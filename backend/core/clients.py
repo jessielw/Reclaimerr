@@ -5,6 +5,7 @@ from backend.core.settings import settings
 from backend.services.jellyfin import JellyfinBackend
 from backend.services.plex import PlexBackend
 from backend.services.radarr import RadarrClient
+from backend.services.sonarr import SonarrClient
 
 
 class ClientManager:
@@ -15,7 +16,7 @@ class ClientManager:
         self._jellyfin: JellyfinBackend | None = None
         self._plex: PlexBackend | None = None
         self._radarr: RadarrClient | None = None
-        # TODO: self._sonarr: SonarrClient | None = None
+        self._sonarr: SonarrClient | None = None
 
         LOG.info("ClientManager initialized")
 
@@ -67,6 +68,22 @@ class ClientManager:
                 LOG.error(f"Failed to initialize Radarr client: {e}")
         return self._radarr
 
+    @property
+    def sonarr(self) -> SonarrClient | None:
+        """Get Sonarr client, lazy-initializing if configured."""
+        if self._sonarr is None and settings.sonarr_api_key:
+            try:
+                from backend.services.radarr import RadarrClient
+
+                self._sonarr = SonarrClient(
+                    api_key=settings.sonarr_api_key,
+                    base_url=settings.sonarr_url,
+                )
+                LOG.info(f"Sonarr client initialized: {settings.sonarr_url}")
+            except Exception as e:
+                LOG.error(f"Failed to initialize Sonarr client: {e}")
+        return self._sonarr
+
     def reload_jellyfin(self) -> JellyfinBackend | None:
         """Force reload Jellyfin client (useful after config changes)."""
         self._jellyfin = None
@@ -82,12 +99,18 @@ class ClientManager:
         self._radarr = None
         return self.radarr
 
+    def reload_sonarr(self) -> SonarrClient | None:
+        """Force reload Sonarr client (useful after config changes)."""
+        self._sonarr = None
+        return self.sonarr
+
     def reload_all(self) -> None:
         """Force reload all clients (useful after config changes)."""
         LOG.info("Reloading all clients")
         self._jellyfin = None
         self._plex = None
         self._radarr = None
+        self._sonarr = None
 
     def get_status(self) -> dict[str, bool]:
         """Get connection status of all clients."""
@@ -95,6 +118,7 @@ class ClientManager:
             "jellyfin": self._jellyfin is not None,
             "plex": self._plex is not None,
             "radarr": self._radarr is not None,
+            "sonarr": self._sonarr is not None,
         }
 
     # def cleanup(self) -> None:
