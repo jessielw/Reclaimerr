@@ -43,7 +43,7 @@ def _get_config_directory() -> Path:
         return RUNTIME_DIR
     else:
         # installed mode: use platformdirs for user config
-        config_dir = Path(platformdirs.user_config_dir("Mp4Forge", "Mp4Forge"))
+        config_dir = Path(platformdirs.user_config_dir("Vacuumarr", "Vacuumarr"))
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
 
