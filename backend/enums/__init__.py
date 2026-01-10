@@ -32,3 +32,5 @@ class SeerrRequestStatus(Enum):
     PENDING = 1
     APPROVED = 2
     DECLINED = 3
+    FAILED = 4
+    COMPLETED = 5
