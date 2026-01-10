@@ -56,23 +56,31 @@ class PlexBackend:
         response.raise_for_status()
         return response.json()
 
+    def health(self) -> bool:
+        """Check server health and API key."""
+        try:
+            self._make_request("")
+            return True
+        except Exception:
+            return False
+
     def get_library_sections(self) -> list[dict]:
         """Get all library sections."""
         data = self._make_request("library/sections")
         return data.get("MediaContainer", {}).get("Directory", [])
 
-    def get_movies(self, exclude_sections: list[str] | None = None) -> list[PlexMovie]:
+    def get_movies(self, exclude_libraries: list[str] | None = None) -> list[PlexMovie]:
         """Get all movies from all movie libraries.
 
         Args:
-            exclude_sections: List of section names to exclude (e.g., ['Other Videos'])
+            exclude_libraries: List of library names to exclude (e.g., ['Other Videos'])
         """
         sections = self.get_library_sections()
         movie_sections = [s for s in sections if s.get("type") == "movie"]
 
-        if exclude_sections:
+        if exclude_libraries:
             movie_sections = [
-                s for s in movie_sections if s.get("title") not in exclude_sections
+                s for s in movie_sections if s.get("title") not in exclude_libraries
             ]
 
         all_movies = []
@@ -170,10 +178,10 @@ class PlexBackend:
         return all_series
 
     def get_aggregated_movies(
-        self, exclude_sections: list[str] | None = None
+        self, exclude_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data with optional section exclusion."""
-        movies = self.get_movies(exclude_sections=exclude_sections)
+        movies = self.get_movies(exclude_libraries=exclude_libraries)
 
         return [
             AggregatedMovieData(
