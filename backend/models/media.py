@@ -56,3 +56,9 @@ class AggregatedSeriesData:
     never_watched: bool
     # jellyfin-specific (None for Plex)
     played_by_user_count: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ArrTag:
+    id: int
+    label: str
