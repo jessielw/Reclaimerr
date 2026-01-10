@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
+
+from backend.enums import Service
 
 
 @dataclass(slots=True, frozen=True)
 class ExternalIDs:
     """External provider IDs for media items."""
 
+    tmdb: str
     imdb: str | None
-    tmdb: str | None
     tmdb_collection: str | None
     tvdb: str | None
 
@@ -21,6 +24,7 @@ class AggregatedMovieData:
     id: str
     name: str
     year: int | None
+    service: Literal[Service.PLEX, Service.JELLYFIN]
     library_name: str
     added_at: datetime | None
     premiere_date: datetime | None
