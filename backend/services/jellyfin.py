@@ -119,11 +119,11 @@ class JellyfinBackend:
 
         return "Unknown"
 
-    def health(self):
-        """Check Jellyfin server health and API key."""
+    def health(self) -> bool:
+        """Check server health and API key."""
         try:
-            status = self._make_request("System/Info")
-            return True if status.get("ServerName") else False
+            self._make_request("System/Info")
+            return True
         except Exception:
             return False
 
