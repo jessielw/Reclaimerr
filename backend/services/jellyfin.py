@@ -1,63 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 import niquests
 
 from backend.enums import Service
+from backend.models.clients.jellyfin import (
+    JellyfinMovie,
+    JellyfinSeries,
+    JellyfinUser,
+    JellyfinUserData,
+)
 from backend.models.media import AggregatedMovieData, AggregatedSeriesData, ExternalIDs
-
-
-@dataclass(slots=True, frozen=True)
-class JellyfinUser:
-    """Jellyfin user information."""
-
-    id: str
-    name: str
-
-
-@dataclass(slots=True, frozen=True)
-class JellyfinUserData:
-    """User-specific watch data for a media item."""
-
-    id: str
-    key: str
-    play_count: int
-    last_played_date: datetime | None
-    played: bool
-
-
-@dataclass(slots=True, frozen=True)
-class JellyfinMovie:
-    """Internal Jellyfin movie representation with user data."""
-
-    id: str
-    name: str
-    year: int | None
-    premiere_date: datetime | None
-    date_created: datetime | None
-    container: str
-    library_id: str
-    library_name: str
-    external_ids: ExternalIDs | None
-    user_data: JellyfinUserData | None
-
-
-@dataclass(slots=True, frozen=True)
-class JellyfinSeries:
-    """Internal Jellyfin series representation with user data."""
-
-    id: str
-    name: str
-    year: int | None
-    premiere_date: datetime | None
-    date_created: datetime | None
-    library_id: str
-    library_name: str
-    external_ids: ExternalIDs | None
-    user_data: JellyfinUserData | None
 
 
 class JellyfinBackend:
@@ -66,32 +21,34 @@ class JellyfinBackend:
     def __init__(self, api_key: str, jellyfin_url: str):
         self.api_key = api_key
         self.jellyfin_url = jellyfin_url
-        self.session = niquests.Session()
-        self.session.headers.update(
-            {"X-Emby-Token": self.api_key, "accept": "application/json"}
-        )
+        self.headers = {
+            "X-Emby-Token": self.api_key,
+            "accept": "application/json",
+        }
         # cache library information - map folder IDs to library names
         self._library_cache: dict[str, str] = {}
         # cache of virtual folders for path-based lookup
         self._virtual_folders: list[dict] | None = None
 
-    def _make_request(self, endpoint: str, params: dict | None = None):
-        response = self.session.get(f"{self.jellyfin_url}/{endpoint}", params=params)
+    async def _make_request(self, endpoint: str, params: dict | None = None):
+        response = await niquests.aget(
+            f"{self.jellyfin_url}/{endpoint}", params=params, headers=self.headers
+        )
         response.raise_for_status()
         return response.json()
 
-    def _get_virtual_folders(self) -> list[dict]:
+    async def _get_virtual_folders(self) -> list[dict]:
         """Get and cache virtual folders (libraries)."""
         if self._virtual_folders is None:
-            self._virtual_folders = self._make_request("Library/VirtualFolders")
+            self._virtual_folders = await self._make_request("Library/VirtualFolders")
         return self._virtual_folders  # type: ignore[return-value]
 
-    def _get_library_name_from_path(self, item_path: str) -> str:
+    async def _get_library_name_from_path(self, item_path: str) -> str:
         """Get library name by matching item path to virtual folder paths."""
         if not item_path:
             return "Unknown"
 
-        virtual_folders = self._get_virtual_folders()
+        virtual_folders = await self._get_virtual_folders()
         for vf in virtual_folders:
             lib_paths = vf.get("Locations", [])
             for lib_path in lib_paths:
@@ -100,7 +57,9 @@ class JellyfinBackend:
 
         return "Unknown"
 
-    def _get_library_name(self, parent_id: str, item_path: str | None = None) -> str:
+    async def _get_library_name(
+        self, parent_id: str, item_path: str | None = None
+    ) -> str:
         """Get library name from parent ID and optionally item path, with caching."""
         # try path-based lookup first if available
         if item_path:
@@ -108,7 +67,7 @@ class JellyfinBackend:
             if cache_key in self._library_cache:
                 return self._library_cache[cache_key]
 
-            lib_name = self._get_library_name_from_path(item_path)
+            lib_name = await self._get_library_name_from_path(item_path)
             self._library_cache[cache_key] = lib_name
             return lib_name
 
@@ -118,20 +77,20 @@ class JellyfinBackend:
 
         return "Unknown"
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         """Check server health and API key."""
         try:
-            self._make_request("System/Info")
+            await self._make_request("System/Info")
             return True
         except Exception:
             return False
 
-    def get_users(self) -> list[JellyfinUser]:
+    async def get_users(self) -> list[JellyfinUser]:
         """Get all Jellyfin users."""
-        users_data = self._make_request("Users")
+        users_data = await self._make_request("Users")
         return [JellyfinUser(name=user["Name"], id=user["Id"]) for user in users_data]
 
-    def get_movies_for_user(
+    async def get_movies_for_user(
         self, user_id: str, filters: dict | None = None
     ) -> list[JellyfinMovie]:
         """Get all movies for a specific user."""
@@ -145,13 +104,15 @@ class JellyfinBackend:
         }
         if filters:
             params.update(filters)
-        items_data = self._make_request("Items", params=params).get("Items", [])
+        items_data = (await self._make_request("Items", params=params)).get("Items", [])
         data = []
         for item in items_data:
             # get library information using path (most reliable)
             parent_id = item.get("ParentId")
             item_path = item.get("Path")
-            library_name = self._get_library_name(parent_id or "Unknown", item_path)
+            library_name = await self._get_library_name(
+                parent_id or "Unknown", item_path
+            )
 
             user_data = JellyfinUserData(
                 id=item["UserData"]["ItemId"],
@@ -195,7 +156,7 @@ class JellyfinBackend:
             data.append(movie)
         return data
 
-    def get_series_for_user(
+    async def get_series_for_user(
         self, user_id: str, filters: dict | None = None
     ) -> list[JellyfinSeries]:
         """Get all TV series for a specific user."""
@@ -209,13 +170,15 @@ class JellyfinBackend:
         }
         if filters:
             params.update(filters)
-        items_data = self._make_request("Items", params=params).get("Items", [])
+        items_data = (await self._make_request("Items", params=params)).get("Items", [])
         data = []
         for item in items_data:
             # get library information using path (most reliable)
             parent_id = item.get("ParentId")
             item_path = item.get("Path")
-            library_name = self._get_library_name(parent_id or "Unknown", item_path)
+            library_name = await self._get_library_name(
+                parent_id or "Unknown", item_path
+            )
 
             user_data = JellyfinUserData(
                 id=item["UserData"]["ItemId"],
@@ -258,7 +221,9 @@ class JellyfinBackend:
             data.append(series)
         return data
 
-    def get_all_watched_episodes_for_user(self, user_id: str) -> dict[str, datetime]:
+    async def get_all_watched_episodes_for_user(
+        self, user_id: str
+    ) -> dict[str, datetime]:
         """Get all watched episodes for a user and return a map of seriesId -> most recent watch date.
 
         This is much more efficient than querying each series individually.
@@ -275,7 +240,7 @@ class JellyfinBackend:
                 "SortBy": "DatePlayed",
                 "SortOrder": "Descending",
             }
-            response = self._make_request("Items", params=params)
+            response = await self._make_request("Items", params=params)
             items = response.get("Items", [])
 
             # group by series and keep the most recent watch date
@@ -296,14 +261,14 @@ class JellyfinBackend:
         except Exception:
             return {}
 
-    def get_aggregated_movies(
+    async def get_aggregated_movies(
         self, exclude_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data across all users with optional library exclusion."""
         movie_data: dict[str, dict[str, Any]] = {}
 
-        for user in self.get_users():
-            user_movies = self.get_movies_for_user(user.id)
+        for user in await self.get_users():
+            user_movies = await self.get_movies_for_user(user.id)
 
             for movie in user_movies:
                 # skip if library is in exclusion list
@@ -357,7 +322,7 @@ class JellyfinBackend:
             for data in movie_data.values()
         ]
 
-    def get_aggregated_series(
+    async def get_aggregated_series(
         self, exclude_libraries: list[str] | None = None
     ) -> list[AggregatedSeriesData]:
         """Get aggregated series data across all users with optional library exclusion.
@@ -368,12 +333,14 @@ class JellyfinBackend:
         """
         series_data: dict[str, dict[str, Any]] = {}
 
-        for user in self.get_users():
+        for user in await self.get_users():
             # get all watched episodes for this user in one API call
-            user_series_watch_dates = self.get_all_watched_episodes_for_user(user.id)
+            user_series_watch_dates = await self.get_all_watched_episodes_for_user(
+                user.id
+            )
 
             # get series list for this user
-            user_series = self.get_series_for_user(user.id)
+            user_series = await self.get_series_for_user(user.id)
 
             for series in user_series:
                 # skip if library is in exclusion list

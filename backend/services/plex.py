@@ -1,42 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
 import niquests
 
 from backend.enums import Service
+from backend.models.clients.plex import PlexMovie, PlexSeries
 from backend.models.media import AggregatedMovieData, AggregatedSeriesData, ExternalIDs
-
-
-@dataclass(slots=True, frozen=True)
-class PlexMovie:
-    """Internal Plex movie representation."""
-
-    id: str
-    name: str
-    year: int | None
-    library_name: str
-    added_at: datetime | None
-    updated_at: datetime | None
-    last_viewed_at: datetime | None
-    view_count: int
-    external_ids: ExternalIDs | None
-
-
-@dataclass(slots=True, frozen=True)
-class PlexSeries:
-    """Internal Plex series representation."""
-
-    id: str
-    name: str
-    year: int | None
-    library_name: str
-    added_at: datetime | None
-    updated_at: datetime | None
-    last_viewed_at: datetime | None
-    view_count: int
-    external_ids: ExternalIDs | None
 
 
 class PlexBackend:
@@ -45,36 +15,40 @@ class PlexBackend:
     def __init__(self, token: str, plex_url: str):
         self.token = token
         self.plex_url = plex_url
-        self.session = niquests.Session()
-        self.session.headers.update(
-            {"X-Plex-Token": self.token, "Accept": "application/json"}
-        )
+        self.headers = {
+            "X-Plex-Token": self.token,
+            "Accept": "application/json",
+        }
 
-    def _make_request(self, endpoint: str, params: dict | None = None):
-        response = self.session.get(f"{self.plex_url}/{endpoint}", params=params)
+    async def _make_request(self, endpoint: str, params: dict | None = None):
+        response = await niquests.aget(
+            f"{self.plex_url}/{endpoint}", params=params, headers=self.headers
+        )
         response.raise_for_status()
         return response.json()
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         """Check server health and API key."""
         try:
-            self._make_request("")
+            await self._make_request("")
             return True
         except Exception:
             return False
 
-    def get_library_sections(self) -> list[dict]:
+    async def get_library_sections(self) -> list[dict]:
         """Get all library sections."""
-        data = self._make_request("library/sections")
+        data = await self._make_request("library/sections")
         return data.get("MediaContainer", {}).get("Directory", [])
 
-    def get_movies(self, exclude_libraries: list[str] | None = None) -> list[PlexMovie]:
+    async def get_movies(
+        self, exclude_libraries: list[str] | None = None
+    ) -> list[PlexMovie]:
         """Get all movies from all movie libraries.
 
         Args:
             exclude_libraries: List of library names to exclude (e.g., ['Other Videos'])
         """
-        sections = self.get_library_sections()
+        sections = await self.get_library_sections()
         movie_sections = [s for s in sections if s.get("type") == "movie"]
 
         if exclude_libraries:
@@ -88,7 +62,7 @@ class PlexBackend:
             section_name = section.get("title", "Unknown")
             # type=1 to only fetch movies, not collections
             # includeGuids=1 to get external IDs
-            items_data = self._make_request(
+            items_data = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 1, "includeGuids": 1},
             )
@@ -122,13 +96,15 @@ class PlexBackend:
 
         return all_movies
 
-    def get_series(self, exclude_sections: list[str] | None = None) -> list[PlexSeries]:
+    async def get_series(
+        self, exclude_sections: list[str] | None = None
+    ) -> list[PlexSeries]:
         """Get all TV series from all show libraries.
 
         Args:
             exclude_sections: List of section names to exclude
         """
-        sections = self.get_library_sections()
+        sections = await self.get_library_sections()
         show_sections = [s for s in sections if s.get("type") == "show"]
 
         if exclude_sections:
@@ -142,7 +118,7 @@ class PlexBackend:
             section_name = section.get("title", "Unknown")
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
-            items_data = self._make_request(
+            items_data = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 2, "includeGuids": 1},
             )
@@ -176,11 +152,11 @@ class PlexBackend:
 
         return all_series
 
-    def get_aggregated_movies(
+    async def get_aggregated_movies(
         self, exclude_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data with optional section exclusion."""
-        movies = self.get_movies(exclude_libraries=exclude_libraries)
+        movies = await self.get_movies(exclude_libraries=exclude_libraries)
 
         return [
             AggregatedMovieData(
@@ -201,11 +177,11 @@ class PlexBackend:
             for m in movies
         ]
 
-    def get_aggregated_series(
+    async def get_aggregated_series(
         self, exclude_sections: list[str] | None = None
     ) -> list[AggregatedSeriesData]:
         """Get aggregated series data with optional section exclusion."""
-        series = self.get_series(exclude_sections=exclude_sections)
+        series = await self.get_series(exclude_sections=exclude_sections)
 
         return [
             AggregatedSeriesData(

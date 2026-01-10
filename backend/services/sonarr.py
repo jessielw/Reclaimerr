@@ -1,40 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import niquests
 
-
-@dataclass(slots=True, frozen=True)
-class SonarrSeason:
-    """Sonarr season representation."""
-
-    season_number: int
-    monitored: bool
-    statistics: dict | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class SonarrSeries:
-    """Sonarr series representation."""
-
-    id: int
-    title: str
-    tvdb_id: int | None
-    imdb_id: str | None
-    year: int | None
-    path: str
-    monitored: bool
-    season_count: int
-    seasons: list[SonarrSeason]
-    tags: list[int]
-    raw: dict | None = None
-
-    def __repr__(self) -> str:
-        return (
-            f"SonarrSeries(id={self.id}, title='{self.title}', tvdb_id={self.tvdb_id}, "
-            f"year={self.year}, seasons={self.season_count}, monitored={self.monitored}, tags={self.tags})"
-        )
+from backend.models.clients.sonarr import SonarrSeason, SonarrSeries
+from backend.models.media import ArrTag
 
 
 def build_sonarr_series_from_dict(data: dict) -> SonarrSeries:
@@ -64,14 +33,6 @@ def build_sonarr_series_from_dict(data: dict) -> SonarrSeries:
     )
 
 
-@dataclass(slots=True, frozen=True)
-class SonarrTag:
-    """Sonarr tag representation."""
-
-    id: int
-    label: str
-
-
 class SonarrClient:
     """Client for Sonarr API operations."""
 
@@ -84,20 +45,12 @@ class SonarrClient:
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-        self.session = niquests.Session()
-        self.session.headers.update(
-            {
-                "X-Api-Key": self.api_key,
-                "Content-Type": "application/json",
-            }
-        )
+        self.headers = {
+            "X-Api-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
 
-    def __del__(self) -> None:
-        """Close session on cleanup."""
-        if self.session:
-            self.session.close()
-
-    def _make_request(
+    async def _make_request(
         self, method: str, endpoint: str, **kwargs
     ) -> tuple[int, dict | list | None]:
         """Make HTTP request to Sonarr API.
@@ -105,8 +58,8 @@ class SonarrClient:
         Returns:
             Tuple of (status_code, response_data)
         """
-        response = self.session.request(
-            method, f"{self.base_url}/api/v3/{endpoint}", **kwargs
+        response = await niquests.arequest(
+            method, f"{self.base_url}/api/v3/{endpoint}", headers=self.headers, **kwargs
         )
         response.raise_for_status()
 
@@ -117,15 +70,15 @@ class SonarrClient:
             return status_code, response.json()
         return status_code, None
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         """Check server health and API key."""
         try:
-            self._make_request("GET", "health")
+            await self._make_request("GET", "health")
             return True
         except Exception:
             return False
 
-    def get_series(self, series_id: int) -> SonarrSeries:
+    async def get_series(self, series_id: int) -> SonarrSeries:
         """Get series by ID.
 
         Args:
@@ -134,36 +87,36 @@ class SonarrClient:
         Returns:
             Series object
         """
-        status_code, data = self._make_request("GET", f"series/{series_id}")
+        status_code, data = await self._make_request("GET", f"series/{series_id}")
         if not isinstance(data, dict):
             raise ValueError(
                 f"Invalid response for series {series_id} (status: {status_code})"
             )
         return build_sonarr_series_from_dict(data)
 
-    def get_all_series(self) -> list[SonarrSeries]:
+    async def get_all_series(self) -> list[SonarrSeries]:
         """Get all series from Sonarr.
 
         Returns:
             List of all series
         """
-        _, data = self._make_request("GET", "series")
+        _, data = await self._make_request("GET", "series")
         if not isinstance(data, list):
             return []
         return [build_sonarr_series_from_dict(series) for series in data]
 
-    def get_tags(self) -> list[SonarrTag]:
+    async def get_tags(self) -> list[ArrTag]:
         """Get all tags from Sonarr.
 
         Returns:
             List of all tags
         """
-        _, data = self._make_request("GET", "tag")
+        _, data = await self._make_request("GET", "tag")
         if not isinstance(data, list):
             return []
-        return [SonarrTag(id=tag["id"], label=tag["label"]) for tag in data]
+        return [ArrTag(id=tag["id"], label=tag["label"]) for tag in data]
 
-    def create_tag(self, label: str) -> SonarrTag:
+    async def create_tag(self, label: str) -> ArrTag:
         """Create a new tag.
 
         Args:
@@ -172,14 +125,16 @@ class SonarrClient:
         Returns:
             Created tag
         """
-        status_code, data = self._make_request("POST", "tag", json={"label": label})
+        status_code, data = await self._make_request(
+            "POST", "tag", json={"label": label}
+        )
         if not isinstance(data, dict):
             raise ValueError(
                 f"Invalid response when creating tag {label} (status: {status_code})"
             )
-        return SonarrTag(id=data["id"], label=data["label"])
+        return ArrTag(id=data["id"], label=data["label"])
 
-    def get_or_create_tag(self, label: str) -> SonarrTag:
+    async def get_or_create_tag(self, label: str) -> ArrTag:
         """Get existing tag by label or create if doesn't exist.
 
         Args:
@@ -188,13 +143,13 @@ class SonarrClient:
         Returns:
             Tag object
         """
-        tags = self.get_tags()
+        tags = await self.get_tags()
         for tag in tags:
             if tag.label.lower() == label.lower():
                 return tag
-        return self.create_tag(label)
+        return await self.create_tag(label)
 
-    def add_tag_to_series(
+    async def add_tag_to_series(
         self, series_ids: list[int], tag_id: int
     ) -> list[SonarrSeries]:
         """Add a tag to multiple series (preserves existing tags).
@@ -206,7 +161,7 @@ class SonarrClient:
         Returns:
             List of updated series
         """
-        status_code, data = self._make_request(
+        status_code, data = await self._make_request(
             "PUT",
             "series/editor",
             json={
@@ -225,7 +180,7 @@ class SonarrClient:
             build_sonarr_series_from_dict(updated_series) for updated_series in data
         ]
 
-    def delete_series(
+    async def delete_series(
         self,
         series_id: int,
         delete_files: bool = True,
@@ -242,7 +197,7 @@ class SonarrClient:
             "deleteFiles": str(delete_files).lower(),
             "addImportListExclusion": str(add_import_exclusion).lower(),
         }
-        status_code, _ = self._make_request(
+        status_code, _ = await self._make_request(
             "DELETE",
             f"series/{series_id}",
             params=params,
@@ -252,7 +207,7 @@ class SonarrClient:
                 f"Failed to delete series {series_id} (status: {status_code})"
             )
 
-    def delete_series_bulk(
+    async def delete_series_bulk(
         self,
         series_ids: list[int],
         delete_files: bool = True,
@@ -265,7 +220,7 @@ class SonarrClient:
             delete_files: Whether to delete series files from disk
             add_import_exclusion: Whether to add to import exclusion list
         """
-        status_code, _ = self._make_request(
+        status_code, _ = await self._make_request(
             "DELETE",
             "series/editor",
             json={
@@ -279,7 +234,7 @@ class SonarrClient:
                 f"Failed to delete series {series_ids} (status: {status_code})"
             )
 
-    def update_season_monitoring(
+    async def update_season_monitoring(
         self,
         series_id: int,
         season_number: int,
@@ -296,7 +251,9 @@ class SonarrClient:
             Updated series
         """
         # get current series data
-        status_code, series_data = self._make_request("GET", f"series/{series_id}")
+        status_code, series_data = await self._make_request(
+            "GET", f"series/{series_id}"
+        )
         if not isinstance(series_data, dict):
             raise ValueError(
                 f"Invalid response for series {series_id} (status: {status_code})"
@@ -310,7 +267,7 @@ class SonarrClient:
                 break
 
         # update the series
-        status_code, updated_data = self._make_request(
+        status_code, updated_data = await self._make_request(
             "PUT",
             f"series/{series_id}",
             json=series_data,
@@ -322,7 +279,7 @@ class SonarrClient:
 
         return build_sonarr_series_from_dict(updated_data)
 
-    def delete_season_files(
+    async def delete_season_files(
         self,
         series_id: int,
         season_number: int,
@@ -334,7 +291,7 @@ class SonarrClient:
             season_number: Season number to delete files from
         """
         # get all episodes for this series
-        status_code, episodes = self._make_request(
+        status_code, episodes = await self._make_request(
             "GET",
             "episode",
             params={"seriesId": series_id},
@@ -356,7 +313,7 @@ class SonarrClient:
             return
 
         # delete the episode files in bulk
-        status_code, _ = self._make_request(
+        status_code, _ = await self._make_request(
             "DELETE",
             "episodefile/bulk",
             json={"episodeFileIds": episode_file_ids},
