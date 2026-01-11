@@ -13,7 +13,7 @@ from backend.models.media import AggregatedMovieData, AggregatedSeriesData, Exte
 class PlexBackend:
     """Plex media server backend."""
 
-    def __init__(self, token: str, plex_url: str):
+    def __init__(self, token: str, plex_url: str) -> None:
         self.token = token
         self.plex_url = plex_url
         self.session = niquests.AsyncSession()
@@ -24,7 +24,9 @@ class PlexBackend:
             }
         )
 
-    async def _make_request(self, endpoint: str, params: dict | None = None):
+    async def _make_request(
+        self, endpoint: str, params: dict | None = None
+    ) -> dict | list:
         max_retries = 3
 
         for attempt in range(max_retries):
@@ -42,11 +44,14 @@ class PlexBackend:
                 response.raise_for_status()
                 return response.json()
 
-            except (ConnectionError, TimeoutError) as e:
+            except (ConnectionError, TimeoutError):
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
                 raise
+
+        # should never reach here, but satisfy type checker
+        raise RuntimeError("Max retries exceeded")
 
     async def health(self) -> bool:
         """Check server health and API key."""
@@ -61,7 +66,9 @@ class PlexBackend:
         data = await self._make_request("library/sections")
         if not data:
             return []
-        return data.get("MediaContainer", {}).get("Directory", [])
+        if not isinstance(data, list):
+            return []
+        return data.get("MediaContainer", {}).get("Directory", [])  # pyright: ignore [reportAttributeAccessIssue]
 
     async def get_movies(
         self, exclude_libraries: list[str] | None = None
@@ -91,7 +98,7 @@ class PlexBackend:
             )
             if not items_data:
                 continue
-            items = items_data.get("MediaContainer", {}).get("Metadata", [])
+            items = items_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
             for item in items:
                 # only include actual movies, not collections or other types
@@ -149,7 +156,7 @@ class PlexBackend:
             )
             if not items_data:
                 continue
-            items = items_data.get("MediaContainer", {}).get("Metadata", [])
+            items = items_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
             for item in items:
                 # only include actual shows, not collections or other types
