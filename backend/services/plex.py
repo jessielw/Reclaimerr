@@ -64,9 +64,7 @@ class PlexBackend:
     async def get_library_sections(self) -> list[dict]:
         """Get all library sections."""
         data = await self._make_request("library/sections")
-        if not data:
-            return []
-        if not isinstance(data, list):
+        if not isinstance(data, dict):
             return []
         return data.get("MediaContainer", {}).get("Directory", [])  # pyright: ignore [reportAttributeAccessIssue]
 
