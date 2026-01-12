@@ -141,17 +141,12 @@ class JellyfinService:
                 else None,
                 played=item["UserData"]["Played"],
             )
+            provider_ids = item.get("ProviderIds", {})
             external_ids = ExternalIDs(
-                imdb=item["ProviderIds"].get("Imdb")
-                if item.get("ProviderIds")
-                else None,
-                tmdb=item["ProviderIds"].get("Tmdb"),
-                tmdb_collection=item["ProviderIds"].get("TmdbCollection")
-                if item.get("ProviderIds")
-                else None,
-                tvdb=item["ProviderIds"].get("Tvdb")
-                if item.get("ProviderIds")
-                else None,
+                imdb=provider_ids.get("Imdb"),
+                tmdb=provider_ids.get("Tmdb"),
+                tmdb_collection=provider_ids.get("TmdbCollection"),
+                tvdb=provider_ids.get("Tvdb"),
             )
             movie = JellyfinMovie(
                 id=item["Id"],
@@ -216,17 +211,12 @@ class JellyfinService:
                 else None,
                 played=item["UserData"]["Played"],
             )
+            provider_ids = item.get("ProviderIds", {})
             external_ids = ExternalIDs(
-                imdb=item["ProviderIds"].get("Imdb")
-                if item.get("ProviderIds")
-                else None,
-                tmdb=item["ProviderIds"].get("Tmdb"),
-                tmdb_collection=item["ProviderIds"].get("TmdbCollection")
-                if item.get("ProviderIds")
-                else None,
-                tvdb=item["ProviderIds"].get("Tvdb")
-                if item.get("ProviderIds")
-                else None,
+                imdb=provider_ids.get("Imdb"),
+                tmdb=provider_ids.get("Tmdb"),
+                tmdb_collection=provider_ids.get("TmdbCollection"),
+                tvdb=provider_ids.get("Tvdb"),
             )
             series = JellyfinSeries(
                 id=item["Id"],
