@@ -12,13 +12,13 @@ class PlexMovie:
 
     id: str
     name: str
-    year: int | None
+    year: int
     library_name: str
     added_at: datetime | None
     updated_at: datetime | None
     last_viewed_at: datetime | None
     view_count: int
-    external_ids: ExternalIDs | None
+    external_ids: ExternalIDs
     size: int
 
 
@@ -28,11 +28,11 @@ class PlexSeries:
 
     id: str
     name: str
-    year: int | None
+    year: int
     library_name: str
     added_at: datetime | None
     updated_at: datetime | None
     last_viewed_at: datetime | None
     view_count: int
-    external_ids: ExternalIDs | None
+    external_ids: ExternalIDs
     size: int
