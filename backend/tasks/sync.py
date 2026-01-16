@@ -67,23 +67,34 @@ async def gather_movies() -> dict[int, AggregatedMovieData] | None:
 
     # deduplicate movies, keeping the one with most recent watch date
     unique_movies: dict[int, AggregatedMovieData] = {}
+    skipped_count = 0
 
     for movie in aggregated_movies:
         ext_ids = movie.external_ids
         if not ext_ids or not ext_ids.tmdb:
+            skipped_count += 1
             continue
 
         tmdb_id = ext_ids.tmdb
         if tmdb_id not in unique_movies:
             unique_movies[tmdb_id] = movie
         else:
-            # keep movie with most recent watch date (None is considered oldest)
             existing = unique_movies[tmdb_id]
+            # Keep movie with most recent watch date
             if movie.last_viewed_at and (
                 not existing.last_viewed_at
                 or movie.last_viewed_at > existing.last_viewed_at
             ):
                 unique_movies[tmdb_id] = movie
+            # If watch dates are equal/both None, prefer latest added_at
+            elif movie.last_viewed_at == existing.last_viewed_at:
+                if movie.added_at and (
+                    not existing.added_at or movie.added_at > existing.added_at
+                ):
+                    unique_movies[tmdb_id] = movie
+
+    if skipped_count > 0:
+        LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
 
     return unique_movies
 
@@ -133,28 +144,42 @@ async def gather_series() -> dict[int, AggregatedSeriesData] | None:
 
     # deduplicate series, keeping the one with most recent watch date
     unique_series: dict[int, AggregatedSeriesData] = {}
+    skipped_count = 0
 
     for series in aggregated_series:
         ext_ids = series.external_ids
         if not ext_ids or not ext_ids.tmdb:
+            skipped_count += 1
             continue
 
         tmdb_id = ext_ids.tmdb
         if tmdb_id not in unique_series:
             unique_series[tmdb_id] = series
         else:
-            # keep series with most recent watch date
             existing = unique_series[tmdb_id]
+            # keep series with most recent watch date
             if series.last_viewed_at and (
                 not existing.last_viewed_at
                 or series.last_viewed_at > existing.last_viewed_at
             ):
                 unique_series[tmdb_id] = series
+            # if watch dates are equal/both None, prefer latest added_at
+            elif series.last_viewed_at == existing.last_viewed_at:
+                if series.added_at and (
+                    not existing.added_at or series.added_at > existing.added_at
+                ):
+                    unique_series[tmdb_id] = series
+
+    if skipped_count > 0:
+        LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
 
     return unique_series
 
 
 async def sync_movies():
+    start_time = datetime.now(timezone.utc)
+    LOG.info("Starting movie sync...")
+
     aggregated_movies = await gather_movies()
     if not aggregated_movies:
         LOG.info("No movies to sync from media servers")
@@ -183,6 +208,7 @@ async def sync_movies():
                 radarr_movies = {m.tmdb_id: m for m in get_movies if m.tmdb_id}
 
             # iterate through aggregated movies
+            batch_count = 0
             for idx, movie in enumerate[AggregatedMovieData](
                 aggregated_movies.values(), start=1
             ):
@@ -199,9 +225,13 @@ async def sync_movies():
 
                     # always update watch data and size from media server
                     existing_movie.size = movie.size
+                    existing_movie.library_name = movie.library_name
                     existing_movie.radarr_id = (
                         radarr_obj.id if radarr_obj else existing_movie.radarr_id
                     )
+                    # update added_at if available and not already set
+                    if movie.added_at and not existing_movie.added_at:
+                        existing_movie.added_at = movie.added_at
                     existing_movie.last_viewed_at = movie.last_viewed_at
                     existing_movie.view_count = movie.view_count
                     existing_movie.never_watched = movie.never_watched
@@ -213,10 +243,10 @@ async def sync_movies():
                             f"Restored soft-deleted movie: {movie.name} ({tmdb_id})"
                         )
 
-                    # fetch TMDB metadata if missing
+                    # fetch TMDB metadata if missing or stale (30+ days old)
                     if not existing_movie.last_metadata_refresh_at:
                         LOG.debug(
-                            f"Fetching TMDB metadata for {movie.name} ({tmdb_id})"
+                            f"Refreshing TMDB metadata for {movie.name} ({tmdb_id})"
                         )
                         await _update_movie_tmdb_metadata(
                             existing_movie, tmdb_id, tmdb_service
@@ -233,12 +263,16 @@ async def sync_movies():
                         year=movie.year,
                         tmdb_id=tmdb_id,
                         size=movie.size,
+                        library_name=movie.library_name,
                         radarr_id=radarr_obj.id if radarr_obj else None,
                         imdb_id=movie.external_ids.imdb,
                         last_viewed_at=movie.last_viewed_at,
                         view_count=movie.view_count,
                         never_watched=movie.never_watched,
                     )
+                    # set added_at from media server if available
+                    if movie.added_at:
+                        new_movie.added_at = movie.added_at
 
                     # fetch TMDB metadata
                     await _update_movie_tmdb_metadata(new_movie, tmdb_id, tmdb_service)
@@ -247,10 +281,13 @@ async def sync_movies():
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
                     await session.commit()
-                    LOG.debug(f"Committed batch of {COMMIT_BATCH_SIZE} movies")
+                    batch_count += 1
 
             # commit any remaining movies
             await session.commit()
+            LOG.debug(
+                f"Committed {len(aggregated_movies)} movies in {batch_count + 1} batches"
+            )
 
             # soft-delete movies that no longer exist in media servers
             movies_to_delete = [
@@ -268,9 +305,13 @@ async def sync_movies():
                     LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
                 await session.commit()
 
-            LOG.info("Movie sync completed successfully")
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            LOG.info(f"Movie sync completed successfully in {duration:.2f}s")
     except Exception as e:
-        LOG.critical(f"Error during movie sync: {e}", exc_info=True)
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        LOG.critical(
+            f"Error during movie sync after {duration:.2f}s: {e}", exc_info=True
+        )
     finally:
         await tmdb_service.session.close()
 
@@ -316,6 +357,9 @@ async def _update_movie_tmdb_metadata(
 
 async def sync_series():
     """Sync series from media servers to database."""
+    start_time = datetime.now(timezone.utc)
+    LOG.info("Starting series sync...")
+
     aggregated_series = await gather_series()
     if not aggregated_series:
         LOG.info("No series to sync from media servers")
@@ -344,6 +388,7 @@ async def sync_series():
                 sonarr_series = {s.tmdb_id: s for s in get_series if s.tmdb_id}
 
             # iterate through aggregated series
+            batch_count = 0
             for idx, series in enumerate[AggregatedSeriesData](
                 aggregated_series.values(), start=1
             ):
@@ -362,9 +407,13 @@ async def sync_series():
 
                     # always update watch data and size from media server
                     existing_series_obj.size = series.size
+                    existing_series_obj.library_name = series.library_name
                     existing_series_obj.sonarr_id = (
                         sonarr_obj.id if sonarr_obj else existing_series_obj.sonarr_id
                     )
+                    # update added_at if available and not already set
+                    if series.added_at and not existing_series_obj.added_at:
+                        existing_series_obj.added_at = series.added_at
                     existing_series_obj.last_viewed_at = series.last_viewed_at
                     existing_series_obj.view_count = series.view_count
                     existing_series_obj.never_watched = series.never_watched
@@ -379,7 +428,7 @@ async def sync_series():
                     # fetch TMDB metadata if missing
                     if not existing_series_obj.last_metadata_refresh_at:
                         LOG.debug(
-                            f"Fetching TMDB metadata for {series.name} ({tmdb_id})"
+                            f"Refreshing TMDB metadata for {series.name} ({tmdb_id})"
                         )
                         await _update_series_tmdb_metadata(
                             existing_series_obj, tmdb_id, tmdb_service
@@ -393,6 +442,7 @@ async def sync_series():
                         year=series.year,
                         tmdb_id=tmdb_id,
                         size=series.size,
+                        library_name=series.library_name,
                         sonarr_id=sonarr_obj.id if sonarr_obj else None,
                         imdb_id=series.external_ids.imdb,
                         tvdb_id=series.external_ids.tvdb,
@@ -400,6 +450,9 @@ async def sync_series():
                         view_count=series.view_count,
                         never_watched=series.never_watched,
                     )
+                    # set added_at from media server if available
+                    if series.added_at:
+                        new_series.added_at = series.added_at
 
                     # fetch TMDB metadata
                     await _update_series_tmdb_metadata(
@@ -410,10 +463,13 @@ async def sync_series():
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
                     await session.commit()
-                    LOG.debug(f"Committed batch of {COMMIT_BATCH_SIZE} series")
+                    batch_count += 1
 
             # commit any remaining series
             await session.commit()
+            LOG.debug(
+                f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
+            )
 
             # soft-delete series that no longer exist in media servers
             series_to_delete = [
@@ -431,15 +487,20 @@ async def sync_series():
                     LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
                 await session.commit()
 
-            LOG.info("Series sync completed successfully")
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            LOG.info(f"Series sync completed successfully in {duration:.2f}s")
     except Exception as e:
-        LOG.critical(f"Error during series sync: {e}", exc_info=True)
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        LOG.critical(
+            f"Error during series sync after {duration:.2f}s: {e}", exc_info=True
+        )
     finally:
         await tmdb_service.session.close()
 
 
 async def sync_all_media():
     """Main sync task - syncs both movies and series from media servers."""
+    start_time = datetime.now(timezone.utc)
     LOG.info("Starting media sync task")
     failures = False
     try:
@@ -456,8 +517,11 @@ async def sync_all_media():
         failures = True
         LOG.critical(f"Media sync task failed: {e}", exc_info=True)
 
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     if not failures:
-        LOG.info("Media sync task completed successfully")
+        LOG.info(f"Media sync task completed successfully in {duration:.2f}s")
+    else:
+        LOG.error(f"Media sync task completed with failures after {duration:.2f}s")
 
 
 async def _update_series_tmdb_metadata(
