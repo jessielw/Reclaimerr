@@ -117,7 +117,7 @@ class JellyfinService:
             "includeItemTypes": "Movie",
             "recursive": "true",
             "enableTotalRecordCount": "true",
-            "Fields": "ProviderIds,MediaSources",
+            "Fields": "ProviderIds,MediaSources,DateCreated",
             "ParentId": library_id,
         }
 
@@ -176,6 +176,7 @@ class JellyfinService:
         library_id: str,
         library_name: str,
         series_sizes: dict[str, int] | None = None,
+        series_dates: dict[str, datetime] | None = None,
         filters: dict | None = None,
     ) -> list[JellyfinSeries]:
         """Get TV series for a specific user, optionally filtered by library.
@@ -185,6 +186,7 @@ class JellyfinService:
             library_id: Library ID to query
             library_name: The name of the library
             series_sizes: Pre-calculated series sizes (series_id -> total bytes)
+            series_dates: Pre-calculated series dates (series_id -> oldest episode DateCreated)
             filters: Additional query filters
         """
         params = {
@@ -226,6 +228,8 @@ class JellyfinService:
 
             # get size from pre-calculated series sizes (if available)
             total_size = series_sizes.get(item["Id"], 0) if series_sizes else 0
+            # get oldest episode date (if available)
+            series_date = series_dates.get(item["Id"]) if series_dates else None
 
             series = JellyfinSeries(
                 id=item["Id"],
@@ -234,9 +238,7 @@ class JellyfinService:
                 premiere_date=datetime.fromisoformat(item["PremiereDate"])
                 if item.get("PremiereDate")
                 else None,
-                date_created=datetime.fromisoformat(item["DateCreated"])
-                if item.get("DateCreated")
-                else None,
+                date_created=series_date,
                 library_id=library_id,
                 library_name=library_name,
                 external_ids=external_ids,
@@ -248,37 +250,42 @@ class JellyfinService:
 
     async def get_series_sizes_for_library(
         self, library_id: str, user_id: str
-    ) -> dict[str, int]:
-        """Get total sizes for all series in a library by fetching all episodes in one call.
+    ) -> tuple[dict[str, int], dict[str, datetime]]:
+        """Get total sizes and oldest DateCreated for all series in a library.
 
         Args:
             library_id: The Jellyfin library ID
             user_id: The user ID to fetch episodes for
 
         Returns:
-            Dictionary mapping series_id to total size in bytes
+            Tuple of (series_sizes, series_dates) where:
+            - series_sizes: Dictionary mapping series_id to total size in bytes
+            - series_dates: Dictionary mapping series_id to oldest episode DateCreated
         """
         params = {
             "userId": user_id,
             "includeItemTypes": "Episode",
             "recursive": "true",
-            "Fields": "MediaSources,SeriesId",
+            "Fields": "MediaSources,SeriesId,DateCreated",
             "ParentId": library_id,
         }
 
         get_data = await self._make_request("Items", params=params)
         if not get_data:
-            return {}
+            return {}, {}
 
         episodes = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
 
-        # group episodes by series and sum sizes
+        # group episodes by series and sum sizes, track oldest date
         series_sizes: dict[str, int] = {}
+        series_dates: dict[str, datetime] = {}
+
         for episode in episodes:
             series_id = episode.get("SeriesId")
             if not series_id:
                 continue
 
+            # sum sizes
             episode_size = 0
             media_sources = episode.get("MediaSources", [])
             for source in media_sources:
@@ -288,7 +295,16 @@ class JellyfinService:
                 series_sizes[series_id] = 0
             series_sizes[series_id] += episode_size
 
-        return series_sizes
+            # track oldest DateCreated (first episode added)
+            if episode.get("DateCreated"):
+                episode_date = datetime.fromisoformat(episode["DateCreated"])
+                if (
+                    series_id not in series_dates
+                    or episode_date < series_dates[series_id]
+                ):
+                    series_dates[series_id] = episode_date
+
+        return series_sizes, series_dates
 
     async def get_all_watched_episodes_for_user(
         self, user_id: str
@@ -439,7 +455,7 @@ class JellyfinService:
                 continue
 
             # fetch series sizes once per library (not per user as this is expensive)
-            series_sizes = await self.get_series_sizes_for_library(
+            series_sizes, series_dates = await self.get_series_sizes_for_library(
                 library_id, users[0].id
             )
 
@@ -455,6 +471,7 @@ class JellyfinService:
                     library_id=library_id,
                     library_name=library_name,
                     series_sizes=series_sizes,
+                    series_dates=series_dates,
                 )
 
                 for series in user_series:
