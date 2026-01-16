@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from services import sonarr
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -16,13 +15,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    MappedAsDataclass,
-    mapped_column,
-    relationship,
-)
+from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
 from backend.enums import MediaType, Service, TaskStatus
 
@@ -57,32 +50,6 @@ class ServiceConfig(Base):
     )
 
 
-class CleanupRule(Base):
-    """User-defined cleanup rules for movies and series."""
-
-    __tablename__ = "cleanup_rules"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
-    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
-
-    # rule criteria
-    unwatched_days: Mapped[int | None] = mapped_column(Integer, default=None)
-    last_watched_days: Mapped[int | None] = mapped_column(Integer, default=None)
-    max_imdb_rating: Mapped[float | None] = mapped_column(Float, default=None)
-    min_file_size_gb: Mapped[float | None] = mapped_column(Float, default=None)
-
-    # actions
-    auto_tag: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # series-specific
-    delete_partial_seasons: Mapped[bool] = mapped_column(Boolean, default=False)
-    ended_series_grace_days: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(), init=False
-    )
-
-
 class Movie(Base):
     """Movie availability and metadata."""
 
@@ -99,6 +66,7 @@ class Movie(Base):
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)
+    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
 
     # external IDs
     radarr_id: Mapped[int | None] = mapped_column(
@@ -136,7 +104,7 @@ class Movie(Base):
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
-        DateTime, server_default=func.now(), init=False
+        DateTime, default=None, init=False
     )
     # we're only soft deleting data to maintain TMDB metadata on re-add
     removed_at: Mapped[datetime | None] = mapped_column(
@@ -165,6 +133,7 @@ class Series(Base):
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)
+    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
 
     # external IDs
     sonarr_id: Mapped[int | None] = mapped_column(
@@ -207,7 +176,7 @@ class Series(Base):
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
-        DateTime, server_default=func.now(), init=False
+        DateTime, default=None, init=False
     )
     # we're only soft deleting data to maintain TMDB metadata on re-add
     removed_at: Mapped[datetime | None] = mapped_column(
@@ -220,85 +189,104 @@ class Series(Base):
     )
 
 
-# class WatchHistory(Base):
-#     """Watch history from Plex/Jellyfin - tracks when media was last watched."""
+class CleanupRule(Base):
+    """User-defined cleanup rules for movies and series."""
 
-#     __tablename__ = "watch_history"
+    __tablename__ = "cleanup_rules"
 
-#     id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    name: Mapped[str] = mapped_column(String(100))  # rule name
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-#     # foreign keys (one of these will be set)
-#     movie_id: Mapped[int | None] = mapped_column(
-#         ForeignKey("movies.id"), unique=True, default=None, init=False
-#     )
-#     series_id: Mapped[int | None] = mapped_column(
-#         ForeignKey("series.id"), unique=True, default=None, init=False
-#     )
+    # library filtering (applies to Plex/Jellyfin library names)
+    # None = applies to all libraries, otherwise specific library name
+    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
 
-#     # watch data - only what matters for cleanup decisions
-#     last_viewed_at: Mapped[datetime | None] = mapped_column(
-#         DateTime, default=None, init=False
-#     )
-#     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    # TMDB popularity criteria
+    min_popularity: Mapped[float | None] = mapped_column(Float, default=None)
+    max_popularity: Mapped[float | None] = mapped_column(Float, default=None)
 
-#     # relationships
-#     movie: Mapped[Movie | None] = relationship(
-#         back_populates="watch_history", default=None, init=False
-#     )
-#     series: Mapped[Series | None] = relationship(
-#         back_populates="watch_history", default=None, init=False
-#     )
+    # TMDB vote average criteria
+    min_vote_average: Mapped[float | None] = mapped_column(Float, default=None)
+    max_vote_average: Mapped[float | None] = mapped_column(Float, default=None)
 
-#     synced_at: Mapped[datetime] = mapped_column(
-#         DateTime, server_default=func.now(), init=False
-#     )
+    # TMDB vote count criteria
+    min_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # watch history criteria
+    min_view_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_view_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    include_never_watched: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # age criteria (days since added)
+    min_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # size criteria (bytes)
+    min_size: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_size: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # actions
+    auto_tag: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
 
 
-# class CleanupCandidate(Base):
-#     """Items identified as candidates for deletion based on cleanup rules."""
+class CleanupCandidate(Base):
+    """Items identified as candidates for deletion based on cleanup rules."""
 
-#     __tablename__ = "cleanup_candidates"
+    __tablename__ = "cleanup_candidates"
 
-#     id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
 
-#     # foreign keys (one of these will be set)
-#     movie_id: Mapped[int | None] = mapped_column(
-#         ForeignKey("movies.id"), unique=True, default=None, init=False
-#     )
-#     series_id: Mapped[int | None] = mapped_column(
-#         ForeignKey("series.id"), unique=True, default=None, init=False
-#     )
+    # media identification (required for TMDB ID tv/movie id overlap)
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
 
-#     # candidate info -> why it was marked (e.g., "Unwatched for 365 days")
-#     reason: Mapped[str] = mapped_column(Text)
-#     matched_rule_id: Mapped[int | None] = mapped_column(
-#         ForeignKey("cleanup_rules.id"), default=None, init=False
-#     )
+    # multiple rule matching support (required fields first for dataclass)
+    matched_rule_ids: Mapped[list[int]] = mapped_column(JSON)
+    # snapshot of values: {"popularity": 2.5, "vote_average": 4.2, "view_count": 0}
+    matched_criteria: Mapped[dict] = mapped_column(JSON)
+    # easily readable combined reasons from all matched rules
+    reason: Mapped[str] = mapped_column(Text)
 
-#     # status
-#     tagged_in_arr: Mapped[bool] = mapped_column(Boolean, default=False)
-#     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)  # user reviewed
-#     approved_for_deletion: Mapped[bool] = mapped_column(Boolean, default=False)
+    # foreign keys (one will be set based on media_type)
+    movie_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movies.id"), unique=True, default=None
+    )
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id"), unique=True, default=None
+    )
 
-#     # space savings
-#     estimated_space_gb: Mapped[float | None] = mapped_column(
-#         Float, default=None, init=False
-#     )
+    # library context
+    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
 
-#     created_at: Mapped[datetime] = mapped_column(
-#         DateTime, server_default=func.now(), init=False
-#     )
-#     updated_at: Mapped[datetime] = mapped_column(
-#         DateTime, server_default=func.now(), onupdate=func.now(), init=False
-#     )
+    # workflow status
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved_for_deletion: Mapped[bool] = mapped_column(Boolean, default=False)
+    tagged_in_arr: Mapped[bool] = mapped_column(Boolean, default=False)
 
-#     # relationships
-#     movie: Mapped[Movie | None] = relationship(
-#         back_populates="cleanup_candidate", default=None, init=False
-#     )
-#     series: Mapped[Series | None] = relationship(
-#         back_populates="cleanup_candidate", default=None, init=False
-#     )
+    # space savings
+    estimated_space_gb: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
 
 
 class TaskRun(Base):
