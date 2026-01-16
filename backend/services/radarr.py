@@ -174,18 +174,54 @@ class RadarrClient:
         Returns:
             List of updated movies
         """
+        if not movie_ids:
+            return []
+
         status_code, data = await self._make_request(
             "PUT",
             "movie/editor",
             json={
                 "movieIds": movie_ids,
                 "tags": [tag_id],
+                "applyTags": "add",
             },
         )
 
         if not isinstance(data, list):
             raise ValueError(
                 f"Invalid response updating movies {movie_ids} (status: {status_code})"
+            )
+
+        return [build_radarr_movie_from_dict(updated_movie) for updated_movie in data]
+
+    async def remove_tag_from_movies(
+        self, movie_ids: list[int], tag_id: int
+    ) -> list[RadarrMovie]:
+        """Remove a single tag from multiple movies (preserves other tags).
+
+        Args:
+            movie_ids: List of Movie IDs
+            tag_id: Tag ID to remove
+
+        Returns:
+            List of updated movies
+        """
+        if not movie_ids:
+            return []
+
+        status_code, data = await self._make_request(
+            "PUT",
+            "movie/editor",
+            json={
+                "movieIds": movie_ids,
+                "tags": [tag_id],
+                "applyTags": "remove",
+            },
+        )
+
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response removing tag from movies {movie_ids} (status: {status_code})"
             )
 
         return [build_radarr_movie_from_dict(updated_movie) for updated_movie in data]

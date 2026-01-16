@@ -187,6 +187,9 @@ class SonarrClient:
         Returns:
             List of updated series
         """
+        if not series_ids:
+            return []
+
         status_code, data = await self._make_request(
             "PUT",
             "series/editor",
@@ -200,6 +203,40 @@ class SonarrClient:
         if not isinstance(data, list):
             raise ValueError(
                 f"Invalid response updating series {series_ids} (status: {status_code})"
+            )
+
+        return [
+            build_sonarr_series_from_dict(updated_series) for updated_series in data
+        ]
+
+    async def remove_tag_from_series(
+        self, series_ids: list[int], tag_id: int
+    ) -> list[SonarrSeries]:
+        """Remove a tag from multiple series (preserves other tags).
+
+        Args:
+            series_ids: List of Series IDs
+            tag_id: Tag ID to remove
+
+        Returns:
+            List of updated series
+        """
+        if not series_ids:
+            return []
+
+        status_code, data = await self._make_request(
+            "PUT",
+            "series/editor",
+            json={
+                "seriesIds": series_ids,
+                "tags": [tag_id],
+                "applyTags": "remove",
+            },
+        )
+
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response removing tag from series {series_ids} (status: {status_code})"
             )
 
         return [
