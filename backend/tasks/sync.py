@@ -327,7 +327,7 @@ async def _update_movie_tmdb_metadata(
             return
 
         ext_ids = movie_metadata.get("external_ids", {})
-        movie.imdb_id = ext_ids.get("imdb_id")
+        movie.imdb_id = ext_ids.get("imdb_id") or None
         movie.tmdb_title = movie_metadata.get("title")
         movie.original_title = movie_metadata.get("original_title")
 
@@ -535,8 +535,8 @@ async def _update_series_tmdb_metadata(
             return
 
         ext_ids = series_metadata.get("external_ids", {})
-        series.imdb_id = ext_ids.get("imdb_id")
-        series.tvdb_id = str(ext_ids.get("tvdb_id")) if ext_ids.get("tvdb_id") else None
+        series.imdb_id = ext_ids.get("imdb_id") or None
+        series.tvdb_id = str(ext_ids.get("tvdb_id")) or None
         series.tmdb_title = series_metadata.get("name")
         series.original_title = series_metadata.get("original_name")
 
