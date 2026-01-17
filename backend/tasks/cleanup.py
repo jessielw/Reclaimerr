@@ -76,7 +76,7 @@ async def _process_media(
     Returns (created_count, updated_count)
     """
     # get all media items
-    if media_type == MediaType.MOVIE:
+    if media_type is MediaType.MOVIE:
         result = await db.execute(select(Movie).where(Movie.removed_at.is_(None)))
         media_items = result.scalars().all()
         id_field = "movie_id"
