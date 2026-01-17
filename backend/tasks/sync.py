@@ -17,6 +17,21 @@ from backend.services.plex import PlexService
 COMMIT_BATCH_SIZE = 100
 
 
+def _set_service_fields(
+    db_obj: Movie | Series,
+    aggregated_data: AggregatedMovieData | AggregatedSeriesData,
+) -> None:
+    """Set service-specific ID, library name, and path based on source service."""
+    if aggregated_data.service is Service.PLEX:
+        db_obj.plex_id = aggregated_data.id
+        db_obj.plex_library_name = aggregated_data.library_name
+        db_obj.plex_path = aggregated_data.path
+    elif aggregated_data.service is Service.JELLYFIN:
+        db_obj.jellyfin_id = aggregated_data.id
+        db_obj.jellyfin_library_name = aggregated_data.library_name
+        db_obj.jellyfin_path = aggregated_data.path
+
+
 async def gather_movies() -> dict[int, AggregatedMovieData] | None:
     """
     Fetch and combine movies from all configured media servers, deduplicating by TMDB ID. Only
@@ -225,7 +240,10 @@ async def sync_movies():
 
                     # always update watch data and size from media server
                     existing_movie.size = movie.size
-                    existing_movie.library_name = movie.library_name
+
+                    # update service-specific fields based on source
+                    _set_service_fields(existing_movie, movie)
+
                     existing_movie.radarr_id = (
                         radarr_obj.id if radarr_obj else existing_movie.radarr_id
                     )
@@ -263,13 +281,16 @@ async def sync_movies():
                         year=movie.year,
                         tmdb_id=tmdb_id,
                         size=movie.size,
-                        library_name=movie.library_name,
                         radarr_id=radarr_obj.id if radarr_obj else None,
                         imdb_id=movie.external_ids.imdb,
                         last_viewed_at=movie.last_viewed_at,
                         view_count=movie.view_count,
                         never_watched=movie.never_watched,
                     )
+
+                    # set service-specific fields based on source
+                    _set_service_fields(new_movie, movie)
+
                     # set added_at from media server if available
                     if movie.added_at:
                         new_movie.added_at = movie.added_at
@@ -405,9 +426,12 @@ async def sync_series():
                 if tmdb_id in existing_series:
                     existing_series_obj = existing_series[tmdb_id]
 
-                    # always update watch data and size from media server
+                    # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
-                    existing_series_obj.library_name = series.library_name
+
+                    # update service-specific fields based on source
+                    _set_service_fields(existing_series_obj, series)
+
                     existing_series_obj.sonarr_id = (
                         sonarr_obj.id if sonarr_obj else existing_series_obj.sonarr_id
                     )
@@ -442,7 +466,6 @@ async def sync_series():
                         year=series.year,
                         tmdb_id=tmdb_id,
                         size=series.size,
-                        library_name=series.library_name,
                         sonarr_id=sonarr_obj.id if sonarr_obj else None,
                         imdb_id=series.external_ids.imdb,
                         tvdb_id=series.external_ids.tvdb,
@@ -450,6 +473,10 @@ async def sync_series():
                         view_count=series.view_count,
                         never_watched=series.never_watched,
                     )
+
+                    # set service-specific fields based on source
+                    _set_service_fields(new_series, series)
+
                     # set added_at from media server if available
                     if series.added_at:
                         new_series.added_at = series.added_at
@@ -536,7 +563,8 @@ async def _update_series_tmdb_metadata(
 
         ext_ids = series_metadata.get("external_ids", {})
         series.imdb_id = ext_ids.get("imdb_id") or None
-        series.tvdb_id = str(ext_ids.get("tvdb_id")) or None
+        tvdb_id = ext_ids.get("tvdb_id")
+        series.tvdb_id = str(tvdb_id) if tvdb_id is not None else None
         series.tmdb_title = series_metadata.get("name")
         series.original_title = series_metadata.get("original_name")
 
@@ -567,23 +595,3 @@ async def _update_series_tmdb_metadata(
         LOG.error(
             f"Error updating TMDB metadata for series {tmdb_id}: {e}", exc_info=True
         )
-
-
-# async def reset_seerr_requests(deleted_items: list[dict]):
-#     """
-#     Reset requests in Seerr for deleted media items.
-
-#     Args:
-#         deleted_items: List of deleted media items with metadata
-#     """
-#     logger.info(f"Resetting Seerr requests for {len(deleted_items)} deleted items")
-
-#     try:
-#         # TODO: Implement Seerr request reset logic
-#         # 1. For each deleted item, find corresponding request in Seerr
-#         # 2. Reset/decline the request with appropriate message
-#         # 3. Log results
-
-#         logger.info("Seerr request reset completed successfully")
-#     except Exception as e:
-#         logger.error(f"Error resetting Seerr requests: {e}", exc_info=True)
