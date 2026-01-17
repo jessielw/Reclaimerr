@@ -211,3 +211,54 @@ class SeerrClient:
         requests = await self.get_tv_requests(tmdb_id)
         for req in requests:
             await self.delete_request(req.id)
+
+    async def get_media_id(self, tmdb_id: int, media_type: MediaType) -> int | None:
+        """Get Seerr internal media ID from TMDB ID.
+
+        Args:
+            tmdb_id: TMDB ID
+            media_type: Movie or Series
+
+        Returns:
+            Seerr media ID or None if not found
+        """
+        try:
+            endpoint = "movie" if media_type is MediaType.MOVIE else "tv"
+            _, data = await self._make_request("GET", f"{endpoint}/{tmdb_id}")
+            if not isinstance(data, dict):
+                return None
+            return data.get("mediaInfo", {}).get("id")
+        except Exception:
+            return None
+
+    async def delete_media(self, media_id: int) -> None:
+        """Delete media item from Seerr database.
+
+        Args:
+            media_id: Seerr internal media ID
+        """
+        status_code, _ = await self._make_request("DELETE", f"media/{media_id}")
+        if status_code != 204:
+            raise ValueError(
+                f"Failed to delete media {media_id} (status: {status_code})"
+            )
+
+    async def delete_movie_media(self, tmdb_id: int) -> None:
+        """Delete movie media item from Seerr database.
+
+        Args:
+            tmdb_id: TMDB movie ID
+        """
+        media_id = await self.get_media_id(tmdb_id, MediaType.MOVIE)
+        if media_id:
+            await self.delete_media(media_id)
+
+    async def delete_tv_media(self, tmdb_id: int) -> None:
+        """Delete TV series media item from Seerr database.
+
+        Args:
+            tmdb_id: TMDB TV series ID
+        """
+        media_id = await self.get_media_id(tmdb_id, MediaType.SERIES)
+        if media_id:
+            await self.delete_media(media_id)
