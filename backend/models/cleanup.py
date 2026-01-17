@@ -21,4 +21,4 @@ class CleanupRuleReq(BaseModel):
     max_days_since_added: int | None = None
     min_size: int | None = None
     max_size: int | None = None
-    library_name: str | None = None
+    library_names: list[str] | None = None

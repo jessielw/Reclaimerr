@@ -14,6 +14,7 @@ class PlexMovie:
     name: str
     year: int
     library_name: str
+    path: str | None
     added_at: datetime | None
     updated_at: datetime | None
     last_viewed_at: datetime | None
@@ -30,6 +31,7 @@ class PlexSeries:
     name: str
     year: int
     library_name: str
+    path: str | None
     added_at: datetime | None
     updated_at: datetime | None
     last_viewed_at: datetime | None

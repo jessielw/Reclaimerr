@@ -26,6 +26,7 @@ class AggregatedMovieData:
     year: int
     service: Literal[Service.PLEX, Service.JELLYFIN]
     library_name: str
+    path: str | None
     added_at: datetime | None
     premiere_date: datetime | None
     external_ids: ExternalIDs
@@ -47,7 +48,9 @@ class AggregatedSeriesData:
     id: str
     name: str
     year: int
+    service: Literal[Service.PLEX, Service.JELLYFIN]
     library_name: str
+    path: str | None
     added_at: datetime | None
     premiere_date: datetime | None
     external_ids: ExternalIDs
