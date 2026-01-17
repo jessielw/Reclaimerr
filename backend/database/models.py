@@ -66,7 +66,14 @@ class Movie(Base):
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)
-    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+
+    # service-specific file info (for multi-service setups with different paths)
+    plex_id: Mapped[str | None] = mapped_column(String(50), default=None)
+    plex_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    plex_path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    jellyfin_id: Mapped[str | None] = mapped_column(String(50), default=None)
+    jellyfin_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    jellyfin_path: Mapped[str | None] = mapped_column(String(1024), default=None)
 
     # external IDs
     radarr_id: Mapped[int | None] = mapped_column(
@@ -133,7 +140,14 @@ class Series(Base):
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)
-    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+
+    # service-specific file info (for multi-service setups with different paths)
+    plex_id: Mapped[str | None] = mapped_column(String(50), default=None)
+    plex_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    plex_path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    jellyfin_id: Mapped[str | None] = mapped_column(String(50), default=None)
+    jellyfin_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    jellyfin_path: Mapped[str | None] = mapped_column(String(1024), default=None)
 
     # external IDs
     sonarr_id: Mapped[int | None] = mapped_column(
@@ -202,8 +216,9 @@ class CleanupRule(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # library filtering (applies to Plex/Jellyfin library names)
-    # None = applies to all libraries, otherwise specific library name
-    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    # None or empty list = applies to all libraries
+    # Otherwise, item must be in one of the listed library names
+    library_names: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # TMDB popularity criteria
     min_popularity: Mapped[float | None] = mapped_column(Float, default=None)
@@ -268,9 +283,6 @@ class CleanupCandidate(Base):
     series_id: Mapped[int | None] = mapped_column(
         ForeignKey("series.id"), unique=True, default=None
     )
-
-    # library context
-    library_name: Mapped[str | None] = mapped_column(String(255), default=None)
 
     # workflow status
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
