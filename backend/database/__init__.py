@@ -2,9 +2,16 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
 from backend.core.settings import settings
-from backend.database.models import Base
+
+
+class Base(MappedAsDataclass, DeclarativeBase):
+    """Base class for all SQLAlchemy models."""
+
+    pass
+
 
 engine = create_async_engine(
     f"sqlite+aiosqlite:///{settings.db_path}",
