@@ -5,9 +5,9 @@ from sqlalchemy import select
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.tmdb import AsyncTMDBClient
-from backend.database.database import async_db
+from backend.database import async_db
 from backend.database.models import Movie, Series, ServiceConfig
-from backend.enums import Service
+from backend.enums import MediaType, Service
 from backend.models.clients.radarr import RadarrMovie
 from backend.models.clients.sonarr import SonarrSeries
 from backend.models.media import AggregatedMovieData, AggregatedSeriesData
@@ -15,6 +15,49 @@ from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
 
 COMMIT_BATCH_SIZE = 100
+
+
+def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
+    """Determine if TMDB metadata needs refreshing.
+
+    Refresh if:
+    - Never refreshed before
+    - Missing critical display fields (rating, popularity, backdrop, poster)
+    - Been >30 days AND release date is within last 6 months (recent releases get updates)
+    """
+    # never refreshed - always refresh
+    if not obj.last_metadata_refresh_at:
+        return True
+
+    # cache time now
+    time_now = datetime.now(timezone.utc)
+
+    # check for missing critical fields if not recently checked
+    if (time_now - obj.last_metadata_refresh_at).days > 7 and (
+        not obj.vote_average
+        or not obj.popularity
+        or not obj.backdrop_url
+        or not obj.poster_url
+    ):
+        return True
+
+    # check if it's a recent release that might need updates
+    if media_type is MediaType.MOVIE:
+        release_date = obj.tmdb_release_date  # pyright: ignore[reportAttributeAccessIssue]
+    else:
+        release_date = obj.tmdb_first_air_date  # pyright: ignore[reportAttributeAccessIssue]
+
+    if release_date:
+        days_since_release = (time_now - release_date.replace(tzinfo=timezone.utc)).days
+        days_since_refresh = (
+            time_now - obj.last_metadata_refresh_at.replace(tzinfo=timezone.utc)
+        ).days
+
+        # if released within last 6 months and not refreshed in 30 days
+        if days_since_release <= 180 and days_since_refresh > 30:
+            return True
+
+    return False
 
 
 def _set_service_fields(
@@ -261,8 +304,8 @@ async def sync_movies():
                             f"Restored soft-deleted movie: {movie.name} ({tmdb_id})"
                         )
 
-                    # fetch TMDB metadata if missing or stale (30+ days old)
-                    if not existing_movie.last_metadata_refresh_at:
+                    # refresh TMDB metadata if needed
+                    if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
                         LOG.debug(
                             f"Refreshing TMDB metadata for {movie.name} ({tmdb_id})"
                         )
@@ -449,8 +492,8 @@ async def sync_series():
                             f"Restored soft-deleted series: {series.name} ({tmdb_id})"
                         )
 
-                    # fetch TMDB metadata if missing
-                    if not existing_series_obj.last_metadata_refresh_at:
+                    # refresh TMDB metadata if needed
+                    if _needs_metadata_refresh(existing_series_obj, MediaType.SERIES):
                         LOG.debug(
                             f"Refreshing TMDB metadata for {series.name} ({tmdb_id})"
                         )
