@@ -1,6 +1,12 @@
 from enum import Enum, StrEnum, auto
 
 
+class UserRole(StrEnum):
+    USER = auto()
+    MODERATOR = auto()
+    ADMIN = auto()
+
+
 class Service(StrEnum):
     SONARR = auto()
     RADARR = auto()
