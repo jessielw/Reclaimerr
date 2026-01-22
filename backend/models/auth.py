@@ -1,4 +1,8 @@
+from datetime import datetime
+
 from pydantic import BaseModel
+
+from backend.enums import UserRole
 
 
 class LoginRequest(BaseModel):
@@ -12,9 +16,9 @@ class UserInfo(BaseModel):
     display_name: str | None
     email: str | None
     avatar_url: str | None
-    role: str
+    role: UserRole
+    created_at: datetime
     require_password_change: bool
-    # jellyfin_linked: bool
 
 
 class AuthResponse(BaseModel):
@@ -27,7 +31,7 @@ class CreateUserRequest(BaseModel):
     username: str
     email: str | None = None
     password: str
-    role: str = "user"
+    role: UserRole
     require_password_change: bool = True
 
 
