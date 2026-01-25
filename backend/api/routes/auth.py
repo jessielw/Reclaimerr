@@ -1,7 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,11 +15,13 @@ from backend.core.auth import (
     verify_password,
 )
 from backend.core.logger import LOG
+from backend.core.utils.image_handling import save_picture_from_bytes
 from backend.database import get_db
 from backend.database.models import User
 from backend.models.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    ChangeProfileInfoRequest,
     CreateUserRequest,
     LoginRequest,
     UserInfo,
@@ -60,7 +64,7 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
             username=user.username,
             display_name=user.display_name,
             email=user.email,
-            avatar_url=user.avatar_url,
+            avatar_path=user.avatar_path,
             role=user.role,
             created_at=user.created_at,
             require_password_change=user.require_password_change or False,
@@ -76,11 +80,43 @@ async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
         username=current_user.username,
         display_name=current_user.display_name,
         email=current_user.email,
-        avatar_url=current_user.avatar_url,
+        avatar_path=current_user.avatar_path,
         role=current_user.role,
         created_at=current_user.created_at,
         require_password_change=current_user.require_password_change or False,
     )
+
+
+@router.post("/me")
+async def update_profile(
+    new_info: ChangeProfileInfoRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Modify current user's profile."""
+    # ensure email is not taken
+    if new_info.email:
+        result = await db.execute(
+            select(User).where(User.email == new_info.email, User.id != current_user.id)
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already in use",
+            )
+
+    # update info
+    current_user.display_name = new_info.display_name
+    current_user.email = new_info.email
+    await db.commit()
+
+    LOG.info(f"User {current_user.username} updated their profile info")
+
+    return {
+        "message": "Profile info updated successfully",
+        "email": current_user.email,
+        "display_name": current_user.display_name,
+    }
 
 
 @router.post("/change-password")
@@ -113,14 +149,13 @@ async def create_user(
 ):
     """Admin creates a user."""
     # ensure we don't create a user that already exists
-    if request.email:
+    if request.email:  # if user provided an email, check both username and email
         result = await db.execute(
             select(User).where(
                 or_(User.username == request.username, User.email == request.email)
             )
         )
-    else:
-        request.email = None  # normalize empty email to None to prevent '' duplicates
+    else:  # only check username
         result = await db.execute(select(User).where(User.username == request.username))
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -148,7 +183,7 @@ async def create_user(
         username=new_user.username,
         display_name=new_user.display_name,
         email=new_user.email,
-        avatar_url=new_user.avatar_url,
+        avatar_path=new_user.avatar_path,
         role=new_user.role,
         created_at=new_user.created_at,
         require_password_change=new_user.require_password_change or False,
@@ -168,7 +203,7 @@ async def list_users(
             username=u.username,
             display_name=u.display_name,
             email=u.email,
-            avatar_url=u.avatar_url,
+            avatar_path=u.avatar_path,
             role=u.role,
             created_at=u.created_at,
             require_password_change=u.require_password_change or False,
@@ -204,6 +239,60 @@ async def delete_user(
     LOG.info(f"Admin {admin.username} deleted user {user.username}")
 
     return {"message": "User deleted successfully"}
+
+
+@router.post("/avatar")
+async def upload_avatar(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    avatar: UploadFile = File(...),
+):
+    """Upload user avatar."""
+    # Validate file type
+    if not avatar.content_type or not avatar.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image",
+        )
+
+    # Read file contents
+    contents = await avatar.read()
+
+    # Delete old avatar if exists (will be handled in save_picture_from_bytes)
+    old_avatar_path = (
+        Path(current_user.avatar_path) if current_user.avatar_path else None
+    )
+
+    # Run CPU-bound image processing in thread pool to avoid blocking event loop
+    avatar_filename = await asyncio.to_thread(
+        save_picture_from_bytes,
+        contents,
+        avatar.filename or "avatar.jpg",
+        old_avatar_path,
+    )
+
+    current_user.avatar_path = avatar_filename
+    await db.commit()
+
+    LOG.info(f"User {current_user.username} uploaded avatar: {avatar_filename}")
+
+    return {
+        "message": "Avatar uploaded successfully",
+        "avatar_path": avatar_filename,
+    }
+
+
+@router.post("/users/{user_id}")
+async def update_user(
+    user_id: int,
+    admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin updates a user."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="User update not yet implemented",
+    )
 
 
 # @router.post("/users/{user_id}/reset-password")
