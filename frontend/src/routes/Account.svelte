@@ -127,6 +127,7 @@
       };
       reader.readAsDataURL(avatarFile);
       avatarInputState = AVATAR_SAVE;
+      toast.message("Avatar selected. Click the save icon to upload.");
     }
   }
 
@@ -140,8 +141,10 @@
       formData.append("avatar", avatarFile);
       await post_api("/api/account/avatar", formData);
       avatarFile = null;
+      toast.success("Avatar uploaded successfully");
     } catch (err: any) {
       profileError = err.message;
+      toast.error(`Error uploading avatar: ${err.message}`);
     } finally {
       avatarInputState = AVATAR_IDLE;
     }
