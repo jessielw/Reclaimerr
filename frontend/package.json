@@ -1,6 +1,6 @@
 {
-  "name": "vacuumerr-frontend",
-  "version": "0.1.0",
+  "name": "vacuumerr-web",
+  "version": "0.1.0-alpha1",
   "type": "module",
   "scripts": {
     "dev": "vite",
