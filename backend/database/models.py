@@ -15,15 +15,41 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.enums import MediaType, Service, TaskStatus
+from backend.database import Base
+from backend.enums import MediaType, Service, TaskStatus, UserRole
 
 
-class Base(MappedAsDataclass, DeclarativeBase):
-    """Base class for all models."""
+class User(Base):
+    """User account for vacuumerr."""
 
-    pass
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    username: Mapped[str] = mapped_column(String(255), unique=True, init=True)
+    password_hash: Mapped[str] = mapped_column(String(255), init=True)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, default=None)
+    display_name: Mapped[str | None] = mapped_column(String(64), default=None)
+
+    # permissions
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    require_password_change: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # metadata
+    avatar_path: Mapped[str | None] = mapped_column(String(500), default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    # TODO: eventually add tracking for push notification service(s)
 
 
 class ServiceConfig(Base):
@@ -240,6 +266,14 @@ class CleanupRule(Base):
     # age criteria (days since added)
     min_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
     max_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # watch recency criteria (days since last watched)
+    min_days_since_last_watched: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    max_days_since_last_watched: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
 
     # size criteria (bytes)
     min_size: Mapped[int | None] = mapped_column(Integer, default=None)
