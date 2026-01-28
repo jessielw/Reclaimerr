@@ -228,11 +228,13 @@
                   <div class="flex items-center gap-3">
                     <div class="relative">
                       {#if user.avatar_url}
-                        <img
-                          src={user.avatar_url}
-                          alt="Avatar"
-                          class="w-16 h-16 rounded-full object-cover border-4 border-primary"
-                        />
+                        <div>
+                          <img
+                            src={user.avatar_url}
+                            alt="Avatar"
+                            class="w-16 h-16 max-w-16 rounded-full object-cover border-4 border-primary"
+                          />
+                        </div>
                       {:else}
                         <div
                           class="w-16 h-16 rounded-full bg-primary text-primary-foreground flex items-center
