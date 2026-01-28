@@ -12,6 +12,8 @@
   import Settings from "./routes/Settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import { onMount } from "svelte";
+  import Menu from "@lucide/svelte/icons/menu";
+  import X from "@lucide/svelte/icons/x";
 
   const routes = {
     "/": Dashboard,
@@ -21,6 +23,12 @@
     "/account": Account,
     "/settings": Settings,
   };
+
+  let sidebarOpen = $state(false);
+
+  function closeSidebar() {
+    sidebarOpen = false;
+  }
 
   onMount(() => {
     auth.init();
@@ -43,9 +51,45 @@
 {:else}
   <!-- show main app if authenticated -->
   <div class="flex h-screen bg-background">
-    <Sidebar />
+    <!-- mobile header bar -->
+    <div
+      class="lg:hidden fixed top-0 left-0 right-0 z-50 bg-card border-b border-border px-4 py-3 flex items-center gap-3"
+    >
+      <button
+        onclick={() => (sidebarOpen = !sidebarOpen)}
+        class="p-2 hover:bg-accent rounded-lg transition-colors"
+        aria-label="Toggle menu"
+      >
+        {#if sidebarOpen}
+          <X class="w-6 h-6 text-foreground" />
+        {:else}
+          <Menu class="w-6 h-6 text-foreground" />
+        {/if}
+      </button>
+      <h1 class="font-semibold text-lg text-foreground">Vacuumerr</h1>
+    </div>
 
-    <main class="flex-1 overflow-y-auto">
+    <!-- mobile backdrop overlay -->
+    {#if sidebarOpen}
+      <button
+        onclick={closeSidebar}
+        class="lg:hidden fixed inset-0 bg-black/50 z-40 backdrop-blur-sm border-0 p-0 w-full h-full"
+        aria-label="Close menu"
+      ></button>
+    {/if}
+
+    <!-- sidebar: slide in on mobile, always visible on desktop -->
+    <div
+      class="{sidebarOpen
+        ? 'translate-x-0'
+        : '-translate-x-full'} lg:translate-x-0 fixed lg:static
+        inset-y-0 left-0 z-40 transition-transform duration-300 ease-in-out pt-14 lg:pt-0"
+    >
+      <Sidebar onNavigate={closeSidebar} />
+    </div>
+
+    <!-- main content with top padding on mobile for header -->
+    <main class="flex-1 overflow-y-auto pt-14 lg:pt-0">
       <Router {routes} />
     </main>
   </div>
