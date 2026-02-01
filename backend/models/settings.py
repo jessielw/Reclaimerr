@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import BaseModel, model_validator
 
 from backend.enums import Service
