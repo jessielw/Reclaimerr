@@ -6,7 +6,7 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.tmdb import AsyncTMDBClient
 from backend.database import async_db
-from backend.database.models import Movie, Series, ServiceConfig
+from backend.database.models import Movie, Series, ServiceConfig, ServiceMediaLibrary
 from backend.enums import MediaType, Service
 from backend.models.media import AggregatedMovieData, AggregatedSeriesData
 from backend.models.services.radarr import RadarrMovie
@@ -33,7 +33,9 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     time_now = datetime.now(timezone.utc)
 
     # check for missing critical fields if not recently checked
-    if (time_now - obj.last_metadata_refresh_at).days > 7 and (
+    if (
+        time_now - obj.last_metadata_refresh_at.replace(tzinfo=timezone.utc)
+    ).days > 7 and (
         not obj.vote_average
         or not obj.popularity
         or not obj.backdrop_url
@@ -110,14 +112,23 @@ async def gather_movies() -> dict[int, AggregatedMovieData] | None:
                 f"Fetching movies from {server.service_type} at {server.base_url}"
             )
 
-            # fetch aggregated movies
-            extra_settings = server.extra_settings
-            get_movies = await service.get_aggregated_movies(
-                included_libraries=extra_settings.get("movies", {}).get(
-                    "included_libraries"
-                )
-                if extra_settings
+            # get selected movie libraries for this service
+            lib_query = select(ServiceMediaLibrary).where(
+                ServiceMediaLibrary.service_type == server.service_type,
+                ServiceMediaLibrary.media_type == MediaType.MOVIE,
+                ServiceMediaLibrary.selected.is_(True),
+            )
+            lib_result = await session.execute(lib_query)
+            selected_libraries = lib_result.scalars().all()
+            included_library_names = (
+                [lib.library_name for lib in selected_libraries]
+                if selected_libraries
                 else None
+            )
+
+            # fetch aggregated movies
+            get_movies = await service.get_aggregated_movies(
+                included_libraries=included_library_names
             )
             if get_movies:
                 aggregated_movies.extend(get_movies)
@@ -187,14 +198,23 @@ async def gather_series() -> dict[int, AggregatedSeriesData] | None:
                 f"Fetching series from {server.service_type} at {server.base_url}"
             )
 
-            # fetch aggregated series
-            extra_settings = server.extra_settings
-            get_series = await service.get_aggregated_series(
-                included_libraries=extra_settings.get("series", {}).get(
-                    "included_libraries"
-                )
-                if extra_settings
+            # get selected series libraries for this service
+            lib_query = select(ServiceMediaLibrary).where(
+                ServiceMediaLibrary.service_type == server.service_type,
+                ServiceMediaLibrary.media_type == MediaType.SERIES,
+                ServiceMediaLibrary.selected.is_(True),
+            )
+            lib_result = await session.execute(lib_query)
+            selected_libraries = lib_result.scalars().all()
+            included_library_names = (
+                [lib.library_name for lib in selected_libraries]
+                if selected_libraries
                 else None
+            )
+
+            # fetch aggregated series
+            get_series = await service.get_aggregated_series(
+                included_libraries=included_library_names
             )
             if get_series:
                 aggregated_series.extend(get_series)
@@ -637,4 +657,119 @@ async def _update_series_tmdb_metadata(
     except Exception as e:
         LOG.error(
             f"Error updating TMDB metadata for series {tmdb_id}: {e}", exc_info=True
+        )
+
+
+async def update_service_libraries() -> None:
+    """Update service libraries in the database from Plex and Jellyfin."""
+    if not service_manager.plex and not service_manager.jellyfin:
+        return
+
+    async with async_db() as session:
+        # get existing libraries from database
+        result = await session.execute(select(ServiceMediaLibrary))
+        existing_libraries = result.scalars().all()
+
+        # create a map of (service_type, library_id) -> ServiceMediaLibrary for quick lookup
+        existing_map: dict[tuple[Service, str], ServiceMediaLibrary] = {
+            (lib.service_type, lib.library_id): lib for lib in existing_libraries
+        }
+
+        # track all current library keys to identify deletions
+        current_library_keys: set[tuple[Service, str]] = set[tuple[Service, str]]()
+
+        # handle Jellyfin libraries
+        if service_manager.jellyfin:
+            jellyfin_movie_libs = await service_manager.jellyfin.get_movie_libraries()
+            jellyfin_series_libs = await service_manager.jellyfin.get_series_libraries()
+
+            # process movie libraries
+            for lib in jellyfin_movie_libs:
+                key = (Service.JELLYFIN, lib["id"])
+                current_library_keys.add(key)
+
+                if key in existing_map:
+                    # update if name changed
+                    if existing_map[key].library_name != lib["name"]:
+                        existing_map[key].library_name = lib["name"]
+                else:
+                    # insert new library
+                    new_lib = ServiceMediaLibrary(
+                        service_type=Service.JELLYFIN,
+                        library_id=lib["id"],
+                        library_name=lib["name"],
+                        media_type=MediaType.MOVIE,
+                    )
+                    session.add(new_lib)
+
+            # process series libraries
+            for lib in jellyfin_series_libs:
+                key = (Service.JELLYFIN, lib["id"])
+                current_library_keys.add(key)
+
+                if key in existing_map:
+                    # update if name changed
+                    if existing_map[key].library_name != lib["name"]:
+                        existing_map[key].library_name = lib["name"]
+                else:
+                    # insert new library
+                    new_lib = ServiceMediaLibrary(
+                        service_type=Service.JELLYFIN,
+                        library_id=lib["id"],
+                        library_name=lib["name"],
+                        media_type=MediaType.SERIES,
+                    )
+                    session.add(new_lib)
+
+        # handle Plex libraries
+        if service_manager.plex:
+            plex_movie_libs = await service_manager.plex.get_movie_libraries()
+            plex_series_libs = await service_manager.plex.get_series_libraries()
+
+            # process movie libraries
+            for lib in plex_movie_libs:
+                key = (Service.PLEX, lib["id"])
+                current_library_keys.add(key)
+
+                if key in existing_map:
+                    # update if name changed
+                    if existing_map[key].library_name != lib["name"]:
+                        existing_map[key].library_name = lib["name"]
+                else:
+                    # insert new library
+                    new_lib = ServiceMediaLibrary(
+                        service_type=Service.PLEX,
+                        library_id=lib["id"],
+                        library_name=lib["name"],
+                        media_type=MediaType.MOVIE,
+                    )
+                    session.add(new_lib)
+
+            # process series libraries
+            for lib in plex_series_libs:
+                key = (Service.PLEX, lib["id"])
+                current_library_keys.add(key)
+
+                if key in existing_map:
+                    # update if name changed
+                    if existing_map[key].library_name != lib["name"]:
+                        existing_map[key].library_name = lib["name"]
+                else:
+                    # insert new library
+                    new_lib = ServiceMediaLibrary(
+                        service_type=Service.PLEX,
+                        library_id=lib["id"],
+                        library_name=lib["name"],
+                        media_type=MediaType.SERIES,
+                    )
+                    session.add(new_lib)
+
+        # delete libraries that no longer exist in any service
+        for key, lib in existing_map.items():
+            if key not in current_library_keys:
+                await session.delete(lib)
+
+        await session.commit()
+        LOG.info(
+            f"Updated service libraries: {len(current_library_keys)} total libraries"
         )
