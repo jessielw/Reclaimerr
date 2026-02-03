@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any, Literal
 
 from sqlalchemy import select
 
@@ -660,10 +661,16 @@ async def _update_series_tmdb_metadata(
         )
 
 
-async def update_service_libraries() -> None:
-    """Update service libraries in the database from Plex and Jellyfin."""
+async def sync_service_libraries(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
+    """
+    Update service libraries in the database from Plex and Jellyfin.
+
+    Pass None for service to update both.
+    """
     if not service_manager.plex and not service_manager.jellyfin:
-        return
+        return {Service.PLEX: [], Service.JELLYFIN: []}
 
     async with async_db() as session:
         # get existing libraries from database
@@ -676,10 +683,23 @@ async def update_service_libraries() -> None:
         }
 
         # track all current library keys to identify deletions
-        current_library_keys: set[tuple[Service, str]] = set[tuple[Service, str]]()
+        current_library_keys = set[tuple[Service, str]]()
+
+        # for returning current libraries
+        current_libraries: dict[
+            Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]
+        ] = {Service.PLEX: [], Service.JELLYFIN: []}
+
+        # only update the specified service if provided, else both
+        update_jellyfin = (service is None and service_manager.jellyfin) or (
+            service == Service.JELLYFIN and service_manager.jellyfin
+        )
+        update_plex = (service is None and service_manager.plex) or (
+            service == Service.PLEX and service_manager.plex
+        )
 
         # handle Jellyfin libraries
-        if service_manager.jellyfin:
+        if update_jellyfin and service_manager.jellyfin:
             jellyfin_movie_libs = await service_manager.jellyfin.get_movie_libraries()
             jellyfin_series_libs = await service_manager.jellyfin.get_series_libraries()
 
@@ -687,6 +707,9 @@ async def update_service_libraries() -> None:
             for lib in jellyfin_movie_libs:
                 key = (Service.JELLYFIN, lib["id"])
                 current_library_keys.add(key)
+                current_libraries[Service.JELLYFIN].append(
+                    {"id": lib["id"], "name": lib["name"], "type": MediaType.MOVIE}
+                )
 
                 if key in existing_map:
                     # update if name changed
@@ -706,6 +729,9 @@ async def update_service_libraries() -> None:
             for lib in jellyfin_series_libs:
                 key = (Service.JELLYFIN, lib["id"])
                 current_library_keys.add(key)
+                current_libraries[Service.JELLYFIN].append(
+                    {"id": lib["id"], "name": lib["name"], "type": MediaType.SERIES}
+                )
 
                 if key in existing_map:
                     # update if name changed
@@ -722,7 +748,7 @@ async def update_service_libraries() -> None:
                     session.add(new_lib)
 
         # handle Plex libraries
-        if service_manager.plex:
+        if update_plex and service_manager.plex:
             plex_movie_libs = await service_manager.plex.get_movie_libraries()
             plex_series_libs = await service_manager.plex.get_series_libraries()
 
@@ -730,6 +756,9 @@ async def update_service_libraries() -> None:
             for lib in plex_movie_libs:
                 key = (Service.PLEX, lib["id"])
                 current_library_keys.add(key)
+                current_libraries[Service.PLEX].append(
+                    {"id": lib["id"], "name": lib["name"], "type": MediaType.MOVIE}
+                )
 
                 if key in existing_map:
                     # update if name changed
@@ -749,6 +778,9 @@ async def update_service_libraries() -> None:
             for lib in plex_series_libs:
                 key = (Service.PLEX, lib["id"])
                 current_library_keys.add(key)
+                current_libraries[Service.PLEX].append(
+                    {"id": lib["id"], "name": lib["name"], "type": MediaType.SERIES}
+                )
 
                 if key in existing_map:
                     # update if name changed
@@ -766,10 +798,15 @@ async def update_service_libraries() -> None:
 
         # delete libraries that no longer exist in any service
         for key, lib in existing_map.items():
+            # only delete libraries for the updated service(s)
             if key not in current_library_keys:
-                await session.delete(lib)
+                # if service is specified, only delete for that service
+                if service is None or key[0] == service:
+                    await session.delete(lib)
 
         await session.commit()
         LOG.info(
             f"Updated service libraries: {len(current_library_keys)} total libraries"
         )
+
+        return current_libraries
