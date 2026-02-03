@@ -345,9 +345,10 @@
             <hr class="h-1 my-4 border-muted-foreground" />
 
             <div class="flex flex-col justify-between mb-4">
-              <!-- sync libraries -->
+              <!-- libraries -->
               <div class="flex items-center justify-between">
                 <h2 class="text-xl font-semibold text-foreground">Libraries</h2>
+                <!-- sync libraries -->
                 <Button
                   class="cursor-pointer"
                   onclick={() => syncServiceLibraries(activeTab)}
