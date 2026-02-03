@@ -113,6 +113,10 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-imdb: #f3ce13;
+  --color-tmdb: #01b4e4;
+  --color-movie: #10b981;
+  --color-series: #6366f1;
 }
 
 @layer base {
