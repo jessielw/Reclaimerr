@@ -22,3 +22,33 @@ class ServiceConfigUpdate(BaseModel):
 
 class UpdateMediaLibrariesRequest(BaseModel):
     service_type: Literal[Service.PLEX, Service.JELLYFIN] | None = None
+
+
+class NotificationSettingItem(BaseModel):
+    """Model for creating or updating notification settings."""
+
+    id: int | None = None  # None for new, populated for updates
+    enabled: bool
+    name: str | None = None
+    url: str
+    new_cleanup_candidates: bool = False
+    request_approved: bool = False
+    request_declined: bool = False
+    admin_message: bool = False
+    task_failure: bool = False
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> "NotificationSettingItem":
+        """Sanitize fields after model initialization."""
+        self.url = self.url.strip()
+        return self
+
+
+class NotificationTestRequest(BaseModel):
+    url: str
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> "NotificationTestRequest":
+        """Sanitize fields after model initialization."""
+        self.url = self.url.strip()
+        return self
