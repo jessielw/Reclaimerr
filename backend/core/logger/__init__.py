@@ -1,9 +1,6 @@
 import logging
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-
-import shortuuid
 
 from backend.core.__version__ import __version__, program_name
 from backend.core.logger.enums import LogSource
@@ -115,29 +112,8 @@ class Logger:
     def set_log_level(self, log_level: LogLevel) -> None:
         self.logger.setLevel(log_level.value)
 
-    def clean_up_logs(self, max_logs: int) -> None:
-        log_files = list(self.log_file.parent.glob("*.log"))
-        total_files = len(log_files)
 
-        # sort log files by extracting the timestamp part of the filename
-        log_files.sort(
-            key=lambda f: datetime.strptime(
-                f.name.split("_")[1] + "_" + f.name.split("_")[2], "%Y-%m-%d_%H-%M-%S"
-            )
-        )
-
-        if total_files > max_logs:
-            files_to_delete = log_files[: total_files - max_logs]
-
-            for del_file in files_to_delete:
-                del_file.unlink()
-
-
-# initialize global logger instance
-_date_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-_short_uuid = shortuuid.uuid()[:7]
-_log_filename = (
-    f"{program_name.lower().replace(' ', '_')}_{_date_time_str}_{_short_uuid}.log"
-)
+# initialize global logger instance with a static filename
+_log_filename = f"{program_name.lower().replace(' ', '_')}.log"
 _log_path = settings.log_dir / _log_filename
 LOG = Logger(_log_path, to_console=True)
