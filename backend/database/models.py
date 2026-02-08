@@ -296,10 +296,10 @@ class CleanupRule(Base):
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # library filtering (applies to Plex/Jellyfin library names)
+    # library filtering (stores ServiceMediaLibrary.library_id values)
     # None or empty list = applies to all libraries
-    # Otherwise, item must be in one of the listed library names
-    library_names: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # Otherwise, item must have library_id in one of the listed IDs
+    library_ids: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # TMDB popularity criteria
     min_popularity: Mapped[float | None] = mapped_column(Float, default=None)
