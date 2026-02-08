@@ -7,10 +7,10 @@ from backend.database import get_db
 from backend.database.models import CleanupCandidate, Movie, Series
 from backend.enums import MediaType
 
-router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+router = APIRouter(prefix="/api", tags=["dashboard"])
 
 
-@router.get("/", tags=["dashboard"])
+@router.get("/dashboard")
 async def test(db: AsyncSession = Depends(get_db)):
     """Test endpoint."""
 
