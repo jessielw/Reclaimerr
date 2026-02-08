@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -14,7 +14,8 @@ from backend.core.service_manager import service_manager
 from backend.database import get_db
 from backend.database.models import ServiceConfig, ServiceMediaLibrary, User
 from backend.enums import Service
-from backend.models.settings import ServiceConfigUpdate
+from backend.models.settings import ServiceConfigUpdate, UpdateMediaLibrariesRequest
+from backend.tasks.sync import sync_service_libraries
 
 router = APIRouter(tags=["settings", "services"])
 
@@ -118,7 +119,7 @@ async def set_service_settings(
     return {
         "message": (
             f"{data.service_type.title()} settings updated "
-            f"{'and client initialized' if data.enabled else 'and client disabled'}"
+            f"{'' if data.enabled else 'and client disabled'}"
         ),
         "data": data,
     }
@@ -212,3 +213,24 @@ async def test_service_settings(
         "message": f"{data.service_type} settings tested successfully",
         "data": data,
     }
+
+
+@router.post("/sync/libraries")
+async def update_service_libraries(
+    service_type: UpdateMediaLibrariesRequest,
+    _current_user: Annotated[User, Depends(get_current_user)],
+) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
+    """Sync library selections for a given service."""
+    if not service_type.service_type or service_type.service_type not in (
+        Service.JELLYFIN,
+        Service.PLEX,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Library selection is only supported for Jellyfin and Plex",
+        )
+
+    # update libraries for the service
+    updated_libraries = await sync_service_libraries(service_type.service_type)
+
+    return updated_libraries
