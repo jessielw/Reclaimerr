@@ -138,7 +138,7 @@
 
   <!-- footer -->
   <div class="flex p-4 border-t border-border space-3 gap-3 items-center">
-    <HardDrive />
+    <HardDrive class="text-muted-foreground" />
     <div class="text-xs text-muted-foreground text-center">
       Vacuumerr v{VERSION}
     </div>
