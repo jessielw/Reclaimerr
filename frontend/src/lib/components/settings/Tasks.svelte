@@ -12,7 +12,7 @@
   import OctagonX from "@lucide/svelte/icons/octagon-x";
   import { toast } from "svelte-sonner";
   import { formatDistanceToNow } from "$lib/utils/date";
-  import EditJobScheduleDialog from "./EditJobScheduleDialog.svelte";
+  import EditTaskScheduleDialog from "./EditTaskScheduleDialog.svelte";
   import { ScheduleType, JobStatus } from "$lib/types/shared";
 
   interface JobDetails {
@@ -256,7 +256,7 @@
 
 <!-- edit schedule dialog -->
 {#if editingJob && editingJob.schedule_type && editingJob.schedule_value}
-  <EditJobScheduleDialog
+  <EditTaskScheduleDialog
     bind:open={editDialogOpen}
     jobId={editingJob.id}
     jobName={editingJob.name}
