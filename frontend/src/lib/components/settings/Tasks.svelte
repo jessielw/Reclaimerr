@@ -27,7 +27,7 @@
     schedule_type: ScheduleType;
     schedule_value: string | null;
     default_schedule_type: ScheduleType;
-    default_schedule_value: string | null;
+    default_schedule_value: string;
     enabled: boolean;
     editable: boolean;
   }
