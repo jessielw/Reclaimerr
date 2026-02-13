@@ -409,9 +409,9 @@ async def _sync_radarr_tags() -> tuple[int, int]:
     tag = await service_manager.radarr.get_or_create_tag(settings.cleanup_tag)
     LOG.debug(f"Using Radarr tag '{tag.label}' (ID: {tag.id})")
 
-    # find old vacuumerr tags (starts with 'vacuumerr' but isn't current tag)
+    # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
     old_tags = [
-        t for t in all_tags if t.label.startswith("vacuumerr") and t.id != tag.id
+        t for t in all_tags if t.label.startswith("reclaimerr") and t.id != tag.id
     ]
     if old_tags:
         LOG.info(
@@ -495,9 +495,9 @@ async def _sync_sonarr_tags() -> tuple[int, int]:
     tag = await service_manager.sonarr.get_or_create_tag(settings.cleanup_tag)
     LOG.debug(f"Using Sonarr tag '{tag.label}' (ID: {tag.id})")
 
-    # find old vacuumerr tags (starts with 'vacuumerr' but isn't current tag)
+    # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
     old_tags = [
-        t for t in all_tags if t.label.startswith("vacuumerr") and t.id != tag.id
+        t for t in all_tags if t.label.startswith("reclaimerr") and t.id != tag.id
     ]
     if old_tags:
         LOG.info(

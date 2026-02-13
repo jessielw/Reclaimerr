@@ -50,10 +50,10 @@
     <div class="flex items-center gap-3">
       <div class="flex gap-3">
         <div class="w-12 h-12 flex items-center justify-center">
-          <img src={logoImage} alt="vacuumerr logo" class="w-10 h-10" />
+          <img src={logoImage} alt="reclaimerr logo" class="w-10 h-10" />
         </div>
         <div>
-          <h1 class="text-xl font-bold text-foreground">Vacuumerr</h1>
+          <h1 class="text-xl font-bold text-foreground">Reclaimerr</h1>
           <p class="text-xs text-muted-foreground">Media Cleanup</p>
         </div>
       </div>
@@ -140,7 +140,7 @@
   <div class="flex p-4 border-t border-border space-3 gap-3 items-center">
     <HardDrive class="text-muted-foreground" />
     <div class="text-xs text-muted-foreground text-center">
-      Vacuumerr v{VERSION}
+      Reclaimerr v{VERSION}
     </div>
   </div>
 </aside>

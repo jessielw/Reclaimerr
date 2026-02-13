@@ -34,8 +34,8 @@
   <div class="max-w-md w-full space-y-8">
     <!-- logo/title -->
     <div class="text-center">
-      <img src={logoImage} alt="Vacuumerr" class="w-32 h-32 mx-auto mb-4" />
-      <h1 class="text-4xl font-bold text-blue-500 mb-2">Vacuumerr</h1>
+      <img src={logoImage} alt="Reclaimerr" class="w-32 h-32 mx-auto mb-4" />
+      <h1 class="text-4xl font-bold text-blue-500 mb-2">Reclaimerr</h1>
     </div>
 
     <!-- login form -->

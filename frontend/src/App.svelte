@@ -43,7 +43,8 @@
   <div class="flex h-screen items-center justify-center bg-background">
     <div class="text-center">
       <div
-        class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
+        class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary 
+        border-r-transparent"
       ></div>
       <p class="mt-4 text-muted-foreground">Loading...</p>
     </div>
@@ -70,7 +71,7 @@
             <Menu class="w-6 h-6 text-foreground" />
           {/if}
         </button>
-        <h1 class="font-semibold text-lg text-foreground">Vacuumerr</h1>
+        <h1 class="font-semibold text-lg text-foreground">Reclaimerr</h1>
       </div>
 
       <!-- mobile backdrop overlay -->

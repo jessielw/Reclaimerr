@@ -340,17 +340,18 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.128.0"
+version = "0.128.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
     { name = "pydantic" },
     { name = "starlette" },
     { name = "typing-extensions" },
+    { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/52/08/8c8508db6c7b9aae8f7175046af41baad690771c9bcde676419965e338c7/fastapi-0.128.0.tar.gz", hash = "sha256:1cc179e1cef10a6be60ffe429f79b829dce99d8de32d7acb7e6c8dfdf7f2645a", size = 365682, upload-time = "2025-12-27T15:21:13.714Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/72/0df5c58c954742f31a7054e2dd1143bae0b408b7f36b59b85f928f9b456c/fastapi-0.128.8.tar.gz", hash = "sha256:3171f9f328c4a218f0a8d2ba8310ac3a55d1ee12c28c949650288aee25966007", size = 375523, upload-time = "2026-02-11T15:19:36.69Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/05/5cbb59154b093548acd0f4c7c474a118eda06da25aa75c616b72d8fcd92a/fastapi-0.128.0-py3-none-any.whl", hash = "sha256:aebd93f9716ee3b4f4fcfe13ffb7cf308d99c9f3ab5622d8877441072561582d", size = 103094, upload-time = "2025-12-27T15:21:12.154Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/37/37b07e276f8923c69a5df266bfcb5bac4ba8b55dfe4a126720f8c48681d1/fastapi-0.128.8-py3-none-any.whl", hash = "sha256:5618f492d0fe973a778f8fec97723f598aa9deee495040a8d51aaf3cf123ecf1", size = 103630, upload-time = "2026-02-11T15:19:35.209Z" },
 ]
 
 [package.optional-dependencies]
@@ -1129,6 +1130,52 @@ wheels = [
 ]
 
 [[package]]
+name = "reclaimerr"
+version = "0.1.0a1"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "apprise" },
+    { name = "apscheduler" },
+    { name = "argon2-cffi" },
+    { name = "fastapi", extra = ["standard"] },
+    { name = "niquests", extra = ["speedups"] },
+    { name = "pillow" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt" },
+    { name = "python-dotenv" },
+    { name = "semver" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "alembic", specifier = ">=1.17.2" },
+    { name = "apprise", specifier = ">=1.9.7" },
+    { name = "apscheduler", specifier = ">=3.11.2" },
+    { name = "argon2-cffi", specifier = ">=23.1.0" },
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.128.8" },
+    { name = "niquests", extras = ["speedups"], specifier = ">=3.16.1" },
+    { name = "pillow", specifier = ">=12.1.0" },
+    { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "pyjwt", specifier = ">=2.10.1" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "semver", specifier = ">=3.0.4" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.45" },
+    { name = "uvicorn", specifier = ">=0.40.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "requests"
 version = "2.32.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1495,52 +1542,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/53/8369e5219a5855869bcee5f4d317f6da0e2c669aecf0ef7d371e3d084449/uvloop-0.22.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:bc5ef13bbc10b5335792360623cc378d52d7e62c2de64660616478c32cd0598e", size = 4119472, upload-time = "2025-10-16T22:16:41.694Z" },
     { url = "https://files.pythonhosted.org/packages/f8/ba/d69adbe699b768f6b29a5eec7b47dd610bd17a69de51b251126a801369ea/uvloop-0.22.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:1f38ec5e3f18c8a10ded09742f7fb8de0108796eb673f30ce7762ce1b8550cad", size = 4239051, upload-time = "2025-10-16T22:16:43.224Z" },
 ]
-
-[[package]]
-name = "vacuumerr"
-version = "0.1.0a1"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "apprise" },
-    { name = "apscheduler" },
-    { name = "argon2-cffi" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "niquests", extra = ["speedups"] },
-    { name = "pillow" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt" },
-    { name = "python-dotenv" },
-    { name = "semver" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "alembic", specifier = ">=1.17.2" },
-    { name = "apprise", specifier = ">=1.9.7" },
-    { name = "apscheduler", specifier = ">=3.11.2" },
-    { name = "argon2-cffi", specifier = ">=23.1.0" },
-    { name = "fastapi", extras = ["standard"], specifier = ">=0.128.0" },
-    { name = "niquests", extras = ["speedups"], specifier = ">=3.16.1" },
-    { name = "pillow", specifier = ">=12.1.0" },
-    { name = "pydantic-settings", specifier = ">=2.12.0" },
-    { name = "pyjwt", specifier = ">=2.10.1" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "semver", specifier = ">=3.0.4" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.45" },
-    { name = "uvicorn", specifier = ">=0.40.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "wassima"
