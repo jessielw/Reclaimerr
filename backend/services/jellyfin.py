@@ -465,6 +465,7 @@ class JellyfinService:
                             "id": movie.id,
                             "name": movie.name,
                             "year": movie.year,
+                            "library_id": movie.library_id,
                             "library_name": movie.library_name,
                             "path": movie.path,
                             "service": Service.JELLYFIN,
@@ -503,7 +504,8 @@ class JellyfinService:
         # convert to final format
         return [
             AggregatedMovieData(
-                **data, never_watched=(data["played_by_user_count"] == 0)
+                **data,
+                never_watched=(data["played_by_user_count"] == 0),
             )
             for data in movie_data.values()
         ]
@@ -571,6 +573,7 @@ class JellyfinService:
                             "name": series.name,
                             "year": series.year,
                             "service": Service.JELLYFIN,
+                            "library_id": series.library_id,
                             "library_name": series.library_name,
                             "path": series.path,
                             "added_at": series.date_created,
@@ -601,7 +604,8 @@ class JellyfinService:
         # convert to final format
         return [
             AggregatedSeriesData(
-                **data, never_watched=(data["played_by_user_count"] == 0)
+                **data,
+                never_watched=(data["played_by_user_count"] == 0),
             )
             for data in series_data.values()
         ]

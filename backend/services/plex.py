@@ -260,6 +260,10 @@ class PlexService:
         all_movies = []
         for section in movie_sections:
             section_id = section["key"]
+            section_uuid = section.get("uuid")
+            if not section_uuid:
+                LOG.warning(f"Section {section_id} missing UUID, skipping")
+                continue
             section_name = section.get("title", "Unknown")
             LOG.debug(f"Processing movie library: {section_name} (ID: {section_id})")
 
@@ -292,6 +296,7 @@ class PlexService:
                     id=item["ratingKey"],
                     name=item.get("title", ""),
                     year=item.get("year"),
+                    library_id=section_uuid,
                     library_name=section_name,
                     path=item.get("Media", [{}])[0].get("Part", [{}])[0].get("file")
                     if item.get("Media")
@@ -334,6 +339,10 @@ class PlexService:
         all_series = []
         for section in show_sections:
             section_id = section["key"]
+            section_uuid = section.get("uuid")
+            if not section_uuid:
+                LOG.warning(f"Section {section_id} missing UUID, skipping")
+                continue
             section_name = section.get("title", "Unknown")
             LOG.debug(f"Processing series library: {section_name} (ID: {section_id})")
 
@@ -369,6 +378,7 @@ class PlexService:
                     id=item["ratingKey"],
                     name=item.get("title", ""),
                     year=item.get("year"),
+                    library_id=section_uuid,
                     library_name=section_name,
                     path=series_path,
                     added_at=datetime.fromtimestamp(item["addedAt"]).astimezone()
@@ -402,6 +412,7 @@ class PlexService:
                 name=m.name,
                 year=m.year,
                 service=Service.PLEX,
+                library_id=m.library_id,
                 library_name=m.library_name,
                 path=m.path,
                 added_at=m.added_at,
@@ -429,6 +440,7 @@ class PlexService:
                 name=s.name,
                 year=s.year,
                 service=Service.PLEX,
+                library_id=s.library_id,
                 library_name=s.library_name,
                 path=s.path,
                 added_at=s.added_at,

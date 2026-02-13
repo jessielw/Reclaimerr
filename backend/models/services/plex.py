@@ -13,6 +13,7 @@ class PlexMovie:
     id: str
     name: str
     year: int
+    library_id: str
     library_name: str
     path: str | None
     added_at: datetime | None
@@ -30,6 +31,7 @@ class PlexSeries:
     id: str
     name: str
     year: int
+    library_id: str
     library_name: str
     path: str | None
     added_at: datetime | None

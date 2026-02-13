@@ -181,7 +181,7 @@ def _evaluate_rule(
     # validate rule has at least one criterion set
     has_criteria = any(
         (
-            rule.library_names is not None,
+            rule.library_ids is not None,
             rule.min_popularity is not None,
             rule.max_popularity is not None,
             rule.min_vote_average is not None,
@@ -210,14 +210,14 @@ def _evaluate_rule(
     if not item.size or item.size == 0:
         return False
 
-    # check library filtering - check both plex and jellyfin library names
-    if rule.library_names is not None and len(rule.library_names) > 0:
+    # check library filtering - check both plex and jellyfin library IDs
+    if rule.library_ids is not None and len(rule.library_ids) > 0:
         item_libraries = [
             lib
-            for lib in (item.plex_library_name, item.jellyfin_library_name)
+            for lib in (item.plex_library_id, item.jellyfin_library_id)
             if lib is not None
         ]
-        if not any(lib in rule.library_names for lib in item_libraries):
+        if not any(lib in rule.library_ids for lib in item_libraries):
             return False
 
     # check popularity

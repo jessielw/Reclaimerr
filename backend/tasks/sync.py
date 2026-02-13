@@ -67,13 +67,15 @@ def _set_service_fields(
     db_obj: Movie | Series,
     aggregated_data: AggregatedMovieData | AggregatedSeriesData,
 ) -> None:
-    """Set service-specific ID, library name, and path based on source service."""
+    """Set service-specific ID, library ID, library name, and path based on source service."""
     if aggregated_data.service is Service.PLEX:
         db_obj.plex_id = aggregated_data.id
+        db_obj.plex_library_id = aggregated_data.library_id
         db_obj.plex_library_name = aggregated_data.library_name
         db_obj.plex_path = aggregated_data.path
     elif aggregated_data.service is Service.JELLYFIN:
         db_obj.jellyfin_id = aggregated_data.id
+        db_obj.jellyfin_library_id = aggregated_data.library_id
         db_obj.jellyfin_library_name = aggregated_data.library_name
         db_obj.jellyfin_path = aggregated_data.path
 
