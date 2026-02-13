@@ -101,7 +101,7 @@
   // status colors
   function getStatusColor(status: TaskStatus): string {
     switch (status) {
-      case TaskStatus.Success:
+      case TaskStatus.Completed:
         return "bg-green-500";
       case TaskStatus.Error:
         return "bg-red-500";
@@ -119,6 +119,57 @@
   // status text
   function getStatusText(status: TaskStatus): string {
     return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+
+  // get display status with time-based logic for completed tasks
+  function getDisplayStatus(task: TaskDetails): {
+    text: string;
+    color: string;
+  } {
+    // if disabled, show disabled
+    if (!task.enabled) {
+      return { text: "Disabled", color: "bg-gray-500" };
+    }
+
+    // if running, show running
+    if (task.status === TaskStatus.Running) {
+      return { text: "Running", color: "bg-blue-500" };
+    }
+
+    // if error, show error
+    if (task.status === TaskStatus.Error) {
+      return { text: "Error", color: "bg-red-500" };
+    }
+
+    // if completed
+    if (task.status === TaskStatus.Completed) {
+      // check if it's been less than 2 minutes since last run
+      if (task.last_run) {
+        const lastRunDate = new Date(task.last_run);
+        const now = new Date();
+        const minutesSinceLastRun =
+          (now.getTime() - lastRunDate.getTime()) / (1000 * 60);
+
+        // show "Completed" for 2 minutes, then show "Scheduled" if there's a next run
+        if (minutesSinceLastRun < 2) {
+          return { text: "Completed", color: "bg-green-500" };
+        } else if (task.next_run) {
+          return { text: "Scheduled", color: "bg-yellow-500" };
+        }
+      }
+      return { text: "Completed", color: "bg-green-500" };
+    }
+
+    // default to scheduled
+    if (task.status === TaskStatus.Scheduled) {
+      return { text: "Scheduled", color: "bg-yellow-500" };
+    }
+
+    // fallback
+    return {
+      text: getStatusText(task.status),
+      color: getStatusColor(task.status),
+    };
   }
 
   onMount(() => {
@@ -157,14 +208,15 @@
   {:else}
     <div class="space-y-4">
       {#each tasks as task (task.id)}
+        {@const displayStatus = getDisplayStatus(task)}
         <div class="border rounded-lg p-4 hover:bg-accent transition-colors">
           <div class="flex flex-col sm:flex-row items-start justify-between">
             <div class="flex-1">
               <div class="flex items-center gap-3">
                 <h3 class="text-foreground font-semibold">{task.name}</h3>
                 <!-- status badge -->
-                <Badge class={getStatusColor(task.status)}>
-                  {task.enabled ? getStatusText(task.status) : "Disabled"}
+                <Badge class={displayStatus.color}>
+                  {displayStatus.text}
                 </Badge>
               </div>
 
