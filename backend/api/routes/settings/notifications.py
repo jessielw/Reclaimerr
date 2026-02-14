@@ -58,8 +58,8 @@ async def test_notification(
     ap.add(data.url)
     try:
         result = await ap.async_notify(
-            body="This is a test notification from Vacuumarr.",
-            title="**Vacuumarr Notification Test**",
+            body="This is a test notification from Reclaimerr.",
+            title="**Reclaimerr Notification Test**",
             body_format=apprise.NotifyFormat.MARKDOWN,
         )
         if not result:
