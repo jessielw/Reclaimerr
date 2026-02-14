@@ -25,7 +25,7 @@ from backend.tasks.cleanup import (
     tag_cleanup_candidates,
 )
 from backend.tasks.sync import sync_all_media, sync_movies, sync_series
-from backend.tasks.task_tracker import is_task_running
+from backend.tasks.task_tracker import get_task_status
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -251,23 +251,19 @@ async def list_tasks(
         enabled = db_schedule.enabled if db_schedule else True
         task_schedule_id = db_schedule.id if db_schedule else None
 
-        # get last execution from TaskRun table
+        # get status from in-memory tracker (with TTL for completed/failed)
+        status_str, error = (
+            get_task_status(db_schedule.task)
+            if db_schedule
+            else (TaskStatus.PENDING.value, None)
+        )
+        status = TaskStatus(status_str) if status_str else TaskStatus.PENDING
+
+        # get last run timestamp from DB for display purposes only
         last_task_run = await _get_last_task_run(db, task.id, task_schedule_id)
         last_run = None
-        status = TaskStatus.PENDING
-        error = None
-
-        # check if task is currently running (in-memory check)
-        if db_schedule and is_task_running(db_schedule.task):
-            status = TaskStatus.RUNNING
-        elif last_task_run:
-            # use historical status from DB
-            if last_task_run.completed_at:
-                last_run = last_task_run.completed_at.isoformat()
-            status = (
-                last_task_run.status if last_task_run.status else TaskStatus.PENDING
-            )
-            error = last_task_run.error_message
+        if last_task_run and last_task_run.completed_at:
+            last_run = last_task_run.completed_at.isoformat()
 
         # determine trigger type and details
         trigger_type = None
@@ -333,7 +329,7 @@ async def list_tasks(
 
 
 @router.get("/tasks/{task_id}")
-async def get_task_status(
+async def task_status(
     task_id: str,
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
@@ -345,8 +341,12 @@ async def get_task_status(
     if not task:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
-    # get last execution from TaskRun table
+    # get status from in-memory tracker (with TTL for completed/failed)
     task_enum = Task(task_id)
+    status_str, error = get_task_status(task_enum)
+    status = TaskStatus(status_str) if status_str else TaskStatus.PENDING
+
+    # get last run timestamp from DB for display purposes only
     result = await db.execute(
         select(TaskRun)
         .where(TaskRun.task == task_enum)
@@ -354,20 +354,9 @@ async def get_task_status(
         .limit(1)
     )
     last_task_run = result.scalar_one_or_none()
-
     last_run = None
-    status = TaskStatus.PENDING
-    error = None
-
-    # check if task is currently running (in-memory check)
-    if is_task_running(task_enum):
-        status = TaskStatus.RUNNING
-    elif last_task_run:
-        # use historical status from DB
-        if last_task_run.completed_at:
-            last_run = last_task_run.completed_at.isoformat()
-        status = last_task_run.status if last_task_run.status else TaskStatus.PENDING
-        error = last_task_run.error_message
+    if last_task_run and last_task_run.completed_at:
+        last_run = last_task_run.completed_at.isoformat()
 
     return {
         "id": task.id,

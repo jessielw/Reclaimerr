@@ -121,7 +121,7 @@
     return status.charAt(0).toUpperCase() + status.slice(1);
   };
 
-  // get display status with time-based logic for completed tasks
+  // get display status - trust the backend's status directly
   const getDisplayStatus = (
     task: TaskDetails,
   ): {
@@ -133,41 +133,7 @@
       return { text: "Disabled", color: "bg-gray-500" };
     }
 
-    // if running, show running
-    if (task.status === TaskStatus.Running) {
-      return { text: "Running", color: "bg-blue-500" };
-    }
-
-    // if error, show error
-    if (task.status === TaskStatus.Error) {
-      return { text: "Error", color: "bg-red-500" };
-    }
-
-    // if completed
-    if (task.status === TaskStatus.Completed) {
-      // check if it's been less than 2 minutes since last run
-      if (task.last_run) {
-        const lastRunDate = new Date(task.last_run);
-        const now = new Date();
-        const minutesSinceLastRun =
-          (now.getTime() - lastRunDate.getTime()) / (1000 * 60);
-
-        // show "Completed" for 2 minutes, then show "Scheduled" if there's a next run
-        if (minutesSinceLastRun < 2) {
-          return { text: "Completed", color: "bg-green-500" };
-        } else if (task.next_run) {
-          return { text: "Scheduled", color: "bg-yellow-500" };
-        }
-      }
-      return { text: "Completed", color: "bg-green-500" };
-    }
-
-    // default to scheduled
-    if (task.status === TaskStatus.Scheduled) {
-      return { text: "Scheduled", color: "bg-yellow-500" };
-    }
-
-    // fallback
+    // trust backend status (which includes TTL for completed/failed)
     return {
       text: getStatusText(task.status),
       color: getStatusColor(task.status),
