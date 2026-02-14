@@ -14,7 +14,7 @@ async def weekly_house_keeping() -> None:
         LOG.info("Starting weekly house keeping task")
 
         # delete old task runs, keeping only the most recent 200 runs
-        await _trim_task_runs(keep_recent=10)
+        await _trim_task_runs(keep_recent=200)
 
         LOG.info("Finished weekly house keeping task")
 
