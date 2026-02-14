@@ -15,6 +15,7 @@ from backend.tasks.cleanup import (
     scan_cleanup_candidates,
     tag_cleanup_candidates,
 )
+from backend.tasks.house_keeping import weekly_house_keeping
 from backend.tasks.sync import sync_all_media, sync_service_libraries
 
 scheduler = AsyncIOScheduler()
@@ -27,6 +28,7 @@ TASK_FUNCTION_MAP = {
     Task.SCAN_CLEANUP_CANDIDATES: scan_cleanup_candidates,
     Task.TAG_CLEANUP_CANDIDATES: tag_cleanup_candidates,
     # Task.DELETE_CLEANUP_CANDIDATES: delete_cleanup_candidates, # TODO: enable once delete task is ready and tested
+    Task.WEEKLY_HOUSE_KEEPING: weekly_house_keeping,
 }
 
 
@@ -67,6 +69,15 @@ async def ensure_default_schedules(db: AsyncSession) -> None:
             "schedule_value": "0 12 * * *",  # Daily at 12 PM
             "default_schedule_type": ScheduleType.CRON,
             "default_schedule_value": "0 12 * * *",
+            "enabled": True,
+        },
+        {
+            "task": Task.WEEKLY_HOUSE_KEEPING,
+            "description": "Performs weekly maintenance tasks to ensure system stability",
+            "schedule_type": ScheduleType.CRON,
+            "schedule_value": "0 8 * * 0",  # Weekly on Sunday at 8 AM
+            "default_schedule_type": ScheduleType.CRON,
+            "default_schedule_value": "0 8 * * 0",
             "enabled": True,
         },
     )

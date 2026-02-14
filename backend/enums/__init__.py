@@ -64,7 +64,7 @@ class Task(StrEnum):
     DELETE_CLEANUP_CANDIDATES = auto()
 
     # housekeeping
-    HOUSE_KEEPING = auto()
+    WEEKLY_HOUSE_KEEPING = auto()
 
     def friendly_name(self) -> str:
         return self.name.replace("_", " ").title()
