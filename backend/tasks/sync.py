@@ -7,13 +7,24 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.tmdb import AsyncTMDBClient
 from backend.database import async_db
-from backend.database.models import Movie, Series, ServiceConfig, ServiceMediaLibrary
-from backend.enums import MediaType, Service
+from backend.database.models import (
+    Movie,
+    Series,
+    ServiceConfig,
+    ServiceMediaLibrary,
+)
+from backend.enums import MediaType, Service, Task
 from backend.models.media import AggregatedMovieData, AggregatedSeriesData
 from backend.models.services.radarr import RadarrMovie
 from backend.models.services.sonarr import SonarrSeries
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
+from backend.tasks.task_tracker import track_task_execution
+
+__all__ = (
+    "sync_all_media",
+    "sync_service_libraries",
+)
 
 COMMIT_BATCH_SIZE = 100
 
@@ -595,26 +606,29 @@ async def sync_all_media():
     """Main sync task - syncs both movies and series from media servers."""
     start_time = datetime.now(timezone.utc)
     LOG.info("Starting media sync task")
-    failures = False
-    try:
-        # sync movies first
-        await sync_movies()
-    except Exception as e:
-        failures = True
-        LOG.critical(f"Media sync task failed: {e}", exc_info=True)
 
-    try:
-        # then sync series
-        await sync_series()
-    except Exception as e:
-        failures = True
-        LOG.critical(f"Media sync task failed: {e}", exc_info=True)
+    async with track_task_execution(Task.SYNC_ALL_MEDIA):
+        failures = False
+        try:
+            # sync movies first
+            await sync_movies()
+        except Exception as e:
+            failures = True
+            LOG.critical(f"Media sync task failed: {e}", exc_info=True)
 
-    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-    if not failures:
-        LOG.info(f"Media sync task completed successfully in {duration:.2f}s")
-    else:
-        LOG.error(f"Media sync task completed with failures after {duration:.2f}s")
+        try:
+            # then sync series
+            await sync_series()
+        except Exception as e:
+            failures = True
+            LOG.critical(f"Media sync task failed: {e}", exc_info=True)
+
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        if not failures:
+            LOG.info(f"Media sync task completed successfully in {duration:.2f}s")
+        else:
+            LOG.error(f"Media sync task completed with failures after {duration:.2f}s")
+            raise Exception("Media sync completed with failures")
 
 
 async def _update_series_tmdb_metadata(
@@ -671,6 +685,18 @@ async def sync_service_libraries(
 
     Pass None for service to update both.
     """
+    # only use task tracking when called as a scheduled task (service=None)
+    if service is None:
+        async with track_task_execution(Task.SYNC_SERVICE_LIBRARIES):
+            return await _sync_service_libraries_impl(service)
+    else:
+        return await _sync_service_libraries_impl(service)
+
+
+async def _sync_service_libraries_impl(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
+    """Internal implementation for syncing service libraries."""
     if not service_manager.plex and not service_manager.jellyfin:
         return {Service.PLEX: [], Service.JELLYFIN: []}
 
