@@ -170,135 +170,135 @@
   });
 </script>
 
-<div class="p-8">
-  <div class="max-w-7xl mx-auto">
-    <!-- header -->
-    <div class="flex items-center justify-between mb-2">
-      <h1 class="text-3xl font-bold text-foreground mb-2">Users</h1>
-      {#if !profileError}
-        <Button
-          type="button"
-          class="hover cursor-pointer"
-          onclick={() => (showCreateModal = true)}><UserPlus /> Add User</Button
-        >
-      {/if}
-    </div>
-
-    <ErrorBox error={profileError} />
-
-    <!-- users table -->
-    <div class="bg-card rounded-lg border border-border overflow-x-auto">
-      {#if loading}
-        <div class="p-8 text-center text-muted-foreground">
-          <div
-            class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
-          ></div>
-          <p class="mt-4">Loading users...</p>
-        </div>
-      {:else if users.length === 0}
-        <div class="p-8 text-center text-muted-foreground">
-          No users found. Create your first user to get started.
-        </div>
-      {:else}
-        <table class="w-full">
-          <thead class="bg-muted/50">
-            <tr>
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >User</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Role</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Joined</th
-              >
-              <th
-                class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Actions</th
-              >
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-border">
-            {#each users as user (user.id)}
-              <tr class="hover:bg-muted/30 transition-colors">
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="flex items-center gap-3">
-                    <div class="relative">
-                      {#if user.avatar_url}
-                        <div>
-                          <img
-                            src={user.avatar_url}
-                            alt="Avatar"
-                            class="w-16 h-16 max-w-16 rounded-full object-cover border-4 border-primary"
-                          />
-                        </div>
-                      {:else}
-                        <div
-                          class="w-16 h-16 rounded-full bg-primary text-primary-foreground flex items-center
-                          justify-center text-2xl font-bold border-4 border-primary"
-                        >
-                          {user.username.charAt(0).toUpperCase()}
-                        </div>
-                      {/if}
-                    </div>
-
-                    <div>
-                      <div class="text-sm font-medium text-foreground">
-                        {user.display_name || user.username}
-                      </div>
-                      {#if user.email}
-                        <div class="text-xs text-muted-foreground">
-                          {user.email}
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <span class="text-sm text-foreground capitalize"
-                    >{user.role}</span
-                  >
-                </td>
-                <td
-                  class="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground"
-                >
-                  {formatDate(user.created_at)}
-                </td>
-                <td
-                  class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"
-                >
-                  <div class="flex items-center justify-end gap-2">
-                    <!-- edit -->
-                    {#if $auth.user?.role === "admin"}
-                      <Button
-                        type="button"
-                        size="icon"
-                        class="rounded-full cursor-pointer"
-                        onclick={() => openEditModal(user)}><UserPen /></Button
-                      >
-                    {/if}
-                    <!-- delete -->
-                    <Button
-                      type="button"
-                      size="icon"
-                      class="rounded-full hover:bg-destructive-secondary bg-destructive 
-                        text-destructive-foreground disabled:bg-muted disabled:text-muted-foreground 
-                        disabled:cursor-not-allowed cursor-pointer"
-                      onclick={() => openDeleteDialog(user)}
-                      disabled={user.id === $auth.user?.id}><UserX /></Button
-                    >
-                  </div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </div>
+<!-- header -->
+<div class="flex items-center justify-between mb-4">
+  <div>
+    <h2 class="text-xl font-semibold text-foreground">User Management</h2>
+    <p class="text-sm text-muted-foreground mt-1">
+      Create and manage user accounts
+    </p>
   </div>
+  {#if !profileError}
+    <Button
+      type="button"
+      class="hover cursor-pointer"
+      onclick={() => (showCreateModal = true)}><UserPlus /> Add User</Button
+    >
+  {/if}
+</div>
+
+<ErrorBox error={profileError} />
+
+<!-- users table -->
+<div class="bg-card rounded-lg border border-border overflow-x-auto">
+  {#if loading}
+    <div class="p-8 text-center text-muted-foreground">
+      <div
+        class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
+      ></div>
+      <p class="mt-4">Loading users...</p>
+    </div>
+  {:else if users.length === 0}
+    <div class="p-8 text-center text-muted-foreground">
+      No users found. Create your first user to get started.
+    </div>
+  {:else}
+    <table class="w-full">
+      <thead class="bg-muted/50">
+        <tr>
+          <th
+            class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >User</th
+          >
+          <th
+            class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >Role</th
+          >
+          <th
+            class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >Joined</th
+          >
+          <th
+            class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >Actions</th
+          >
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {#each users as user (user.id)}
+          <tr class="hover:bg-muted/30 transition-colors">
+            <td class="px-6 py-4 whitespace-nowrap">
+              <div class="flex items-center gap-3">
+                <div class="relative">
+                  {#if user.avatar_url}
+                    <div>
+                      <img
+                        src={user.avatar_url}
+                        alt="Avatar"
+                        class="w-16 h-16 max-w-16 rounded-full object-cover border-4 border-primary"
+                      />
+                    </div>
+                  {:else}
+                    <div
+                      class="w-16 h-16 rounded-full bg-primary text-primary-foreground flex items-center
+                      justify-center text-2xl font-bold border-4 border-primary"
+                    >
+                      {user.username.charAt(0).toUpperCase()}
+                    </div>
+                  {/if}
+                </div>
+
+                <div>
+                  <div class="text-sm font-medium text-foreground">
+                    {user.display_name || user.username}
+                  </div>
+                  {#if user.email}
+                    <div class="text-xs text-muted-foreground">
+                      {user.email}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap">
+              <span class="text-sm text-foreground capitalize">{user.role}</span
+              >
+            </td>
+            <td
+              class="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground"
+            >
+              {formatDate(user.created_at)}
+            </td>
+            <td
+              class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"
+            >
+              <div class="flex items-center justify-end gap-2">
+                <!-- edit -->
+                {#if $auth.user?.role === "admin"}
+                  <Button
+                    type="button"
+                    size="icon"
+                    class="rounded-full cursor-pointer"
+                    onclick={() => openEditModal(user)}><UserPen /></Button
+                  >
+                {/if}
+                <!-- delete -->
+                <Button
+                  type="button"
+                  size="icon"
+                  class="rounded-full hover:bg-destructive-secondary bg-destructive 
+                    text-destructive-foreground disabled:bg-muted disabled:text-muted-foreground 
+                    disabled:cursor-not-allowed cursor-pointer"
+                  onclick={() => openDeleteDialog(user)}
+                  disabled={user.id === $auth.user?.id}><UserX /></Button
+                >
+              </div>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
 </div>
 
 <!-- create User Modal -->
