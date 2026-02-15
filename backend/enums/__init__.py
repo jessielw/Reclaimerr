@@ -3,7 +3,6 @@ from enum import Enum, StrEnum, auto
 
 class UserRole(StrEnum):
     USER = auto()
-    MODERATOR = auto()
     ADMIN = auto()
 
 
@@ -46,6 +45,10 @@ class NotificationType(StrEnum):
 
     # admin exclusive notifications
     TASK_FAILURE = auto()
+
+    def is_admin_only(self) -> bool:
+        """Check if this notification type is restricted to admins."""
+        return self in (NotificationType.TASK_FAILURE,)
 
 
 class ScheduleType(StrEnum):
