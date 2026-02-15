@@ -422,7 +422,7 @@
       </h2>
       <form
         onsubmit={(e) => {
-          e.preventDefault(), updateUser();
+          (e.preventDefault(), updateUser());
         }}
         class="space-y-4"
         autocomplete="off"
