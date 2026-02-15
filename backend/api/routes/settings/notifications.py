@@ -29,7 +29,7 @@ async def get_notification_settings(
             NotificationSetting.user_id == current_user.id
         )
     )
-    notifications = result.scalars()
+    notifications = result.scalars().all()
 
     return [
         NotificationSettingItem(

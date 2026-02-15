@@ -161,7 +161,7 @@ async def list_users(
             created_at=u.created_at,
             require_password_change=u.require_password_change or False,
         )
-        for u in result.scalars()
+        for u in result.scalars().all()
     ]
 
 

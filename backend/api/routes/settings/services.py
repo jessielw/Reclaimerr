@@ -28,7 +28,7 @@ async def get_service_settings(
     """Get current service settings."""
     # service configs
     get_service_configs = await db.execute(select(ServiceConfig))
-    service_configs = get_service_configs.scalars()
+    service_configs = get_service_configs.scalars().all()
 
     # gather libraries from Jellyfin and/or Plex
     MEDIA_SERVICES = (Service.JELLYFIN, Service.PLEX)

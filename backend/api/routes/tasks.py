@@ -228,7 +228,7 @@ async def list_tasks(
     """
     # get all task schedules from database
     result = await db.execute(select(TaskSchedule))
-    db_schedules = {schedule.task: schedule for schedule in result.scalars()}
+    db_schedules = {schedule.task: schedule for schedule in result.scalars().all()}
 
     tasks = []
     for task in scheduler.get_jobs():
