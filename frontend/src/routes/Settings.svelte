@@ -3,7 +3,7 @@
   import { get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/ServiceConfigForm.svelte";
   import Notifications from "$lib/components/settings/Notifications.svelte";
-  import Tasks from "$lib/components/settings/Tasks.svelte";
+  import Tasks from "$lib/components/settings/tasks/Tasks.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
