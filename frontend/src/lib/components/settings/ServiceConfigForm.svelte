@@ -1,8 +1,10 @@
 <script lang="ts">
+  import type { Component } from "svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
 
   interface Props {
     tabLabel: string;
+    tabIcon: Component | null;
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
@@ -12,6 +14,7 @@
 
   let {
     tabLabel,
+    tabIcon,
     enabled,
     baseUrl,
     apiKey,
@@ -28,8 +31,12 @@
 
 <div class="space-y-6">
   <div class="flex items-center justify-between mb-6">
-    <h2 class="text-xl font-semibold text-foreground">
-      {tabLabel} Configuration
+    <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
+      {#if tabIcon}
+        {@const Icon = tabIcon}
+        <Icon class="size-5" aria-hidden="true" />
+      {/if}
+      <span class="align-middle">{tabLabel}</span>
     </h2>
     <label class="flex items-center gap-2 cursor-pointer">
       <span class="text-sm text-foreground">Enable</span>
