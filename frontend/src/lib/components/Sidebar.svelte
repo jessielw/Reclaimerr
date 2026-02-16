@@ -7,27 +7,24 @@
   import House from "@lucide/svelte/icons/house";
   import ClapperBoard from "@lucide/svelte/icons/clapperboard";
   import Tv from "@lucide/svelte/icons/tv";
-  import User from "@lucide/svelte/icons/user";
-  import Users from "@lucide/svelte/icons/users";
   import Settings from "@lucide/svelte/icons/settings";
   import DoorOpen from "@lucide/svelte/icons/door-open";
   import DoorClosed from "@lucide/svelte/icons/door-closed";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
-  import Filter from "@lucide/svelte/icons/filter";
+  import Ticket from "@lucide/svelte/icons/ticket";
   import { toTitleCase } from "$lib/utils/strings";
 
   // optional callback to close sidebar on mobile after navigation
   let { onNavigate = () => {} }: { onNavigate?: () => void } = $props();
 
   // nav items: path = route path, label = display text, icon = icon component
+  // adminOnly = whether to show item only for admin users
   const navItems = [
-    { path: "/", label: "Dashboard", icon: House },
-    // { path: "/movies", label: "Movies", icon: ClapperBoard },
-    // { path: "/series", label: "Series", icon: Tv },
-    { path: "/rules", label: "Rules", icon: Filter, adminOnly: true },
-    { path: "/users", label: "Users", icon: Users, adminOnly: true },
-    { path: "/account", label: "Account", icon: User },
-    { path: "/settings", label: "Settings", icon: Settings, adminOnly: true },
+    { path: "/", label: "Dashboard", icon: House, adminOnly: false },
+    { path: "/movies", label: "Movies", icon: ClapperBoard, adminOnly: false },
+    { path: "/series", label: "Series", icon: Tv, adminOnly: false },
+    { path: "/requests", label: "Requests", icon: Ticket, adminOnly: false },
+    { path: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   ];
 
   // vars
@@ -63,7 +60,7 @@
   </div>
 
   <!-- navigation -->
-  <nav class="flex-1 p-4 space-y-1">
+  <nav class="flex-1 p-4 space-y-1 overflow-y-auto">
     {#each navItems as item}
       {#if !item.adminOnly || $auth.user?.role === "admin"}
         <a
