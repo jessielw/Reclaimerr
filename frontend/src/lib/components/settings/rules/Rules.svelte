@@ -19,7 +19,7 @@
     type ReclaimRule,
     type LibraryType,
   } from "$lib/types/shared";
-  import RuleForm from "$lib/components/rules/RuleForm.svelte";
+  import RuleForm from "$lib/components/settings/rules/RuleForm.svelte";
 
   let loading = $state(false);
   let rules = $state<ReclaimRule[]>([]);
