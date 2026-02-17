@@ -45,7 +45,7 @@
 </script>
 
 <div
-  class="group relative cursor-pointer"
+  class="group relative"
   onmouseenter={() => (isHovered = true)}
   onmouseleave={() => (isHovered = false)}
   role="contentinfo"
