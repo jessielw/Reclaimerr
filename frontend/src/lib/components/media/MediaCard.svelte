@@ -99,7 +99,6 @@
       {#if media.status.is_blacklisted}
         <div
           class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-50"
-          title="Blacklisted"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -116,7 +115,6 @@
       {#if media.status.is_candidate}
         <div
           class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-50"
-          title="Deletion Candidate"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -133,7 +131,6 @@
       {#if media.status.has_pending_request}
         <div
           class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-50"
-          title="Pending Request"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
