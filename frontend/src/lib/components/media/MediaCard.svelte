@@ -85,7 +85,7 @@
       <!-- blacklisted -->
       {#if media.status.is_blacklisted}
         <div
-          class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-50"
+          class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-40"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -101,7 +101,7 @@
       <!-- deletion candidate -->
       {#if media.status.is_candidate}
         <div
-          class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-50"
+          class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-40"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -117,7 +117,7 @@
       <!-- pending request -->
       {#if media.status.has_pending_request}
         <div
-          class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-50"
+          class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-40"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
