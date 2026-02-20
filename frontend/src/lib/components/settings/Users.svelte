@@ -4,7 +4,11 @@
   import { auth } from "$lib/stores/auth";
   import { get_api, post_api, delete_api } from "$lib/api";
   import ErrorBox from "$lib/components/ErrorBox.svelte";
-  import type { UserProfile as User } from "$lib/types/shared";
+  import {
+    Permission,
+    type UserProfile as User,
+    UserRole,
+  } from "$lib/types/shared";
   import { Button } from "$lib/components/ui/button/index.js";
   import { toast } from "svelte-sonner";
   import { formatDate } from "$lib/utils/date";
@@ -19,6 +23,11 @@
   let { svgIcon }: Props = $props();
 
   let users: User[] = $state([]);
+  const isAdmin = $derived($auth.user?.role === "admin");
+  const canManageUsers = $derived(
+    isAdmin || ($auth.user?.permissions ?? []).includes(Permission.Moderator),
+  );
+
   let loading: boolean = $state(true);
   let profileError: string = $state("");
   let showCreateModal: boolean = $state(false);
@@ -35,6 +44,7 @@
     email: "",
     display_name: "",
     role: "user",
+    permissions: [Permission.Request],
   });
 
   // edit user form
@@ -42,11 +52,67 @@
     display_name: "",
     email: "",
     role: "user",
+    permissions: [] as Permission[],
     password: "", // optional - only if changing password
   });
 
+  const permissionOptions = [
+    {
+      value: Permission.Moderator,
+      label: "Moderator",
+      description: "Manage users (cannot grant or modify Admin unless Admin)",
+      adminOnly: true,
+    },
+    {
+      value: Permission.ManageRequests,
+      label: "Manage requests",
+      description: "View all requests and approve/deny requests",
+    },
+    {
+      value: Permission.Request,
+      label: "Request",
+      description: "Submit and manage own exception requests",
+    },
+    {
+      value: Permission.AutoApprove,
+      label: "Auto approve",
+      description: "Automatically approve your own requests",
+    },
+    {
+      value: Permission.ManageBlocklist,
+      label: "Manage blocklist",
+      description: "Reserved for explicit blocklist management",
+    },
+  ];
+  
+  // helper to check if a permission can be edited based on current user's role
+  const canEditPermission = (permission: Permission): boolean => {
+    if (isAdmin) return true;
+    return permission !== Permission.Moderator;
+  };
+
+  // toggle permission in create user form
+  const toggleCreatePermission = (permission: Permission, checked: boolean) => {
+    if (checked) {
+      newUser.permissions = [...newUser.permissions, permission];
+    } else {
+      newUser.permissions = newUser.permissions.filter((p) => p !== permission);
+    }
+  };
+
+  // toggle permission in edit user form
+  const toggleEditPermission = (permission: Permission, checked: boolean) => {
+    if (checked) {
+      editUser.permissions = [...editUser.permissions, permission];
+    } else {
+      editUser.permissions = editUser.permissions.filter(
+        (p) => p !== permission,
+      );
+    }
+  };
+
   // load users from API
-  async function loadUsers() {
+  const loadUsers = async () => {
     try {
       profileError = "";
       users = await get_api<User[]>("/api/account/users");
@@ -55,10 +121,10 @@
     } finally {
       loading = false;
     }
-  }
+  };
 
   // create new user
-  async function createUser() {
+  const createUser = async () => {
     try {
       await post_api("/api/account/users", newUser);
       showCreateModal = false;
@@ -67,10 +133,10 @@
     } catch (err: any) {
       toast.warning(err.message);
     }
-  }
+  };
 
   // delete user
-  async function deleteUser(userId: number, username: string) {
+  const deleteUser = async (userId: number, username: string) => {
     try {
       profileError = "";
       await delete_api(`/api/account/users/${userId}`);
@@ -79,57 +145,59 @@
     } catch (err: any) {
       profileError = err.message;
     }
-  }
+  };
 
   // open delete confirmation dialog
-  function openDeleteDialog(user: User) {
+  const openDeleteDialog = (user: User) => {
     userToDelete = user;
     showDeleteDialog = true;
-  }
+  };
 
   // close delete confirmation dialog
-  function closeDeleteDialog() {
+  const closeDeleteDialog = () => {
     showDeleteDialog = false;
     // small delay to allow dialog close animation before removing value from state
     setTimeout(() => {
       userToDelete = null;
     }, 200);
-  }
+  };
 
   // confirm delete user
-  async function confirmDelete() {
+  const confirmDelete = async () => {
     if (userToDelete) {
       await deleteUser(userToDelete.id, userToDelete.username);
       closeDeleteDialog();
     }
-  }
+  };
 
   // open edit user modal
-  function openEditModal(user: User) {
+  const openEditModal = (user: User) => {
     editingUser = user;
     editUser = {
       display_name: user.display_name || "",
       email: user.email || "",
       role: user.role,
+      permissions: [...(user.permissions || [])],
       password: "",
     };
     showEditModal = true;
-  }
+  };
 
   // close edit user modal
-  function closeEditModal() {
+  const closeEditModal = () => {
     showEditModal = false;
     editingUser = null;
     editUser = {
       display_name: "",
       email: "",
       role: "user",
+      permissions: [],
       password: "",
     };
-  }
+  };
 
   // update user
-  async function updateUser() {
+  const updateUser = async () => {
     if (!editingUser) return;
 
     try {
@@ -137,6 +205,7 @@
         display_name: editUser.display_name.trim(),
         email: editUser.email.trim(),
         role: editUser.role,
+        permissions: editUser.permissions,
       };
 
       // only include password if it's provided
@@ -152,24 +221,25 @@
     } catch (err: any) {
       toast.warning(err.message);
     }
-  }
+  };
 
   // close create user modal and reset form
-  function closeModal() {
+  const closeModal = () => {
     showCreateModal = false;
     resetForm();
-  }
+  };
 
   // reset create user form
-  function resetForm() {
+  const resetForm = () => {
     newUser = {
       username: "",
       password: "",
       email: "",
       display_name: "",
       role: "user",
+      permissions: [Permission.Request],
     };
-  }
+  };
 
   onMount(() => {
     loadUsers();
@@ -180,7 +250,6 @@
 <div class="flex items-center justify-between mb-4">
   <div>
     <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
-      {console.log(svgIcon)}
       {#if svgIcon}
         {@const Icon = svgIcon}
         <Icon class="size-5" aria-hidden="true" />
@@ -191,7 +260,7 @@
       Create and manage user accounts
     </p>
   </div>
-  {#if !profileError}
+  {#if !profileError && canManageUsers}
     <Button
       type="button"
       class="hover cursor-pointer"
@@ -287,7 +356,7 @@
             >
               <div class="flex items-center justify-end gap-2">
                 <!-- edit -->
-                {#if $auth.user?.role === "admin"}
+                {#if canManageUsers}
                   <Button
                     type="button"
                     size="icon"
@@ -296,15 +365,17 @@
                   >
                 {/if}
                 <!-- delete -->
-                <Button
-                  type="button"
-                  size="icon"
-                  class="rounded-full hover:bg-destructive-secondary bg-destructive 
+                {#if canManageUsers}
+                  <Button
+                    type="button"
+                    size="icon"
+                    class="rounded-full hover:bg-destructive-secondary bg-destructive 
                     text-destructive-foreground disabled:bg-muted disabled:text-muted-foreground 
                     disabled:cursor-not-allowed cursor-pointer"
-                  onclick={() => openDeleteDialog(user)}
-                  disabled={user.id === $auth.user?.id}><UserX /></Button
-                >
+                    onclick={() => openDeleteDialog(user)}
+                    disabled={user.id === $auth.user?.id}><UserX /></Button
+                  >
+                {/if}
               </div>
             </td>
           </tr>
@@ -319,7 +390,9 @@
   <div
     class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
   >
-    <div class="bg-card rounded-lg border border-border max-w-md w-full p-6">
+    <div
+      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
+    >
       <h2 class="text-xl font-semibold text-foreground mb-4">
         Create Local User
       </h2>
@@ -405,8 +478,52 @@
             id="role"
           >
             <option value="user">User</option>
-            <option value="admin">Admin</option>
+            {#if isAdmin}
+              <option value="admin">Admin</option>
+            {/if}
           </select>
+        </div>
+        <div>
+          <label
+            for="new_permissions_container"
+            class="block text-sm font-medium text-foreground">Permissions</label
+          >
+          {#if newUser.role === UserRole.Admin}
+            <span class="mt-0 text-xs text-muted-foreground"
+              >Permissions have no effect on Admins</span
+            >
+          {/if}
+          <div
+            id="new_permissions_container"
+            class="space-y-2 rounded-lg border border-border p-3"
+          >
+            {#each permissionOptions as option}
+              <label
+                class="flex items-start gap-2 text-sm text-foreground {canEditPermission(
+                  option.value,
+                )
+                  ? 'cursor-pointer'
+                  : 'opacity-50 cursor-not-allowed'}"
+              >
+                <input
+                  type="checkbox"
+                  checked={newUser.permissions.includes(option.value)}
+                  disabled={!canEditPermission(option.value)}
+                  onchange={(e) =>
+                    toggleCreatePermission(
+                      option.value,
+                      (e.currentTarget as HTMLInputElement).checked,
+                    )}
+                />
+                <span>
+                  <span class="font-medium">{option.label}</span>
+                  <span class="block text-xs text-muted-foreground"
+                    >{option.description}</span
+                  >
+                </span>
+              </label>
+            {/each}
+          </div>
         </div>
         <div class="flex justify-between gap-3 pt-4">
           <Button
@@ -429,7 +546,9 @@
   <div
     class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
   >
-    <div class="bg-card rounded-lg border border-border max-w-md w-full p-6">
+    <div
+      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
+    >
       <h2 class="text-xl font-semibold text-foreground mb-4">
         Edit User: {editingUser.username}
       </h2>
@@ -480,8 +599,51 @@
             id="edit_role"
           >
             <option value="user">User</option>
-            <option value="admin">Admin</option>
+            {#if isAdmin}
+              <option value="admin">Admin</option>
+            {/if}
           </select>
+        </div>
+        <div>
+          <label
+            for="edit_permissions_container"
+            class="block text-sm font-medium text-foreground">Permissions</label
+          >
+          {#if editUser.role === UserRole.Admin}
+            <span class="mt-0 text-xs text-muted-foreground"
+              >Permissions have no effect on Admins</span
+            >
+          {/if}
+          <div
+            id="edit_permissions_container"
+            class="space-y-2 rounded-lg border border-border p-3"
+          >
+            {#each permissionOptions as option}
+              <label
+                class="flex items-start gap-2 text-sm text-foreground
+                  {canEditPermission(option.value)
+                  ? 'cursor-pointer'
+                  : 'opacity-50 cursor-not-allowed'}"
+              >
+                <input
+                  type="checkbox"
+                  checked={editUser.permissions.includes(option.value)}
+                  disabled={!canEditPermission(option.value)}
+                  onchange={(e) =>
+                    toggleEditPermission(
+                      option.value,
+                      (e.currentTarget as HTMLInputElement).checked,
+                    )}
+                />
+                <span>
+                  <span class="font-medium">{option.label}</span>
+                  <span class="block text-xs text-muted-foreground"
+                    >{option.description}</span
+                  >
+                </span>
+              </label>
+            {/each}
+          </div>
         </div>
         <div>
           <label
