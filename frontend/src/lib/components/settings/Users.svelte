@@ -84,7 +84,7 @@
       description: "Reserved for explicit blocklist management",
     },
   ];
-  
+
   // helper to check if a permission can be edited based on current user's role
   const canEditPermission = (permission: Permission): boolean => {
     if (isAdmin) return true;
@@ -388,7 +388,7 @@
 <!-- create User Modal -->
 {#if showCreateModal}
   <div
-    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-40 p-4"
   >
     <div
       class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
@@ -544,7 +544,7 @@
 <!-- edit user modal -->
 {#if showEditModal && editingUser}
   <div
-    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-40 p-4"
   >
     <div
       class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
