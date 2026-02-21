@@ -169,7 +169,7 @@
 </script>
 
 <div
-  class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto"
+  class="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4 overflow-y-auto"
 >
   <div class="bg-card rounded-lg border border-border max-w-4xl w-full my-8">
     <form onsubmit={handleSubmit}>
