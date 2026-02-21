@@ -69,7 +69,7 @@
     } finally {
       submitting = false;
     }
-  }
+  };
 
   const handleClose = () => {
     reason = "";
@@ -77,7 +77,7 @@
     if (onClose) {
       onClose();
     }
-  }
+  };
 </script>
 
 <Dialog.Root bind:open>

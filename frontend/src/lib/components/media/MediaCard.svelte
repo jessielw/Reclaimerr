@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import Info from "@lucide/svelte/icons/info";
   import ArrowDownToLine from "@lucide/svelte/icons/arrow-down-to-line";
@@ -6,11 +7,16 @@
   import TicketMinus from "@lucide/svelte/icons/ticket-minus";
   import ListX from "@lucide/svelte/icons/list-x";
   import FileImage from "@lucide/svelte/icons/file-image";
-  import type { MediaItem, MediaType } from "$lib/types/shared";
+  import { auth } from "$lib/stores/auth";
+  import {
+    Permission,
+    type MediaItem,
+    type MediaType,
+  } from "$lib/types/shared";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import Badge from "$lib/components/ui/badge/badge.svelte";
 
-  const TMDB_IMAGE_WIDTH = 500;
+  const TMDB_POSTER_WIDTH = 500;
 
   interface Props {
     media: MediaItem;
@@ -28,7 +34,16 @@
     onViewDetails,
   }: Props = $props();
 
+  let cardEl: HTMLDivElement;
+  let cardWidth = $state(0);
+  const REQUEST_TEXT_MIN_WIDTH = 120;
+
   let isHovered = $state(false);
+  const canRequestExceptions = $derived(
+    $auth.user?.role === "admin" ||
+      ($auth.user?.permissions ?? []).includes(Permission.Request) ||
+      ($auth.user?.permissions ?? []).includes(Permission.AutoApprove),
+  );
 
   const handleRequestException = (e: Event) => {
     e.stopPropagation();
@@ -43,10 +58,19 @@
       onViewDetails(media);
     }
   };
+
+  onMount(() => {
+    const observer = new ResizeObserver(([entry]) => {
+      cardWidth = entry.contentRect.width;
+    });
+    if (cardEl) observer.observe(cardEl);
+    return () => observer.disconnect();
+  });
 </script>
 
 <div
   class="group relative"
+  bind:this={cardEl}
   onmouseenter={() => (isHovered = true)}
   onmouseleave={() => (isHovered = false)}
   role="contentinfo"
@@ -59,7 +83,7 @@
     <!-- poster image -->
     {#if media.poster_url}
       <img
-        src={`http://image.tmdb.org/t/p/w${TMDB_IMAGE_WIDTH}/${media.poster_url}`}
+        src={`http://image.tmdb.org/t/p/w${TMDB_POSTER_WIDTH}/${media.poster_url}`}
         alt={media.title}
         class="w-full h-full object-cover"
       />
@@ -85,7 +109,7 @@
       <!-- blacklisted -->
       {#if media.status.is_blacklisted}
         <div
-          class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-40"
+          class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -101,7 +125,7 @@
       <!-- deletion candidate -->
       {#if media.status.is_candidate}
         <div
-          class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-40"
+          class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -117,7 +141,7 @@
       <!-- pending request -->
       {#if media.status.has_pending_request}
         <div
-          class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-40"
+          class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
@@ -146,26 +170,34 @@
         </div>
 
         <!-- request button and info -->
-        <div class="flex gap-0.5 z-50">
+        <div class="flex gap-0.5 z-20">
           <!-- request -->
-          {#if !media.status.is_blacklisted && !media.status.has_pending_request}
+          {#if canRequestExceptions && !media.status.is_blacklisted && !media.status.has_pending_request}
             <Button
               size="sm"
               class="cursor-pointer text-foreground/30 hover:text-foreground 
               bg-primary/30 hover:bg-primary transition-colors flex-1 rounded-tr-none rounded-br-none"
               onclick={handleRequestException}
             >
-              <ArrowDownToLine class="size-5" /> Request
+              <ArrowDownToLine class="size-5" />
+              {#if cardWidth > REQUEST_TEXT_MIN_WIDTH}
+                Request
+              {/if}
             </Button>
           {/if}
 
           <!-- info -->
           {#if isHovered}
+            {@const canRequest =
+              canRequestExceptions &&
+              !media.status.is_blacklisted &&
+              !media.status.has_pending_request}
             <div>
               <Button
                 size="sm"
-                class="cursor-pointer rounded-tl-none rounded-bl-none text-foreground/30 hover:text-foreground 
-                bg-primary/30 hover:bg-primary transition-colors"
+                class="cursor-pointer text-foreground/30 hover:text-foreground 
+                bg-primary/30 hover:bg-primary transition-colors 
+                {!canRequest ? '' : 'rounded-tl-none rounded-bl-none'}"
                 onclick={handleInfoClick}
               >
                 <Info class="size-6" />
