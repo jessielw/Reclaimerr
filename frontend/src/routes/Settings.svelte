@@ -35,6 +35,7 @@
   import { toTitleCase } from "$lib/utils/strings";
   import type { LibraryType } from "$lib/types/shared";
   import { MediaType, SettingsTab } from "$lib/types/shared";
+  import { Permission } from "$lib/types/shared";
   import { auth } from "$lib/stores/auth";
 
   type Tab = {
@@ -153,12 +154,20 @@
 
   // filter tabs based on user role
   const isAdmin = $derived($auth.user?.role === "admin");
+  const canManageUsers = $derived(
+    isAdmin || ($auth.user?.permissions ?? []).includes(Permission.Moderator),
+  );
   const filteredTabGroups = $derived(
     tabGroups
       .filter((group) => !group.adminOnly || isAdmin)
       .map((group) => ({
         ...group,
-        tabs: group.tabs.filter((tab) => !tab.adminOnly || isAdmin),
+        tabs: group.tabs.filter((tab) => {
+          if (tab.id === SettingsTab.Users) {
+            return canManageUsers;
+          }
+          return !tab.adminOnly || isAdmin;
+        }),
       }))
       .filter((group) => group.tabs.length > 0),
   );
