@@ -31,14 +31,14 @@
   let logoutHovered = $state(false);
 
   // function to check if a nav item is active
-  function isActive(path: string): boolean {
+  const isActive = (path: string): boolean => {
     return $location === path;
-  }
+  };
 
   // logout handler
-  function handleLogout() {
+  const handleLogout = () => {
     auth.logout();
-  }
+  };
 </script>
 
 <aside class="w-64 bg-card border-r border-border flex flex-col h-full">
