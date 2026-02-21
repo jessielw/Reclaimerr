@@ -13,6 +13,11 @@
   import { toast } from "svelte-sonner";
   import { formatDate } from "$lib/utils/date";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import { Checkbox } from "$lib/components/ui/checkbox/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
   import UserPlus from "@lucide/svelte/icons/user-plus";
   import UserPen from "@lucide/svelte/icons/user-pen";
   import UserX from "@lucide/svelte/icons/user-x";
@@ -385,17 +390,20 @@
   {/if}
 </div>
 
-<!-- create User Modal -->
+<!-- create user modal -->
 {#if showCreateModal}
-  <div
-    class="fixed inset-0 bg-black/50 flex items-center justify-center z-40 p-4"
+  <Dialog.Root
+    open={showCreateModal}
+    onOpenChange={(v) => (showCreateModal = v)}
   >
-    <div
+    <Dialog.Content
       class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
     >
-      <h2 class="text-xl font-semibold text-foreground mb-4">
-        Create Local User
-      </h2>
+      <Dialog.Header>
+        <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
+          >Create Local User</Dialog.Title
+        >
+      </Dialog.Header>
       <form
         onsubmit={(e) => {
           e.preventDefault();
@@ -404,90 +412,60 @@
         class="space-y-4"
         autocomplete="off"
       >
-        <div>
-          <label
-            for="username"
-            class="block text-sm font-medium text-foreground mb-2"
-            >Username</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="username">Username</Label>
+          <Input
+            id="username"
             type="text"
             bind:value={newUser.username}
             required
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter username"
-            id="username"
           />
         </div>
-        <div>
-          <label
-            for="password"
-            class="block text-sm font-medium text-foreground mb-2"
-            >Password</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="password">Password</Label>
+          <Input
+            id="password"
             type="password"
             bind:value={newUser.password}
             required
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter password"
-            id="password"
           />
         </div>
-        <div>
-          <label
-            for="display_name"
-            class="block text-sm font-medium text-foreground mb-2"
-            >Display Name (Optional)</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="display_name">Display Name (Optional)</Label>
+          <Input
+            id="display_name"
             type="text"
             bind:value={newUser.display_name}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter display name"
-            id="display_name"
           />
         </div>
-        <div>
-          <label
-            for="email"
-            class="block text-sm font-medium text-foreground mb-2"
-            >Email (Optional)</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="email">Email (Optional)</Label>
+          <Input
+            id="email"
             type="email"
             bind:value={newUser.email}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter email"
-            id="email"
           />
         </div>
-        <div>
-          <label
-            for="role"
-            class="block text-sm font-medium text-foreground mb-2">Role</label
-          >
-          <select
-            bind:value={newUser.role}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-            id="role"
-          >
-            <option value="user">User</option>
-            {#if isAdmin}
-              <option value="admin">Admin</option>
-            {/if}
-          </select>
+        <div class="space-y-2">
+          <Label for="role">Role</Label>
+          <Select.Root type="single" bind:value={newUser.role}>
+            <Select.Trigger class="w-full focus:ring-2 focus:ring-ring">
+              {newUser.role === "admin" ? "Admin" : "User"}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="user" label="User">User</Select.Item>
+              {#if isAdmin}
+                <Select.Item value="admin" label="Admin">Admin</Select.Item>
+              {/if}
+            </Select.Content>
+          </Select.Root>
         </div>
-        <div>
-          <label
-            for="new_permissions_container"
-            class="block text-sm font-medium text-foreground">Permissions</label
-          >
+        <div class="space-y-2">
+          <Label for="new_permissions_container">Permissions</Label>
           {#if newUser.role === UserRole.Admin}
             <span class="mt-0 text-xs text-muted-foreground"
               >Permissions have no effect on Admins</span
@@ -498,22 +476,18 @@
             class="space-y-2 rounded-lg border border-border p-3"
           >
             {#each permissionOptions as option}
-              <label
+              <Label
                 class="flex items-start gap-2 text-sm text-foreground {canEditPermission(
                   option.value,
                 )
                   ? 'cursor-pointer'
                   : 'opacity-50 cursor-not-allowed'}"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={newUser.permissions.includes(option.value)}
                   disabled={!canEditPermission(option.value)}
-                  onchange={(e) =>
-                    toggleCreatePermission(
-                      option.value,
-                      (e.currentTarget as HTMLInputElement).checked,
-                    )}
+                  onCheckedChange={(e) =>
+                    toggleCreatePermission(option.value, e)}
                 />
                 <span>
                   <span class="font-medium">{option.label}</span>
@@ -521,7 +495,7 @@
                     >{option.description}</span
                   >
                 </span>
-              </label>
+              </Label>
             {/each}
           </div>
         </div>
@@ -537,21 +511,21 @@
           >
         </div>
       </form>
-    </div>
-  </div>
+    </Dialog.Content>
+  </Dialog.Root>
 {/if}
 
 <!-- edit user modal -->
 {#if showEditModal && editingUser}
-  <div
-    class="fixed inset-0 bg-black/50 flex items-center justify-center z-40 p-4"
-  >
-    <div
+  <Dialog.Root open={showEditModal} onOpenChange={(v) => (showEditModal = v)}>
+    <Dialog.Content
       class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
     >
-      <h2 class="text-xl font-semibold text-foreground mb-4">
-        Edit User: {editingUser.username}
-      </h2>
+      <Dialog.Header>
+        <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
+          >Edit User: {editingUser.username}</Dialog.Title
+        >
+      </Dialog.Header>
       <form
         onsubmit={(e) => {
           (e.preventDefault(), updateUser());
@@ -559,56 +533,40 @@
         class="space-y-4"
         autocomplete="off"
       >
-        <div>
-          <label
-            for="edit_display_name"
-            class="block text-sm font-medium text-foreground mb-2"
-            >Display Name</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="edit_display_name">Display Name</Label>
+          <Input
+            id="edit_display_name"
             type="text"
             bind:value={editUser.display_name}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter display name"
-            id="edit_display_name"
           />
         </div>
-        <div>
-          <label
-            for="edit_email"
-            class="block text-sm font-medium text-foreground mb-2">Email</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="edit_email">Email</Label>
+          <Input
+            id="edit_email"
             type="email"
             bind:value={editUser.email}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground
-            placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Enter email"
-            id="edit_email"
           />
         </div>
-        <div>
-          <label
-            for="edit_role"
-            class="block text-sm font-medium text-foreground mb-2">Role</label
-          >
-          <select
-            bind:value={editUser.role}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-            id="edit_role"
-          >
-            <option value="user">User</option>
-            {#if isAdmin}
-              <option value="admin">Admin</option>
-            {/if}
-          </select>
+        <div class="space-y-2">
+          <Label for="edit_role">Role</Label>
+          <Select.Root type="single" bind:value={editUser.role}>
+            <Select.Trigger class="w-full focus:ring-2 focus:ring-ring">
+              {editUser.role === "admin" ? "Admin" : "User"}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="user" label="User">User</Select.Item>
+              {#if isAdmin}
+                <Select.Item value="admin" label="Admin">Admin</Select.Item>
+              {/if}
+            </Select.Content>
+          </Select.Root>
         </div>
-        <div>
-          <label
-            for="edit_permissions_container"
-            class="block text-sm font-medium text-foreground">Permissions</label
-          >
+        <div class="space-y-2">
+          <Label for="edit_permissions_container">Permissions</Label>
           {#if editUser.role === UserRole.Admin}
             <span class="mt-0 text-xs text-muted-foreground"
               >Permissions have no effect on Admins</span
@@ -619,21 +577,17 @@
             class="space-y-2 rounded-lg border border-border p-3"
           >
             {#each permissionOptions as option}
-              <label
-                class="flex items-start gap-2 text-sm text-foreground
-                  {canEditPermission(option.value)
+              <Label
+                class="flex items-start gap-2 text-sm text-foreground {canEditPermission(
+                  option.value,
+                )
                   ? 'cursor-pointer'
                   : 'opacity-50 cursor-not-allowed'}"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={editUser.permissions.includes(option.value)}
                   disabled={!canEditPermission(option.value)}
-                  onchange={(e) =>
-                    toggleEditPermission(
-                      option.value,
-                      (e.currentTarget as HTMLInputElement).checked,
-                    )}
+                  onCheckedChange={(e) => toggleEditPermission(option.value, e)}
                 />
                 <span>
                   <span class="font-medium">{option.label}</span>
@@ -641,22 +595,17 @@
                     >{option.description}</span
                   >
                 </span>
-              </label>
+              </Label>
             {/each}
           </div>
         </div>
-        <div>
-          <label
-            for="edit_password"
-            class="block text-sm font-medium text-foreground mb-2"
-            >New Password (Optional)</label
-          >
-          <input
+        <div class="space-y-2">
+          <Label for="edit_password">New Password (Optional)</Label>
+          <Input
+            id="edit_password"
             type="password"
             bind:value={editUser.password}
-            class="w-full px-4 py-2 bg-background border border-input rounded-lg text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
             placeholder="Leave blank to keep current password"
-            id="edit_password"
           />
           <p class="mt-1 text-xs text-muted-foreground">
             Only fill this if you want to change the user's password
@@ -674,8 +623,8 @@
           >
         </div>
       </form>
-    </div>
-  </div>
+    </Dialog.Content>
+  </Dialog.Root>
 {/if}
 
 <!-- confirm delete alert dialog -->
