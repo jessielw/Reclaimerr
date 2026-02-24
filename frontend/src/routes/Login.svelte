@@ -171,6 +171,7 @@
             duration-300 transition-colors"
           placeholder="Username / Email"
           autocomplete="username"
+          minlength={5}
           maxlength={usernameMaxLength}
         />
 
@@ -187,7 +188,8 @@
             duration-300 transition-colors"
           placeholder="Password"
           autocomplete="current-password"
-          maxlength={255}
+          minlength={8}
+          maxlength={64}
         />
 
         <Button
