@@ -17,7 +17,7 @@
   // TMDB image base URLs for different sizes
   const TMDB_BASE_URL_ORIGINAL = "https://image.tmdb.org/t/p/original";
   const TMDB_BASE_URL_W1280 = "https://image.tmdb.org/t/p/w1280";
-  const RANDOM_BACKGROUND_IMG_INTERVAL = 15000;
+  const RANDOM_BACKGROUND_IMG_INTERVAL = 5000;
   let imageBaseUrl = TMDB_BASE_URL_ORIGINAL;
   let refreshInterval: number | null = null;
   let overlay: HTMLElement | null;
@@ -90,7 +90,7 @@
             overlay.style.backgroundImage = `url(${imageBaseUrl + imageUrl})`;
           }
           overlay.style.opacity = "1";
-        }, 1000); // matches transition duration in CSS for smooth fade
+        }, 500); // matches transition duration in CSS for smooth fade
       }
     } catch (err) {
       console.error("Failed to fetch background image:", err);
@@ -124,7 +124,9 @@
 </script>
 
 <div id="login-bg-overlay"></div>
-<div class="min-h-screen flex items-center justify-center bg-transparent px-4">
+<div
+  class="dark min-h-screen flex items-center justify-center bg-transparent px-4"
+>
   <div class="max-w-md w-full space-y-8">
     <!-- login form -->
     <div
@@ -219,10 +221,11 @@
     position: fixed;
     inset: 0;
     z-index: -1;
+    background: linear-gradient(135deg, #18181b 60%, #23272f 100%);
     background-size: cover;
     background-repeat: no-repeat;
     background-position: center center;
     opacity: 1;
-    transition: opacity 1s;
+    transition: opacity 0.5s ease-out;
   }
 </style>
