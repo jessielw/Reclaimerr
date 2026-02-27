@@ -79,10 +79,10 @@
 
         <div class="flex gap-2 items-center">
           <Button
-            variant="outline"
             size="sm"
             onclick={handlePreviousPage}
             disabled={data.page === 1}
+            class="cursor-pointer"
           >
             <ChevronLeft class="w-4 h-4 mr-1" />
             Previous
@@ -93,10 +93,10 @@
           </span>
 
           <Button
-            variant="outline"
             size="sm"
             onclick={handleNextPage}
             disabled={data.page === data.total_pages}
+            class="cursor-pointer"
           >
             Next
             <ChevronRight class="w-4 h-4 ml-1" />
