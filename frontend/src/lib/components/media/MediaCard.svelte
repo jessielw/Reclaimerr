@@ -36,7 +36,7 @@
 
   let cardEl: HTMLDivElement;
   let cardWidth = $state(0);
-  const REQUEST_TEXT_MIN_WIDTH = 120;
+  const REQUEST_TEXT_MIN_WIDTH = 160;
 
   let isHovered = $state(false);
   const canRequestExceptions = $derived(
@@ -157,6 +157,10 @@
 
     <!-- hover overlay -->
     {#if isHovered}
+      {@const canRequest =
+        canRequestExceptions &&
+        !media.status.is_blacklisted &&
+        !media.status.has_pending_request}
       <div
         class="absolute inset-0 bg-linear-to-t from-black/60 via-transparent
           to-black/60 flex flex-col justify-end p-4 transition-opacity duration-200"
@@ -170,13 +174,19 @@
         </div>
 
         <!-- request button and info -->
-        <div class="flex gap-0.5 z-20">
+        <div
+          class="flex gap-0.5 z-20 {canRequest
+            ? 'justify-center'
+            : 'justify-end'}"
+        >
           <!-- request -->
-          {#if canRequestExceptions && !media.status.is_blacklisted && !media.status.has_pending_request}
+          {#if canRequest}
             <Button
               size="sm"
               class="cursor-pointer text-foreground/30 hover:text-foreground 
-              bg-primary/30 hover:bg-primary transition-colors flex-1 rounded-tr-none rounded-br-none"
+              bg-primary/30 hover:bg-primary transition-colors rounded-tr-none rounded-br-none
+              {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}
+              {!canRequest ? '' : 'rounded-tr-none rounded-br-none'}"
               onclick={handleRequestException}
             >
               <ArrowDownToLine class="size-5" />
@@ -187,23 +197,17 @@
           {/if}
 
           <!-- info -->
-          {#if isHovered}
-            {@const canRequest =
-              canRequestExceptions &&
-              !media.status.is_blacklisted &&
-              !media.status.has_pending_request}
-            <div>
-              <Button
-                size="sm"
-                class="cursor-pointer text-foreground/30 hover:text-foreground 
-                bg-primary/30 hover:bg-primary transition-colors 
-                {!canRequest ? '' : 'rounded-tl-none rounded-bl-none'}"
-                onclick={handleInfoClick}
-              >
-                <Info class="size-6" />
-              </Button>
-            </div>
-          {/if}
+          <div>
+            <Button
+              size="sm"
+              class="cursor-pointer text-foreground/30 hover:text-foreground 
+              bg-primary/30 hover:bg-primary transition-colors 
+              {!canRequest ? '' : 'rounded-tl-none rounded-bl-none'}"
+              onclick={handleInfoClick}
+            >
+              <Info class="size-6" />
+            </Button>
+          </div>
         </div>
       </div>
     {/if}
