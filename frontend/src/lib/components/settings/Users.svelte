@@ -335,9 +335,13 @@
                 </div>
 
                 <div>
-                  <div class="flex flex-col text-sm font-medium text-foreground">
+                  <div
+                    class="flex flex-col text-sm font-medium text-foreground"
+                  >
                     <span>{user.username}</span>
-                    <span class="text-xs text-muted-foreground italic">{user.display_name}</span>
+                    <span class="text-xs text-muted-foreground italic"
+                      >{user.display_name}</span
+                    >
                   </div>
                   {#if user.email}
                     <div class="text-xs text-muted-foreground">
