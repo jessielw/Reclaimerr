@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
-from backend.api.routes import radarr
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.dashboard import router as dashboard_router
@@ -123,7 +121,6 @@ app.include_router(dashboard_router)
 app.include_router(auth_router)
 app.include_router(rules_router)
 app.include_router(account_router)
-app.include_router(radarr.router)
 app.include_router(tasks_router)
 app.include_router(media_router)
 app.include_router(requests_router)
