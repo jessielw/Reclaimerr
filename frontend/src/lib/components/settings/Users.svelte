@@ -30,7 +30,7 @@
   let users: User[] = $state([]);
   const isAdmin = $derived($auth.user?.role === "admin");
   const canManageUsers = $derived(
-    isAdmin || ($auth.user?.permissions ?? []).includes(Permission.Moderator),
+    isAdmin || ($auth.user?.permissions ?? []).includes(Permission.ManageUsers),
   );
 
   let loading: boolean = $state(true);
@@ -63,10 +63,10 @@
 
   const permissionOptions = [
     {
-      value: Permission.Moderator,
-      label: "Moderator",
-      description: "Manage users (cannot grant or modify Admin unless Admin)",
-      adminOnly: true,
+      value: Permission.ManageUsers,
+      label: "Manage users",
+      description:
+        "Create, edit, and delete users (cannot manage admins unless Admin)",
     },
     {
       value: Permission.ManageRequests,
@@ -91,10 +91,7 @@
   ];
 
   // helper to check if a permission can be edited based on current user's role
-  const canEditPermission = (permission: Permission): boolean => {
-    if (isAdmin) return true;
-    return permission !== Permission.Moderator;
-  };
+  const canEditPermission = (_permission: Permission): boolean => true;
 
   // toggle permission in create user form
   const toggleCreatePermission = (permission: Permission, checked: boolean) => {
@@ -397,7 +394,8 @@
     onOpenChange={(v) => (showCreateModal = v)}
   >
     <Dialog.Content
-      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
+      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto
+        text-foreground"
     >
       <Dialog.Header>
         <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
@@ -417,9 +415,12 @@
           <Input
             id="username"
             type="text"
+            class="input-hover-el"
             bind:value={newUser.username}
             required
             placeholder="Enter username"
+            minlength={5}
+            maxlength={32}
           />
         </div>
         <div class="space-y-2">
@@ -427,9 +428,12 @@
           <Input
             id="password"
             type="password"
+            class="input-hover-el"
             bind:value={newUser.password}
             required
             placeholder="Enter password"
+            minlength={8}
+            maxlength={64}
           />
         </div>
         <div class="space-y-2">
@@ -437,8 +441,11 @@
           <Input
             id="display_name"
             type="text"
+            class="input-hover-el"
             bind:value={newUser.display_name}
             placeholder="Enter display name"
+            minlength={3}
+            maxlength={32}
           />
         </div>
         <div class="space-y-2">
@@ -446,8 +453,11 @@
           <Input
             id="email"
             type="email"
+            class="input-hover-el"
             bind:value={newUser.email}
             placeholder="Enter email"
+            minlength={5}
+            maxlength={120}
           />
         </div>
         <div class="space-y-2">
@@ -519,7 +529,8 @@
 {#if showEditModal && editingUser}
   <Dialog.Root open={showEditModal} onOpenChange={(v) => (showEditModal = v)}>
     <Dialog.Content
-      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto"
+      class="max-h-[90vh] bg-card rounded-lg border border-border max-w-md w-full p-6 overflow-y-auto
+        text-foreground"
     >
       <Dialog.Header>
         <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
@@ -540,6 +551,9 @@
             type="text"
             bind:value={editUser.display_name}
             placeholder="Enter display name"
+            class="input-hover-el"
+            minlength={3}
+            maxlength={32}
           />
         </div>
         <div class="space-y-2">
@@ -549,6 +563,9 @@
             type="email"
             bind:value={editUser.email}
             placeholder="Enter email"
+            class="input-hover-el"
+            minlength={5}
+            maxlength={120}
           />
         </div>
         <div class="space-y-2">
@@ -606,6 +623,9 @@
             type="password"
             bind:value={editUser.password}
             placeholder="Leave blank to keep current password"
+            class="input-hover-el"
+            minlength={8}
+            maxlength={64}
           />
           <p class="mt-1 text-xs text-muted-foreground">
             Only fill this if you want to change the user's password
@@ -633,7 +653,7 @@
   onOpenChange={(v) => (showDeleteDialog = v)}
 >
   <AlertDialog.Content
-    class="bg-card border border-border rounded-lg p-6 max-w-md w-full"
+    class="bg-card border border-border rounded-lg p-6 max-w-md w-full text-foreground"
   >
     <AlertDialog.Header>
       <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2"
