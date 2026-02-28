@@ -58,12 +58,11 @@
       });
 
       toast.success("Exception request submitted successfully");
-      reason = "";
-      open = false;
 
       if (onSuccess) {
         onSuccess();
       }
+      handleClose(false);
     } catch (err: any) {
       toast.error(`Failed to submit request: ${err.message}`);
     } finally {
@@ -71,11 +70,11 @@
     }
   };
 
-  const handleClose = () => {
+  const handleClose = (fireCallback: boolean = true) => {
     reason = "";
     duration = "30";
     open = false;
-    if (onClose) {
+    if (fireCallback && onClose) {
       onClose();
     }
   };
@@ -161,7 +160,11 @@
       </div>
 
       <Dialog.Footer>
-        <Button variant="outline" onclick={handleClose} disabled={submitting}>
+        <Button
+          variant="outline"
+          onclick={() => handleClose()}
+          disabled={submitting}
+        >
           Cancel
         </Button>
         <Button onclick={handleSubmit} disabled={submitting || !reason.trim()}>
