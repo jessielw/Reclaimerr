@@ -5,9 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
-from backend.core.settings import settings
 from backend.database import async_db
 from backend.database.models import (
+    GeneralSettings,
     MediaBlacklist,
     Movie,
     ReclaimCandidate,
@@ -421,16 +421,28 @@ async def tag_cleanup_candidates() -> None:
     Efficiently tags candidates and removes tags from items no longer candidates.
     Uses bulk operations for performance.
     """
-
-    if not settings.auto_tag_enabled:
-        LOG.debug("Auto-tagging disabled in settings, skipping")
-        return
-
+    tag = "reclaimerr"
+    
+    # check if services are configured before doing any work
     if not service_manager.radarr and not service_manager.sonarr:
         LOG.debug("Neither Radarr nor Sonarr configured, skipping tag sync")
         return
 
-    LOG.info(f"Starting cleanup candidate tagging (tag: {settings.cleanup_tag})")
+    # check if auto-tagging is enabled in settings before doing any work
+    tagging_enabled = False
+    async with async_db() as db:
+        result = await db.execute(select(GeneralSettings))
+        settings = result.scalars().first()
+        if settings:
+            tagging_enabled = settings.auto_tag_enabled
+            tag = f"{tag}{settings.cleanup_tag_suffix or ''}"
+
+    # if tagging is disabled, skip entire process (don't even query media or candidates)
+    if not tagging_enabled:
+        LOG.debug("Auto-tagging disabled in settings, skipping")
+        return
+
+    LOG.info(f"Starting cleanup candidate tagging (tag: {tag})")
 
     async with track_task_execution(Task.TAG_CLEANUP_CANDIDATES):
         try:
@@ -441,13 +453,13 @@ async def tag_cleanup_candidates() -> None:
 
             # process Radarr movies
             if service_manager.radarr:
-                tagged, untagged = await _sync_radarr_tags()
+                tagged, untagged = await _sync_radarr_tags(tag)
                 movies_tagged = tagged
                 movies_untagged = untagged
 
             # process Sonarr series
             if service_manager.sonarr:
-                tagged, untagged = await _sync_sonarr_tags()
+                tagged, untagged = await _sync_sonarr_tags(tag)
                 series_tagged = tagged
                 series_untagged = untagged
 
@@ -461,7 +473,7 @@ async def tag_cleanup_candidates() -> None:
             raise
 
 
-async def _sync_radarr_tags() -> tuple[int, int]:
+async def _sync_radarr_tags(cleanup_tag: str) -> tuple[int, int]:
     """Sync Radarr movie tags. Returns (tagged_count, untagged_count)."""
     if not service_manager.radarr:
         return 0, 0
@@ -470,7 +482,7 @@ async def _sync_radarr_tags() -> tuple[int, int]:
     all_tags = await service_manager.radarr.get_tags()
 
     # get or create the current cleanup tag
-    tag = await service_manager.radarr.get_or_create_tag(settings.cleanup_tag)
+    tag = await service_manager.radarr.get_or_create_tag(cleanup_tag)
     LOG.debug(f"Using Radarr tag '{tag.label}' (ID: {tag.id})")
 
     # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
@@ -547,7 +559,7 @@ async def _sync_radarr_tags() -> tuple[int, int]:
     return len(movies_to_tag), len(movies_to_untag)
 
 
-async def _sync_sonarr_tags() -> tuple[int, int]:
+async def _sync_sonarr_tags(cleanup_tag: str) -> tuple[int, int]:
     """Sync Sonarr series tags. Returns (tagged_count, untagged_count)."""
     if not service_manager.sonarr:
         return 0, 0
@@ -556,7 +568,7 @@ async def _sync_sonarr_tags() -> tuple[int, int]:
     all_tags = await service_manager.sonarr.get_tags()
 
     # get or create the current cleanup tag
-    tag = await service_manager.sonarr.get_or_create_tag(settings.cleanup_tag)
+    tag = await service_manager.sonarr.get_or_create_tag(cleanup_tag)
     LOG.debug(f"Using Sonarr tag '{tag.label}' (ID: {tag.id})")
 
     # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
