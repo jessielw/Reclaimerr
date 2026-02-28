@@ -74,6 +74,11 @@ export enum NotificationType {
   TaskFailure = "task_failure",
 }
 
+export interface GeneralSettings {
+  auto_tag_enabled: boolean;
+  cleanup_tag_suffix: string;
+}
+
 export interface ReclaimRule {
   id: number;
   name: string;
