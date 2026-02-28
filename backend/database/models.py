@@ -140,6 +140,28 @@ class ServiceMediaLibrary(Base):
     )
 
 
+class GeneralSettings(Base):
+    """General application settings."""
+
+    __tablename__ = "general_settings"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+
+    # cleanup and tagging settings
+    auto_tag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    cleanup_tag_suffix: Mapped[str] = mapped_column(String(15), default="")
+
+    # timestamps
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), default=None
+    )
+
+
 class Movie(Base):
     """Movie availability and metadata."""
 
