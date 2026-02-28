@@ -1,13 +1,19 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
 from backend.database import async_db
-from backend.database.models import Movie, ReclaimCandidate, ReclaimRule, Series
+from backend.database.models import (
+    MediaBlacklist,
+    Movie,
+    ReclaimCandidate,
+    ReclaimRule,
+    Series,
+)
 from backend.enums import MediaType, NotificationType, Task
 from backend.services.notifications import notify_all_users
 from backend.tasks.task_tracker import track_task_execution
@@ -107,6 +113,39 @@ async def _process_media(
 
     LOG.info(f"Processing {len(media_items)} {media_type.value} items")
 
+    # fetch all blacklisted items for this media type to skip them
+    now = datetime.now(timezone.utc)
+    if media_type is MediaType.MOVIE:
+        blacklist_result = await db.execute(
+            select(MediaBlacklist).where(
+                MediaBlacklist.media_type == MediaType.MOVIE,
+                MediaBlacklist.movie_id.isnot(None),
+                or_(
+                    MediaBlacklist.permanent.is_(True),
+                    MediaBlacklist.expires_at.is_(None),
+                    MediaBlacklist.expires_at > now,
+                ),
+            )
+        )
+        blacklisted_ids = {b.movie_id for b in blacklist_result.scalars().all()}
+    else:
+        blacklist_result = await db.execute(
+            select(MediaBlacklist).where(
+                MediaBlacklist.media_type == MediaType.SERIES,
+                MediaBlacklist.series_id.isnot(None),
+                or_(
+                    MediaBlacklist.permanent.is_(True),
+                    MediaBlacklist.expires_at.is_(None),
+                    MediaBlacklist.expires_at > now,
+                ),
+            )
+        )
+        blacklisted_ids = {b.series_id for b in blacklist_result.scalars().all()}
+
+    LOG.info(
+        f"Found {len(blacklisted_ids)} blacklisted {media_type.value} items to skip"
+    )
+
     # fetch all existing candidates for this media type once (avoid N queries in loop)
     if media_type is MediaType.MOVIE:
         result = await db.execute(
@@ -135,6 +174,10 @@ async def _process_media(
     candidates_updated = 0
 
     for item in media_items:
+        # skip blacklisted items
+        if item.id in blacklisted_ids:
+            continue
+
         # evaluate all rules against this item
         matched_rules = []
         matched_criteria = {}
