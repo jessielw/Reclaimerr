@@ -1,6 +1,6 @@
 <script lang="ts">
   import { link, location } from "svelte-spa-router";
-  import { auth } from "../stores/auth";
+  import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./ThemeToggle.svelte";
   import logoImage from "$lib/assets/logo.png";
   import { VERSION } from "$lib/version";
@@ -12,7 +12,9 @@
   import DoorClosed from "@lucide/svelte/icons/door-closed";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import Ticket from "@lucide/svelte/icons/ticket";
+  import ShieldBan from "@lucide/svelte/icons/shield-ban";
   import { toTitleCase } from "$lib/utils/strings";
+  import * as Avatar from "$lib/components/ui/avatar/index.js";
 
   // optional callback to close sidebar on mobile after navigation
   let { onNavigate = () => {} }: { onNavigate?: () => void } = $props();
@@ -24,6 +26,12 @@
     { path: "/movies", label: "Movies", icon: ClapperBoard, adminOnly: false },
     { path: "/series", label: "Series", icon: Tv, adminOnly: false },
     { path: "/requests", label: "Requests", icon: Ticket, adminOnly: false },
+    {
+      path: "/blacklist",
+      label: "Blacklist",
+      icon: ShieldBan,
+      adminOnly: false,
+    },
     { path: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   ];
 
@@ -85,20 +93,22 @@
           >
             <!-- user avatar -->
             {#if $auth.user.avatar_url}
-              <div>
-                <img
-                  src={$auth.user.avatar_url}
-                  alt="Avatar"
-                  class="w-10 h-10 rounded-full object-cover border-3 border-primary"
-                />
-              </div>
+              <Avatar.Root class="w-10 h-10 border-3 border-primary">
+                <Avatar.Image src={$auth.user.avatar_url} alt="Avatar" />
+                <Avatar.Fallback
+                  >{$auth.user.username.charAt(0).toUpperCase()}
+                </Avatar.Fallback>
+              </Avatar.Root>
             {:else}
-              <div
-                class="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center
-                  justify-center text-2xl font-bold border-3 border-primary"
+              <Avatar.Root
+                class="w-10 h-10 text-2xl text-primary-foreground font-bold"
               >
-                {$auth.user.username.charAt(0).toUpperCase()}
-              </div>
+                <Avatar.Fallback class="bg-primary"
+                  >{$auth.user.username
+                    .charAt(0)
+                    .toUpperCase()}</Avatar.Fallback
+                >
+              </Avatar.Root>
             {/if}
             <div>
               <div class="text-sm font-medium text-foreground">

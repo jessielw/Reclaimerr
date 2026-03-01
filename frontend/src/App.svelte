@@ -8,6 +8,7 @@
   import Requests from "./routes/Requests.svelte";
   import Movies from "./routes/Movies.svelte";
   import Series from "./routes/Series.svelte";
+  import Blacklist from "./routes/Blacklist.svelte";
   import Rules from "./routes/Rules.svelte";
   import Settings from "./routes/Settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
@@ -21,6 +22,7 @@
     "/": Dashboard,
     "/movies": Movies,
     "/series": Series,
+    "/blacklist": Blacklist,
     "/requests": Requests,
     "/rules": Rules,
     "/settings": Settings,

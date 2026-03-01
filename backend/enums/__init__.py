@@ -13,7 +13,7 @@ class Permission(StrEnum):
     MANAGE_REQUESTS = auto()
     REQUEST = auto()
     AUTO_APPROVE = auto()
-    MANAGE_BLOCK_LIST = auto()
+    MANAGE_BLACKLIST = auto()
 
 
 class Service(StrEnum):

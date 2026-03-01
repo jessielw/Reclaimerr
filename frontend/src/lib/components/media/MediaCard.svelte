@@ -5,7 +5,7 @@
   import ArrowDownToLine from "@lucide/svelte/icons/arrow-down-to-line";
   import Ticket from "@lucide/svelte/icons/ticket";
   import TicketMinus from "@lucide/svelte/icons/ticket-minus";
-  import ListX from "@lucide/svelte/icons/list-x";
+  import ShieldBan from "@lucide/svelte/icons/shield-ban";
   import FileImage from "@lucide/svelte/icons/file-image";
   import { auth } from "$lib/stores/auth";
   import {
@@ -113,7 +113,7 @@
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <ListX class="size-5 text-white cursor-help" />
+              <ShieldBan class="size-5 text-white cursor-help" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Blacklisted</p>

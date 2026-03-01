@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
+from backend.api.routes.blacklist import router as blacklist_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.info import router as info_router
 from backend.api.routes.media import router as media_router
@@ -124,6 +125,7 @@ app.include_router(account_router)
 app.include_router(tasks_router)
 app.include_router(media_router)
 app.include_router(requests_router)
+app.include_router(blacklist_router)
 
 
 # mount static files LAST - after all routes
