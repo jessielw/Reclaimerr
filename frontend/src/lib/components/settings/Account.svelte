@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { auth } from "$lib/stores/auth";
   import type { Component } from "svelte";
   import { get_api, post_api } from "$lib/api";
   import ErrorBox from "$lib/components/ErrorBox.svelte";
@@ -10,6 +11,7 @@
   import Save from "@lucide/svelte/icons/save";
   import Pencil from "@lucide/svelte/icons/pencil";
   import { Input } from "$lib/components/ui/input/index.js";
+  import * as Avatar from "$lib/components/ui/avatar/index.js";
 
   interface Props {
     svgIcon: Component | null;
@@ -146,8 +148,22 @@
       profileError = "";
       const formData = new FormData();
       formData.append("avatar", avatarFile);
-      await post_api("/api/account/avatar", formData);
+      const response: { message: string; path: string } = await post_api(
+        "/api/account/avatar",
+        formData,
+      );
       avatarFile = null;
+
+      // update auth user data to reflect new avatar immediately
+      const curUser = $auth.user;
+      if (curUser) {
+        auth.updateUser({
+          ...curUser,
+          // '/avatars/' prefix is added by backend, so we can directly use the returned path
+          avatar_url: `/avatars/${response.path}`,
+        });
+      }
+
       toast.success("Avatar uploaded successfully");
     } catch (err: any) {
       profileError = err.message;
@@ -195,21 +211,24 @@
       <div class="flex items-center gap-6">
         <div class="relative w-32 h-32">
           {#if avatarPreview}
-            <img
-              src={avatarPreview}
-              alt="Avatar"
-              class="w-32 h-32 rounded-full object-cover
-                border-4 {avatarInputState === AVATAR_SAVE
+            <Avatar.Root
+              class="w-32 h-32 border-4 {avatarInputState === AVATAR_SAVE
                 ? 'border-destructive'
                 : 'border-primary'}"
-            />
-          {:else}
-            <div
-              class="w-32 h-32 rounded-full bg-primary text-primary-foreground flex items-center
-                justify-center text-4xl font-bold border-4 border-primary"
             >
-              {profile.username.charAt(0).toUpperCase()}
-            </div>
+              <Avatar.Image src={avatarPreview} alt="Avatar" />
+              <Avatar.Fallback
+                >{profile.username.charAt(0).toUpperCase()}</Avatar.Fallback
+              >
+            </Avatar.Root>
+          {:else}
+            <Avatar.Root
+              class="w-32 h-32 text-4xl font-bold border-4 border-primary"
+            >
+              <Avatar.Fallback class="bg-primary">
+                {profile.username.charAt(0).toUpperCase()}
+              </Avatar.Fallback>
+            </Avatar.Root>
           {/if}
           <!-- edit avatar icon button -->
           <label class="absolute bottom-2 right-2 cursor-pointer">
