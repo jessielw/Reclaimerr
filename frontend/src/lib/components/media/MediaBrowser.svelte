@@ -8,7 +8,9 @@
   import ExceptionRequestDialog from "$lib/components/media/ExceptionRequestDialog.svelte";
   import Search from "@lucide/svelte/icons/search";
   import {
+    ExceptionRequestStatus,
     MediaType,
+    type ExceptionRequest,
     type MovieWithStatus,
     type SeriesWithStatus,
     type MediaItem,
@@ -156,10 +158,47 @@
     showExceptionDialog = true;
   };
 
-  // after successful exception request, reload media to get updated status
-  const handleExceptionSuccess = () => {
-    // reload media to get updated status
-    loadMedia(currentPage);
+  // after successful exception request, update only the requested media card in local state
+  const handleExceptionSuccess = (request: ExceptionRequest) => {
+    if (!mediaData) return;
+
+    const isPending = request.status === ExceptionRequestStatus.Pending;
+    const isApproved = request.status === ExceptionRequestStatus.Approved;
+
+    mediaData = {
+      ...mediaData,
+      items: mediaData.items.map((item) => {
+        if (item.id !== request.media_id) return item;
+
+        return {
+          ...item,
+          status: {
+            ...item.status,
+            has_pending_request: isPending,
+            request_id: isPending ? request.id : null,
+            request_status: request.status,
+            request_reason: request.reason,
+            is_blacklisted: isApproved ? true : item.status.is_blacklisted,
+          },
+        };
+      }),
+    };
+
+    if (selectedMedia && selectedMedia.id === request.media_id) {
+      selectedMedia = {
+        ...selectedMedia,
+        status: {
+          ...selectedMedia.status,
+          has_pending_request: isPending,
+          request_id: isPending ? request.id : null,
+          request_status: request.status,
+          request_reason: request.reason,
+          is_blacklisted: isApproved
+            ? true
+            : selectedMedia.status.is_blacklisted,
+        },
+      };
+    }
   };
 
   onMount(() => {

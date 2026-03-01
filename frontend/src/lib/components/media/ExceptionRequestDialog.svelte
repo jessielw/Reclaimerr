@@ -4,9 +4,14 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { post_api } from "$lib/api";
   import { toast } from "svelte-sonner";
-  import type { MediaItem, MediaType } from "$lib/types/shared";
+  import type {
+    ExceptionRequest,
+    MediaItem,
+    MediaType,
+  } from "$lib/types/shared";
   import * as Select from "$lib/components/ui/select/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
 
   const TMDB_POSTER_WIDTH = 342;
   const inputPlaceHolderText: string =
@@ -18,7 +23,7 @@
     media: MediaItem | null;
     mediaType: MediaType;
     onClose?: () => void;
-    onSuccess?: () => void;
+    onSuccess?: (request: ExceptionRequest) => void;
   }
 
   let {
@@ -32,12 +37,14 @@
   let reason = $state("");
   let submitting = $state(false);
   let duration = $state("30");
+  let customDays = $state("30");
 
   const durationOptions = [
     { value: "30", label: "30 days" },
     { value: "90", label: "90 days" },
     { value: "180", label: "180 days" },
     { value: "365", label: "1 year" },
+    { value: "custom", label: "Custom days" },
     { value: "forever", label: "Forever" },
   ];
 
@@ -50,17 +57,34 @@
     try {
       submitting = true;
 
-      await post_api("/api/requests", {
+      let durationDays: number | null;
+      if (duration === "forever") {
+        durationDays = null;
+      } else if (duration === "custom") {
+        const parsed = Number(customDays);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          toast.error(
+            "Custom duration must be a positive whole number of days",
+          );
+          submitting = false;
+          return;
+        }
+        durationDays = parsed;
+      } else {
+        durationDays = Number(duration);
+      }
+
+      const createdRequest = await post_api<ExceptionRequest>("/api/requests", {
         media_type: mediaType,
         media_id: media.id,
         reason: reason.trim(),
-        duration_days: duration === "forever" ? null : Number(duration),
+        duration_days: durationDays,
       });
 
       toast.success("Exception request submitted successfully");
 
       if (onSuccess) {
-        onSuccess();
+        onSuccess(createdRequest);
       }
       handleClose(false);
     } catch (err: any) {
@@ -73,6 +97,7 @@
   const handleClose = (fireCallback: boolean = true) => {
     reason = "";
     duration = "30";
+    customDays = "30";
     open = false;
     if (fireCallback && onClose) {
       onClose();
@@ -83,7 +108,7 @@
 <Dialog.Root bind:open>
   <Dialog.Content
     showCloseButton={false}
-    class="media-dialog sm:max-w-175 max-h-[90vh] overflow-hidden border-ring border-2"
+    class="media-dialog sm:max-w-175 max-h-[90vh] overflow-y-auto border-ring border-2"
   >
     <Dialog.Header>
       <Dialog.Title class="text-foreground">Request Exception</Dialog.Title>
@@ -153,6 +178,17 @@
               {/each}
             </Select.Content>
           </Select.Root>
+          {#if duration === "custom"}
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              bind:value={customDays}
+              placeholder="Enter number of days"
+              class="input-hover-el"
+              disabled={submitting}
+            />
+          {/if}
           <p class="text-xs text-muted-foreground">
             Admins can override this duration when approving
           </p>
