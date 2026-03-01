@@ -17,7 +17,7 @@ export enum Permission {
   ManageRequests = "manage_requests",
   Request = "request",
   AutoApprove = "auto_approve",
-  ManageBlocklist = "manage_blocklist",
+  ManageBlacklist = "manage_blacklist",
 }
 
 export interface UserProfile extends User {
@@ -236,6 +236,22 @@ export interface ExceptionRequest {
   admin_notes: string | null;
   effective_permanent: boolean | null;
   effective_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlacklistEntry {
+  id: number;
+  media_type: MediaType;
+  media_id: number;
+  media_title: string;
+  media_year: number;
+  poster_url: string | null;
+  reason: string | null;
+  blacklisted_by_user_id: number;
+  blacklisted_by_username: string;
+  permanent: boolean;
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
