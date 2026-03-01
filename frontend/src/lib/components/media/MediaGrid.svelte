@@ -1,9 +1,7 @@
 <script lang="ts">
   import MediaCard from "./MediaCard.svelte";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
-  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import CompactPagination from "$lib/components/CompactPagination.svelte";
   import type {
     MediaItem,
     MediaType,
@@ -29,19 +27,6 @@
     onViewDetails,
     onPageChange,
   }: Props = $props();
-
-  // pagination handlers
-  const handlePreviousPage = () => {
-    if (data && data.page > 1 && onPageChange) {
-      onPageChange(data.page - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (data && data.page < data.total_pages && onPageChange) {
-      onPageChange(data.page + 1);
-    }
-  };
 </script>
 
 <div class="w-full">
@@ -69,7 +54,9 @@
 
     <!-- pagination -->
     {#if data.total_pages > 1}
-      <div class="flex justify-between items-center">
+      <div
+        class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+      >
         <p class="text-sm text-muted-foreground">
           Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
             data.page * data.per_page,
@@ -77,31 +64,12 @@
           )} of {data.total} items
         </p>
 
-        <div class="flex gap-2 items-center">
-          <Button
-            size="sm"
-            onclick={handlePreviousPage}
-            disabled={data.page === 1}
-            class="cursor-pointer"
-          >
-            <ChevronLeft class="w-4 h-4 mr-1" />
-            Previous
-          </Button>
-
-          <span class="text-sm text-muted-foreground">
-            Page {data.page} of {data.total_pages}
-          </span>
-
-          <Button
-            size="sm"
-            onclick={handleNextPage}
-            disabled={data.page === data.total_pages}
-            class="cursor-pointer"
-          >
-            Next
-            <ChevronRight class="w-4 h-4 ml-1" />
-          </Button>
-        </div>
+        <CompactPagination
+          currentPage={data.page}
+          totalPages={data.total_pages}
+          maxVisiblePages={3}
+          onPageChange={(page) => onPageChange?.(page)}
+        />
       </div>
     {/if}
   {/if}
