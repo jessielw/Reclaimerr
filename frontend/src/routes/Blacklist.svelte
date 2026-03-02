@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { get_api, delete_api, put_api } from "$lib/api";
   import ErrorBox from "$lib/components/ErrorBox.svelte";
+  import CompactPagination from "$lib/components/CompactPagination.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
@@ -19,8 +20,6 @@
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
-  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash from "@lucide/svelte/icons/trash";
   import MediaTypeBadge from "$lib/components/requests/MediaTypeBadge.svelte";
@@ -367,7 +366,7 @@
     </p>
   </div>
 
-  <div class="mb-6 flex flex-col sm:flex-row gap-2">
+  <div class="mb-4 flex flex-col sm:flex-row gap-2">
     <div class="relative flex-1">
       <Search
         class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
@@ -381,7 +380,7 @@
       />
     </div>
 
-    <div class="flex flex-1 flex-row gap-4">
+    <div class="flex flex-1 flex-row gap-2">
       <!-- sort by -->
       <Select.Root type="single" bind:value={sortBy}>
         <Select.Trigger class="flex-10 bg-card text-card-foreground">
@@ -563,43 +562,26 @@
           {/each}
         </tbody>
       </table>
-
-      {#if data && data.total_pages > 1}
-        <div
-          class="flex justify-between items-center px-6 py-4 border-t border-border"
-        >
-          <p class="text-sm text-muted-foreground">
-            Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
-              data.page * data.per_page,
-              data.total,
-            )} of {data.total} entries
-          </p>
-
-          <div class="flex items-center gap-2">
-            <Button
-              size="sm"
-              class="cursor-pointer"
-              disabled={data.page <= 1}
-              onclick={() => loadBlacklist((data?.page ?? 1) - 1)}
-            >
-              <ChevronLeft class="w-4 h-4 mr-1" />
-              Previous
-            </Button>
-            <span class="text-sm text-muted-foreground">
-              Page {data.page} of {data.total_pages}
-            </span>
-            <Button
-              size="sm"
-              class="cursor-pointer"
-              disabled={data.page >= data.total_pages}
-              onclick={() => loadBlacklist((data?.page ?? 1) + 1)}
-            >
-              Next
-              <ChevronRight class="w-4 h-4 ml-1" />
-            </Button>
-          </div>
-        </div>
-      {/if}
     {/if}
   </div>
+
+  {#if !loading && entries.length !== 0 && data && data.total_pages > 1}
+    <div
+      class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+    >
+      <p class="text-sm text-muted-foreground">
+        Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
+          data.page * data.per_page,
+          data.total,
+        )} of {data.total} entries
+      </p>
+
+      <CompactPagination
+        currentPage={data.page}
+        totalPages={data.total_pages}
+        maxVisiblePages={3}
+        onPageChange={loadBlacklist}
+      />
+    </div>
+  {/if}
 </div>
