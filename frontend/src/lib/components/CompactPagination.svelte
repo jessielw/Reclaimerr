@@ -54,7 +54,7 @@
   <Button
     size="sm"
     class="h-8 w-8 p-0 cursor-pointer border border-gray-400 bg-button-1 hover:bg-button-1-hover 
-      text-button-1-foreground"
+      text-button-1-foreground shadow"
     disabled={currentPage <= 1}
     onclick={() => goToPage(1)}
     aria-label="First page"
@@ -65,7 +65,7 @@
   <Button
     size="sm"
     class="h-8 w-8 p-0 cursor-pointer border border-gray-400 bg-button-1 hover:bg-button-1-hover 
-      text-button-1-foreground"
+      text-button-1-foreground shadow"
     disabled={currentPage <= 1}
     onclick={() => goToPage(currentPage - 1)}
     aria-label="Previous page"
@@ -75,7 +75,7 @@
   {#each pageButtons as page (page)}
     <Button
       size="sm"
-      class="h-8 w-8 p-0 cursor-pointer border border-gray-400
+      class="h-8 w-8 p-0 cursor-pointer border border-gray-400 shadow
         {page === currentPage
         ? 'bg-primary hover:bg-primary text-primary-foreground'
         : 'bg-button-1 hover:bg-button-1-hover text-button-1-foreground'}"
@@ -89,7 +89,7 @@
   <Button
     size="sm"
     class="h-8 w-8 p-0 cursor-pointer border border-gray-400 bg-button-1 hover:bg-button-1-hover 
-      text-button-1-foreground"
+      text-button-1-foreground shadow"
     disabled={currentPage >= totalPages}
     onclick={() => goToPage(currentPage + 1)}
     aria-label="Next page"
@@ -100,7 +100,7 @@
   <Button
     size="sm"
     class="h-8 w-8 p-0 cursor-pointer border border-gray-400 bg-button-1 hover:bg-button-1-hover 
-      text-button-1-foreground"
+      text-button-1-foreground shadow"
     disabled={currentPage >= totalPages}
     onclick={() => goToPage(totalPages)}
     aria-label="Last page"
