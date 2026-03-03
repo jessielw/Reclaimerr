@@ -24,7 +24,7 @@ from backend.tasks.cleanup import (
     scan_cleanup_candidates,
     tag_cleanup_candidates,
 )
-from backend.tasks.sync import sync_all_media, sync_movies, sync_series
+from backend.tasks.sync import sync_movies, sync_series
 from backend.tasks.task_tracker import get_task_status
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -41,7 +41,6 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 #     try:
 #         # Queue the task to run immediately in the background
 #         job = scheduler.add_job(
-#             sync_all_media,
 #             id=f"test_job",
 #             name="Test Job",
 #             replace_existing=False,

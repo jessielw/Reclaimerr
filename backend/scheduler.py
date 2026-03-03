@@ -16,14 +16,19 @@ from backend.tasks.cleanup import (
     tag_cleanup_candidates,
 )
 from backend.tasks.house_keeping import weekly_house_keeping
-from backend.tasks.sync import sync_all_media, sync_service_libraries
+from backend.tasks.sync import (
+    sync_jellyfin_media,
+    sync_plex_media,
+    sync_service_libraries,
+)
 
 scheduler = AsyncIOScheduler()
 
 
 # map Task enum to their Python functions
 TASK_FUNCTION_MAP = {
-    Task.SYNC_ALL_MEDIA: sync_all_media,
+    Task.SYNC_PLEX_MEDIA: sync_plex_media,
+    Task.SYNC_JELLYFIN_MEDIA: sync_jellyfin_media,
     Task.SYNC_SERVICE_LIBRARIES: sync_service_libraries,
     Task.SCAN_CLEANUP_CANDIDATES: scan_cleanup_candidates,
     Task.TAG_CLEANUP_CANDIDATES: tag_cleanup_candidates,
@@ -36,12 +41,21 @@ async def ensure_default_schedules(db: AsyncSession) -> None:
     """Ensure default task schedules exist in database."""
     default_schedules = (
         {
-            "task": Task.SYNC_ALL_MEDIA,
-            "description": "Synchronizes all movies and series from configured media servers",
+            "task": Task.SYNC_PLEX_MEDIA,
+            "description": "Synchronizes movies and series from Plex",
             "schedule_type": ScheduleType.CRON,
             "schedule_value": "0 3 * * *",  # daily at 3 AM
             "default_schedule_type": ScheduleType.CRON,
             "default_schedule_value": "0 3 * * *",
+            "enabled": True,
+        },
+        {
+            "task": Task.SYNC_JELLYFIN_MEDIA,
+            "description": "Synchronizes movies and series from Jellyfin",
+            "schedule_type": ScheduleType.CRON,
+            "schedule_value": "0 4 * * *",  # daily at 4 AM
+            "default_schedule_type": ScheduleType.CRON,
+            "default_schedule_value": "0 4 * * *",
             "enabled": True,
         },
         {

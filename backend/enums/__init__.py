@@ -74,7 +74,8 @@ class ScheduleType(StrEnum):
 
 class Task(StrEnum):
     # sync
-    SYNC_ALL_MEDIA = auto()
+    SYNC_PLEX_MEDIA = auto()
+    SYNC_JELLYFIN_MEDIA = auto()
     SYNC_SERVICE_LIBRARIES = auto()
 
     # cleanup

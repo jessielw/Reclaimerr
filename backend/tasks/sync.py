@@ -22,11 +22,75 @@ from backend.services.plex import PlexService
 from backend.tasks.task_tracker import track_task_execution
 
 __all__ = (
-    "sync_all_media",
+    "sync_plex_media",
+    "sync_jellyfin_media",
     "sync_service_libraries",
 )
 
 COMMIT_BATCH_SIZE = 100
+
+MEDIA_SERVICES: tuple[Literal[Service.PLEX, Service.JELLYFIN], ...] = (
+    Service.PLEX,
+    Service.JELLYFIN,
+)
+
+
+async def _get_configured_media_servers(
+    session,
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+) -> list[ServiceConfig]:
+    """Return enabled/valid configured media servers, optionally filtered by service."""
+    query = select(ServiceConfig).where(
+        ServiceConfig.service_type.in_(MEDIA_SERVICES),
+        ServiceConfig.enabled.is_(True),
+        ServiceConfig.base_url.isnot(None),
+        ServiceConfig.api_key.isnot(None),
+    )
+    if service is not None:
+        query = query.where(ServiceConfig.service_type == service)
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def _get_selected_library_names(
+    session,
+    service_type: Service,
+    media_type: MediaType,
+) -> list[str] | None:
+    """Return selected library names for the given service/media type."""
+    lib_query = select(ServiceMediaLibrary).where(
+        ServiceMediaLibrary.service_type == service_type,
+        ServiceMediaLibrary.media_type == media_type,
+        ServiceMediaLibrary.selected.is_(True),
+    )
+    lib_result = await session.execute(lib_query)
+    selected_libraries = lib_result.scalars().all()
+    if not selected_libraries:
+        return None
+    return [lib.library_name for lib in selected_libraries]
+
+
+async def _get_media_service_instance(
+    service_type: Service,
+) -> JellyfinService | PlexService | None:
+    """Return initialized media service instance for Plex/Jellyfin or None."""
+    service_instance = await service_manager.return_service(service_type)
+    if not service_instance:
+        LOG.error(f"Service {service_type} not initialized")
+        return None
+    if not isinstance(service_instance, (JellyfinService, PlexService)):
+        LOG.error(f"Service {service_type} is not a media server")
+        return None
+    return service_instance
+
+
+async def _sync_service_media(
+    service: Literal[Service.PLEX, Service.JELLYFIN], task: Task
+) -> None:
+    """Run movie+series sync for a single service with task tracking."""
+    async with track_task_execution(task):
+        await sync_movies(service=service, allow_soft_delete=False)
+        await sync_series(service=service, allow_soft_delete=False)
 
 
 def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
@@ -91,7 +155,9 @@ def _set_service_fields(
         db_obj.jellyfin_path = aggregated_data.path
 
 
-async def gather_movies() -> dict[int, AggregatedMovieData] | None:
+async def gather_movies(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+) -> dict[int, AggregatedMovieData] | None:
     """
     Fetch and combine movies from all configured media servers, deduplicating by TMDB ID. Only
     grabs libraries that are included in the service configuration.
@@ -99,49 +165,28 @@ async def gather_movies() -> dict[int, AggregatedMovieData] | None:
     # fetch service configs from database to generate combined aggregated movie list
     aggregated_movies = []
     async with async_db() as session:
-        # get all enabled media servers with valid configs
-        query = select(ServiceConfig).where(
-            ServiceConfig.service_type.in_((Service.PLEX, Service.JELLYFIN)),
-            ServiceConfig.enabled.is_(True),
-            ServiceConfig.base_url.isnot(None),
-            ServiceConfig.api_key.isnot(None),
-        )
-        result = await session.execute(query)
-        media_servers = result.scalars().all()
+        media_servers = await _get_configured_media_servers(session, service)
 
         if not media_servers:
             return
 
         # fetch movies from each media server
         for server in media_servers:
-            # get service instance (ensuring initialized and a supported media server)
-            service = await service_manager.return_service(server.service_type)
-            if not service:
-                LOG.error(f"Service {server.service_type} not initialized")
-                continue
-            if not isinstance(service, (JellyfinService, PlexService)):
-                LOG.error(f"Service {server.service_type} is not a media server")
+            service_instance = await _get_media_service_instance(server.service_type)
+            if not service_instance:
                 continue
             LOG.debug(
                 f"Fetching movies from {server.service_type} at {server.base_url}"
             )
 
-            # get selected movie libraries for this service
-            lib_query = select(ServiceMediaLibrary).where(
-                ServiceMediaLibrary.service_type == server.service_type,
-                ServiceMediaLibrary.media_type == MediaType.MOVIE,
-                ServiceMediaLibrary.selected.is_(True),
-            )
-            lib_result = await session.execute(lib_query)
-            selected_libraries = lib_result.scalars().all()
-            included_library_names = (
-                [lib.library_name for lib in selected_libraries]
-                if selected_libraries
-                else None
+            included_library_names = await _get_selected_library_names(
+                session,
+                server.service_type,
+                MediaType.MOVIE,
             )
 
             # fetch aggregated movies
-            get_movies = await service.get_aggregated_movies(
+            get_movies = await service_instance.get_aggregated_movies(
                 included_libraries=included_library_names
             )
             if get_movies:
@@ -182,52 +227,34 @@ async def gather_movies() -> dict[int, AggregatedMovieData] | None:
     return unique_movies
 
 
-async def gather_series() -> dict[int, AggregatedSeriesData] | None:
+async def gather_series(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+) -> dict[int, AggregatedSeriesData] | None:
     """Fetch and combine series from all configured media servers, deduplicating by TMDB ID."""
     aggregated_series = []
     async with async_db() as session:
-        # get all enabled media servers with valid configs
-        query = select(ServiceConfig).where(
-            ServiceConfig.service_type.in_((Service.PLEX, Service.JELLYFIN)),
-            ServiceConfig.enabled.is_(True),
-            ServiceConfig.base_url.isnot(None),
-            ServiceConfig.api_key.isnot(None),
-        )
-        result = await session.execute(query)
-        media_servers = result.scalars().all()
+        media_servers = await _get_configured_media_servers(session, service)
 
         if not media_servers:
             return
 
         # fetch series from each media server
         for server in media_servers:
-            service = await service_manager.return_service(server.service_type)
-            if not service:
-                LOG.error(f"Service {server.service_type} not initialized")
-                continue
-            if not isinstance(service, (JellyfinService, PlexService)):
-                LOG.error(f"Service {server.service_type} is not a media server")
+            service_instance = await _get_media_service_instance(server.service_type)
+            if not service_instance:
                 continue
             LOG.debug(
                 f"Fetching series from {server.service_type} at {server.base_url}"
             )
 
-            # get selected series libraries for this service
-            lib_query = select(ServiceMediaLibrary).where(
-                ServiceMediaLibrary.service_type == server.service_type,
-                ServiceMediaLibrary.media_type == MediaType.SERIES,
-                ServiceMediaLibrary.selected.is_(True),
-            )
-            lib_result = await session.execute(lib_query)
-            selected_libraries = lib_result.scalars().all()
-            included_library_names = (
-                [lib.library_name for lib in selected_libraries]
-                if selected_libraries
-                else None
+            included_library_names = await _get_selected_library_names(
+                session,
+                server.service_type,
+                MediaType.SERIES,
             )
 
             # fetch aggregated series
-            get_series = await service.get_aggregated_series(
+            get_series = await service_instance.get_aggregated_series(
                 included_libraries=included_library_names
             )
             if get_series:
@@ -268,15 +295,19 @@ async def gather_series() -> dict[int, AggregatedSeriesData] | None:
     return unique_series
 
 
-async def sync_movies():
+async def sync_movies(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    allow_soft_delete: bool = True,
+) -> set[int]:
     start_time = datetime.now(timezone.utc)
-    LOG.info("Starting movie sync...")
+    source_label = service.value if service else "all-media-services"
+    LOG.info(f"Starting movie sync ({source_label})...")
 
-    aggregated_movies = await gather_movies()
+    aggregated_movies = await gather_movies(service)
     if not aggregated_movies:
-        LOG.info("No movies to sync from media servers")
-        return
-    LOG.info(f"Gathered {len(aggregated_movies)} unique movies from media servers")
+        LOG.info(f"No movies to sync from {source_label}")
+        return set()
+    LOG.info(f"Gathered {len(aggregated_movies)} unique movies from {source_label}")
 
     # tmdb service instance
     tmdb_service = AsyncTMDBClient()
@@ -290,8 +321,7 @@ async def sync_movies():
             # convert to dictionary keyed by tmdb_id for easier lookup
             existing_movies = {m.tmdb_id: m for m in existing_movies_list if m.tmdb_id}
 
-            # keep track of all tmdb_ids we've seen in this sync
-            parsed_tmdb_ids = set[int]()
+            parsed_tmdb_ids: set[int] = set()
 
             # if radarr is enabled collect it's ids
             radarr_movies: dict[int, RadarrMovie] = {}
@@ -387,29 +417,34 @@ async def sync_movies():
                 f"Committed {len(aggregated_movies)} movies in {batch_count + 1} batches"
             )
 
-            # soft-delete movies that no longer exist in media servers
-            movies_to_delete = [
-                movie
-                for movie in existing_movies.values()
-                if movie.tmdb_id not in parsed_tmdb_ids and not movie.removed_at
-            ]
+            if allow_soft_delete:
+                movies_to_delete = [
+                    movie
+                    for movie in existing_movies.values()
+                    if movie.tmdb_id not in parsed_tmdb_ids and not movie.removed_at
+                ]
 
-            if movies_to_delete:
-                LOG.info(
-                    f"Soft-deleting {len(movies_to_delete)} movies no longer in media servers"
-                )
-                for movie in movies_to_delete:
-                    movie.removed_at = datetime.now(timezone.utc)
-                    LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
-                await session.commit()
+                if movies_to_delete:
+                    LOG.info(
+                        f"Soft-deleting {len(movies_to_delete)} movies no longer in {source_label}"
+                    )
+                    for movie in movies_to_delete:
+                        movie.removed_at = datetime.now(timezone.utc)
+                        LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
+                    await session.commit()
 
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-            LOG.info(f"Movie sync completed successfully in {duration:.2f}s")
+            LOG.info(
+                f"Movie sync ({source_label}) completed successfully in {duration:.2f}s"
+            )
+            return parsed_tmdb_ids
     except Exception as e:
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         LOG.critical(
-            f"Error during movie sync after {duration:.2f}s: {e}", exc_info=True
+            f"Error during movie sync ({source_label}) after {duration:.2f}s: {e}",
+            exc_info=True,
         )
+        raise
     finally:
         await tmdb_service.session.close()
 
@@ -453,16 +488,20 @@ async def _update_movie_tmdb_metadata(
         LOG.error(f"Error updating TMDB metadata for movie {tmdb_id}: {e}")
 
 
-async def sync_series():
+async def sync_series(
+    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    allow_soft_delete: bool = True,
+) -> set[int]:
     """Sync series from media servers to database."""
     start_time = datetime.now(timezone.utc)
-    LOG.info("Starting series sync...")
+    source_label = service.value if service else "all-media-services"
+    LOG.info(f"Starting series sync ({source_label})...")
 
-    aggregated_series = await gather_series()
+    aggregated_series = await gather_series(service)
     if not aggregated_series:
-        LOG.info("No series to sync from media servers")
-        return
-    LOG.info(f"Gathered {len(aggregated_series)} unique series from media servers")
+        LOG.info(f"No series to sync from {source_label}")
+        return set()
+    LOG.info(f"Gathered {len(aggregated_series)} unique series from {source_label}")
 
     # tmdb service instance
     tmdb_service = AsyncTMDBClient()
@@ -575,60 +614,46 @@ async def sync_series():
                 f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
             )
 
-            # soft-delete series that no longer exist in media servers
-            series_to_delete = [
-                s
-                for s in existing_series.values()
-                if s.tmdb_id not in parsed_tmdb_ids and not s.removed_at
-            ]
+            if allow_soft_delete:
+                series_to_delete = [
+                    s
+                    for s in existing_series.values()
+                    if s.tmdb_id not in parsed_tmdb_ids and not s.removed_at
+                ]
 
-            if series_to_delete:
-                LOG.info(
-                    f"Soft-deleting {len(series_to_delete)} series no longer in media servers"
-                )
-                for s in series_to_delete:
-                    s.removed_at = datetime.now(timezone.utc)
-                    LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
-                await session.commit()
+                if series_to_delete:
+                    LOG.info(
+                        f"Soft-deleting {len(series_to_delete)} series no longer in {source_label}"
+                    )
+                    for s in series_to_delete:
+                        s.removed_at = datetime.now(timezone.utc)
+                        LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
+                    await session.commit()
 
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-            LOG.info(f"Series sync completed successfully in {duration:.2f}s")
+            LOG.info(
+                f"Series sync ({source_label}) completed successfully in {duration:.2f}s"
+            )
+            return parsed_tmdb_ids
     except Exception as e:
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         LOG.critical(
-            f"Error during series sync after {duration:.2f}s: {e}", exc_info=True
+            f"Error during series sync ({source_label}) after {duration:.2f}s: {e}",
+            exc_info=True,
         )
+        raise
     finally:
         await tmdb_service.session.close()
 
 
-async def sync_all_media():
-    """Main sync task - syncs both movies and series from media servers."""
-    start_time = datetime.now(timezone.utc)
-    LOG.info("Starting media sync task")
+async def sync_plex_media() -> None:
+    """Sync Plex media only and track as dedicated task run."""
+    await _sync_service_media(Service.PLEX, Task.SYNC_PLEX_MEDIA)
 
-    async with track_task_execution(Task.SYNC_ALL_MEDIA):
-        failures = False
-        try:
-            # sync movies first
-            await sync_movies()
-        except Exception as e:
-            failures = True
-            LOG.critical(f"Media sync task failed: {e}", exc_info=True)
 
-        try:
-            # then sync series
-            await sync_series()
-        except Exception as e:
-            failures = True
-            LOG.critical(f"Media sync task failed: {e}", exc_info=True)
-
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-        if not failures:
-            LOG.info(f"Media sync task completed successfully in {duration:.2f}s")
-        else:
-            LOG.error(f"Media sync task completed with failures after {duration:.2f}s")
-            raise Exception("Media sync completed with failures")
+async def sync_jellyfin_media() -> None:
+    """Sync Jellyfin media only and track as dedicated task run."""
+    await _sync_service_media(Service.JELLYFIN, Task.SYNC_JELLYFIN_MEDIA)
 
 
 async def _update_series_tmdb_metadata(

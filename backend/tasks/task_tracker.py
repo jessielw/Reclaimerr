@@ -69,9 +69,9 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
     Context manager to track task execution status.
 
     Usage:
-        async with track_task_execution(Task.SYNC_ALL_MEDIA):
-            await sync_movies()
-            await sync_series()
+        async with track_task_execution(Task.SYNC_PLEX_MEDIA):
+            await sync_movies(service=Service.PLEX)
+            await sync_series(service=Service.PLEX)
 
     This will:
     - Add task to in-memory running set (checked by API for real-time status)

@@ -255,3 +255,50 @@ export interface BlacklistEntry {
   created_at: string;
   updated_at: string;
 }
+
+export interface DashboardKpis {
+  total_movies: number;
+  total_series: number;
+  reclaimable_movies_gb: number;
+  reclaimable_series_gb: number;
+  reclaimable_total_gb: number;
+}
+
+export interface DashboardRequestsSummary {
+  pending_count: number;
+  approved_7d: number;
+  denied_7d: number;
+  mine_pending: number;
+  mine_active: number;
+}
+
+export interface DashboardServiceSummary {
+  name: string;
+  status: string;
+  enabled: boolean;
+  last_sync_at: string | null;
+}
+
+export interface DashboardActivityItem {
+  id: string;
+  type: string;
+  title: string;
+  subtitle: string | null;
+  created_at: string;
+  actor_display: string | null;
+  media_type: string | null;
+  media_title: string | null;
+}
+
+export interface DashboardViewer {
+  role: UserRole;
+  can_view_admin_panels: boolean;
+}
+
+export interface DashboardResponse {
+  kpis: DashboardKpis;
+  requests: DashboardRequestsSummary;
+  services: DashboardServiceSummary[];
+  activity: DashboardActivityItem[];
+  viewer: DashboardViewer;
+}
