@@ -15,39 +15,63 @@ class Settings(BaseSettings):
 
     # application data directory
     data_dir: Path = Field(
-        default=Path("./data"), description="Directory for database, logs, cache"
+        default=Path("./data"), description="Directory for database, logs, cache."
     )
 
     # static directory
     static_dir: Path = Field(
-        default=Path("./data/static"), description="Directory for static files"
+        default=Path("./data/static"), description="Directory for static files."
     )
 
     # avatars directory
     avatars_dir: Path = Field(
-        default=Path("./data/static/avatars"), description="Directory for user avatars"
+        default=Path("./data/static/avatars"), description="Directory for user avatars."
     )
 
     # logging
     log_level: str = Field(
-        default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL"
+        default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL."
     )
 
     # admin
     admin_password: str | None = Field(
-        default=None, description="Initial admin password"
+        default=None, description="Initial admin password."
     )
 
     # API configuration
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: str = "*"  # comma-separated list or "*" for all
+    cors_origins: str = Field(
+        default="*",
+        description=(
+            "Comma-separated list of allowed CORS origins (e.g., 'https://app.example.com'). "
+            "Avoid '*' in production."
+        ),
+    )
 
     # JWT authentication
     jwt_secret: str | None = Field(
-        default=None, description="Secret key for JWT tokens"
+        default=None, description="Secret key for JWT tokens (min 32 characters)."
     )
     jwt_algorithm: str = "HS256"
+
+    # cookie security (set to True in production behind HTTPS)
+    cookie_secure: bool = Field(
+        default=False,
+        description="Set to True when serving behind HTTPS to mark auth cookies as Secure.",
+    )
+
+    # TMDB API configuration
+    tmdb_api_key: str | None = Field(
+        default=None,
+        description="TMDB API bearer token (read access token from https://www.themoviedb.org/settings/api).",
+    )
+
+    # encryption key for sensitive DB fields
+    encryption_key: str | None = Field(
+        default=None,
+        description="Key for encrypting sensitive DB fields (min 32 characters).",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -68,12 +92,12 @@ class Settings(BaseSettings):
     @field_validator("jwt_secret", mode="before")
     @classmethod
     def validate_jwt_secret(cls, v: str | None) -> str | None:
-        """Validate JWT secret is set and not empty."""
-        if isinstance(v, str):
-            v = v.strip()
-        if not v:
-            raise PydanticCustomError("jwt_secret", "JWT secret must be set")
-        return v
+        return cls._validate_secret(v, "jwt_secret")
+
+    @field_validator("encryption_key", mode="before")
+    @classmethod
+    def validate_encryption_key(cls, v: str | None) -> str | None:
+        return cls._validate_secret(v, "encryption_key")
 
     @property
     def data_dir_path(self) -> Path:
@@ -126,6 +150,42 @@ class Settings(BaseSettings):
     def version(self) -> str:
         """Get application version."""
         return str(__version__)
+
+    @staticmethod
+    def _validate_secret(v: str | None, field: str) -> str | None:
+        """Shared secret validation logic for jwt_secret and encryption_key using hardcoded error messages."""
+        if isinstance(v, str):
+            v = v.strip()
+        if not v:
+            if field == "jwt_secret":
+                raise PydanticCustomError("jwt_secret", "JWT secret must be set")
+            else:
+                raise PydanticCustomError(
+                    "encryption_key", "Encryption key must be set"
+                )
+        if v == "CHANGE_ME_IN_PRODUCTION":
+            if field == "jwt_secret":
+                raise PydanticCustomError(
+                    "jwt_secret",
+                    "JWT secret must not be a known default value. Generate a strong random secret.",
+                )
+            else:
+                raise PydanticCustomError(
+                    "encryption_key",
+                    "Encryption key must not be a known default value. Generate a strong random secret.",
+                )
+        if len(v) < 32:
+            if field == "jwt_secret":
+                raise PydanticCustomError(
+                    "jwt_secret",
+                    "JWT secret must be at least 32 characters long",
+                )
+            else:
+                raise PydanticCustomError(
+                    "encryption_key",
+                    "Encryption key must be at least 32 characters long",
+                )
+        return v
 
 
 # global settings instance
