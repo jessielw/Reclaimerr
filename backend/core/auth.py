@@ -4,8 +4,7 @@ from typing import Annotated
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +16,14 @@ from backend.enums import Permission, UserRole
 # password hashing with Argon2
 argon_ph = PasswordHasher()
 
-# HTTP Bearer token scheme
-security = HTTPBearer(auto_error=False)
+# cookie name for JWT token
+COOKIE_NAME = "access_token"
+
+# Session lifetime (24 hours)
+# The sliding session middleware will refresh the cookie when
+# less than half the TTL remains, so active users stay logged in.
+SESSION_TTL = timedelta(hours=24)
+SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -34,15 +39,22 @@ def get_password_hash(password: str) -> str:
     return argon_ph.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+def create_access_token(
+    data: dict,
+    expires_delta: timedelta | None = None,
+    token_version: int = 0,
+) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(days=7)
+        expire = datetime.now(timezone.utc) + SESSION_TTL
 
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "tv": token_version})
+
+    if settings.jwt_secret is None:
+        raise RuntimeError("JWT secret is not set")
     encoded_jwt = jwt.encode(
         to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm
     )
@@ -52,6 +64,8 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT token."""
     try:
+        if settings.jwt_secret is None:
+            raise RuntimeError("JWT secret is not set")
         payload = jwt.decode(
             token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
         )
@@ -68,18 +82,16 @@ def decode_token(token: str) -> dict:
 
 
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Get the current authenticated user from JWT token."""
-    if not credentials:
+    """Get the current authenticated user from HttpOnly JWT cookie."""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
         )
-
-    token = credentials.credentials
     payload = decode_token(token)
 
     user_id_str = payload.get("sub")
@@ -95,6 +107,13 @@ async def get_current_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
+
+    # verify token version matches (allows invalidation on password change/logout)
+    token_version = payload.get("tv", 0)
+    if token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
 
     if not user.is_active:
