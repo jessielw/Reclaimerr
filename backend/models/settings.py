@@ -11,6 +11,15 @@ from backend.database.models import User
 from backend.enums import Service
 
 
+def _validate_notification_url(url: str) -> None:
+    """Basic sanity check that a notification URL has a recognizable scheme."""
+    if url and "://" not in url:
+        raise PydanticCustomError(
+            "notification_url",
+            "Notification URL must include a scheme (e.g. discord://, https://, ntfy://)",
+        )
+
+
 class ServiceConfigUpdate(BaseModel):
     service_type: Service
     base_url: str
@@ -45,8 +54,9 @@ class NotificationSettingItem(BaseModel):
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationSettingItem:
-        """Sanitize fields after model initialization."""
+        """Sanitize and validate notification URL."""
         self.url = self.url.strip()
+        _validate_notification_url(self.url)
         return self
 
 
@@ -55,8 +65,9 @@ class NotificationTestRequest(BaseModel):
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationTestRequest:
-        """Sanitize fields after model initialization."""
+        """Sanitize and validate notification URL."""
         self.url = self.url.strip()
+        _validate_notification_url(self.url)
         return self
 
 
