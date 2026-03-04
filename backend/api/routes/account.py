@@ -94,7 +94,7 @@ async def change_password(
 
     current_user.password_hash = get_password_hash(request.new_password)
     current_user.require_password_change = False
-    current_user.token_version += 1
+    current_user.bump_token_version()
     await db.commit()
 
     # clear cookie so client is forced to re-login with the new password
@@ -251,6 +251,8 @@ async def update_user(
 
     if request.password:
         user.password_hash = get_password_hash(request.password)
+        # invalidate all existing sessions for this user
+        user.bump_token_version()
 
     await db.commit()
 
