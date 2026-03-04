@@ -37,12 +37,25 @@ def save_picture_from_bytes(
     Returns:
         The new avatar filename
     """
+    # validate and normalize file extension
+    ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    ext = Path(original_filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        ext = ".png"  # default to PNG for safety
+
     # create new picture path
-    picture_fn = f"{uuid.uuid4().hex}{Path(original_filename).suffix}"
+    picture_fn = f"{uuid.uuid4().hex}{ext}"
     picture_path = settings.avatars_dir / picture_fn
 
     try:
-        # open image from bytes
+        # protect against decompression bombs
+        Image.MAX_IMAGE_PIXELS = 25_000_000  # ~5000x5000
+
+        # open image from bytes and verify it's a real image
+        i = Image.open(BytesIO(image_bytes))
+        i.verify()
+
+        # re-open after verify() (verify closes the file)
         i = Image.open(BytesIO(image_bytes))
 
         # check if the image is a GIF, if so, save without modifications
