@@ -9,6 +9,7 @@
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
+    apiKeyIsSet?: boolean;
     baseUrlPlaceholder?: string;
     onchange?: (event: CustomEvent) => void;
   }
@@ -19,6 +20,7 @@
     enabled,
     baseUrl,
     apiKey,
+    apiKeyIsSet = false,
     baseUrlPlaceholder,
     onchange,
   }: Props = $props();
@@ -74,7 +76,9 @@
       name="apiKey"
       value={apiKey}
       oninput={(e) => dispatchChange("apiKey", e.currentTarget.value)}
-      placeholder="Enter your API key"
+      placeholder={apiKeyIsSet
+        ? "Leave blank to keep existing key"
+        : "Enter your API key"}
       class="input-hover-el"
     />
     <p class="mt-1 text-xs text-muted-foreground">

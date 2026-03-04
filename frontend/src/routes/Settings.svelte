@@ -61,6 +61,7 @@
   type ServiceState = {
     config: ServiceConfig;
     libraries: LibraryType[];
+    apiKeyIsSet: boolean;
   };
 
   // services
@@ -191,55 +192,25 @@
 
   // unified state for each service even though
   // Jellyfin & Plex will be the only ones with libraries
+  const emptyServiceState = (): ServiceState => ({
+    config: { enabled: false, baseUrl: "", apiKey: "" },
+    libraries: [],
+    apiKeyIsSet: false,
+  });
+
   let serviceState = $state<Record<SettingsTab, ServiceState>>({
-    [SettingsTab.Jellyfin]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Plex]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Radarr]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Sonarr]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Seerr]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.General]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Tasks]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Notifications]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.About]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Account]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Rules]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
-    [SettingsTab.Users]: {
-      config: { enabled: false, baseUrl: "", apiKey: "" },
-      libraries: [],
-    },
+    [SettingsTab.Jellyfin]: emptyServiceState(),
+    [SettingsTab.Plex]: emptyServiceState(),
+    [SettingsTab.Radarr]: emptyServiceState(),
+    [SettingsTab.Sonarr]: emptyServiceState(),
+    [SettingsTab.Seerr]: emptyServiceState(),
+    [SettingsTab.General]: emptyServiceState(),
+    [SettingsTab.Tasks]: emptyServiceState(),
+    [SettingsTab.Notifications]: emptyServiceState(),
+    [SettingsTab.About]: emptyServiceState(),
+    [SettingsTab.Account]: emptyServiceState(),
+    [SettingsTab.Rules]: emptyServiceState(),
+    [SettingsTab.Users]: emptyServiceState(),
   });
 
   // handler for service config changes
@@ -256,12 +227,17 @@
     testingService = true;
     const config = serviceState[serviceId as SettingsTab].config;
     try {
-      const response: boolean = await post_api("/api/settings/test/service", {
+      // only send api_key if the user typed a new one (backend resolves existing key otherwise)
+      const payload: Record<string, unknown> = {
         service_type: serviceId,
         enabled: config.enabled,
         base_url: config.baseUrl,
-        api_key: config.apiKey,
-      });
+      };
+      if (config.apiKey) payload.api_key = config.apiKey;
+      const response: boolean = await post_api(
+        "/api/settings/test/service",
+        payload,
+      );
       if (!response) {
         throw new Error("Connection test failed");
       }
@@ -290,13 +266,13 @@
           service_type: string;
           enabled: boolean;
           base_url: string;
-          api_key: string;
         };
       } = await post_api("/api/settings/save/service", {
         service_type: serviceId,
         enabled: config.enabled,
         base_url: config.baseUrl,
-        api_key: config.apiKey,
+        // only send api_key if the user typed a new one (backend resolves existing key otherwise)
+        ...(config.apiKey ? { api_key: config.apiKey } : {}),
         libraries:
           libraries.length > 0
             ? libraries.map((lib) => ({
@@ -305,12 +281,13 @@
               }))
             : undefined,
       });
-      // update state based on response
+      // update state: clear the typed key, keep baseUrl/enabled from response
       serviceState[serviceId as SettingsTab].config = {
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
-        apiKey: response.data.api_key,
+        apiKey: "",
       };
+      serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
       toast.success(response.message);
     } catch (err: any) {
       toast.error(
@@ -360,9 +337,10 @@
       for (const [serviceId, config] of Object.entries(rawServices)) {
         serviceState[serviceId as SettingsTab].config = {
           enabled: config.enabled,
-          baseUrl: config.base_url, // base_url -> baseUrl
-          apiKey: config.api_key, // api_key -> apiKey
+          baseUrl: config.base_url,
+          apiKey: "", // never populate from masked response — leave blank, placeholder shows key status
         };
+        serviceState[serviceId as SettingsTab].apiKeyIsSet = !!config.api_key;
         // if plex or jellyfin, load libraries
         if (
           serviceId === SettingsTab.Jellyfin ||
@@ -550,6 +528,7 @@
             enabled={serviceState[activeTab].config.enabled}
             baseUrl={serviceState[activeTab].config.baseUrl}
             apiKey={serviceState[activeTab].config.apiKey}
+            apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
             baseUrlPlaceholder={tabs.find((t) => t.id === activeTab)
               ?.baseUrlPlaceholder || "http://localhost:8096"}
             onchange={handleServiceChange}
