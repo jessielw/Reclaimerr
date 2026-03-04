@@ -6,58 +6,57 @@ function createAuthStore() {
   const { subscribe, set, update } = writable<AuthState>({
     isAuthenticated: false,
     user: null,
-    token: null,
-    loading: true, // start with loading=true while we check for existing token
+    loading: true, // start with loading=true while we check for existing session
   });
 
-  // initialize auth state from localStorage
+  // initialize auth state by checking if the cookie session is still valid
   async function init() {
-    const token = localStorage.getItem("authToken");
-    if (token) {
-      try {
-        // verify token is still valid by fetching user info
-        const response = await fetch("/api/account/me", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+    try {
+      // verify session is still valid by fetching user info (cookie sent automatically)
+      const response = await fetch("/api/account/me", {
+        credentials: "include",
+      });
 
-        if (response.ok) {
-          const user = await response.json();
-          set({
-            isAuthenticated: true,
-            user,
-            token,
-            loading: false,
-          });
-        } else {
-          // token invalid, clear it
-          localStorage.removeItem("authToken");
-          set({
-            isAuthenticated: false,
-            user: null,
-            token: null,
-            loading: false,
-          });
-        }
-      } catch (error) {
-        console.error("Failed to verify token:", error);
-        localStorage.removeItem("authToken");
+      if (response.ok) {
+        const user = await response.json();
+        set({
+          isAuthenticated: true,
+          user,
+          loading: false,
+        });
+      } else {
         set({
           isAuthenticated: false,
           user: null,
-          token: null,
           loading: false,
         });
       }
-    } else {
+    } catch (error) {
+      console.error("Failed to verify session:", error);
       set({
         isAuthenticated: false,
         user: null,
-        token: null,
         loading: false,
       });
     }
+  }
+
+  // Re-verify the session when the browser tab becomes visible again.
+  // This handles the case where the JWT expired while the user was away —
+  // instead of getting a jarring logout mid-interaction, we check proactively.
+  if (typeof document !== "undefined") {
+    let lastCheck = 0;
+    const RECHECK_INTERVAL_MS = 5 * 60 * 1000; // at most once per 5 minutes
+
+    document.addEventListener("visibilitychange", () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastCheck > RECHECK_INTERVAL_MS
+      ) {
+        lastCheck = Date.now();
+        init();
+      }
+    });
   }
 
   return {
@@ -71,6 +70,7 @@ function createAuthStore() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ username, password }),
+        credentials: "include",
       });
 
       if (!response.ok) {
@@ -80,13 +80,9 @@ function createAuthStore() {
 
       const data = await response.json();
 
-      // store token
-      localStorage.setItem("authToken", data.access_token);
-
       set({
         isAuthenticated: true,
         user: data.user,
-        token: data.access_token,
         loading: false,
       });
 
@@ -94,12 +90,18 @@ function createAuthStore() {
     },
 
     // logout
-    logout: () => {
-      localStorage.removeItem("authToken");
+    logout: async () => {
+      try {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          credentials: "include",
+        });
+      } catch {
+        // ignore network errors on logout
+      }
       set({
         isAuthenticated: false,
         user: null,
-        token: null,
         loading: false,
       });
     },

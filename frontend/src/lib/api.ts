@@ -1,18 +1,10 @@
 import { auth } from "./stores/auth";
-import { get } from "svelte/store";
 
 /**
  * make an authenticated API request
  */
 export async function fetchAPI(url: string, options: RequestInit = {}) {
-  const authState = get(auth);
-
   const headers = new Headers(options.headers);
-
-  // add auth token if available
-  if (authState.token) {
-    headers.set("Authorization", `Bearer ${authState.token}`);
-  }
 
   // only set Content-Type for JSON requests, not for FormData (browser sets it automatically)
   if (options.body && typeof options.body === "string") {
@@ -22,6 +14,7 @@ export async function fetchAPI(url: string, options: RequestInit = {}) {
   const response = await fetch(url, {
     ...options,
     headers,
+    credentials: "include",
   });
 
   // handle 401 Unauthorized - token expired or invalid
