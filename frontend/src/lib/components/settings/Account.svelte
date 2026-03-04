@@ -12,6 +12,8 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Avatar from "$lib/components/ui/avatar/index.js";
+  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import Info from "@lucide/svelte/icons/info";
 
   interface Props {
     svgIcon: Component | null;
@@ -207,6 +209,16 @@
     <div class="bg-card rounded-lg border border-border p-6">
       <h2 class="text-xl font-semibold text-foreground mb-4">
         Profile Picture
+        <span class="ml-1">
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <Info class="size-4 text-muted-foreground" />
+            </Tooltip.Trigger>
+            <Tooltip.Content>
+              <p>Max file size: 5MB</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        </span>
       </h2>
       <div class="flex items-center gap-6">
         <div class="relative w-32 h-32">
