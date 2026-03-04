@@ -212,7 +212,7 @@
         <span class="ml-1">
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Info class="size-4 text-muted-foreground" />
+              <Info class="size-4 text-muted-foreground cursor-help" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Max file size: 5MB</p>
