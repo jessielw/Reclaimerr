@@ -8,7 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
-from backend.core.auth import get_current_user
+from backend.core.auth import require_admin
+from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.database import get_db
@@ -20,9 +21,16 @@ from backend.tasks.sync import sync_service_libraries
 router = APIRouter(tags=["settings", "services"])
 
 
+def _mask_api_key(key: str) -> str:
+    """Return a masked version of an API key, showing only the last 4 characters."""
+    if not key or len(key) <= 4:
+        return "****"
+    return f"{'*' * (len(key) - 4)}{key[-4:]}"
+
+
 @router.get("/services")
 async def get_service_settings(
-    _current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get current service settings."""
@@ -48,7 +56,9 @@ async def get_service_settings(
         config.service_type: {
             "enabled": config.enabled,
             "base_url": config.base_url,
-            "api_key": config.api_key,
+            "api_key": _mask_api_key(
+                fer_decrypt(config.api_key) if config.api_key else ""
+            ),
             # sort libraries for Plex and Jellyfin only
             "libraries": [
                 {
@@ -78,7 +88,7 @@ async def get_service_settings(
 @router.post("/save/service")
 async def set_service_settings(
     data: ServiceConfigUpdate,
-    _current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Set service settings for a given service."""
@@ -135,14 +145,14 @@ async def _upsert_service_config(
     insert_statement = sqlite_insert(ServiceConfig).values(
         service_type=data.service_type,
         base_url=data.base_url,
-        api_key=data.api_key,
+        api_key=fer_encrypt(data.api_key),
         enabled=data.enabled,
     )
     upsert_statement = insert_statement.on_conflict_do_update(
         index_elements=["service_type"],
         set_={
             "base_url": data.base_url,
-            "api_key": data.api_key,
+            "api_key": fer_encrypt(data.api_key),
             "enabled": data.enabled,
         },
     )
@@ -201,7 +211,7 @@ async def _upsert_service_libraries(
 @router.post("/test/service")
 async def test_service_settings(
     data: ServiceConfigUpdate,
-    _current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict:
     """Test service settings for a given service."""
     success, error_msg = await service_manager.test_service(
@@ -218,7 +228,7 @@ async def test_service_settings(
 @router.post("/sync/libraries")
 async def update_service_libraries(
     service_type: UpdateMediaLibrariesRequest,
-    _current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
     """Sync library selections for a given service."""
     if not service_type.service_type or service_type.service_type not in (
