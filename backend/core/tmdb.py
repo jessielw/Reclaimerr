@@ -15,6 +15,7 @@ from tenacity import (
 )
 
 from backend.core.logger import LOG
+from backend.core.settings import settings
 from backend.core.utils.request import should_retry_on_status
 
 
@@ -30,12 +31,19 @@ class AsyncTMDBClient:
 
     __slots__ = ("session",)
 
-    def __init__(self) -> None:
-        """Initialize TMDB client."""
+    def __init__(self, api_key: str | None = None) -> None:
+        """Initialize TMDB client.
+
+        Args:
+            api_key: TMDB API bearer token. If not provided, reads from settings,
+                     then falls back to the bundled default token.
+        """
+        token = api_key or settings.tmdb_api_key or self._resolve_token()
+
         self.session = AsyncSession()
         self.session.headers.update(
             {
-                "Authorization": f"Bearer {self._get_tvdb_k()}",
+                "Authorization": f"Bearer {token}",
                 "accept": "application/json",
             }
         )
@@ -141,7 +149,8 @@ class AsyncTMDBClient:
         )
 
     @staticmethod
-    def _get_tvdb_k() -> str:
+    def _resolve_token() -> str:
+        """Resolve the bundled default TMDB API bearer token."""
         k = (
             b"ZXlKaGJHY2lPaUpJVXpJMU5pSjkuZXlKaGRXUWlPaUpqTVRnMU9URTVNR1EyWlRNNVltSTVabVJsT0d"
             b"VMllXRXpaamt4TXprek5TSXNJbTVpWmlJNk1UYzJOelUwTXpjeE55NHdNeklzSW5OMVlpSTZJalk1Tld"
