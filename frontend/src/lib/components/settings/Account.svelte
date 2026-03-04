@@ -222,9 +222,7 @@
               >
             </Avatar.Root>
           {:else}
-            <Avatar.Root
-              class="w-32 h-32 text-4xl font-bold border-4 border-primary"
-            >
+            <Avatar.Root class="w-32 h-32 text-4xl font-bold">
               <Avatar.Fallback class="bg-primary">
                 {profile.username.charAt(0).toUpperCase()}
               </Avatar.Fallback>
