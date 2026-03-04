@@ -76,6 +76,11 @@ async def create_or_update_notification(
                 status_code=403,
                 detail="Only administrators can enable task failure notifications",
             )
+        if data.admin_message:
+            raise HTTPException(
+                status_code=403,
+                detail="Only administrators can enable admin message notifications",
+            )
 
     if data.id:
         # update existing notification
