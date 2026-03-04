@@ -44,8 +44,8 @@
   };
 
   // logout handler
-  const handleLogout = () => {
-    auth.logout();
+  const handleLogout = async () => {
+    await auth.logout();
   };
 </script>
 
