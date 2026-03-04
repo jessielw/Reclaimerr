@@ -2,17 +2,27 @@ import asyncio
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
+    COOKIE_NAME,
     get_current_user,
     get_password_hash,
     require_permission,
     verify_password,
 )
 from backend.core.logger import LOG
+from backend.core.settings import settings
 from backend.core.utils.image_handling import save_picture_from_bytes
 from backend.database import get_db
 from backend.database.models import User
@@ -70,11 +80,12 @@ async def update_profile(
 async def change_password(
     request: ChangePasswordRequest,
     current_user: Annotated[User, Depends(get_current_user)],
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Change password."""
-    if not current_user.require_password_change and request.old_password:
-        if not current_user.password_hash or not verify_password(
+    if not current_user.require_password_change:
+        if not request.old_password or not verify_password(
             request.old_password, current_user.password_hash
         ):
             raise HTTPException(
@@ -83,7 +94,17 @@ async def change_password(
 
     current_user.password_hash = get_password_hash(request.new_password)
     current_user.require_password_change = False
+    current_user.token_version += 1
     await db.commit()
+
+    # clear cookie so client is forced to re-login with the new password
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
 
     return {"message": "Password changed successfully"}
 
@@ -245,15 +266,22 @@ async def upload_avatar(
     avatar: UploadFile = File(...),
 ) -> dict[str, str]:
     """Upload user avatar."""
-    # validate file type
-    if not avatar.content_type or not avatar.content_type.startswith("image/"):
+    # validate content type
+    ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    if not avatar.content_type or avatar.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image",
+            detail="File must be a JPEG, PNG, GIF, or WebP image",
         )
 
-    # read file contents
+    # enforce maximum file size (5 MB)
+    MAX_SIZE = 5 * 1024 * 1024
     contents = await avatar.read()
+    if len(contents) > MAX_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image file must be smaller than 5 MB",
+        )
 
     # delete old avatar if exists (will be handled in save_picture_from_bytes)
     old_avatar_path = (
