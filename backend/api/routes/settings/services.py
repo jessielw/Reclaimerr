@@ -131,7 +131,12 @@ async def set_service_settings(
             f"{data.service_type.title()} settings updated "
             f"{'' if data.enabled else 'and client disabled'}"
         ),
-        "data": data,
+        "data": {
+            "service_type": data.service_type,
+            "base_url": data.base_url,
+            "api_key": _mask_api_key(data.api_key),
+            "enabled": data.enabled,
+        },
     }
 
 
@@ -221,7 +226,12 @@ async def test_service_settings(
         raise HTTPException(status_code=400, detail=error_msg)
     return {
         "message": f"{data.service_type} settings tested successfully",
-        "data": data,
+        "data": {
+            "service_type": data.service_type,
+            "base_url": data.base_url,
+            "api_key": _mask_api_key(data.api_key),
+            "enabled": data.enabled,
+        },
     }
 
 
