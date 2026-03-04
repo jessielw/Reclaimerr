@@ -31,7 +31,9 @@ limiter = Limiter(key_func=get_remote_address)
 @limiter.limit("5/minute")
 async def login(
     body: LoginRequest,
-    _request: Request,
+    # 'request' cannot be prefixed with a _ or it will break the rate limiter which uses the request 
+    # object internally
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
