@@ -64,6 +64,14 @@ class User(Base):
         back_populates="user", default_factory=list, lazy="noload", repr=False
     )
 
+    def bump_token_version(self) -> None:
+        """
+        Increment token version to invalidate existing sessions.
+
+        Must be called within a session commit block to take effect.
+        """
+        self.token_version += 1
+
 
 class NotificationSetting(Base):
     """Notification settings."""
