@@ -15,7 +15,7 @@
 </script>
 
 <Button
-  class={"text-foreground cursor-pointer gap-2 " + " " + className}
+  class={"text-primary-foreground cursor-pointer gap-2 " + " " + className}
   onmouseenter={() => (selfHovered = true)}
   onmouseleave={() => (selfHovered = false)}
   {...restProps}
