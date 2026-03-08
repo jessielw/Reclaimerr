@@ -7,9 +7,9 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
-  import MediaTypeBadge from "$lib/components/requests/MediaTypeBadge.svelte";
-  import PosterThumb from "$lib/components/requests/PosterThumb.svelte";
-  import RequestStatusBadge from "$lib/components/requests/RequestStatusBadge.svelte";
+  import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
+  import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
+  import RequestStatusBadge from "$lib/components/requests/request-status-badge.svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";

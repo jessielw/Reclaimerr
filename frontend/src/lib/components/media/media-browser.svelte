@@ -3,9 +3,9 @@
   import { get_api } from "$lib/api";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
-  import MediaGrid from "$lib/components/media/MediaGrid.svelte";
-  import MediaDetailDialog from "$lib/components/media/MediaDetailDialog.svelte";
-  import ExceptionRequestDialog from "$lib/components/media/ExceptionRequestDialog.svelte";
+  import MediaGrid from "$lib/components/media/media-grid.svelte";
+  import MediaDetailDialog from "$lib/components/media/media-detail-dialog.svelte";
+  import ExceptionRequestDialog from "$lib/components/media/exception-request-dialog.svelte";
   import Search from "@lucide/svelte/icons/search";
   import {
     ExceptionRequestStatus,

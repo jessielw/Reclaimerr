@@ -22,8 +22,8 @@
   import Search from "@lucide/svelte/icons/search";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash from "@lucide/svelte/icons/trash";
-  import MediaTypeBadge from "$lib/components/requests/MediaTypeBadge.svelte";
-  import PosterThumb from "$lib/components/requests/PosterThumb.svelte";
+  import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
+  import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
 
   // state
   let data = $state<PaginatedResponse<BlacklistEntry> | null>(null);
