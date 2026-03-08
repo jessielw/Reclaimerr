@@ -19,7 +19,7 @@
     <span class="text-gray-900 text-sm font-semibold">{title}</span>
   </span>
   {#if children}
-    <div class="text-sm p-3 text-foreground/95">
+    <div class="text-sm p-3 text-foreground/85">
       {@render children?.()}
     </div>
   {/if}
