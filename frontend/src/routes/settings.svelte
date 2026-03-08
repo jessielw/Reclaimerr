@@ -1,15 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { get_api, post_api } from "$lib/api";
-  import ServiceConfigForm from "$lib/components/settings/ServiceConfigForm.svelte";
+  import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
   import MediaServers from "$lib/components/settings/media-servers.svelte";
-  import Notifications from "$lib/components/settings/Notifications.svelte";
+  import Notifications from "$lib/components/settings/notifications.svelte";
   import Tasks from "$lib/components/settings/tasks/Tasks.svelte";
   import Rules from "$lib/components/settings/rules/Rules.svelte";
-  import Account from "$lib/components/settings/Account.svelte";
-  import Users from "$lib/components/settings/Users.svelte";
-  import About from "$lib/components/settings/About.svelte";
-  import General from "$lib/components/settings/General.svelte";
+  import Account from "$lib/components/settings/account.svelte";
+  import Users from "$lib/components/settings/users.svelte";
+  import About from "$lib/components/settings/about.svelte";
+  import General from "$lib/components/settings/general.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";

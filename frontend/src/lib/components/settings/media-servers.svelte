@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
   import { onMount } from "svelte";
   import { get_api, post_api } from "$lib/api";
-  import ServiceConfigForm from "$lib/components/settings/ServiceConfigForm.svelte";
+  import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";

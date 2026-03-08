@@ -254,9 +254,9 @@
                 <div>
                   <span class="text-muted-foreground">Library:</span>
                   <span class="text-foreground ml-2">
-                    {media.plex_library_name ||
-                      media.jellyfin_library_name ||
-                      "Unknown"}
+                    {"service_refs" in media && media.service_refs.length > 0
+                      ? media.service_refs.map((r) => r.library_name).join(", ")
+                      : "Unknown"}
                   </span>
                 </div>
                 <div>
