@@ -5,7 +5,7 @@
   import MediaServers from "$lib/components/settings/media-servers.svelte";
   import Notifications from "$lib/components/settings/notifications.svelte";
   import Tasks from "$lib/components/settings/tasks/Tasks.svelte";
-  import Rules from "$lib/components/settings/rules/Rules.svelte";
+  import Rules from "$lib/components/settings/rules/rules.svelte";
   import Account from "$lib/components/settings/account.svelte";
   import Users from "$lib/components/settings/users.svelte";
   import About from "$lib/components/settings/about.svelte";
