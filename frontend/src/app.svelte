@@ -2,7 +2,7 @@
   import Router from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
-  import Sidebar from "$lib/components/Sidebar.svelte";
+  import Sidebar from "$lib/components/sidebar.svelte";
   import Login from "./routes/login.svelte";
   import Dashboard from "./routes/dashboard.svelte";
   import Requests from "./routes/requests.svelte";
