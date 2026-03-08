@@ -44,6 +44,7 @@
     <label class="flex items-center gap-2 cursor-pointer">
       <span class="text-sm text-foreground">Enable</span>
       <Switch
+        class="cursor-pointer"
         checked={enabled}
         onCheckedChange={(checked) => dispatchChange("enabled", checked)}
       />
