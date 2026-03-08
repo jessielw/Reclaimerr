@@ -10,7 +10,9 @@
     baseUrl: string;
     apiKey: string;
     apiKeyIsSet?: boolean;
+    apiKeyLabel?: string;
     baseUrlPlaceholder?: string;
+    disableToggle?: boolean;
     onchange?: (event: CustomEvent) => void;
   }
 
@@ -21,7 +23,9 @@
     baseUrl,
     apiKey,
     apiKeyIsSet = false,
+    apiKeyLabel = "API Key",
     baseUrlPlaceholder,
+    disableToggle = false,
     onchange,
   }: Props = $props();
 
@@ -45,7 +49,8 @@
       <span class="text-sm text-foreground">Enable</span>
       <Switch
         class="cursor-pointer"
-        checked={enabled}
+        checked={disableToggle ? true : enabled}
+        disabled={disableToggle}
         onCheckedChange={(checked) => dispatchChange("enabled", checked)}
       />
     </label>
@@ -70,7 +75,7 @@
 
   <div>
     <label for="apiKey" class="block text-sm font-medium text-foreground mb-2"
-      >API Key</label
+      >{apiKeyLabel}</label
     >
     <Input
       type="password"
@@ -78,12 +83,13 @@
       value={apiKey}
       oninput={(e) => dispatchChange("apiKey", e.currentTarget.value)}
       placeholder={apiKeyIsSet
-        ? "Leave blank to keep existing key"
-        : "Enter your API key"}
+        ? `Leave blank to keep existing ${apiKeyLabel.toLowerCase().replace("api", "API")}`
+        : `Enter your ${apiKeyLabel.toLowerCase().replace("api", "API")}`}
       class="input-hover-el"
     />
     <p class="mt-1 text-xs text-muted-foreground">
-      Your {tabLabel} API key for authentication
+      Your {tabLabel}
+      {apiKeyLabel.toLowerCase().replace("api", "API")} for authentication
     </p>
   </div>
 </div>
