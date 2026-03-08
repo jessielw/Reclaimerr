@@ -20,7 +20,7 @@
     type ReclaimRule,
     type LibraryType,
   } from "$lib/types/shared";
-  import RuleForm from "$lib/components/settings/rules/RuleForm.svelte";
+  import RuleForm from "$lib/components/settings/rules/rule-form.svelte";
 
   interface Props {
     svgIcon: Component | null;
