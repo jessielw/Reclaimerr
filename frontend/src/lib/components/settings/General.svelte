@@ -4,8 +4,6 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { Checkbox } from "$lib/components/ui/checkbox/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
-  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-  import Info from "@lucide/svelte/icons/info";
   import { get_api, put_api } from "$lib/api";
   import { toast } from "svelte-sonner";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -106,19 +104,7 @@
     <!-- arr tagging -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm mt-6">
       <h3 class="font-semibold text-foreground items-center mb-3">
-        Aarr Tagging
-        <Tooltip.Root>
-          <Tooltip.Trigger>
-            <Info
-              class="inline size-4 ml-1 text-muted-foreground cursor-help"
-            />
-          </Tooltip.Trigger>
-          <Tooltip.Content>
-            <p>
-              Automatic tagging of reclaimerr candidates for Radarr and Sonarr
-            </p>
-          </Tooltip.Content>
-        </Tooltip.Root>
+        Radarr and Sonarr tagging
       </h3>
 
       <!-- automatic tagging toggle -->
