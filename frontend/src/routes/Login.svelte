@@ -7,6 +7,8 @@
   import DoorOpen from "@lucide/svelte/icons/door-open";
   import DoorClosed from "@lucide/svelte/icons/door-closed";
   import { get_api } from "$lib/api";
+  import { shuffleArray } from "$lib/utils/array";
+  import { TOP_RATED_BACKDROPS } from "$lib/misc/tmdb-images";
 
   let username = $state("");
   let password = $state("");
@@ -68,13 +70,16 @@
     try {
       // if we already have backdrop URLs, just pick the next one to avoid hitting the API too often
       if (backDropUrls.length === 0) {
-        const response = await get_api<{ backdrops: string[] | null }>(
-          "/api/info/random-backdrop",
-        );
-        if (response.backdrops) {
-          backDropUrls = response.backdrops;
-        } else {
-          return;
+        try {
+          const response = await get_api<{ backdrops: string[] | null }>(
+            "/api/info/random-backdrop",
+          );
+          // if API returns backdrops, we can use them otherwise fall back to hardcoded array
+          backDropUrls =
+            response.backdrops ?? shuffleArray([...TOP_RATED_BACKDROPS]);
+        } catch (err) {
+          // if API fails, use the backup array of hardcoded image paths
+          backDropUrls = shuffleArray([...TOP_RATED_BACKDROPS]);
         }
       }
 
