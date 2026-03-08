@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { get_api } from "$lib/api";
-  import ErrorBox from "$lib/components/ErrorBox.svelte";
+  import ErrorBox from "$lib/components/error-box.svelte";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
   import TrendingDown from "@lucide/svelte/icons/trending-down";

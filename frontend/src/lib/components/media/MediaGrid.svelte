@@ -1,7 +1,7 @@
 <script lang="ts">
   import MediaCard from "./MediaCard.svelte";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
-  import CompactPagination from "$lib/components/CompactPagination.svelte";
+  import CompactPagination from "$lib/components/compact-pagination.svelte";
   import type {
     MediaItem,
     MediaType,

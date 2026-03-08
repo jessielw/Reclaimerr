@@ -3,7 +3,7 @@
   import type { Component } from "svelte";
   import { auth } from "$lib/stores/auth";
   import { get_api, post_api, delete_api } from "$lib/api";
-  import ErrorBox from "$lib/components/ErrorBox.svelte";
+  import ErrorBox from "$lib/components/error-box.svelte";
   import {
     Permission,
     type UserProfile as User,

@@ -9,7 +9,7 @@
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
-  import TestButton from "$lib/components/TestButton.svelte";
+  import TestButton from "$lib/components/test-button.svelte";
   import Save from "@lucide/svelte/icons/save";
   import Tv from "@lucide/svelte/icons/tv";
   import Clapperboard from "@lucide/svelte/icons/clapperboard";

@@ -3,7 +3,7 @@
   import { auth } from "$lib/stores/auth";
   import type { Component } from "svelte";
   import { get_api, post_api } from "$lib/api";
-  import ErrorBox from "$lib/components/ErrorBox.svelte";
+  import ErrorBox from "$lib/components/error-box.svelte";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { toast } from "svelte-sonner";

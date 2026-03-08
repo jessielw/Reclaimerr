@@ -1,7 +1,7 @@
 <script lang="ts">
   import { link, location } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
-  import ThemeToggle from "./ThemeToggle.svelte";
+  import ThemeToggle from "./theme-toggle.svelte";
   import logoImage from "$lib/assets/logo.png";
   import { VERSION } from "$lib/version";
   import House from "@lucide/svelte/icons/house";

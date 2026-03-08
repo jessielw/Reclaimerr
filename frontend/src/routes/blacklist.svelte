@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { get_api, delete_api, put_api } from "$lib/api";
-  import ErrorBox from "$lib/components/ErrorBox.svelte";
-  import CompactPagination from "$lib/components/CompactPagination.svelte";
+  import ErrorBox from "$lib/components/error-box.svelte";
+  import CompactPagination from "$lib/components/compact-pagination.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
