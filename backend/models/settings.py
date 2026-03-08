@@ -25,6 +25,8 @@ class ServiceConfigUpdate(BaseModel):
     base_url: str
     api_key: str | None = None  # None = keep existing key (used if frontend changes it)
     enabled: bool
+    # only plex/jellyfin are eligible; at most one server may have this True
+    is_main: bool = False
     libraries: list[dict] | None = None
 
     @model_validator(mode="after")
@@ -33,6 +35,11 @@ class ServiceConfigUpdate(BaseModel):
         self.base_url = self.base_url.strip()
         if self.api_key is not None:
             self.api_key = self.api_key.strip() or None  # treat empty string as None
+        if self.is_main and self.service_type not in (Service.PLEX, Service.JELLYFIN):
+            raise PydanticCustomError(
+                "is_main_invalid",
+                "Only Plex and Jellyfin can be designated as the main media server",
+            )
         return self
 
 
