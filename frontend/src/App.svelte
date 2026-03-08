@@ -7,10 +7,10 @@
   import Dashboard from "./routes/Dashboard.svelte";
   import Requests from "./routes/Requests.svelte";
   import Movies from "./routes/Movies.svelte";
-  import Series from "./routes/Series.svelte";
+  import Series from "./routes/series.svelte";
   import Blacklist from "./routes/Blacklist.svelte";
   import Rules from "./routes/Rules.svelte";
-  import Settings from "./routes/Settings.svelte";
+  import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import { onMount } from "svelte";
   import Menu from "@lucide/svelte/icons/menu";
