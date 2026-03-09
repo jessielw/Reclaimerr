@@ -44,7 +44,7 @@ DEFAULT_SCHEDULES = (
         "task": Task.SYNC_MEDIA,
         "description": (
             "Synchronizes libraries, movies and series from the main media server, "
-            "plus linked watch data from non-main servers"
+            "plus linked watch data from non main servers"
         ),
         "schedule_type": ScheduleType.CRON,
         "schedule_value": "0 3 * * *",  # daily at 3 AM
@@ -113,20 +113,35 @@ DEFAULT_SCHEDULES = (
 
 
 async def ensure_default_schedules(db: AsyncSession) -> None:
-    """Ensure default task schedules exist in database."""
-    for schedule_data in DEFAULT_SCHEDULES:
-        # check if task schedule already exists
-        result = await db.execute(
-            select(TaskSchedule).where(TaskSchedule.task == schedule_data["task"])
-        )
-        existing = result.scalar_one_or_none()
+    """Ensure default task schedules exist in database updating existing ones if necessary."""
+    # fetch all existing schedules in one query
+    all_schedules = (await db.execute(select(TaskSchedule))).scalars().all()
+    schedule_map = {s.task: s for s in all_schedules}
 
-        if not existing:
-            task_schedule = TaskSchedule(**schedule_data)
+    for default in DEFAULT_SCHEDULES:
+        task = default["task"]
+        existing = schedule_map.get(task)
+        if existing:
+            updated = False
+            if existing.description != default["description"]:
+                existing.description = default["description"]
+                updated = True
+            if existing.schedule_type != default["default_schedule_type"]:
+                existing.schedule_type = default["default_schedule_type"]
+                updated = True
+            if existing.schedule_value != default["default_schedule_value"]:
+                existing.schedule_value = default["default_schedule_value"]
+                updated = True
+            # do not override enabled
+            if updated:
+                db.add(existing)
+                LOG.info(
+                    f"Updated existing schedule for {task.friendly_name()} with default values"
+                )
+        else:
+            task_schedule = TaskSchedule(**default)
             db.add(task_schedule)
-            LOG.info(
-                f"Created default schedule for {schedule_data['task'].friendly_name()}"
-            )
+            LOG.info(f"Created default schedule for {task.friendly_name()}")
 
     await db.commit()
 
