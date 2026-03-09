@@ -70,13 +70,18 @@ class NotificationType(StrEnum):
 class ScheduleType(StrEnum):
     INTERVAL = auto()
     CRON = auto()
+    MANUAL = auto()
 
 
 class Task(StrEnum):
-    # sync
-    SYNC_PLEX_MEDIA = auto()
-    SYNC_JELLYFIN_MEDIA = auto()
-    SYNC_SERVICE_LIBRARIES = auto()
+    # automatic sync tasks
+    # sync media as well as run any other sync tasks needed
+    SYNC_MEDIA = auto()
+    RESYNC_MEDIA = auto()
+
+    # manual only sync tasks (run only when manually triggered)
+    SYNC_MEDIA_LIBRARIES = auto()
+    SYNC_LINKED_DATA = auto()
 
     # cleanup
     SCAN_CLEANUP_CANDIDATES = auto()
