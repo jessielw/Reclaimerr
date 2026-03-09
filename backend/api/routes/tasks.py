@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +15,7 @@ from backend.enums import MediaType, ScheduleType, Task, TaskStatus
 from backend.models.tasks import TaskScheduleRequest
 
 # from backend.models.cleanup import CleanupRuleReq
-from backend.scheduler import scheduler, update_task_schedule
+from backend.scheduler import TASK_FUNCTION_MAP, scheduler, update_task_schedule
 from backend.tasks.cleanup import (
     _reset_seerr_request,
     delete_cleanup_candidates,
@@ -222,107 +220,55 @@ async def list_tasks(
     _admin: Annotated[User, Depends(require_admin)], db: AsyncSession = Depends(get_db)
 ) -> dict[str, list[dict]]:
     """
-    List all scheduled jobs and their next run times.
-    Includes both recurring scheduled jobs and one-time manual jobs.
+    List all tasks from the database, enriched with live scheduler state.
+    Manual tasks (default_schedule_type == MANUAL) are always present but not editable.
     """
-    # get all task schedules from database
     result = await db.execute(select(TaskSchedule))
-    db_schedules = {schedule.task: schedule for schedule in result.scalars().all()}
+    db_schedules = result.scalars().all()
 
     tasks = []
-    for task in scheduler.get_jobs():
-        next_run = None
-        if task.next_run_time:
-            next_run = task.next_run_time.isoformat()
+    for db_schedule in db_schedules:
+        task_id = db_schedule.task.value
 
-        # get database configuration
-        db_schedule = db_schedules.get(task.id)
-        schedule_type = db_schedule.schedule_type if db_schedule else None
-        schedule_value = db_schedule.schedule_value if db_schedule else None
-        default_schedule_type = (
-            db_schedule.default_schedule_type if db_schedule else None
+        # live APScheduler job only exists for non manual, enabled tasks
+        job = scheduler.get_job(task_id)
+        next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+
+        # status from in memory tracker (with TTL for completed/failed)
+        if not db_schedule.enabled:
+            status = TaskStatus.DISABLED
+            error = None
+        else:
+            status_str, error = get_task_status(db_schedule.task)
+            status = TaskStatus(status_str) if status_str else TaskStatus.SCHEDULED
+
+        last_task_run = await _get_last_task_run(db, task_id, db_schedule.id)
+        last_run = (
+            last_task_run.completed_at.isoformat()
+            if last_task_run and last_task_run.completed_at
+            else None
         )
-        default_schedule_value = (
-            db_schedule.default_schedule_value if db_schedule else None
-        )
-        description = db_schedule.description if db_schedule else None
-        # default to True for non-DB tasks
-        enabled = db_schedule.enabled if db_schedule else True
-        task_schedule_id = db_schedule.id if db_schedule else None
 
-        # get status from in-memory tracker (with TTL for completed/failed)
-        status_str, error = (
-            get_task_status(db_schedule.task)
-            if db_schedule
-            else (TaskStatus.SCHEDULED.value, None)
-        )
-        status = TaskStatus(status_str) if status_str else TaskStatus.SCHEDULED
-
-        # get last run timestamp from DB for display purposes only
-        last_task_run = await _get_last_task_run(db, task.id, task_schedule_id)
-        last_run = None
-        if last_task_run and last_task_run.completed_at:
-            last_run = last_task_run.completed_at.isoformat()
-
-        # determine trigger type and details
-        trigger_type = None
-        if isinstance(task.trigger, IntervalTrigger):
-            trigger_type = ScheduleType.INTERVAL
-        elif isinstance(task.trigger, CronTrigger):
-            trigger_type = ScheduleType.CRON
-
-        if trigger_type is None:
-            raise HTTPException(
-                status_code=500, detail=f"Unsupported trigger type for task '{task.id}'"
-            )
+        # manual tasks are not editable — their schedule cannot be configured
+        editable = db_schedule.default_schedule_type != ScheduleType.MANUAL
 
         tasks.append(
             {
-                "id": task.id,
-                "name": task.name,
-                "description": description,
+                "id": task_id,
+                "name": db_schedule.task.friendly_name(),
+                "description": db_schedule.description,
                 "next_run": next_run,
                 "last_run": last_run,
                 "status": status,
                 "error": error,
-                "trigger_type": trigger_type,
-                "schedule_type": schedule_type,
-                "schedule_value": schedule_value,
-                "default_schedule_type": default_schedule_type,
-                "default_schedule_value": default_schedule_value,
-                "enabled": enabled,
-                "editable": db_schedule
-                is not None,  # Only DB-configured jobs are editable
+                "schedule_type": db_schedule.schedule_type,
+                "schedule_value": db_schedule.schedule_value,
+                "default_schedule_type": db_schedule.default_schedule_type,
+                "default_schedule_value": db_schedule.default_schedule_value,
+                "enabled": db_schedule.enabled,
+                "editable": editable,
             }
         )
-
-    # also add disabled tasks from database that aren't in scheduler
-    for task_id_str, db_schedule in db_schedules.items():
-        if not db_schedule.enabled and not any(t["id"] == task_id_str for t in tasks):
-            # get last execution from TaskRun table
-            last_task_run = await _get_last_task_run(db, task_id_str, db_schedule.id)
-            last_run = None
-            if last_task_run and last_task_run.completed_at:
-                last_run = last_task_run.completed_at.isoformat()
-
-            tasks.append(
-                {
-                    "id": task_id_str,
-                    "name": db_schedule.task.friendly_name(),
-                    "description": db_schedule.description,
-                    "next_run": None,
-                    "last_run": last_run,
-                    "status": TaskStatus.DISABLED,
-                    "error": None,
-                    "trigger_type": db_schedule.schedule_type.value,
-                    "schedule_type": db_schedule.schedule_type.value,
-                    "schedule_value": db_schedule.schedule_value,
-                    "default_schedule_type": db_schedule.default_schedule_type.value,
-                    "default_schedule_value": db_schedule.default_schedule_value,
-                    "enabled": False,
-                    "editable": True,
-                }
-            )
 
     return {"tasks": tasks}
 
@@ -340,7 +286,7 @@ async def task_status(
     if not task:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
-    # get status from in-memory tracker (with TTL for completed/failed)
+    # get status from in memory tracker (with TTL for completed/failed)
     task_enum = Task(task_id)
     status_str, error = get_task_status(task_enum)
     status = TaskStatus(status_str) if status_str else TaskStatus.SCHEDULED
@@ -372,21 +318,44 @@ async def task_status(
 @router.post("/tasks/{task_id}/run")
 async def run_task_now(task_id: str, _admin: Annotated[User, Depends(require_admin)]):
     """
-    Trigger a scheduled job to run immediately (doesn't affect schedule).
+    Trigger a task to run immediately. For scheduled tasks, advances their next run
+    time. For manual tasks (not registered in APScheduler), fires them as a one-off job.
     """
     task = scheduler.get_job(task_id)
-    if not task:
+    if task:
+        try:
+            task.modify(next_run_time=datetime.now())
+            return {
+                "status": "success",
+                "message": f"Task '{task_id}' scheduled to run immediately",
+            }
+        except Exception as e:
+            LOG.error(f"Error running task {task_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # manual task (not registered in the scheduler, fire as a one-off job)
+    try:
+        task_enum = Task(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+    task_func = TASK_FUNCTION_MAP.get(task_enum)
+    if not task_func:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
     try:
-        # trigger the task to run now (in addition to its regular schedule)
-        task.modify(next_run_time=datetime.now())
+        scheduler.add_job(
+            task_func,
+            id=f"{task_id}_manual_{datetime.now().timestamp()}",
+            name=task_enum.friendly_name(),
+            replace_existing=False,
+        )
         return {
             "status": "success",
-            "message": f"Task '{task_id}' scheduled to run immediately",
+            "message": f"Task '{task_id}' queued to run immediately",
         }
     except Exception as e:
-        LOG.error(f"Error running task {task_id}: {e}", exc_info=True)
+        LOG.error(f"Error running manual task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
