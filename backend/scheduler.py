@@ -17,9 +17,10 @@ from backend.tasks.cleanup import (
 )
 from backend.tasks.house_keeping import weekly_house_keeping
 from backend.tasks.sync import (
-    sync_jellyfin_media,
-    sync_plex_media,
-    sync_service_libraries,
+    resync_media,
+    sync_linked_data,
+    sync_media,
+    sync_media_libraries,
 )
 
 scheduler = AsyncIOScheduler()
@@ -27,9 +28,10 @@ scheduler = AsyncIOScheduler()
 
 # map Task enum to their Python functions
 TASK_FUNCTION_MAP = {
-    Task.SYNC_PLEX_MEDIA: sync_plex_media,
-    Task.SYNC_JELLYFIN_MEDIA: sync_jellyfin_media,
-    Task.SYNC_SERVICE_LIBRARIES: sync_service_libraries,
+    Task.SYNC_MEDIA: sync_media,
+    Task.SYNC_MEDIA_LIBRARIES: sync_media_libraries,
+    Task.SYNC_LINKED_DATA: sync_linked_data,
+    Task.RESYNC_MEDIA: resync_media,
     Task.SCAN_CLEANUP_CANDIDATES: scan_cleanup_candidates,
     Task.TAG_CLEANUP_CANDIDATES: tag_cleanup_candidates,
     # Task.DELETE_CLEANUP_CANDIDATES: delete_cleanup_candidates, # TODO: enable once delete task is ready and tested
@@ -37,66 +39,82 @@ TASK_FUNCTION_MAP = {
 }
 
 
+DEFAULT_SCHEDULES = (
+    {
+        "task": Task.SYNC_MEDIA,
+        "description": (
+            "Synchronizes libraries, movies and series from the main media server, "
+            "plus linked watch data from non-main servers"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 3 * * *",  # daily at 3 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 3 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.SYNC_MEDIA_LIBRARIES,
+        "description": "Updates the library list from connected services",
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": True,
+    },
+    {
+        "task": Task.SYNC_LINKED_DATA,
+        "description": "Updates linked data from connected services",
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": True,
+    },
+    {
+        "task": Task.RESYNC_MEDIA,
+        "description": (
+            "Resynchronizes media from connected media servers (deletes and "
+            "re-adds all media, used for fixing sync issues)"
+        ),
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": False,
+    },
+    {
+        "task": Task.SCAN_CLEANUP_CANDIDATES,
+        "description": "Identifies media that can be removed based on cleanup rules",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 10 * * *",  # daily at 10 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 10 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.TAG_CLEANUP_CANDIDATES,
+        "description": "Tags media identified as cleanup candidates for easier management",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 12 * * *",  # daily at 12 PM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 12 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.WEEKLY_HOUSE_KEEPING,
+        "description": "Performs weekly maintenance tasks to ensure system stability",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 8 * * 0",  # weekly on Sunday at 8 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 8 * * 0",
+        "enabled": True,
+    },
+)
+
+
 async def ensure_default_schedules(db: AsyncSession) -> None:
     """Ensure default task schedules exist in database."""
-    default_schedules = (
-        {
-            "task": Task.SYNC_PLEX_MEDIA,
-            "description": "Synchronizes movies and series from Plex",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 3 * * *",  # daily at 3 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 3 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SYNC_JELLYFIN_MEDIA,
-            "description": "Synchronizes movies and series from Jellyfin",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 4 * * *",  # daily at 4 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 4 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SYNC_SERVICE_LIBRARIES,
-            "description": "Updates the library list from connected services",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 6 * * *",  # daily at 6 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 6 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SCAN_CLEANUP_CANDIDATES,
-            "description": "Identifies media that can be removed based on cleanup rules",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 10 * * *",  # Daily at 10 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 10 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.TAG_CLEANUP_CANDIDATES,
-            "description": "Tags media identified as cleanup candidates for easier management",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 12 * * *",  # Daily at 12 PM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 12 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.WEEKLY_HOUSE_KEEPING,
-            "description": "Performs weekly maintenance tasks to ensure system stability",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 8 * * 0",  # Weekly on Sunday at 8 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 8 * * 0",
-            "enabled": True,
-        },
-    )
-
-    for schedule_data in default_schedules:
+    for schedule_data in DEFAULT_SCHEDULES:
         # check if task schedule already exists
         result = await db.execute(
             select(TaskSchedule).where(TaskSchedule.task == schedule_data["task"])
@@ -132,8 +150,9 @@ async def setup_scheduler() -> None:
                 continue
 
             # create trigger based on schedule type
-            # interval
-            if task_schedule.schedule_type is ScheduleType.INTERVAL:
+            if task_schedule.schedule_type is ScheduleType.MANUAL:
+                continue  # manual tasks are not scheduled
+            elif task_schedule.schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(task_schedule.schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
@@ -143,7 +162,7 @@ async def setup_scheduler() -> None:
             scheduler.add_job(
                 task_func,
                 trigger,
-                id=task_schedule.task.value,  # Use enum value as string ID
+                id=str(task_schedule.task),
                 name=task_schedule.task.friendly_name(),
                 replace_existing=True,
             )
@@ -177,8 +196,9 @@ async def update_task_schedule(
                 raise ValueError(f"No function found for task: {task}")
 
             # create trigger
-            # interval
-            if schedule_type is ScheduleType.INTERVAL:
+            if schedule_type is ScheduleType.MANUAL:
+                return task_schedule
+            elif schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
@@ -188,14 +208,14 @@ async def update_task_schedule(
             scheduler.add_job(
                 task_func,
                 trigger,
-                id=task,
+                id=str(task),
                 name=task.friendly_name(),
                 replace_existing=True,
             )
             LOG.info(f"Updated task schedule: {task.friendly_name()}")
         else:
             # remove job from scheduler if disabled
-            existing_job = scheduler.get_job(task)
+            existing_job = scheduler.get_job(task.value)
             if existing_job:
                 existing_job.remove()
                 LOG.info(f"Removed disabled task: {task.friendly_name()}")
