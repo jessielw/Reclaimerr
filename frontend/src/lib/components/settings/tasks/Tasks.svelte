@@ -29,7 +29,6 @@
     last_run: string | null;
     status: TaskStatus;
     error: string | null;
-    trigger_type: string;
     schedule_type: ScheduleType;
     schedule_value: string | null;
     default_schedule_type: ScheduleType;
@@ -163,7 +162,6 @@
   <!-- header -->
   <div class="flex flex-col">
     <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
-      {console.log(svgIcon)}
       {#if svgIcon}
         {@const Icon = svgIcon}
         <Icon class="size-5" aria-hidden="true" />
@@ -206,6 +204,14 @@
                 <p class="text-sm text-muted-foreground mt-1">
                   {task.description}
                 </p>
+                {#if !task.editable}
+                  <p class="text-xs text-muted-foreground/75 mt-1 italic">
+                    This task is not editable and will be automatically executed
+                    as needed {task.status === TaskStatus.Disabled
+                      ? "(cannot be manually triggered)"
+                      : ""}
+                  </p>
+                {/if}
               {/if}
 
               <!-- schedule and run info -->
