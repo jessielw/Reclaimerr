@@ -183,6 +183,12 @@
     }
   };
 
+  // track original config for change detection
+  let originalConfigs = $state<Record<ServerKey, MediaServerConfig>>({
+    jellyfin: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
+    plex: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
+  });
+
   // save all servers, prioritizing the main server first since libraries depend on it
   const saveAll = async () => {
     globalSaving = true;
@@ -191,7 +197,14 @@
         ? [pendingMain, ...SERVERS.filter((k) => k !== pendingMain)]
         : [...SERVERS];
       for (const serverKey of saveOrder) {
-        if (servers[serverKey].config.baseUrl) {
+        const config = servers[serverKey].config;
+        const original = originalConfigs[serverKey];
+        // only save if API key is present OR enabled/baseUrl changed
+        const shouldSave =
+          !!config.apiKey ||
+          config.enabled !== original.enabled ||
+          config.baseUrl !== original.baseUrl;
+        if (config.baseUrl && shouldSave) {
           await saveServer(serverKey);
         }
       }
@@ -285,6 +298,13 @@
         const config = rawServices[serverKey];
         if (!config) continue;
         servers[serverKey].config = {
+          enabled: config.enabled,
+          baseUrl: config.base_url,
+          apiKey: "",
+          isMain: config.is_main ?? false,
+        };
+        // save original config for change detection
+        originalConfigs[serverKey] = {
           enabled: config.enabled,
           baseUrl: config.base_url,
           apiKey: "",
