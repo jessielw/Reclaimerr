@@ -35,13 +35,16 @@
     default_schedule_value: string;
     enabled: boolean;
     editable: boolean;
+    requires_main_server: boolean;
   }
 
   interface TasksResponse {
     tasks: TaskDetails[];
+    has_main_server: boolean;
   }
 
   let tasks = $state<TaskDetails[]>([]);
+  let hasMainServer = $state(true);
   let loading = $state(true);
   let refreshInterval: number | null = null;
   let actionInProgress = $state<Record<string, boolean>>({});
@@ -55,6 +58,7 @@
     try {
       const response = await get_api<TasksResponse>("/api/tasks/tasks");
       tasks = response.tasks;
+      hasMainServer = response.has_main_server;
     } catch (error) {
       console.error("Failed to fetch tasks:", error);
       toast.error("Failed to load scheduled tasks");
@@ -212,6 +216,13 @@
                       : ""}
                   </p>
                 {/if}
+              {/if}
+
+              <!-- no main server warning -->
+              {#if task.requires_main_server && !hasMainServer}
+                <p class="text-xs text-yellow-500 mt-1 italic">
+                  Task will be skipped until a main media server is configured
+                </p>
               {/if}
 
               <!-- schedule and run info -->
