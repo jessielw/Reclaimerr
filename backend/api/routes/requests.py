@@ -59,7 +59,7 @@ async def resolve_effective_protection(
         return blacklist_entry.permanent, blacklist_entry.expires_at
 
     LOG.warning(
-        f"Approved request {request.id} has no blacklist entry — data inconsistency"
+        f"Approved request {request.id} has no blacklist entry - data inconsistency"
     )
     return None, None
 

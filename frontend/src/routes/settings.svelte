@@ -259,7 +259,7 @@
     }
   };
 
-  // load service settings (radarr/sonarr/seerr only — media servers handled by MediaServers component)
+  // load service settings (radarr/sonarr/seerr only - media servers handled by MediaServers component)
   const loadServiceSettings = async () => {
     try {
       loading = true;

@@ -204,7 +204,7 @@
       let approved_permanent: boolean | null = null;
 
       if (approveDuration === "user_requested") {
-        // leave both null — backend uses the user's original requested_expires_at
+        // leave both null - backend uses the user's original requested_expires_at
       } else if (approveDuration === "forever") {
         approved_permanent = true;
       } else if (approveDuration === "custom") {
@@ -414,7 +414,7 @@
           >
             {(() => {
               if (approveDuration === "user_requested")
-                return `Use requested (${approveTarget ? formatProtectionLabel(approveTarget) : "—"})`;
+                return `Use requested (${approveTarget ? formatProtectionLabel(approveTarget) : "-"})`;
               if (approveDuration === "forever") return "Forever";
               if (approveDuration === "custom") return "Custom days";
               if (!isNaN(Number(approveDuration)))
@@ -427,11 +427,11 @@
               value="user_requested"
               label={approveTarget
                 ? `Use requested (${formatProtectionLabel(approveTarget)})`
-                : "Use requested (—)"}
+                : "Use requested (-)"}
               class="text-foreground"
               >{approveTarget
                 ? `Use requested (${formatProtectionLabel(approveTarget)})`
-                : "Use requested (—)"}</Select.Item
+                : "Use requested (-)"}</Select.Item
             >
             <Select.Item value="30" label="30 days" class="text-foreground"
               >30 days</Select.Item
