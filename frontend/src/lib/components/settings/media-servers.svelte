@@ -3,25 +3,20 @@
   import { get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Switch } from "$lib/components/ui/switch/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import TestButton from "$lib/components/test-button.svelte";
   import Save from "@lucide/svelte/icons/save";
-  import Tv from "@lucide/svelte/icons/tv";
-  import Clapperboard from "@lucide/svelte/icons/clapperboard";
+  import X from "@lucide/svelte/icons/x";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
+  import Server from "@lucide/svelte/icons/server";
   import { toast } from "svelte-sonner";
-  import type { LibraryType } from "$lib/types/shared";
-  import { MediaType, SettingsTab } from "$lib/types/shared";
+  import { SettingsTab } from "$lib/types/shared";
   import * as Select from "$lib/components/ui/select/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import Checkbox from "$lib/components/ui/checkbox/checkbox.svelte";
-  import { scrollIntoView } from "$lib/utils/misc";
-  import InfoBox from "$lib/components/info-box.svelte";
   import { MEDIA_SERVERS as SERVERS } from "$lib/types/shared";
 
   type ServerKey = (typeof SERVERS)[number];
@@ -35,7 +30,6 @@
 
   type MediaServerState = {
     config: MediaServerConfig;
-    libraries: LibraryType[];
     apiKeyIsSet: boolean;
     testing: boolean;
     saving: boolean;
@@ -58,7 +52,6 @@
 
   const emptyState = (): MediaServerState => ({
     config: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
-    libraries: [],
     apiKeyIsSet: false,
     testing: false,
     saving: false,
@@ -71,8 +64,9 @@
 
   let loading = $state(false);
   let globalSaving = $state(false);
-  let syncingLibraries = $state(false);
+  let syncingMedia = $state(false);
   let confirmServerChange = $state(false);
+  let syncBanner = $state<"resync" | "sync" | null>(null);
 
   // stores each server's enabled state from just before it was promoted to main,
   // so we can restore it if it gets demoted back to linked
@@ -132,14 +126,16 @@
     }
   };
 
-  // save a single server's settings
-  const saveServer = async (serverKey: ServerKey) => {
+  // save a single server's settings (returns the sync_action from the API response)
+  const saveServer = async (
+    serverKey: ServerKey,
+  ): Promise<"resync" | "sync" | null> => {
     servers[serverKey].saving = true;
     const config = { ...servers[serverKey].config };
-    const libraries = servers[serverKey].libraries;
     try {
       const response: {
         message: string;
+        sync_action: "resync" | "sync" | null;
         data: {
           service_type: string;
           enabled: boolean;
@@ -152,10 +148,6 @@
         base_url: config.baseUrl,
         is_main: config.isMain,
         ...(config.apiKey ? { api_key: config.apiKey } : {}),
-        libraries:
-          libraries.length > 0
-            ? libraries.map((lib) => ({ id: lib.id, selected: lib.selected }))
-            : undefined,
       });
       servers[serverKey].config = {
         enabled: response.data.enabled,
@@ -174,10 +166,12 @@
         }
       }
       toast.success(response.message);
+      return response.sync_action ?? null;
     } catch (err: any) {
       toast.error(
         `Error saving ${SERVER_LABELS[serverKey]} settings: ${err.message}`,
       );
+      return null;
     } finally {
       servers[serverKey].saving = false;
     }
@@ -189,9 +183,11 @@
     plex: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
   });
 
-  // save all servers, prioritizing the main server first since libraries depend on it
+  // save all servers, prioritizing the main server first
   const saveAll = async () => {
     globalSaving = true;
+    syncBanner = null;
+    const mainServerKey = pendingMain; // capture before async ops
     try {
       const saveOrder: ServerKey[] = pendingMain
         ? [pendingMain, ...SERVERS.filter((k) => k !== pendingMain)]
@@ -205,69 +201,30 @@
           config.enabled !== original.enabled ||
           config.baseUrl !== original.baseUrl;
         if (config.baseUrl && shouldSave) {
-          await saveServer(serverKey);
+          const action = await saveServer(serverKey);
+          if (serverKey === mainServerKey && action) {
+            syncBanner = action;
+          }
         }
-      }
-      // auto-sync libraries on first save when none are loaded yet
-      if (pendingMain && servers[pendingMain].libraries.length === 0) {
-        await syncLibraries(pendingMain);
       }
     } finally {
       globalSaving = false;
     }
   };
 
-  // sync libraries from the main server
-  const syncLibraries = async (serverKey: ServerKey) => {
-    syncingLibraries = true;
+  // trigger a media sync via the tasks API
+  const syncMedia = async () => {
+    syncingMedia = true;
     try {
-      await post_api("/api/settings/sync/libraries", {
-        service_type: serverKey,
-      });
-      // refresh only libraries without a full-page reload
-      const rawServices = await get_api<
-        Record<
-          string,
-          {
-            enabled: boolean;
-            is_main: boolean | null;
-            base_url: string;
-            api_key: string;
-            libraries?: Array<{
-              id: number;
-              library_id: string;
-              library_name: string;
-              media_type: string;
-              selected: boolean;
-            }> | null;
-          }
-        >
-      >("/api/settings/services");
-      const config = rawServices[serverKey];
-      if (config?.libraries) {
-        servers[serverKey].libraries = config.libraries.map((lib) => ({
-          id: lib.id,
-          libraryId: lib.library_id,
-          libraryName: lib.library_name,
-          mediaType:
-            lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
-          serviceType: serverKey as any,
-          selected: lib.selected,
-        }));
-      }
-      if (servers[serverKey].libraries.length === 0) {
-        toast.warning(
-          `No libraries found from ${SERVER_LABELS[serverKey]}. Make sure it's configured correctly.`,
-        );
-      } else {
-        toast.success(
-          `Successfully synced ${servers[serverKey].libraries.length} libraries from ${SERVER_LABELS[serverKey]}!`,
-        );
-      }
+      await post_api("/api/tasks/tasks/sync_media/run", {});
+      toast.success(
+        "Media sync started! Check the Tasks page to monitor progress.",
+      );
+      syncBanner = null;
     } catch (err: any) {
-      toast.error(`Error syncing libraries: ${err.message}`);
+      toast.error(`Failed to start sync: ${err.message}`);
     } finally {
-      syncingLibraries = false;
+      syncingMedia = false;
     }
   };
 
@@ -283,13 +240,6 @@
             is_main: boolean | null;
             base_url: string;
             api_key: string;
-            libraries?: Array<{
-              id: number;
-              library_id: string;
-              library_name: string;
-              media_type: string;
-              selected: boolean;
-            }> | null;
           }
         >
       >("/api/settings/services");
@@ -311,17 +261,6 @@
           isMain: config.is_main ?? false,
         };
         servers[serverKey].apiKeyIsSet = !!config.api_key;
-        servers[serverKey].libraries = config.libraries
-          ? config.libraries.map((lib) => ({
-              id: lib.id,
-              libraryId: lib.library_id,
-              libraryName: lib.library_name,
-              mediaType:
-                lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
-              serviceType: serverKey as any,
-              selected: lib.selected,
-            }))
-          : [];
         if (config.is_main) {
           savedMainServer = serverKey;
           pendingMain = serverKey;
@@ -348,10 +287,26 @@
   </div>
 {:else}
   <div class="space-y-8">
-    <!-- main Server -->
     <section class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold text-foreground">Main Server</h2>
+        <h2 class="text-lg flex items-center font-semibold text-foreground">
+          <Server class="size-4 mr-2" />
+          Media Servers
+        </h2>
+        <p class="text-sm text-muted-foreground mt-0.5">
+          Configure your media servers. One must be selected as the <strong
+            >main server</strong
+          >, which is the primary source for library and media data. Others will
+          be
+          <strong>linked</strong> for watch history and user data only.
+        </p>
+      </div>
+
+      <hr />
+
+      <!-- main Server -->
+      <div>
+        <h3 class="font-semibold text-foreground">Main Server</h3>
         <p class="text-sm text-muted-foreground mt-0.5">
           The primary source for library and media sync.
         </p>
@@ -452,7 +407,7 @@
         </div>
       {/if}
 
-      <!-- main server config form + libraries -->
+      <!-- main server config form -->
       {#if mainServer}
         {@const apiKeyLabel =
           mainServer === SettingsTab.Plex ? "Token" : "API Key"}
@@ -480,85 +435,15 @@
             >
           </div>
         </div>
-
-        <!-- libraries -->
-        <div class="rounded-lg border border-border p-5 space-y-4">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="text-lg font-semibold text-foreground">Libraries</h2>
-              <p class="text-sm text-muted-foreground mt-0.5">
-                Select which libraries from <strong
-                  >{SERVER_LABELS[mainServer]}</strong
-                > to include in media sync.
-              </p>
-            </div>
-            <Button
-              size="sm"
-              class="cursor-pointer shrink-0 gap-2"
-              disabled={syncingLibraries || globalSaving}
-              onclick={() => syncLibraries(mainServer)}
-            >
-              {#if syncingLibraries}
-                <Spinner class="size-4" />
-              {:else}
-                <RefreshCw class="size-4" />
-              {/if}
-              Sync
-            </Button>
-          </div>
-
-          {#if servers[mainServer].libraries.length > 0}
-            <div class="flex flex-wrap gap-1">
-              {#each servers[mainServer].libraries as library}
-                <Badge
-                  variant="secondary"
-                  class="text-sm px-3 py-1 rounded-full bg-muted text-muted-foreground m-0.5 w-55 justify-between
-                    {library.mediaType === MediaType.Movie
-                    ? 'border-movie'
-                    : 'border-series'}"
-                >
-                  <div class="inline-flex flex-1 max-w-4/5 items-center gap-2">
-                    {#if library.mediaType === MediaType.Movie}
-                      <Clapperboard size="18" />
-                    {:else}
-                      <Tv size="18" />
-                    {/if}
-                    <span class="truncate" title={library.libraryName}>
-                      {library.libraryName}
-                    </span>
-                  </div>
-                  <Switch
-                    class="ml-1 cursor-pointer"
-                    checked={library.selected}
-                    onCheckedChange={(checked) => {
-                      library.selected = checked;
-                    }}
-                  />
-                </Badge>
-              {/each}
-            </div>
-          {:else}
-            <InfoBox title="No Libraries Loaded">
-              <p>
-                No libraries loaded yet. <a
-                  href="#save-all-button"
-                  class="text-primary underline cursor-pointer"
-                  onclick={(e) => scrollIntoView(e, true)}>Save</a
-                >
-                your settings and they'll sync automatically, or click Sync to load
-                them now.
-              </p>
-            </InfoBox>
-          {/if}
-        </div>
       {/if}
     </section>
 
     <!-- linked servers -->
     {#if mainServer && linkedServers.length > 0}
+      <hr />
       <section class="space-y-4">
         <div>
-          <h2 class="text-lg font-semibold text-foreground">Linked Servers</h2>
+          <h2 class="font-semibold text-foreground">Linked Servers</h2>
           <p class="text-sm text-muted-foreground mt-0.5">
             Used for watch history and user data only. Libraries are sourced
             from the main server.
@@ -597,9 +482,65 @@
       </section>
     {/if}
 
-    <!-- save all button -->
+    <!-- save + sync banner -->
     {#if mainServer}
-      <div class="flex justify-end pt-4 border-t border-border">
+      <hr />
+      <!-- post save sync banner -->
+      {#if syncBanner}
+        <div
+          class="flex relative items-start justify-between gap-3 rounded-md border p-4
+            {syncBanner === 'resync'
+            ? 'bg-warning/20 border-warning-secondary text-warning-foreground'
+            : 'bg-primary/10 border-primary/30 text-foreground'}"
+        >
+          <div class="flex-1 space-y-2">
+            {#if syncBanner === "resync"}
+              <p class="text-sm font-medium">
+                Full resync triggered for the new main server.
+              </p>
+              <p class="text-xs text-muted-foreground">
+                Old media data is being replaced. Check the Tasks page to
+                monitor progress.
+              </p>
+            {:else}
+              <p class="text-sm font-medium">
+                Settings saved - ready to import your media library.
+              </p>
+              {#if linkedServers.every((k) => !servers[k].apiKeyIsSet)}
+                <p class="text-xs text-muted-foreground">
+                  Tip: you can also configure a linked server to bring in watch
+                  history and user data before syncing.
+                </p>
+              {/if}
+              <Button
+                size="sm"
+                class="cursor-pointer gap-2 mt-1"
+                disabled={syncingMedia}
+                onclick={syncMedia}
+              >
+                {#if syncingMedia}
+                  <Spinner class="size-4" />
+                  Starting...
+                {:else}
+                  <RefreshCw class="size-4" />
+                  Sync Media Now
+                {/if}
+              </Button>
+            {/if}
+          </div>
+          <Button
+            variant="ghost"
+            class="absolute top-1 right-1 cursor-pointer text-muted-foreground hover:text-foreground"
+            onclick={() => (syncBanner = null)}
+            aria-label="Dismiss"
+          >
+            <X class="size-4" />
+          </Button>
+        </div>
+      {/if}
+
+      <!-- save all button -->
+      <div class="flex justify-end pt-4">
         <Button
           id="save-all-button"
           onclick={saveAll}
@@ -610,8 +551,7 @@
             <Spinner class="size-4" />
             Saving...
           {:else}
-            <Save class="size-4" />
-            Save All Changes
+            <Save class="size-4" /> Save
           {/if}
         </Button>
       </div>
