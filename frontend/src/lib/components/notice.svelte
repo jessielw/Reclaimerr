@@ -23,8 +23,8 @@
       },
     },
     warning: {
-      main: "bg-call-to-action/10 border-call-to-action/70",
-      header: "bg-call-to-action/12",
+      main: "bg-yield/10 border-yield/70",
+      header: "bg-yield/12",
       icon: {
         icon: TriangleAlert,
         class: "text-foreground/75 size-4",
