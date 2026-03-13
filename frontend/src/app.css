@@ -46,6 +46,7 @@
   --warning: oklch(0.577 0.245 27.325);
   --warning-secondary: oklch(58.305% 0.23863 28.392 / 0.774);
   --warning-foreground: oklch(0.208 0.042 265.755);
+  --yield: oklch(95.145% 0.20428 107.337);
   --call-to-action: oklch(0.772 0.1738 64.55);
 }
 
@@ -88,6 +89,7 @@
   --warning: oklch(0.577 0.245 27.325);
   --warning-secondary: oklch(58.305% 0.23863 28.392 / 0.774);
   --warning-foreground: oklch(90.703% 0.01275 271.282);
+  --yield: oklch(95.145% 0.20428 107.337);
   --call-to-action: oklch(0.772 0.1738 64.55);
 }
 
@@ -144,6 +146,7 @@
   --color-warning: var(--warning);
   --color-warning-secondary: var(--warning-secondary);
   --color-warning-foreground: var(--warning-foreground);
+  --color-yield: var(--yield);
   --color-call-to-action: var(--call-to-action);
 }
 
