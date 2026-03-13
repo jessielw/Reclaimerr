@@ -13,6 +13,12 @@ from .default_backdrops import TOP_RATED_BACKDROPS
 router = APIRouter(tags=["info"])
 
 
+@router.get("/health")
+async def health_check() -> dict[str, str]:
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
 @router.get("/version")
 async def get_version() -> dict[str, str]:
     """Get application version."""
