@@ -129,7 +129,7 @@
     }
     formData.library_ids =
       selectedLibraries.length > 0 ? selectedLibraries : null;
-  }
+  };
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -154,20 +154,20 @@
     } finally {
       saving = false;
     }
-  }
+  };
 
   const formatBytes = (bytes: number | null): string => {
     if (bytes === null) return "";
     const gb = bytes / (1024 * 1024 * 1024);
     return gb.toFixed(2);
-  }
+  };
 
   const parseBytes = (gb: string): number | null => {
     if (!gb || gb.trim() === "") return null;
     const value = parseFloat(gb);
     if (isNaN(value)) return null;
     return Math.floor(value * 1024 * 1024 * 1024);
-  }
+  };
 </script>
 
 <div
