@@ -193,7 +193,6 @@
     <!-- header -->
     <div class="flex flex-col mb-3">
       <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
-        {console.log(svgIcon)}
         {#if svgIcon}
           {@const Icon = svgIcon}
           <Icon class="size-5" aria-hidden="true" />
