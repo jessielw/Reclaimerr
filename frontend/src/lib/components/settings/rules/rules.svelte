@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import type { Component } from "svelte";
-  import { fade } from "svelte/transition";
+  import { onMount, type Component } from "svelte";
   import { get_api, post_api, delete_api } from "$lib/api";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
@@ -21,6 +19,7 @@
     type LibraryType,
   } from "$lib/types/shared";
   import RuleForm from "$lib/components/settings/rules/rule-form.svelte";
+  import Notice from "$lib/components/notice.svelte";
 
   interface Props {
     svgIcon: Component | null;
@@ -38,12 +37,29 @@
   let newRuleTimer: ReturnType<typeof setTimeout> | null = null;
   const newRuleDisplayDuration = 10000; // 10 seconds
 
+  $effect(() => {
+    if (!newRule) {
+      return;
+    }
+
+    toast.success(
+      "New candidates will appear next time the Scan Cleanup Candidates task is run. If you want them " +
+        "sooner, you can manually trigger the scan.",
+      {
+        duration: newRuleDisplayDuration,
+      },
+    );
+  });
+
   // delete dialog states
   let showDeleteDialog = $state(false);
   let ruleToDelete = $state<ReclaimRule | null>(null);
 
+  // additional states
+  let isSynced = $state(true); // assume synced until we check
+
   // load rules from API
-  async function loadRules() {
+  const loadRules = async () => {
     try {
       loading = true;
       const response = await get_api<ReclaimRule[]>("/api/rules");
@@ -53,34 +69,35 @@
     } finally {
       loading = false;
     }
-  }
+  };
 
-  // load libraries from API to show in rule form
-  async function loadLibraries() {
+  const loadLibraries = async () => {
     try {
       const services = await get_api<any>("/api/settings/services");
       const libraries: LibraryType[] = [];
 
-      // extract libraries from Jellyfin and Plex
       if (services.jellyfin?.libraries) {
         services.jellyfin.libraries.forEach((lib: any) => {
           libraries.push({
             id: lib.id,
             libraryId: lib.library_id,
             libraryName: lib.library_name,
-            mediaType: lib.media_type,
+            mediaType:
+              lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
             serviceType: SettingsTab.Jellyfin,
             selected: lib.selected,
           });
         });
       }
+
       if (services.plex?.libraries) {
         services.plex.libraries.forEach((lib: any) => {
           libraries.push({
             id: lib.id,
             libraryId: lib.library_id,
             libraryName: lib.library_name,
-            mediaType: lib.media_type,
+            mediaType:
+              lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
             serviceType: SettingsTab.Plex,
             selected: lib.selected,
           });
@@ -93,10 +110,10 @@
     } catch (err: any) {
       toast.error(`Error loading libraries: ${err.message}`);
     }
-  }
+  };
 
   // save rule (create or update)
-  async function handleSaveRule(ruleData: Partial<ReclaimRule>) {
+  const handleSaveRule = async (ruleData: Partial<ReclaimRule>) => {
     try {
       if (editingRule) {
         // update existing rule
@@ -124,10 +141,10 @@
       toast.error(`Error saving rule: ${err.message}`);
       throw err; // re-throw to prevent form from closing
     }
-  }
+  };
 
   // toggle rule enabled/disabled
-  async function toggleRuleEnabled(rule: ReclaimRule) {
+  const toggleRuleEnabled = async (rule: ReclaimRule) => {
     try {
       const updatedRule = { ...rule, enabled: !rule.enabled };
       await post_api(`/api/rules/${rule.id}`, updatedRule);
@@ -138,10 +155,10 @@
     } catch (err: any) {
       toast.error(`Error updating rule: ${err.message}`);
     }
-  }
+  };
 
   // delete rule
-  async function deleteRule(rule: ReclaimRule) {
+  const deleteRule = async (rule: ReclaimRule) => {
     try {
       await delete_api(`/api/rules/${rule.id}`);
       rules = rules.filter((r) => r.id !== rule.id);
@@ -149,28 +166,28 @@
     } catch (err: any) {
       toast.error(`Error deleting rule: ${err.message}`);
     }
-  }
+  };
 
   // open form to edit existing rule
-  function editRule(rule: ReclaimRule) {
+  const editRule = (rule: ReclaimRule) => {
     editingRule = rule;
     showRuleForm = true;
-  }
+  };
 
   // open form to create new rule
-  function createNewRule() {
+  const createNewRule = () => {
     editingRule = null;
     showRuleForm = true;
-  }
+  };
 
   // close rule form modal
-  function closeRuleForm() {
+  const closeRuleForm = () => {
     showRuleForm = false;
     editingRule = null;
-  }
+  };
 
   // generate summary text for a rule based on its conditions
-  function getRuleSummary(rule: ReclaimRule): string {
+  const getRuleSummary = (rule: ReclaimRule): string => {
     const conditions: string[] = [];
 
     if (rule.library_ids && rule.library_ids.length > 0) {
@@ -236,160 +253,198 @@
     }
 
     return conditions.length > 0 ? conditions.join(" • ") : "No conditions set";
-  }
+  };
 
   // open delete confirmation dialog
-  function openDeleteDialog(rule: ReclaimRule) {
+  const openDeleteDialog = (rule: ReclaimRule) => {
     ruleToDelete = rule;
     showDeleteDialog = true;
-  }
+  };
 
   // close delete confirmation dialog
-  function closeDeleteDialog() {
+  const closeDeleteDialog = () => {
     showDeleteDialog = false;
     // small delay to allow dialog close animation before removing value from state
     setTimeout(() => {
       ruleToDelete = null;
     }, 200);
-  }
+  };
 
   // confirm delete rule
-  async function confirmDelete() {
+  const confirmDelete = async () => {
     if (ruleToDelete) {
       await deleteRule(ruleToDelete);
       closeDeleteDialog();
     }
-  }
+  };
 
-  onMount(() => {
-    loadRules();
-    loadLibraries();
+  // check if server has completed initial sync of media data - if not, rules may not work
+  // correctly so we show a warning
+  const checkIfServerSynced = async () => {
+    try {
+      const response = await get_api<{
+        libraries: number;
+        movies: number;
+        series: number;
+      }>("/api/rules/check-synced");
+      if (
+        response.libraries === 0 ||
+        response.movies === 0 ||
+        response.series === 0
+      ) {
+        isSynced = false;
+      } else {
+        isSynced = true;
+      }
+    } catch (err: any) {
+      console.error("Error checking sync status:", err);
+    }
+  };
+
+  onMount(async () => {
+    await Promise.all([loadRules(), loadLibraries()]);
+
+    // check to see if there are any media to display - if not, show a warning that rules may
+    // not work correctly until initial sync is complete
+    setTimeout(async () => {
+      await checkIfServerSynced();
+    }, 100);
   });
 </script>
 
-<!-- header -->
-<div class="flex items-center justify-between mb-4">
-  <div>
-    <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
-      {console.log(svgIcon)}
-      {#if svgIcon}
-        {@const Icon = svgIcon}
-        <Icon class="size-5" aria-hidden="true" />
-      {/if}
-      <span class="align-middle">Rules</span>
-    </h2>
-    <p class="text-sm text-muted-foreground mt-1">
-      Define rules to identify media for cleanup
-    </p>
-  </div>
-  <Button onclick={createNewRule} class="cursor-pointer gap-2">
-    <Plus class="size-4" />
-    New Rule
-  </Button>
-</div>
-
-<!-- new rule info -->
-{#if newRule}
-  <div
-    transition:fade
-    class="bg-info-box-bg text-info-box-fg border-info-box-border rounded-lg p-4 mb-6"
-  >
-    <p class="text-center">
-      New candidates will appear next time the <span class="font-semibold"
-        >Scan Cleanup Candidates</span
-      >
-      is run. If you want them sooner, you can manually trigger the scan.
-    </p>
-  </div>
-{/if}
-
-<!-- loading -->
 {#if loading}
-  <div
-    class="flex p-8 items-center justify-center text-center gap-3 text-muted-foreground"
-  >
-    <Spinner class="size-5" />
-    Loading rules...
+  <div class="p-8 text-center text-muted-foreground">
+    <Spinner size="lg" class="text-primary" />
+    <p class="mt-4">Loading rules...</p>
   </div>
-{:else if rules.length === 0}
-  <div class="bg-card rounded-lg border border-border p-12 text-center">
-    <div class="max-w-md mx-auto">
-      <h3 class="text-lg font-semibold text-foreground mb-2">No rules yet</h3>
-      <p class="text-muted-foreground">
-        Create your first cleanup rule to start identifying media candidates for
-        removal
-      </p>
-    </div>
-  </div>
-
-  <!-- loaded -->
 {:else}
-  <div class="space-y-4">
-    {#each rules as rule}
-      <div
-        class="bg-card rounded-lg border border-border p-6 hover:shadow-md transition-shadow"
-      >
-        <div class="flex items-start justify-between gap-4">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-3 mb-2">
-              <h3 class="text-lg font-semibold text-foreground truncate">
-                {rule.name}
-              </h3>
-            </div>
-            <div class="flex items-center gap-3 mb-2">
-              <Badge
-                variant="secondary"
-                class="shrink-0 {rule.media_type === MediaType.Movie
-                  ? 'border-movie'
-                  : 'border-series'}"
-              >
-                <div class="inline-flex items-center gap-1.5">
-                  {#if rule.media_type === MediaType.Movie}
-                    <Clapperboard class="size-4" />
-                  {:else}
-                    <Tv class="size-4" />
-                  {/if}
-                  <span class="capitalize">{rule.media_type}</span>
-                </div>
-              </Badge>
-              <Badge
-                variant={rule.enabled ? "default" : "secondary"}
-                class="shrink-0"
-              >
-                {rule.enabled ? "Enabled" : "Disabled"}
-              </Badge>
-            </div>
-            <p class="text-sm text-muted-foreground line-clamp-2">
-              {getRuleSummary(rule)}
+  <div class="space-y-6">
+    <div class="flex justify-between items-center mb-3">
+      <!-- header -->
+      <div>
+        <h2
+          class="flex items-center gap-3 text-xl font-semibold text-foreground"
+        >
+          {#if svgIcon}
+            {@const Icon = svgIcon}
+            <Icon class="size-5" aria-hidden="true" />
+          {/if}
+          <span class="align-middle">Rules</span>
+        </h2>
+        <p class="text-sm text-muted-foreground mt-1">Manage cleanup rules</p>
+      </div>
+
+      <!-- add new rule button -->
+      <Button size="sm" onclick={createNewRule} class="cursor-pointer gap-2">
+        <Plus class="size-4" />
+        New Rule
+      </Button>
+    </div>
+
+    <div class="max-w-7xl mx-auto space-y-4">
+      <!-- sync status -->
+      {#if !isSynced}
+        <Notice type="warning" title="Missing Media Data">
+          Media data is still syncing or hasn't been synced yet. Rules may not
+          work correctly until sync is complete. You can start the sync if not
+          already in progress in <strong>Tasks</strong>, or wait and check back
+          later.
+        </Notice>
+      {/if}
+
+      <!-- new rule info -->
+      <!-- loading -->
+      {#if loading}
+        <div
+          class="flex p-8 items-center justify-center text-center gap-3 text-muted-foreground"
+        >
+          <Spinner class="size-5" />
+          Loading rules...
+        </div>
+      {:else if rules.length === 0}
+        <div class="bg-card rounded-lg border border-border p-12 text-center">
+          <div class="max-w-md mx-auto">
+            <h3 class="text-lg font-semibold text-foreground mb-2">
+              No rules yet
+            </h3>
+            <p class="text-muted-foreground">
+              Create your first cleanup rule to start identifying media
+              candidates for removal
             </p>
           </div>
-
-          <div class="flex items-center gap-2 shrink-0">
-            <Switch
-              checked={rule.enabled}
-              onCheckedChange={() => toggleRuleEnabled(rule)}
-              class="cursor-pointer"
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              onclick={() => editRule(rule)}
-              class="text-foreground cursor-pointer"
-            >
-              <Pencil class="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onclick={() => openDeleteDialog(rule)}
-              class="cursor-pointer text-destructive hover:text-destructive"
-            >
-              <Trash2 class="size-4" />
-            </Button>
-          </div>
         </div>
-      </div>
-    {/each}
+
+        <!-- loaded -->
+      {:else}
+        <div class="space-y-4">
+          {#each rules as rule}
+            <div
+              class="bg-card rounded-lg border border-border p-6 hover:shadow-md transition-shadow"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-3 mb-2">
+                    <h3 class="text-lg font-semibold text-foreground truncate">
+                      {rule.name}
+                    </h3>
+                  </div>
+                  <div class="flex items-center gap-3 mb-2">
+                    <Badge
+                      variant="secondary"
+                      class="shrink-0 {rule.media_type === MediaType.Movie
+                        ? 'border-movie'
+                        : 'border-series'}"
+                    >
+                      <div class="inline-flex items-center gap-1.5">
+                        {#if rule.media_type === MediaType.Movie}
+                          <Clapperboard class="size-4" />
+                        {:else}
+                          <Tv class="size-4" />
+                        {/if}
+                        <span class="capitalize">{rule.media_type}</span>
+                      </div>
+                    </Badge>
+                    <Badge
+                      variant={rule.enabled ? "default" : "secondary"}
+                      class="shrink-0"
+                    >
+                      {rule.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                  </div>
+                  <p class="text-sm text-muted-foreground line-clamp-2">
+                    {getRuleSummary(rule)}
+                  </p>
+                </div>
+
+                <div class="flex items-center gap-2 shrink-0">
+                  <Switch
+                    checked={rule.enabled}
+                    onCheckedChange={() => toggleRuleEnabled(rule)}
+                    class="cursor-pointer"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onclick={() => editRule(rule)}
+                    class="text-foreground cursor-pointer"
+                  >
+                    <Pencil class="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onclick={() => openDeleteDialog(rule)}
+                    class="cursor-pointer text-destructive hover:text-destructive"
+                  >
+                    <Trash2 class="size-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -413,7 +468,7 @@
   >
     <AlertDialog.Header>
       <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2"
-        >Delete Rule</AlertDialog.Title
+        >Delete User</AlertDialog.Title
       >
       <AlertDialog.Description class="text-muted-foreground">
         Are you sure you want to delete rule <span class="font-semibold"
