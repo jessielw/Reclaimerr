@@ -110,6 +110,8 @@
   // status colors
   const getStatusColor = (status: TaskStatus): string => {
     switch (status) {
+      case TaskStatus.Queued:
+        return "bg-amber-500";
       case TaskStatus.Completed:
         return "bg-green-500";
       case TaskStatus.Error:
@@ -127,7 +129,24 @@
 
   // status text
   const getStatusText = (status: TaskStatus): string => {
+    if (status === TaskStatus.Queued) {
+      return "Queued";
+    }
     return status.charAt(0).toUpperCase() + status.slice(1);
+  };
+
+  // status hint for queued/scheduled tasks
+  const getStatusHint = (task: TaskDetails): string | null => {
+    if (!task.enabled) {
+      return null;
+    }
+    if (task.status === TaskStatus.Queued) {
+      return "Waiting for the single background worker to finish earlier work.";
+    }
+    if (task.status === TaskStatus.Scheduled) {
+      return "Waiting for its next scheduler window or manual trigger.";
+    }
+    return null;
   };
 
   // get display status - trust the backend's status directly
@@ -175,6 +194,10 @@
     <p class="text-sm text-muted-foreground mt-1">
       Manage and monitor automated tasks
     </p>
+    <p class="text-xs text-muted-foreground/80 mt-2">
+      Tasks run through a single background worker. Scheduled times are
+      best-effort and queued work runs in order.
+    </p>
   </div>
 
   <!-- check if loading -->
@@ -202,6 +225,12 @@
                   {displayStatus.text}
                 </Badge>
               </div>
+
+              {#if getStatusHint(task)}
+                <p class="text-xs text-muted-foreground/75 mt-1 italic">
+                  {getStatusHint(task)}
+                </p>
+              {/if}
 
               <!-- description -->
               {#if task.description}
@@ -251,11 +280,10 @@
 
                 <!-- last run info -->
                 <span class="flex items-center"
-                  ><Hourglass
-                    class="size-4 text-foreground mr-2"
-                  />{task.last_run
-                    ? formatDistanceToNow(task.last_run)
-                    : "Never run"}</span
+                  ><Hourglass class="size-4 text-foreground mr-2" />Last run:
+                  {task.last_run
+                    ? ` ${formatDistanceToNow(task.last_run)}`
+                    : " Never run"}</span
                 >
 
                 <!-- error info -->
