@@ -9,7 +9,6 @@
   import Movies from "./routes/movies.svelte";
   import Series from "./routes/series.svelte";
   import Blacklist from "./routes/blacklist.svelte";
-  import Rules from "./routes/rules.svelte";
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import { onMount } from "svelte";
@@ -24,7 +23,6 @@
     "/series": Series,
     "/blacklist": Blacklist,
     "/requests": Requests,
-    "/rules": Rules,
     "/settings": Settings,
   };
 
