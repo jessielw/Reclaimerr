@@ -17,6 +17,7 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
+  import { toast } from "svelte-sonner";
 
   // props
   let {
@@ -52,10 +53,10 @@
     max_days_since_last_watched: null,
     min_size: null,
     max_size: null,
-    auto_tag: true,
   });
 
   let selectedLibraries = $state<string[]>([]);
+  let validationMessage = $state<string | null>(null);
 
   // media type options for select
   const mediaTypes = [
@@ -69,19 +70,9 @@
   );
 
   // filter libraries based on selected media type
-  // show all libraries (both selected and unselected) but unselected will be disabled
   const filteredLibraries = $derived(
     libraries.filter((lib) => lib.mediaType === formData.media_type),
   );
-
-  // check if rule has any library_ids that reference unselected libraries
-  const hasDisabledLibraries = $derived(() => {
-    if (!selectedLibraries.length) return false;
-    const selectedLibraryIds = libraries
-      .filter((lib) => lib.selected && lib.mediaType === formData.media_type)
-      .map((lib) => lib.libraryId);
-    return selectedLibraries.some((id) => !selectedLibraryIds.includes(id));
-  });
 
   // reset form when rule changes
   $effect(() => {
@@ -106,14 +97,31 @@
         max_days_since_last_watched: rule?.max_days_since_last_watched ?? null,
         min_size: rule?.min_size ?? null,
         max_size: rule?.max_size ?? null,
-        auto_tag: rule?.auto_tag ?? true,
       };
       selectedLibraries = rule?.library_ids ? [...rule.library_ids] : [];
+      validationMessage = null;
     }
   });
   let saving = $state(false);
 
-  function updateLibrarySelection(libraryId: string, selected: boolean) {
+  const hasConfiguredCriteria = (ruleData: Partial<ReclaimRule>) =>
+    ruleData.min_popularity !== null ||
+    ruleData.max_popularity !== null ||
+    ruleData.min_vote_average !== null ||
+    ruleData.max_vote_average !== null ||
+    ruleData.min_vote_count !== null ||
+    ruleData.max_vote_count !== null ||
+    ruleData.min_view_count !== null ||
+    ruleData.max_view_count !== null ||
+    ruleData.include_never_watched ||
+    ruleData.min_days_since_added !== null ||
+    ruleData.max_days_since_added !== null ||
+    ruleData.min_days_since_last_watched !== null ||
+    ruleData.max_days_since_last_watched !== null ||
+    ruleData.min_size !== null ||
+    ruleData.max_size !== null;
+
+  const updateLibrarySelection = (libraryId: string, selected: boolean) => {
     if (selected) {
       selectedLibraries = [...selectedLibraries, libraryId];
     } else {
@@ -123,27 +131,21 @@
       selectedLibraries.length > 0 ? selectedLibraries : null;
   }
 
-  async function handleSubmit(e: Event) {
+  const handleSubmit = async (e: Event) => {
     e.preventDefault();
+    validationMessage = null;
 
     if (!formData.name || formData.name.trim() === "") {
-      alert("Please enter a rule name");
+      validationMessage = "Please enter a rule name.";
+      toast.error(validationMessage);
       return;
     }
 
-    // clean up any library_ids that reference disabled libraries
-    if (formData.library_ids && formData.library_ids.length > 0) {
-      const enabledLibraryIds = libraries
-        .filter((lib) => lib.selected && lib.mediaType === formData.media_type)
-        .map((lib) => lib.libraryId);
-
-      const cleanedLibraryIds = formData.library_ids.filter((id) =>
-        enabledLibraryIds.includes(id),
-      );
-
-      formData.library_ids =
-        cleanedLibraryIds.length > 0 ? cleanedLibraryIds : null;
-      selectedLibraries = cleanedLibraryIds;
+    if (!hasConfiguredCriteria(formData)) {
+      validationMessage =
+        "Add at least one rule condition before saving. Library selection alone is not enough.";
+      toast.error(validationMessage);
+      return;
     }
 
     try {
@@ -154,13 +156,13 @@
     }
   }
 
-  function formatBytes(bytes: number | null): string {
+  const formatBytes = (bytes: number | null): string => {
     if (bytes === null) return "";
     const gb = bytes / (1024 * 1024 * 1024);
     return gb.toFixed(2);
   }
 
-  function parseBytes(gb: string): number | null {
+  const parseBytes = (gb: string): number | null => {
     if (!gb || gb.trim() === "") return null;
     const value = parseFloat(gb);
     if (isNaN(value)) return null;
@@ -191,6 +193,13 @@
         <p class="text-muted-foreground mt-1">
           Define conditions to identify media candidates for cleanup
         </p>
+        {#if validationMessage}
+          <p
+            class="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {validationMessage}
+          </p>
+        {/if}
       </div>
 
       <div class="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
@@ -259,36 +268,20 @@
             <Card.Header>
               <Card.Title>Libraries</Card.Title>
               <Card.Description>
-                Select specific libraries (leave empty for all)
+                Select which libraries this rule applies to (leave empty for
+                all)
               </Card.Description>
             </Card.Header>
             <Card.Content>
-              {#if hasDisabledLibraries()}
-                <div
-                  class="mb-4 p-3 rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"
-                >
-                  <p class="text-sm text-yellow-800 dark:text-yellow-200">
-                    <strong>Warning:</strong> This rule references libraries that
-                    are disabled in Settings. They will be removed when you save this
-                    rule.
-                  </p>
-                </div>
-              {/if}
               <div class="space-y-2">
                 {#each filteredLibraries as library}
-                  <div
-                    class="flex items-center space-x-2"
-                    class:opacity-50={!library.selected}
-                  >
+                  <div class="flex items-center space-x-2">
                     <Switch
                       id={`library-${library.libraryId}`}
                       checked={selectedLibraries.includes(library.libraryId)}
-                      disabled={!library.selected}
                       onCheckedChange={(checked) =>
                         updateLibrarySelection(library.libraryId, checked)}
-                      class={library.selected
-                        ? "cursor-pointer"
-                        : "cursor-not-allowed"}
+                      class="cursor-pointer"
                     />
                     <div class="flex items-center space-x-1.5">
                       <div class="w-4 h-4 shrink-0">
@@ -300,23 +293,9 @@
                       </div>
                       <Label
                         for={`library-${library.libraryId}`}
-                        class={library.selected
-                          ? "cursor-pointer"
-                          : "cursor-not-allowed"}
+                        class="cursor-pointer"
                       >
                         {library.libraryName}
-                        {#if !library.selected}
-                          <Tooltip.Root>
-                            <Tooltip.Trigger>
-                              <Info
-                                class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                              />
-                            </Tooltip.Trigger>
-                            <Tooltip.Content>
-                              <p>This library is not enabled in Settings</p>
-                            </Tooltip.Content>
-                          </Tooltip.Root>
-                        {/if}
                       </Label>
                     </div>
                   </div>
@@ -664,39 +643,6 @@
                     (formData.max_size = parseBytes(e.currentTarget.value))}
                 />
               </div>
-            </div>
-          </Card.Content>
-        </Card.Root>
-
-        <!-- actions -->
-        <Card.Root>
-          <Card.Header>
-            <Card.Title>Actions</Card.Title>
-            <Card.Description>
-              What should happen when items match this rule
-            </Card.Description>
-          </Card.Header>
-          <Card.Content>
-            <div class="flex items-center space-x-2">
-              <Switch
-                id="auto-tag"
-                checked={formData.auto_tag}
-                onCheckedChange={(checked) => (formData.auto_tag = checked)}
-                class="cursor-pointer"
-              />
-              <Label for="auto-tag">
-                Automatically Tag Matching Items
-                <Tooltip.Root>
-                  <Tooltip.Trigger>
-                    <Info
-                      class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                    />
-                  </Tooltip.Trigger>
-                  <Tooltip.Content>
-                    <p>Tag items as cleanup candidates when they match</p>
-                  </Tooltip.Content>
-                </Tooltip.Root>
-              </Label>
             </div>
           </Card.Content>
         </Card.Root>
