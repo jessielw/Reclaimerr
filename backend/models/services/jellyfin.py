@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from backend.models.media import ExternalIDs
+from backend.models.media import ExternalIDs, MovieVersionData
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,12 +34,10 @@ class JellyfinMovie:
     year: int | None
     premiere_date: datetime | None
     date_created: datetime | None
-    container: str
     library_id: str
     library_name: str
-    path: str | None
     external_ids: ExternalIDs | None
-    size: int
+    versions: list[MovieVersionData]
     user_data: JellyfinUserData | None
 
 

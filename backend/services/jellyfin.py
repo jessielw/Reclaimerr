@@ -15,7 +15,12 @@ from tenacity import (
 from backend.core.logger import LOG
 from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
-from backend.models.media import AggregatedMovieData, AggregatedSeriesData, ExternalIDs
+from backend.models.media import (
+    AggregatedMovieData,
+    AggregatedSeriesData,
+    ExternalIDs,
+    MovieVersionData,
+)
 from backend.models.services.jellyfin import (
     JellyfinMovie,
     JellyfinSeries,
@@ -186,7 +191,27 @@ class JellyfinService:
                 tmdb_collection=provider_ids.get("TmdbCollection"),
                 tvdb=provider_ids.get("Tvdb"),
             )
-            has_file = item.get("MediaSources")
+            # build one MovieVersionData per MediaSource (each = one physical file)
+            added_at = (
+                datetime.fromisoformat(item["DateCreated"])
+                if item.get("DateCreated")
+                else None
+            )
+            versions = [
+                MovieVersionData(
+                    service=Service.JELLYFIN,
+                    service_item_id=item["Id"],
+                    service_media_id=source["Id"],
+                    library_id=library_id,
+                    library_name=library_name,
+                    path=source.get("Path"),
+                    size=source.get("Size", 0),
+                    added_at=added_at,
+                    container=source.get("Container"),
+                )
+                for source in item.get("MediaSources", [])
+                if source.get("Id")
+            ]
             movie = JellyfinMovie(
                 id=item["Id"],
                 name=item["Name"],
@@ -194,16 +219,11 @@ class JellyfinService:
                 premiere_date=datetime.fromisoformat(item["PremiereDate"])
                 if item.get("PremiereDate")
                 else None,
-                date_created=datetime.fromisoformat(item["DateCreated"])
-                if item.get("DateCreated")
-                else None,
-                container=item.get("Container"),
+                date_created=added_at,
                 library_id=library_id,
                 library_name=library_name,
-                path=item.get("Path"),
                 external_ids=external_ids,
-                # we're just getting index 0 because there should only be one file
-                size=item["MediaSources"][0]["Size"] if has_file else 0,
+                versions=versions,
                 user_data=user_data,
             )
             data.append(movie)
@@ -456,20 +476,13 @@ class JellyfinService:
 
                 for movie in user_movies:
                     if movie.id not in movie_data:
-                        # first time seeing this movie
+                        # first time seeing this movie - capture versions once (same files for all users)
                         movie_data[movie.id] = {
-                            "id": movie.id,
                             "name": movie.name,
                             "year": movie.year,
-                            "library_id": movie.library_id,
-                            "library_name": movie.library_name,
-                            "path": movie.path,
-                            "service": Service.JELLYFIN,
-                            "added_at": movie.date_created,
                             "premiere_date": movie.premiere_date,
-                            "container": movie.container,
                             "external_ids": movie.external_ids,
-                            "size": movie.size,
+                            "versions": list(movie.versions),
                             "view_count": movie.user_data.play_count
                             if movie.user_data
                             else 0,
@@ -500,8 +513,15 @@ class JellyfinService:
         # convert to final format
         return [
             AggregatedMovieData(
-                **data,
+                name=data["name"],
+                year=data["year"],
+                premiere_date=data["premiere_date"],
+                external_ids=data["external_ids"],
+                versions=data["versions"],
+                view_count=data["view_count"],
+                last_viewed_at=data["last_viewed_at"],
                 never_watched=(data["played_by_user_count"] == 0),
+                played_by_user_count=data["played_by_user_count"],
             )
             for data in movie_data.values()
         ]
