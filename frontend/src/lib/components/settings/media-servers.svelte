@@ -35,6 +35,33 @@
     saving: boolean;
   };
 
+  type AffectedRuleSummary = {
+    id: number;
+    name: string;
+    removed_library_ids: string[];
+    remaining_library_ids: string[];
+  };
+
+  type SyncMediaRunResponse = {
+    status: string;
+    message: string;
+    job_id: number | null;
+    already_active: boolean;
+  };
+
+  type BackgroundJobPollResponse = {
+    id: number;
+    status: string;
+    error_message: string | null;
+    payload?: {
+      result?: {
+        library_sync?: {
+          affected_rules: AffectedRuleSummary[];
+        };
+      };
+    };
+  };
+
   const SERVER_ICONS: Record<ServerKey, any> = {
     jellyfin: JellyfinSVG,
     plex: PlexSVG,
@@ -155,6 +182,13 @@
         apiKey: "",
         isMain: response.data.is_main,
       };
+      // update baseline so subsequent saves detect changes correctly
+      originalConfigs[serverKey] = {
+        enabled: response.data.enabled,
+        baseUrl: response.data.base_url,
+        apiKey: "",
+        isMain: response.data.is_main,
+      };
       servers[serverKey].apiKeyIsSet = true;
       if (response.data.is_main) {
         savedMainServer = serverKey;
@@ -192,23 +226,65 @@
       const saveOrder: ServerKey[] = pendingMain
         ? [pendingMain, ...SERVERS.filter((k) => k !== pendingMain)]
         : [...SERVERS];
+      let anySaved = false;
       for (const serverKey of saveOrder) {
         const config = servers[serverKey].config;
         const original = originalConfigs[serverKey];
-        // only save if API key is present OR enabled/baseUrl changed
+        // only save if API key is present OR any config field changed
         const shouldSave =
           !!config.apiKey ||
           config.enabled !== original.enabled ||
-          config.baseUrl !== original.baseUrl;
+          config.baseUrl !== original.baseUrl ||
+          config.isMain !== original.isMain;
         if (config.baseUrl && shouldSave) {
           const action = await saveServer(serverKey);
-          if (serverKey === mainServerKey && action) {
-            syncBanner = action;
+          anySaved = true;
+          // resync takes priority (main server was swapped, background task running)
+          if (serverKey === mainServerKey && action === "resync") {
+            syncBanner = "resync";
           }
         }
       }
+      // show the sync banner after any successful save (unless resync already set)
+      if (anySaved && syncBanner === null) {
+        syncBanner = "sync";
+      } else if (!anySaved) {
+        toast.info("No changes to save.");
+      }
     } finally {
       globalSaving = false;
+    }
+  };
+
+  const sleep = (ms: number) =>
+    new Promise((resolve) => window.setTimeout(resolve, ms));
+
+  const watchSyncJob = async (jobId: number) => {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const job = await get_api<BackgroundJobPollResponse>(
+        `/api/tasks/background-jobs/${jobId}`,
+      );
+
+      if (job.status === "completed") {
+        const affectedRules =
+          job.payload?.result?.library_sync?.affected_rules ?? [];
+        if (affectedRules.length > 0) {
+          toast.warning(
+            `Media sync updated ${affectedRules.length} rule(s) because some libraries no longer exist.`,
+            { duration: 8000 },
+          );
+        }
+        return;
+      }
+
+      if (job.status === "failed" || job.status === "canceled") {
+        if (job.error_message) {
+          toast.error(`Media sync failed: ${job.error_message}`);
+        }
+        return;
+      }
+
+      await sleep(1500);
     }
   };
 
@@ -216,10 +292,21 @@
   const syncMedia = async () => {
     syncingMedia = true;
     try {
-      await post_api("/api/tasks/tasks/sync_media/run", {});
-      toast.success(
-        "Media sync started! Check the Tasks page to monitor progress.",
+      const response = await post_api<SyncMediaRunResponse>(
+        "/api/tasks/tasks/sync_media/run",
       );
+
+      if (response.job_id !== null) {
+        void watchSyncJob(response.job_id);
+      }
+
+      if (response.already_active) {
+        toast.info(response.message);
+      } else {
+        toast.success(
+          "Media sync started! Check the Tasks page to monitor progress.",
+        );
+      }
       syncBanner = null;
     } catch (err: any) {
       toast.error(`Failed to start sync: ${err.message}`);
@@ -499,12 +586,14 @@
                 Full resync triggered for the new main server.
               </p>
               <p class="text-xs text-muted-foreground">
-                Old media data is being replaced. Check the Tasks page to
-                monitor progress.
+                Old media data is being replaced. Check the <strong
+                  >Tasks</strong
+                > page to monitor progress.
               </p>
             {:else}
               <p class="text-sm font-medium">
-                Settings saved - ready to import your media library.
+                Settings saved - you can sync now to get the latest media data
+                or wait for the next automatic sync.
               </p>
               {#if linkedServers.every((k) => !servers[k].apiKeyIsSet)}
                 <p class="text-xs text-muted-foreground">
