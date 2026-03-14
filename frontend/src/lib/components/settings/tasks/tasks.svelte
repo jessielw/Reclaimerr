@@ -70,7 +70,7 @@
   const runTaskNow = async (taskId: string, taskName: string) => {
     actionInProgress[taskId] = true;
     try {
-      await post_api(`/api/tasks/tasks/${taskId}/run`, {});
+      await post_api(`/api/tasks/tasks/${taskId}/run`);
       toast.success(`${taskName} will run shortly`);
       // refresh to show updated status
       await fetchTasks();
