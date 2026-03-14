@@ -31,6 +31,7 @@ export enum MediaType {
 }
 
 export enum SettingsTab {
+  MediaServers = "media_servers",
   Jellyfin = "jellyfin",
   Plex = "plex",
   Radarr = "radarr",
@@ -38,12 +39,15 @@ export enum SettingsTab {
   Seerr = "seerr",
   General = "general",
   Tasks = "tasks",
+  BackgroundJobs = "background_jobs",
   Notifications = "notifications",
   Account = "account",
   Rules = "rules",
   Users = "users",
   About = "about",
 }
+
+export const MEDIA_SERVERS = [SettingsTab.Jellyfin, SettingsTab.Plex] as const;
 
 export type LibraryType = {
   id: number;
@@ -100,7 +104,6 @@ export interface ReclaimRule {
   max_days_since_last_watched: number | null;
   min_size: number | null;
   max_size: number | null;
-  auto_tag: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -112,10 +115,43 @@ export enum ScheduleType {
 
 export enum TaskStatus {
   Scheduled = "scheduled",
+  Queued = "queued",
   Completed = "completed",
   Error = "error",
   Running = "running",
   Disabled = "disabled",
+}
+
+export enum BackgroundJobStatus {
+  Pending = "pending",
+  Running = "running",
+  Completed = "completed",
+  Failed = "failed",
+  Canceled = "canceled",
+}
+
+export enum BackgroundJobType {
+  ServiceToggle = "service_toggle",
+  TaskRun = "task_run",
+}
+
+export interface BackgroundJobRecord {
+  id: number;
+  job_type: BackgroundJobType;
+  status: BackgroundJobStatus;
+  summary: string | null;
+  dedupe_key: string | null;
+  attempts: number;
+  max_attempts: number;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  scheduled_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  payload: Record<string, unknown>;
 }
 
 // media browsing types
@@ -139,10 +175,6 @@ export interface MovieWithStatus {
   year: number;
   tmdb_id: number;
   size: number | null;
-  plex_path: string | null;
-  jellyfin_path: string | null;
-  plex_library_name: string | null;
-  jellyfin_library_name: string | null;
   radarr_id: number | null;
   imdb_id: string | null;
   tmdb_title: string | null;
@@ -165,16 +197,21 @@ export interface MovieWithStatus {
   added_at: string | null;
 }
 
+export interface SeriesServiceRef {
+  service: string;
+  service_id: string;
+  library_id: string;
+  library_name: string;
+  path: string | null;
+}
+
 export interface SeriesWithStatus {
   id: number;
   title: string;
   year: number;
   tmdb_id: number;
   size: number | null;
-  plex_path: string | null;
-  jellyfin_path: string | null;
-  plex_library_name: string | null;
-  jellyfin_library_name: string | null;
+  service_refs: SeriesServiceRef[];
   sonarr_id: number | null;
   imdb_id: string | null;
   tvdb_id: string | null;
