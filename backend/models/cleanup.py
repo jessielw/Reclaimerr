@@ -40,9 +40,6 @@ class CleanupRuleBase(BaseModel):
     min_size: int | None = None
     max_size: int | None = None
 
-    # actions
-    auto_tag: bool = True
-
 
 class CleanupRuleCreate(CleanupRuleBase):
     """Model for creating a new cleanup rule."""
@@ -82,9 +79,6 @@ class CleanupRuleUpdate(BaseModel):
     # size criteria (bytes)
     min_size: int | None = None
     max_size: int | None = None
-
-    # actions
-    auto_tag: bool | None = None
 
 
 class CleanupRuleResponse(CleanupRuleBase):
