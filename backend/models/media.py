@@ -20,28 +20,37 @@ class ExternalIDs:
 
 
 @dataclass(slots=True, frozen=True)
-class AggregatedMovieData:
-    """Movie with aggregated watch data across all users."""
+class MovieVersionData:
+    """Single physical file version of a movie."""
 
-    id: str
+    service: Literal[Service.PLEX, Service.JELLYFIN]
+    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    service_item_id: str
+    # plex Media.id or jellyfin MediaSource.Id (unique per physical file)
+    service_media_id: str
+    library_id: str
+    library_name: str
+    path: str | None
+    size: int
+    added_at: datetime | None
+    container: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class AggregatedMovieData:
+    """Movie with aggregated watch data across all users, plus all physical file versions."""
+
     name: str
     year: int
-    service: Literal[Service.PLEX, Service.JELLYFIN]
-    library_name: str
-    library_id: str
-    path: str | None
-    added_at: datetime | None
-    premiere_date: datetime | None
     external_ids: ExternalIDs
-    size: int
+    premiere_date: datetime | None
+    versions: list[MovieVersionData]
     # watch data
     view_count: int
     last_viewed_at: datetime | None
     never_watched: bool
     # jellyfin-specific (None for Plex)
     played_by_user_count: int | None = None
-    # jellyfin-specific container info
-    container: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,6 +82,21 @@ class ArrTag:
     label: str
 
 
+class MovieVersionResponse(BaseModel):
+    """API representation of a single physical file version."""
+
+    id: int
+    service: str
+    service_item_id: str
+    service_media_id: str
+    library_id: str
+    library_name: str
+    path: str | None
+    size: int
+    added_at: str | None
+    container: str | None
+
+
 class MediaStatusInfo(BaseModel):
     """Status information for a media item."""
 
@@ -102,10 +126,7 @@ class MovieWithStatus(BaseModel):
 
     # file info
     size: int | None
-    plex_path: str | None
-    jellyfin_path: str | None
-    plex_library_name: str | None
-    jellyfin_library_name: str | None
+    versions: list[MovieVersionResponse]
 
     # external IDs
     radarr_id: int | None
@@ -138,6 +159,16 @@ class MovieWithStatus(BaseModel):
     added_at: str | None
 
 
+class SeriesServiceRefResponse(BaseModel):
+    """API representation of a service-specific reference for a series."""
+
+    service: str
+    service_id: str
+    library_id: str
+    library_name: str
+    path: str | None
+
+
 class SeriesWithStatus(BaseModel):
     """Series with all metadata and status information."""
 
@@ -149,10 +180,7 @@ class SeriesWithStatus(BaseModel):
 
     # file info
     size: int | None
-    plex_path: str | None
-    jellyfin_path: str | None
-    plex_library_name: str | None
-    jellyfin_library_name: str | None
+    service_refs: list[SeriesServiceRefResponse]
 
     # external IDs
     sonarr_id: int | None
