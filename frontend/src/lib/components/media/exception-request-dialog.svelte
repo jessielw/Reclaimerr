@@ -161,12 +161,10 @@
         <div class="space-y-2">
           <Label class="text-foreground">Protection duration</Label>
           <Select.Root type="single" bind:value={duration}>
-            <Select.Trigger
-              class="w-full bg-card text-card-foreground focus:ring-1 focus:ring-focus-ring"
-            >
+            <Select.Trigger class="w-full">
               {durationOptions.find((opt) => opt.value === duration)?.label}
             </Select.Trigger>
-            <Select.Content class="bg-card border-ring">
+            <Select.Content>
               {#each durationOptions as option}
                 <Select.Item
                   value={option.value}
