@@ -13,7 +13,7 @@
   import OctagonX from "@lucide/svelte/icons/octagon-x";
   import { toast } from "svelte-sonner";
   import { formatDistanceToNow } from "$lib/utils/date";
-  import EditTaskScheduleDialog from "./EditTaskScheduleDialog.svelte";
+  import EditTaskScheduleDialog from "./edit-task-schedule-dialog.svelte";
   import { ScheduleType, TaskStatus } from "$lib/types/shared";
 
   interface Props {
