@@ -43,48 +43,28 @@ def get_task_status(task: Task) -> tuple[str, str | None]:
         - If recently completed/failed (within TTL): (COMPLETED/FAILED, error)
         - Otherwise: (PENDING, None) - task is scheduled but not active
     """
-    # check if currently running
     if task in _running_tasks:
         return (TaskStatus.RUNNING, None)
 
-    # check if recently completed/failed (with TTL)
     if task in _recent_completions:
         status, completed_time, error = _recent_completions[task]
-
-        # check if still within TTL
         elapsed = (datetime.now(timezone.utc) - completed_time).total_seconds() / 60
         if elapsed < COMPLETION_TTL_MINUTES:
             return (status, error)
-        else:
-            # TTL expired, remove from recent completions
-            del _recent_completions[task]
+        del _recent_completions[task]
 
-    # default: task is scheduled but not active
     return (TaskStatus.SCHEDULED, None)
 
 
 @asynccontextmanager
 async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
     """
-    Context manager to track task execution status.
-
-    Usage:
-        async with track_task_execution(Task.SYNC_PLEX_MEDIA):
-            await sync_movies(service=Service.PLEX)
-            await sync_series(service=Service.PLEX)
-
-    This will:
-    - Add task to in-memory running set (checked by API for real-time status)
-    - Write COMPLETED/FAILED to DB only when task finishes (historical record)
-    - Remove task from running set when complete
+    Context manager to track task execution status and persist task history.
     """
     start_time = datetime.now(timezone.utc)
-
-    # add to in-memory running set
     _running_tasks.add(task)
     LOG.info(f"Task {task.friendly_name()} started")
 
-    # get task schedule for DB relationship
     task_schedule_id = None
     async with async_db() as session:
         result = await session.execute(
@@ -97,7 +77,6 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
     try:
         yield
 
-        # task completed successfully - store in memory and write to DB
         completion_time = datetime.now(timezone.utc)
         _recent_completions[task] = (TaskStatus.COMPLETED, completion_time, None)
 
@@ -114,10 +93,9 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
             await session.commit()
             LOG.info(f"Task {task.friendly_name()} completed successfully")
 
-    except Exception as e:
-        # task failed - store in memory and write to DB
+    except Exception as exc:
         completion_time = datetime.now(timezone.utc)
-        _recent_completions[task] = (TaskStatus.ERROR, completion_time, str(e))
+        _recent_completions[task] = (TaskStatus.ERROR, completion_time, str(exc))
 
         async with async_db() as session:
             task_run = TaskRun(
@@ -127,24 +105,21 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
             )
             task_run.started_at = start_time
             task_run.completed_at = completion_time
-            task_run.error_message = str(e)
+            task_run.error_message = str(exc)
 
             session.add(task_run)
             await session.commit()
-            LOG.error(f"Task {task.friendly_name()} failed: {e}")
+            LOG.error(f"Task {task.friendly_name()} failed: {exc}")
 
-            # send notification to admins about task failure
             try:
                 await notify_task_failure(
                     task_name=task.friendly_name(),
-                    error_message=str(e),
+                    error_message=str(exc),
                 )
             except Exception as notif_error:
-                # don't let notification failures affect task tracking
                 LOG.error(f"Failed to send task failure notification: {notif_error}")
 
-        raise  # raise the exception
+        raise
 
     finally:
-        # always remove from running set
         _running_tasks.discard(task)

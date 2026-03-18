@@ -7,36 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
+from backend.core.service_manager import service_manager
+from backend.core.task_runtime import MAIN_SERVER_REQUIRED_TASKS, enqueue_scheduled_task
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
-from backend.tasks.cleanup import (
-    delete_cleanup_candidates,
-    scan_cleanup_candidates,
-    tag_cleanup_candidates,
-)
-from backend.tasks.house_keeping import weekly_house_keeping
-from backend.tasks.sync import (
-    resync_media,
-    sync_linked_data,
-    sync_media,
-    sync_media_libraries,
-)
 
 scheduler = AsyncIOScheduler()
-
-
-# map Task enum to their Python functions
-TASK_FUNCTION_MAP = {
-    Task.SYNC_MEDIA: sync_media,
-    Task.SYNC_MEDIA_LIBRARIES: sync_media_libraries,
-    Task.SYNC_LINKED_DATA: sync_linked_data,
-    Task.RESYNC_MEDIA: resync_media,
-    Task.SCAN_CLEANUP_CANDIDATES: scan_cleanup_candidates,
-    Task.TAG_CLEANUP_CANDIDATES: tag_cleanup_candidates,
-    # Task.DELETE_CLEANUP_CANDIDATES: delete_cleanup_candidates, # TODO: enable once delete task is ready and tested
-    Task.WEEKLY_HOUSE_KEEPING: weekly_house_keeping,
-}
 
 
 DEFAULT_SCHEDULES = (
@@ -159,14 +136,20 @@ async def setup_scheduler() -> None:
         task_schedules = result.scalars().all()
 
         for task_schedule in task_schedules:
-            task_func = TASK_FUNCTION_MAP.get(task_schedule.task)
-            if not task_func:
-                LOG.warning(f"No function found for task: {task_schedule.task}")
-                continue
-
             # create trigger based on schedule type
             if task_schedule.schedule_type is ScheduleType.MANUAL:
                 continue  # manual tasks are not scheduled
+
+            # skip tasks that require a main media server if none is configured
+            if (
+                task_schedule.task in MAIN_SERVER_REQUIRED_TASKS
+                and not service_manager.main_media_server
+            ):
+                LOG.info(
+                    f"Skipping {task_schedule.task.friendly_name()} - no main media server configured"
+                )
+                continue
+
             elif task_schedule.schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(task_schedule.schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
@@ -175,8 +158,9 @@ async def setup_scheduler() -> None:
 
             # add job to scheduler (APScheduler still uses job terminology)
             scheduler.add_job(
-                task_func,
+                enqueue_scheduled_task,
                 trigger,
+                args=[task_schedule.task],
                 id=str(task_schedule.task),
                 name=task_schedule.task.friendly_name(),
                 replace_existing=True,
@@ -184,6 +168,46 @@ async def setup_scheduler() -> None:
             LOG.info(f"Scheduled task: {task_schedule.task.friendly_name()}")
 
     LOG.info("Scheduler configured with tasks")
+
+
+async def refresh_main_server_tasks() -> None:
+    """Add or remove main-server-dependent tasks from the scheduler based on current state."""
+    has_main = service_manager.main_media_server is not None
+    async with async_db() as db:
+        for task in MAIN_SERVER_REQUIRED_TASKS:
+            result = await db.execute(
+                select(TaskSchedule).where(TaskSchedule.task == task)
+            )
+            db_schedule = result.scalar_one_or_none()
+            if (
+                not db_schedule
+                or not db_schedule.enabled
+                or db_schedule.schedule_type is ScheduleType.MANUAL
+            ):
+                continue
+
+            job = scheduler.get_job(task.value)
+            if has_main and not job:
+                if db_schedule.schedule_type is ScheduleType.INTERVAL:
+                    trigger = IntervalTrigger(seconds=int(db_schedule.schedule_value))
+                else:
+                    trigger = CronTrigger.from_crontab(db_schedule.schedule_value)
+                scheduler.add_job(
+                    enqueue_scheduled_task,
+                    trigger,
+                    args=[task],
+                    id=task.value,
+                    name=task.friendly_name(),
+                    replace_existing=True,
+                )
+                LOG.info(
+                    f"Scheduled {task.friendly_name()} (main server now configured)"
+                )
+            elif not has_main and job:
+                job.remove()
+                LOG.info(
+                    f"Unscheduled {task.friendly_name()} (no main server configured)"
+                )
 
 
 async def update_task_schedule(
@@ -206,10 +230,6 @@ async def update_task_schedule(
 
         # update scheduler
         if enabled:
-            task_func = TASK_FUNCTION_MAP.get(task)
-            if not task_func:
-                raise ValueError(f"No function found for task: {task}")
-
             # create trigger
             if schedule_type is ScheduleType.MANUAL:
                 return task_schedule
@@ -221,8 +241,9 @@ async def update_task_schedule(
 
             # update or add job
             scheduler.add_job(
-                task_func,
+                enqueue_scheduled_task,
                 trigger,
+                args=[task],
                 id=str(task),
                 name=task.friendly_name(),
                 replace_existing=True,
