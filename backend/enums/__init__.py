@@ -37,10 +37,24 @@ class ExceptionRequestStatus(StrEnum):
 
 class TaskStatus(StrEnum):
     SCHEDULED = auto()
+    QUEUED = auto()
     COMPLETED = auto()
     ERROR = auto()
     RUNNING = auto()
     DISABLED = auto()
+
+
+class BackgroundJobStatus(StrEnum):
+    PENDING = auto()
+    RUNNING = auto()
+    COMPLETED = auto()
+    FAILED = auto()
+    CANCELED = auto()
+
+
+class BackgroundJobType(StrEnum):
+    SERVICE_TOGGLE = auto()
+    TASK_RUN = auto()
 
 
 class SeerrRequestStatus(Enum):
