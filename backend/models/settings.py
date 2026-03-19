@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
 from backend.enums import Service
+from backend.types import MEDIA_SERVERS
 
 
 def _validate_notification_url(url: str) -> None:
@@ -35,7 +36,7 @@ class ServiceConfigUpdate(BaseModel):
         self.base_url = self.base_url.strip()
         if self.api_key is not None:
             self.api_key = self.api_key.strip() or None  # treat empty string as None
-        if self.is_main and self.service_type not in (Service.PLEX, Service.JELLYFIN):
+        if self.is_main and self.service_type not in MEDIA_SERVERS:
             raise PydanticCustomError(
                 "is_main_invalid",
                 "Only Plex and Jellyfin can be designated as the main media server",
