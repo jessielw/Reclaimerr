@@ -81,6 +81,8 @@ export enum NotificationType {
 export interface GeneralSettings {
   auto_tag_enabled: boolean;
   cleanup_tag_suffix: string;
+  worker_poll_min_seconds: number | null;
+  worker_poll_max_seconds: number | null;
 }
 
 export interface ReclaimRule {

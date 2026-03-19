@@ -23,7 +23,15 @@
   let aarrTagging = $state({
     autoTagEnabled: false,
     cleanupTagSuffix: "",
+    workerPollMinSeconds: "",
+    workerPollMaxSeconds: "",
   });
+
+  const parseOptionalSeconds = (value: string): number | null => {
+    if (!value.trim()) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
 
   // save settings
   const saveSettings = async () => {
@@ -37,6 +45,12 @@
       await put_api("/api/settings/general", {
         auto_tag_enabled: aarrTagging.autoTagEnabled,
         cleanup_tag_suffix: aarrTagging.cleanupTagSuffix,
+        worker_poll_min_seconds: parseOptionalSeconds(
+          aarrTagging.workerPollMinSeconds,
+        ),
+        worker_poll_max_seconds: parseOptionalSeconds(
+          aarrTagging.workerPollMaxSeconds,
+        ),
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -52,15 +66,60 @@
   // check cleanup tag suffix for invalid characters and notify user if not valid
   const validateCleanupTagSuffix = (): string | void => {
     // allow empty suffix
-    if (!aarrTagging.cleanupTagSuffix) return;
+    if (aarrTagging.cleanupTagSuffix) {
+      // must start with hyphen or underscore, and only contain allowed chars
+      const valid = /^[-_][a-z_-]*$/.test(aarrTagging.cleanupTagSuffix);
+      if (!valid) {
+        return (
+          "Cleanup tag suffix must start with a hyphen or underscore and only contain lowercase letters, " +
+          "underscores, or hyphens"
+        );
+      }
+    }
 
-    // must start with hyphen or underscore, and only contain allowed chars
-    const valid = /^[-_][a-z_-]*$/.test(aarrTagging.cleanupTagSuffix);
-    if (!valid) {
-      return (
-        "Cleanup tag suffix must start with a hyphen or underscore and only contain lowercase letters, " +
-        "underscores, or hyphens"
-      );
+    const workerPollMinSeconds = parseOptionalSeconds(
+      aarrTagging.workerPollMinSeconds,
+    );
+    const workerPollMaxSeconds = parseOptionalSeconds(
+      aarrTagging.workerPollMaxSeconds,
+    );
+
+    if (
+      aarrTagging.workerPollMinSeconds.trim() &&
+      workerPollMinSeconds === null
+    ) {
+      return "Worker poll minimum must be a valid number of seconds";
+    }
+
+    if (
+      aarrTagging.workerPollMaxSeconds.trim() &&
+      workerPollMaxSeconds === null
+    ) {
+      return "Worker poll maximum must be a valid number of seconds";
+    }
+
+    if (workerPollMinSeconds !== null && workerPollMinSeconds <= 0) {
+      return "Worker poll minimum must be greater than 0 seconds";
+    }
+
+    if (workerPollMinSeconds !== null && workerPollMinSeconds > 60) {
+      return "Worker poll minimum cannot exceed 60 seconds";
+    }
+
+    if (workerPollMaxSeconds !== null && workerPollMaxSeconds <= 0) {
+      return "Worker poll maximum must be greater than 0 seconds";
+    }
+
+    if (workerPollMaxSeconds !== null && workerPollMaxSeconds > 60) {
+      return "Worker poll maximum cannot exceed 60 seconds";
+    }
+
+    if (
+      workerPollMinSeconds !== null &&
+      workerPollMaxSeconds !== null &&
+      workerPollMinSeconds > workerPollMaxSeconds
+    ) {
+      return "Worker poll minimum cannot be greater than worker poll maximum";
     }
   };
 
@@ -71,6 +130,10 @@
         aarrTagging = {
           autoTagEnabled: settings.auto_tag_enabled,
           cleanupTagSuffix: settings.cleanup_tag_suffix,
+          workerPollMinSeconds:
+            settings.worker_poll_min_seconds?.toString() ?? "",
+          workerPollMaxSeconds:
+            settings.worker_poll_max_seconds?.toString() ?? "",
         };
       }
     } catch (error) {
@@ -148,6 +211,54 @@
             class="font-bold">Tag Cleanup Candidates</span
           > task.
         </p>
+      </div>
+    </div>
+
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm mt-6">
+      <h3 class="font-semibold text-foreground items-center">Worker polling</h3>
+      <p class="text-muted-foreground text-sm mb-3">
+        Configure the background worker's polling behavior when idle. Adjusting
+        these settings can help balance prompt job processing with resource
+        usage. Recommended values are between 0.5 and 5 seconds (max 60
+        seconds).
+      </p>
+
+      <div class="grid gap-4 md:grid-cols-2">
+        <!-- minimum poll seconds -->
+        <div>
+          <Label for="workerPollMinSeconds" class="mb-2">
+            <span class="text-sm text-foreground">Minimum Poll Seconds</span>
+          </Label>
+          <Input
+            id="workerPollMinSeconds"
+            name="workerPollMinSeconds"
+            type="number"
+            min="0.1"
+            max="60"
+            step="0.1"
+            class="input-hover-el placeholder-text-muted-foreground"
+            placeholder="Default: 0.5"
+            bind:value={aarrTagging.workerPollMinSeconds}
+          />
+        </div>
+
+        <!-- maximum poll seconds -->
+        <div>
+          <Label for="workerPollMaxSeconds" class="mb-2">
+            <span class="text-sm text-foreground">Maximum Poll Seconds</span>
+          </Label>
+          <Input
+            id="workerPollMaxSeconds"
+            name="workerPollMaxSeconds"
+            type="number"
+            min="0.1"
+            max="60"
+            step="0.1"
+            class="input-hover-el placeholder-text-muted-foreground"
+            placeholder="Default: 5"
+            bind:value={aarrTagging.workerPollMaxSeconds}
+          />
+        </div>
       </div>
     </div>
 
