@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from backend.enums import Service
+from backend.types import MediaServerType
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,7 +23,7 @@ class ExternalIDs:
 class MovieVersionData:
     """Single physical file version of a movie."""
 
-    service: Literal[Service.PLEX, Service.JELLYFIN]
+    service: MediaServerType
     # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
     service_item_id: str
     # plex Media.id or jellyfin MediaSource.Id (unique per physical file)
@@ -60,7 +60,7 @@ class AggregatedSeriesData:
     id: str
     name: str
     year: int
-    service: Literal[Service.PLEX, Service.JELLYFIN]
+    service: MediaServerType
     library_name: str
     library_id: str
     path: str | None
