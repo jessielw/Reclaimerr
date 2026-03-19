@@ -47,6 +47,11 @@ class UpdateMediaLibrariesRequest(BaseModel):
     service_type: Literal[Service.PLEX, Service.JELLYFIN] | None = None
 
 
+class LibrarySelectionUpdate(BaseModel):
+    id: int
+    selected: bool
+
+
 class NotificationSettingItem(BaseModel):
     """Model for creating or updating notification settings."""
 
@@ -82,6 +87,8 @@ class NotificationTestRequest(BaseModel):
 class GeneralSettingsResponse(BaseModel):
     auto_tag_enabled: bool
     cleanup_tag_suffix: str
+    worker_poll_min_seconds: float | None = None
+    worker_poll_max_seconds: float | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -119,5 +126,35 @@ class GeneralSettingsResponse(BaseModel):
             )
 
         return v
+
+    @field_validator("worker_poll_min_seconds", "worker_poll_max_seconds")
+    @classmethod
+    def validate_worker_poll_seconds(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if v <= 0:
+            raise PydanticCustomError(
+                "worker_poll_seconds",
+                "Worker polling values must be greater than 0",
+            )
+        if v > 60:
+            raise PydanticCustomError(
+                "worker_poll_seconds",
+                "Worker polling values cannot exceed 60 seconds",
+            )
+        return float(v)
+
+    @model_validator(mode="after")
+    def validate_worker_poll_range(self) -> GeneralSettingsResponse:
+        if (
+            self.worker_poll_min_seconds is not None
+            and self.worker_poll_max_seconds is not None
+            and self.worker_poll_min_seconds > self.worker_poll_max_seconds
+        ):
+            raise PydanticCustomError(
+                "worker_poll_range",
+                "Worker poll min seconds cannot be greater than worker poll max seconds",
+            )
+        return self
 
     model_config = ConfigDict(from_attributes=True)
