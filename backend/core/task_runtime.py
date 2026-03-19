@@ -8,7 +8,7 @@ from sqlalchemy import select
 from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import BackgroundJob, ServiceConfig
-from backend.enums import BackgroundJobStatus, BackgroundJobType, Service, Task
+from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
 from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
 from backend.tasks.cleanup import scan_cleanup_candidates, tag_cleanup_candidates
@@ -19,6 +19,7 @@ from backend.tasks.sync import (
     sync_media,
     sync_media_libraries,
 )
+from backend.types import MEDIA_SERVERS
 
 MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
     {
@@ -82,7 +83,7 @@ async def _run_linked_data_sync() -> None:
     async with async_db() as session:
         result = await session.execute(
             select(ServiceConfig).where(
-                ServiceConfig.service_type.in_([Service.PLEX, Service.JELLYFIN]),
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
                 ServiceConfig.enabled.is_(True),
             )
         )
