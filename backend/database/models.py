@@ -167,6 +167,8 @@ class GeneralSettings(Base):
     # cleanup and tagging settings
     auto_tag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     cleanup_tag_suffix: Mapped[str] = mapped_column(String(15), default="")
+    worker_poll_min_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(

@@ -53,6 +53,8 @@ async def update_general_settings(
     # update fields
     settings.auto_tag_enabled = request.auto_tag_enabled
     settings.cleanup_tag_suffix = request.cleanup_tag_suffix
+    settings.worker_poll_min_seconds = request.worker_poll_min_seconds
+    settings.worker_poll_max_seconds = request.worker_poll_max_seconds
 
     # update metadata
     settings.updated_at = datetime.now(timezone.utc)
