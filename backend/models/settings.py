@@ -9,7 +9,7 @@ from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
 from backend.enums import Service
-from backend.types import MEDIA_SERVERS
+from backend.types import MEDIA_SERVERS, MediaServerType
 
 
 def _validate_notification_url(url: str) -> None:
@@ -45,7 +45,7 @@ class ServiceConfigUpdate(BaseModel):
 
 
 class UpdateMediaLibrariesRequest(BaseModel):
-    service_type: Literal[Service.PLEX, Service.JELLYFIN] | None = None
+    service_type: MediaServerType | None = None
 
 
 class LibrarySelectionUpdate(BaseModel):
