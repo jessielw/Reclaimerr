@@ -9,7 +9,7 @@ from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import BackgroundJob, ServiceConfig
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
-from backend.jobs.queue import enqueue_background_job
+from backend.jobs import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
 from backend.tasks.cleanup import scan_cleanup_candidates, tag_cleanup_candidates
 from backend.tasks.house_keeping import weekly_house_keeping
