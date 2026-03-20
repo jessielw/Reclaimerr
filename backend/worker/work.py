@@ -12,12 +12,12 @@ from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.database import async_db, close_db, init_db
 from backend.database.models import GeneralSettings
-from backend.jobs.queue import (
+from backend.jobs import (
     claim_next_background_job,
     complete_background_job,
     fail_background_job,
+    run_background_job,
 )
-from backend.jobs.runner import run_background_job
 
 # polling settings
 DEFAULT_IDLE_POLL_MIN_SECONDS = 0.5
