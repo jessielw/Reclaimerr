@@ -11,7 +11,7 @@ from backend.database import async_db
 from backend.database.models import TaskRun
 from backend.enums import Task
 
-__all__ = ("weekly_house_keeping",)
+__all__ = ["weekly_house_keeping"]
 
 
 async def _trim_task_runs(keep_recent: int) -> None:
