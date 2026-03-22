@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { get_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
+  import Notice from "$lib/components/notice.svelte";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
   import TrendingDown from "@lucide/svelte/icons/trending-down";
@@ -31,6 +32,9 @@
   });
   const libraryTotal = $derived(
     (dashboard?.kpis.total_movies ?? 0) + (dashboard?.kpis.total_series ?? 0),
+  );
+  const showSyncNotice = $derived(
+    (dashboard?.media_server_configured ?? false) && libraryTotal === 0,
   );
   const requestBalance7d = $derived(
     (dashboard?.requests.approved_7d ?? 0) -
@@ -185,6 +189,14 @@
 
       {#if dashboard}
         <div class="space-y-6 overflow-x-hidden">
+          {#if showSyncNotice}
+            <Notice type="warning" title="No Media Found">
+              A media server is configured but no media has been synced yet. Run <strong
+                >Sync Media</strong
+              >
+              in <strong>Tasks</strong> to populate your library.
+            </Notice>
+          {/if}
           <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <!-- movies -->
             <article
