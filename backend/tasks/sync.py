@@ -1,47 +1,56 @@
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
+from sqlalchemy import update as sql_update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
+from backend.core.task_tracking import track_task_execution
 from backend.core.tmdb import AsyncTMDBClient
 from backend.database import async_db
 from backend.database.models import (
     Movie,
+    MovieVersion,
+    ReclaimRule,
     Series,
+    SeriesServiceRef,
     ServiceConfig,
     ServiceMediaLibrary,
 )
-from backend.enums import MediaType, Service, Task
-from backend.models.media import AggregatedMovieData, AggregatedSeriesData
+from backend.enums import MediaType, NotificationType, Service, Task
+from backend.models.media import (
+    AggregatedMovieData,
+    AggregatedSeriesData,
+    MovieVersionData,
+)
 from backend.models.services.radarr import RadarrMovie
 from backend.models.services.sonarr import SonarrSeries
 from backend.services.jellyfin import JellyfinService
+from backend.services.notifications import notify_admins
 from backend.services.plex import PlexService
-from backend.tasks.task_tracker import track_task_execution
+from backend.types import MEDIA_SERVERS, MediaServerType
 
-__all__ = (
-    "sync_plex_media",
-    "sync_jellyfin_media",
-    "sync_service_libraries",
-)
+__all__ = [
+    "sync_media",
+    "resync_media",
+    "sync_media_libraries",
+    "sync_linked_data",
+]
 
+# number of records to process before committing to the database during sync tasks
 COMMIT_BATCH_SIZE = 100
-
-MEDIA_SERVICES: tuple[Literal[Service.PLEX, Service.JELLYFIN], ...] = (
-    Service.PLEX,
-    Service.JELLYFIN,
-)
 
 
 async def _get_configured_media_servers(
     session,
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    service: MediaServerType | None = None,
 ) -> list[ServiceConfig]:
     """Return enabled/valid configured media servers, optionally filtered by service."""
     query = select(ServiceConfig).where(
-        ServiceConfig.service_type.in_(MEDIA_SERVICES),
+        ServiceConfig.service_type.in_(MEDIA_SERVERS),
         ServiceConfig.enabled.is_(True),
         ServiceConfig.base_url.isnot(None),
         ServiceConfig.api_key.isnot(None),
@@ -52,22 +61,16 @@ async def _get_configured_media_servers(
     return result.scalars().all()
 
 
-async def _get_selected_library_names(
-    session,
-    service_type: Service,
-    media_type: MediaType,
-) -> list[str] | None:
-    """Return selected library names for the given service/media type."""
-    lib_query = select(ServiceMediaLibrary).where(
-        ServiceMediaLibrary.service_type == service_type,
-        ServiceMediaLibrary.media_type == media_type,
-        ServiceMediaLibrary.selected.is_(True),
+async def _get_main_media_server(session: AsyncSession) -> ServiceConfig | None:
+    """Return the designated main media server config, or None if not set."""
+    result = await session.execute(
+        select(ServiceConfig).where(
+            ServiceConfig.service_type.in_(MEDIA_SERVERS),
+            ServiceConfig.is_main.is_(True),
+            ServiceConfig.enabled.is_(True),
+        )
     )
-    lib_result = await session.execute(lib_query)
-    selected_libraries = lib_result.scalars().all()
-    if not selected_libraries:
-        return None
-    return [lib.library_name for lib in selected_libraries]
+    return result.scalar_one_or_none()
 
 
 async def _get_media_service_instance(
@@ -82,15 +85,6 @@ async def _get_media_service_instance(
         LOG.error(f"Service {service_type} is not a media server")
         return None
     return service_instance
-
-
-async def _sync_service_media(
-    service: Literal[Service.PLEX, Service.JELLYFIN], task: Task
-) -> None:
-    """Run movie+series sync for a single service with task tracking."""
-    async with track_task_execution(task):
-        await sync_movies(service=service, allow_soft_delete=False)
-        await sync_series(service=service, allow_soft_delete=False)
 
 
 def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
@@ -138,62 +132,132 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     return False
 
 
-def _set_service_fields(
-    db_obj: Movie | Series,
-    aggregated_data: AggregatedMovieData | AggregatedSeriesData,
+async def _upsert_series_service_ref(
+    session: AsyncSession,
+    series_id: int,
+    data: AggregatedSeriesData,
 ) -> None:
-    """Set service-specific ID, library ID, library name, and path based on source service."""
-    if aggregated_data.service is Service.PLEX:
-        db_obj.plex_id = aggregated_data.id
-        db_obj.plex_library_id = aggregated_data.library_id
-        db_obj.plex_library_name = aggregated_data.library_name
-        db_obj.plex_path = aggregated_data.path
-    elif aggregated_data.service is Service.JELLYFIN:
-        db_obj.jellyfin_id = aggregated_data.id
-        db_obj.jellyfin_library_id = aggregated_data.library_id
-        db_obj.jellyfin_library_name = aggregated_data.library_name
-        db_obj.jellyfin_path = aggregated_data.path
+    """Upsert the service reference row for a series (one row per service)."""
+    result = await session.execute(
+        select(SeriesServiceRef).where(
+            SeriesServiceRef.series_id == series_id,
+            SeriesServiceRef.service == data.service,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.service_id = data.id
+        existing.library_id = data.library_id
+        existing.library_name = data.library_name
+        existing.path = data.path
+    else:
+        session.add(
+            SeriesServiceRef(
+                series_id=series_id,
+                service=data.service,
+                service_id=data.id,
+                library_id=data.library_id,
+                library_name=data.library_name,
+                path=data.path,
+            )
+        )
+
+
+async def _upsert_movie_versions(
+    session: AsyncSession,
+    db_movie: Movie,
+    versions: list[MovieVersionData],
+) -> None:
+    """Upsert per-file versions for a movie from the main server, pruning any stale entries."""
+    result = await session.execute(
+        select(MovieVersion).where(MovieVersion.movie_id == db_movie.id)
+    )
+    existing: dict[tuple, MovieVersion] = {
+        (v.service, v.service_media_id): v for v in result.scalars().all()
+    }
+
+    incoming_keys: set[tuple] = set()
+    for ver in versions:
+        key = (ver.service, ver.service_media_id)
+        incoming_keys.add(key)
+        if key in existing:
+            ev = existing[key]
+            ev.service_item_id = ver.service_item_id
+            ev.library_id = ver.library_id
+            ev.library_name = ver.library_name
+            ev.path = ver.path
+            ev.size = ver.size
+            ev.container = ver.container
+            if ver.added_at and not ev.added_at:
+                ev.added_at = ver.added_at
+        else:
+            session.add(
+                MovieVersion(
+                    movie_id=db_movie.id,
+                    service=ver.service,
+                    service_item_id=ver.service_item_id,
+                    service_media_id=ver.service_media_id,
+                    library_id=ver.library_id,
+                    library_name=ver.library_name,
+                    path=ver.path,
+                    size=ver.size,
+                    added_at=ver.added_at,
+                    container=ver.container,
+                )
+            )
+
+    # prune stale versions - all incoming versions come from the authoritative main server
+    for key, ev in existing.items():
+        if key not in incoming_keys:
+            await session.delete(ev)
+
+    # size = sum of incoming versions (all stale versions are being deleted)
+    db_movie.size = sum(ver.size for ver in versions)
 
 
 async def gather_movies(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    service: MediaServerType | None = None,
 ) -> dict[int, AggregatedMovieData] | None:
     """
-    Fetch and combine movies from all configured media servers, deduplicating by TMDB ID. Only
-    grabs libraries that are included in the service configuration.
+    Fetch movies from the main media server (or a specific service) and group by TMDB ID.
+    Same movie in multiple libraries on the same server gets its versions merged.
+    Watch data takes the max across libraries.
     """
-    # fetch service configs from database to generate combined aggregated movie list
-    aggregated_movies = []
     async with async_db() as session:
-        media_servers = await _get_configured_media_servers(session, service)
+        if service is not None:
+            # explicit service requested (use it directly)
+            servers = await _get_configured_media_servers(session, service)
+        else:
+            # use designated main server (required)
+            main = await _get_main_media_server(session)
+            if not main:
+                LOG.error(
+                    "No main media server configured. Must have a main server designated."
+                )
+                return None
+            servers = [main]
 
-        if not media_servers:
-            return
+        if not servers:
+            return None
 
-        # fetch movies from each media server
-        for server in media_servers:
+        aggregated_movies: list[AggregatedMovieData] = []
+        for server in servers:
             service_instance = await _get_media_service_instance(server.service_type)
             if not service_instance:
                 continue
             LOG.debug(
                 f"Fetching movies from {server.service_type} at {server.base_url}"
             )
-
-            included_library_names = await _get_selected_library_names(
-                session,
-                server.service_type,
-                MediaType.MOVIE,
-            )
-
-            # fetch aggregated movies
             get_movies = await service_instance.get_aggregated_movies(
-                included_libraries=included_library_names
+                included_libraries=None
             )
             if get_movies:
                 aggregated_movies.extend(get_movies)
-            LOG.debug(f"Fetched {len(get_movies)} movies from {server.service_type}")
+            LOG.debug(
+                f"Fetched {len(get_movies or [])} movies from {server.service_type}"
+            )
 
-    # deduplicate movies, keeping the one with most recent watch date
+    # group by TMDB ID (merges same movie from multiple libraries on the same server)
     unique_movies: dict[int, AggregatedMovieData] = {}
     skipped_count = 0
 
@@ -208,18 +272,28 @@ async def gather_movies(
             unique_movies[tmdb_id] = movie
         else:
             existing = unique_movies[tmdb_id]
-            # Keep movie with most recent watch date
-            if movie.last_viewed_at and (
-                not existing.last_viewed_at
-                or movie.last_viewed_at > existing.last_viewed_at
-            ):
-                unique_movies[tmdb_id] = movie
-            # If watch dates are equal/both None, prefer latest added_at
-            elif movie.last_viewed_at == existing.last_viewed_at:
-                if movie.added_at and (
-                    not existing.added_at or movie.added_at > existing.added_at
-                ):
-                    unique_movies[tmdb_id] = movie
+            merged_versions = existing.versions + movie.versions
+            lva_candidates = [
+                dt for dt in [existing.last_viewed_at, movie.last_viewed_at] if dt
+            ]
+            merged_lva = max(lva_candidates) if lva_candidates else None
+            merged_view_count = max(existing.view_count, movie.view_count)
+            pbu_candidates = [
+                c
+                for c in [existing.played_by_user_count, movie.played_by_user_count]
+                if c is not None
+            ]
+            unique_movies[tmdb_id] = AggregatedMovieData(
+                name=existing.name,
+                year=existing.year,
+                external_ids=existing.external_ids,
+                premiere_date=existing.premiere_date or movie.premiere_date,
+                versions=merged_versions,
+                view_count=merged_view_count,
+                last_viewed_at=merged_lva,
+                never_watched=(merged_lva is None and merged_view_count == 0),
+                played_by_user_count=max(pbu_candidates) if pbu_candidates else None,
+            )
 
     if skipped_count > 0:
         LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
@@ -228,7 +302,7 @@ async def gather_movies(
 
 
 async def gather_series(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    service: MediaServerType | None = None,
 ) -> dict[int, AggregatedSeriesData] | None:
     """Fetch and combine series from all configured media servers, deduplicating by TMDB ID."""
     aggregated_series = []
@@ -247,15 +321,9 @@ async def gather_series(
                 f"Fetching series from {server.service_type} at {server.base_url}"
             )
 
-            included_library_names = await _get_selected_library_names(
-                session,
-                server.service_type,
-                MediaType.SERIES,
-            )
-
             # fetch aggregated series
             get_series = await service_instance.get_aggregated_series(
-                included_libraries=included_library_names
+                included_libraries=None
             )
             if get_series:
                 aggregated_series.extend(get_series)
@@ -296,18 +364,44 @@ async def gather_series(
 
 
 async def sync_movies(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    start_time = datetime.now(timezone.utc)
-    source_label = service.value if service else "all-media-services"
-    LOG.info(f"Starting movie sync ({source_label})...")
+    # resolve main server
+    async with async_db() as _cfg:
+        main_server = await _get_main_media_server(_cfg)
+    main_service_type: MediaServerType | None = (
+        main_server.service_type if main_server else None  # type: ignore[assignment]
+    )
 
-    aggregated_movies = await gather_movies(service)
-    if not aggregated_movies:
-        LOG.info(f"No movies to sync from {source_label}")
+    # if a specific non-main service was requested, only sync watch data from it
+    if (
+        service is not None
+        and main_service_type is not None
+        and service != main_service_type
+    ):
+        LOG.info(f"{service} is a linked server - syncing watch data only")
+        await sync_linked_data(service)
         return set()
-    LOG.info(f"Gathered {len(aggregated_movies)} unique movies from {source_label}")
+
+    # resolve effective service for the full (version + watch) sync
+    effective_service = service if service is not None else main_service_type
+    if not effective_service or not effective_service.value:
+        LOG.error(
+            "No media server available for syncing movies. Please configure a main media server "
+            "or specify a service."
+        )
+        return set()
+    LOG.info(f"Starting movie sync ({effective_service.value})...")
+    start_time = datetime.now(timezone.utc)
+
+    aggregated_movies = await gather_movies(effective_service)
+    if not aggregated_movies:
+        LOG.info(f"No movies to sync from {effective_service.value}")
+        return set()
+    LOG.info(
+        f"Gathered {len(aggregated_movies)} unique movies from {effective_service.value}"
+    )
 
     # tmdb service instance
     tmdb_service = AsyncTMDBClient()
@@ -341,22 +435,21 @@ async def sync_movies(
                     radarr_movies.get(tmdb_id) if tmdb_id in radarr_movies else None
                 )
 
+                # earliest added_at across all versions
+                earliest_added = min(
+                    (v.added_at for v in movie.versions if v.added_at), default=None
+                )
+
                 # if movie already exists, update it
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
-
-                    # always update watch data and size from media server
-                    existing_movie.size = movie.size
-
-                    # update service-specific fields based on source
-                    _set_service_fields(existing_movie, movie)
 
                     existing_movie.radarr_id = (
                         radarr_obj.id if radarr_obj else existing_movie.radarr_id
                     )
                     # update added_at if available and not already set
-                    if movie.added_at and not existing_movie.added_at:
-                        existing_movie.added_at = movie.added_at
+                    if earliest_added and not existing_movie.added_at:
+                        existing_movie.added_at = earliest_added
                     existing_movie.last_viewed_at = movie.last_viewed_at
                     existing_movie.view_count = movie.view_count
                     existing_movie.never_watched = movie.never_watched
@@ -377,17 +470,23 @@ async def sync_movies(
                             existing_movie, tmdb_id, tmdb_service
                         )
 
+                    # upsert per-file versions
+                    await _upsert_movie_versions(
+                        session, existing_movie, movie.versions
+                    )
+
                 # if movie doesn't exist, create new entry
                 else:
                     LOG.info(f"Adding new movie: {movie.name} ({tmdb_id})")
                     radarr_obj = (
                         radarr_movies.get(tmdb_id) if tmdb_id in radarr_movies else None
                     )
+                    initial_size = sum(v.size for v in movie.versions)
                     new_movie = Movie(
                         title=movie.name,
                         year=movie.year,
                         tmdb_id=tmdb_id,
-                        size=movie.size,
+                        size=initial_size,
                         radarr_id=radarr_obj.id if radarr_obj else None,
                         imdb_id=movie.external_ids.imdb,
                         last_viewed_at=movie.last_viewed_at,
@@ -395,16 +494,29 @@ async def sync_movies(
                         never_watched=movie.never_watched,
                     )
 
-                    # set service-specific fields based on source
-                    _set_service_fields(new_movie, movie)
-
-                    # set added_at from media server if available
-                    if movie.added_at:
-                        new_movie.added_at = movie.added_at
+                    if earliest_added:
+                        new_movie.added_at = earliest_added
 
                     # fetch TMDB metadata
                     await _update_movie_tmdb_metadata(new_movie, tmdb_id, tmdb_service)
                     session.add(new_movie)
+                    # flush so new_movie.id is available for version FK
+                    await session.flush()
+                    for ver in movie.versions:
+                        session.add(
+                            MovieVersion(
+                                movie_id=new_movie.id,
+                                service=ver.service,
+                                service_item_id=ver.service_item_id,
+                                service_media_id=ver.service_media_id,
+                                library_id=ver.library_id,
+                                library_name=ver.library_name,
+                                path=ver.path,
+                                size=ver.size,
+                                added_at=ver.added_at,
+                                container=ver.container,
+                            )
+                        )
 
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
@@ -426,7 +538,7 @@ async def sync_movies(
 
                 if movies_to_delete:
                     LOG.info(
-                        f"Soft-deleting {len(movies_to_delete)} movies no longer in {source_label}"
+                        f"Soft-deleting {len(movies_to_delete)} movies no longer in {effective_service.value}"
                     )
                     for movie in movies_to_delete:
                         movie.removed_at = datetime.now(timezone.utc)
@@ -435,13 +547,13 @@ async def sync_movies(
 
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
             LOG.info(
-                f"Movie sync ({source_label}) completed successfully in {duration:.2f}s"
+                f"Movie sync ({effective_service.value}) completed successfully in {duration:.2f}s"
             )
             return parsed_tmdb_ids
     except Exception as e:
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         LOG.critical(
-            f"Error during movie sync ({source_label}) after {duration:.2f}s: {e}",
+            f"Error during movie sync ({effective_service.value}) after {duration:.2f}s: {e}",
             exc_info=True,
         )
         raise
@@ -489,7 +601,7 @@ async def _update_movie_tmdb_metadata(
 
 
 async def sync_series(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
+    service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
     """Sync series from media servers to database."""
@@ -546,7 +658,9 @@ async def sync_series(
                     existing_series_obj.size = series.size
 
                     # update service-specific fields based on source
-                    _set_service_fields(existing_series_obj, series)
+                    await _upsert_series_service_ref(
+                        session, existing_series_obj.id, series
+                    )
 
                     existing_series_obj.sonarr_id = (
                         sonarr_obj.id if sonarr_obj else existing_series_obj.sonarr_id
@@ -591,9 +705,6 @@ async def sync_series(
                     )
 
                     # set service-specific fields based on source
-                    _set_service_fields(new_series, series)
-
-                    # set added_at from media server if available
                     if series.added_at:
                         new_series.added_at = series.added_at
 
@@ -602,6 +713,9 @@ async def sync_series(
                         new_series, tmdb_id, tmdb_service
                     )
                     session.add(new_series)
+                    # flush so new_series.id is available for the service ref FK
+                    await session.flush()
+                    await _upsert_series_service_ref(session, new_series.id, series)
 
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
@@ -646,14 +760,140 @@ async def sync_series(
         await tmdb_service.session.close()
 
 
-async def sync_plex_media() -> None:
-    """Sync Plex media only and track as dedicated task run."""
-    await _sync_service_media(Service.PLEX, Task.SYNC_PLEX_MEDIA)
+async def sync_media() -> dict[str, Any] | None:
+    """
+    Main sync tasks task.
+
+    1. Sync libraries
+    2. Sync movies
+    3. Sync series
+    4. Update watch data from any linked servers
+    """
+    if not service_manager.main_media_server:
+        LOG.debug("No main media server configured - skipping sync")
+        return
+
+    # determine main server
+    async with track_task_execution(Task.SYNC_MEDIA):
+        async with async_db() as session:
+            get_main_server = await _get_main_media_server(session)
+            if not get_main_server:
+                LOG.error("No main media server configured for sync")
+                return
+        main_server = get_main_server.service_type
+        if main_server not in MEDIA_SERVERS:
+            LOG.error(f"Unsupported main media server {main_server} for sync")
+            return
+
+        # update libraries
+        library_sync_result = await sync_media_libraries()
+
+        # sync movies
+        await sync_movies(main_server)  # type: ignore[reportArgumentType]
+
+        # sync series
+        await sync_series(main_server)  # type: ignore[reportArgumentType]
+
+        # sync linked watch data from any non-main servers
+        async with async_db() as linked_session:
+            all_servers = await _get_configured_media_servers(linked_session)
+        for svr in all_servers:
+            if svr.service_type != main_server and svr.service_type in MEDIA_SERVERS:
+                LOG.debug(f"Linked watch sync from {svr.service_type}")
+                await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
+
+        return {"library_sync": library_sync_result}
 
 
-async def sync_jellyfin_media() -> None:
-    """Sync Jellyfin media only and track as dedicated task run."""
-    await _sync_service_media(Service.JELLYFIN, Task.SYNC_JELLYFIN_MEDIA)
+async def sync_linked_data(
+    service: MediaServerType,
+) -> None:
+    """
+    Update watch data (view_count, last_viewed_at, never_watched) on existing Movie rows
+    from a linked (non-main) media server.  No version rows are written.
+    """
+    async with track_task_execution(Task.SYNC_LINKED_DATA):
+        LOG.info(f"Syncing linked data from {service}...")
+        service_instance = await _get_media_service_instance(service)
+        if not service_instance:
+            return
+
+        # fetch all libraries - linked servers don't have library selection
+        aggregated = await service_instance.get_aggregated_movies(
+            included_libraries=None
+        )
+        if not aggregated:
+            return
+
+        # build watch data keyed by TMDB ID (merge same-TMDB across libraries)
+        watch_by_tmdb: dict[int, tuple[int, datetime | None]] = {}
+        for movie in aggregated:
+            if not movie.external_ids or not movie.external_ids.tmdb:
+                continue
+            tmdb_id = movie.external_ids.tmdb
+            if tmdb_id not in watch_by_tmdb:
+                watch_by_tmdb[tmdb_id] = (movie.view_count, movie.last_viewed_at)
+            else:
+                prev_count, prev_lva = watch_by_tmdb[tmdb_id]
+                merged_count = max(prev_count, movie.view_count)
+                lva_candidates = [dt for dt in [prev_lva, movie.last_viewed_at] if dt]
+                watch_by_tmdb[tmdb_id] = (
+                    merged_count,
+                    max(lva_candidates) if lva_candidates else None,
+                )
+
+        if not watch_by_tmdb:
+            return
+
+        async with async_db() as session:
+            result = await session.execute(
+                select(Movie).where(Movie.tmdb_id.in_(watch_by_tmdb.keys()))
+            )
+            updated = 0
+            for movie in result.scalars().all():
+                view_count, last_viewed_at = watch_by_tmdb[movie.tmdb_id]
+                # normalize to naive UTC so comparison with DB values is safe
+                if last_viewed_at is not None and last_viewed_at.tzinfo is not None:
+                    last_viewed_at = last_viewed_at.replace(tzinfo=None)
+                changed = False
+                if view_count > movie.view_count:
+                    movie.view_count = view_count
+                    changed = True
+                if last_viewed_at and (
+                    not movie.last_viewed_at or last_viewed_at > movie.last_viewed_at
+                ):
+                    movie.last_viewed_at = last_viewed_at
+                    movie.never_watched = False
+                    changed = True
+                if changed:
+                    updated += 1
+            await session.commit()
+
+        LOG.info(f"Updated watch data from {service} for {updated} movies")
+
+
+async def resync_media() -> None:
+    """
+    Full re-sync triggered when the main media server is switched.
+    Wipes all MovieVersion rows (old server IDs are invalid for the new server),
+    resets Movie.size, then runs a full sync from the new main server.
+    """
+    if not service_manager.main_media_server:
+        LOG.debug("No main media server configured - skipping resync")
+        return
+
+    LOG.info("Starting resync...")
+    async with track_task_execution(Task.RESYNC_MEDIA):
+        try:
+            async with async_db() as session:
+                await session.execute(sql_delete(MovieVersion))
+                await session.execute(sql_update(Movie).values(size=0))
+                await session.commit()
+            LOG.info("Cleared all MovieVersion rows for main server resync")
+            await sync_movies(allow_soft_delete=False)
+        except Exception as e:
+            LOG.error(f"Error during main server resync: {e}", exc_info=True)
+            raise
 
 
 async def _update_series_tmdb_metadata(
@@ -702,164 +942,114 @@ async def _update_series_tmdb_metadata(
         )
 
 
-async def sync_service_libraries(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
-) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
-    """
-    Update service libraries in the database from Plex and Jellyfin.
+async def sync_media_libraries() -> dict[str, Any]:
+    """Update service libraries in the database from the main media server."""
+    if not service_manager.main_media_server:
+        LOG.debug("No main media server configured - skipping library sync")
+        return {"libraries": [], "affected_rules": []}
 
-    Pass None for service to update both.
-    """
-    # only use task tracking when called as a scheduled task (service=None)
-    if service is None:
-        async with track_task_execution(Task.SYNC_SERVICE_LIBRARIES):
-            return await _sync_service_libraries_impl(service)
-    else:
-        return await _sync_service_libraries_impl(service)
+    async with track_task_execution(Task.SYNC_MEDIA_LIBRARIES):
+        async with async_db() as session:
+            main = await _get_main_media_server(session)
+        if not main:
+            LOG.error("No main media server configured - skipping library sync")
+            return {"libraries": [], "affected_rules": []}
 
+        service_instance = await _get_media_service_instance(main.service_type)
+        if not service_instance:
+            return {"libraries": [], "affected_rules": []}
 
-async def _sync_service_libraries_impl(
-    service: Literal[Service.PLEX, Service.JELLYFIN] | None = None,
-) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
-    """Internal implementation for syncing service libraries."""
-    if not service_manager.plex and not service_manager.jellyfin:
-        return {Service.PLEX: [], Service.JELLYFIN: []}
+        movie_libs = await service_instance.get_movie_libraries()
+        series_libs = await service_instance.get_series_libraries()
 
-    async with async_db() as session:
-        # get existing libraries from database
-        result = await session.execute(select(ServiceMediaLibrary))
-        existing_libraries = result.scalars().all()
+        async with async_db() as session:
+            result = await session.execute(select(ServiceMediaLibrary))
+            existing_map: dict[str, ServiceMediaLibrary] = {
+                lib.library_id: lib for lib in result.scalars().all()
+            }
 
-        # create a map of (service_type, library_id) -> ServiceMediaLibrary for quick lookup
-        existing_map: dict[tuple[Service, str], ServiceMediaLibrary] = {
-            (lib.service_type, lib.library_id): lib for lib in existing_libraries
-        }
+            current_ids: set[str] = set()
+            current_libraries: list[dict[str, Any]] = []
 
-        # track all current library keys to identify deletions
-        current_library_keys = set[tuple[Service, str]]()
-
-        # for returning current libraries
-        current_libraries: dict[
-            Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]
-        ] = {Service.PLEX: [], Service.JELLYFIN: []}
-
-        # only update the specified service if provided, else both
-        update_jellyfin = (service is None and service_manager.jellyfin) or (
-            service == Service.JELLYFIN and service_manager.jellyfin
-        )
-        update_plex = (service is None and service_manager.plex) or (
-            service == Service.PLEX and service_manager.plex
-        )
-
-        # handle Jellyfin libraries
-        if update_jellyfin and service_manager.jellyfin:
-            jellyfin_movie_libs = await service_manager.jellyfin.get_movie_libraries()
-            jellyfin_series_libs = await service_manager.jellyfin.get_series_libraries()
-
-            # process movie libraries
-            for lib in jellyfin_movie_libs:
-                key = (Service.JELLYFIN, lib["id"])
-                current_library_keys.add(key)
-                current_libraries[Service.JELLYFIN].append(
-                    {"id": lib["id"], "name": lib["name"], "type": MediaType.MOVIE}
+            for lib, media_type in [
+                *[(lib, MediaType.MOVIE) for lib in movie_libs],
+                *[(lib, MediaType.SERIES) for lib in series_libs],
+            ]:
+                lib_id = lib["id"]
+                current_ids.add(lib_id)
+                current_libraries.append(
+                    {"id": lib_id, "name": lib["name"], "type": media_type}
                 )
-
-                if key in existing_map:
-                    # update if name changed
-                    if existing_map[key].library_name != lib["name"]:
-                        existing_map[key].library_name = lib["name"]
+                if lib_id in existing_map:
+                    if existing_map[lib_id].library_name != lib["name"]:
+                        existing_map[lib_id].library_name = lib["name"]
                 else:
-                    # insert new library
-                    new_lib = ServiceMediaLibrary(
-                        service_type=Service.JELLYFIN,
-                        library_id=lib["id"],
-                        library_name=lib["name"],
-                        media_type=MediaType.MOVIE,
+                    session.add(
+                        ServiceMediaLibrary(
+                            library_id=lib_id,
+                            library_name=lib["name"],
+                            media_type=media_type,
+                        )
                     )
-                    session.add(new_lib)
 
-            # process series libraries
-            for lib in jellyfin_series_libs:
-                key = (Service.JELLYFIN, lib["id"])
-                current_library_keys.add(key)
-                current_libraries[Service.JELLYFIN].append(
-                    {"id": lib["id"], "name": lib["name"], "type": MediaType.SERIES}
-                )
-
-                if key in existing_map:
-                    # update if name changed
-                    if existing_map[key].library_name != lib["name"]:
-                        existing_map[key].library_name = lib["name"]
-                else:
-                    # insert new library
-                    new_lib = ServiceMediaLibrary(
-                        service_type=Service.JELLYFIN,
-                        library_id=lib["id"],
-                        library_name=lib["name"],
-                        media_type=MediaType.SERIES,
-                    )
-                    session.add(new_lib)
-
-        # handle Plex libraries
-        if update_plex and service_manager.plex:
-            plex_movie_libs = await service_manager.plex.get_movie_libraries()
-            plex_series_libs = await service_manager.plex.get_series_libraries()
-
-            # process movie libraries
-            for lib in plex_movie_libs:
-                key = (Service.PLEX, lib["id"])
-                current_library_keys.add(key)
-                current_libraries[Service.PLEX].append(
-                    {"id": lib["id"], "name": lib["name"], "type": MediaType.MOVIE}
-                )
-
-                if key in existing_map:
-                    # update if name changed
-                    if existing_map[key].library_name != lib["name"]:
-                        existing_map[key].library_name = lib["name"]
-                else:
-                    # insert new library
-                    new_lib = ServiceMediaLibrary(
-                        service_type=Service.PLEX,
-                        library_id=lib["id"],
-                        library_name=lib["name"],
-                        media_type=MediaType.MOVIE,
-                    )
-                    session.add(new_lib)
-
-            # process series libraries
-            for lib in plex_series_libs:
-                key = (Service.PLEX, lib["id"])
-                current_library_keys.add(key)
-                current_libraries[Service.PLEX].append(
-                    {"id": lib["id"], "name": lib["name"], "type": MediaType.SERIES}
-                )
-
-                if key in existing_map:
-                    # update if name changed
-                    if existing_map[key].library_name != lib["name"]:
-                        existing_map[key].library_name = lib["name"]
-                else:
-                    # insert new library
-                    new_lib = ServiceMediaLibrary(
-                        service_type=Service.PLEX,
-                        library_id=lib["id"],
-                        library_name=lib["name"],
-                        media_type=MediaType.SERIES,
-                    )
-                    session.add(new_lib)
-
-        # delete libraries that no longer exist in any service
-        for key, lib in existing_map.items():
-            # only delete libraries for the updated service(s)
-            if key not in current_library_keys:
-                # if service is specified, only delete for that service
-                if service is None or key[0] == service:
+            # delete libraries no longer present on the main server
+            removed_ids: set[str] = set()
+            for lib_id, lib in existing_map.items():
+                if lib_id not in current_ids:
                     await session.delete(lib)
+                    removed_ids.add(lib_id)
 
-        await session.commit()
-        LOG.info(
-            f"Updated service libraries: {len(current_library_keys)} total libraries"
-        )
+            # scrub removed library IDs from any rules that reference them
+            affected_rules: list[dict[str, Any]] = []
+            if removed_ids:
+                rules_result = await session.execute(
+                    select(ReclaimRule).where(ReclaimRule.library_ids.is_not(None))
+                )
+                for rule in rules_result.scalars().all():
+                    if rule.library_ids and any(
+                        lid in removed_ids for lid in rule.library_ids
+                    ):
+                        removed_from_rule = [
+                            lid for lid in rule.library_ids if lid in removed_ids
+                        ]
+                        cleaned = [
+                            lid for lid in rule.library_ids if lid not in removed_ids
+                        ]
+                        rule.library_ids = cleaned if cleaned else None
+                        affected_rules.append(
+                            {
+                                "id": rule.id,
+                                "name": rule.name,
+                                "removed_library_ids": removed_from_rule,
+                                "remaining_library_ids": cleaned,
+                            }
+                        )
+                        LOG.info(
+                            f"Removed stale library IDs {removed_ids} from rule '{rule.name}'"
+                        )
 
-        return current_libraries
+            await session.commit()
+
+            if affected_rules:
+                try:
+                    await notify_admins(
+                        notification_type=NotificationType.ADMIN_MESSAGE,
+                        title="Rules Updated After Library Sync",
+                        message=(
+                            f"Library sync removed missing libraries from {len(affected_rules)} rule(s): "
+                            + ", ".join(rule["name"] for rule in affected_rules)
+                        ),
+                    )
+                except Exception as notify_error:
+                    LOG.error(
+                        f"Failed to notify admins about rule library cleanup: {notify_error}"
+                    )
+
+            LOG.info(
+                f"Updated service libraries: {len(current_ids)} total libraries "
+                f"from {main.service_type}"
+            )
+            return {
+                "libraries": current_libraries,
+                "affected_rules": affected_rules,
+            }
