@@ -4,8 +4,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.core.auth import get_current_user
+from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     ExceptionRequest,
@@ -18,8 +20,10 @@ from backend.database.models import (
 from backend.enums import ExceptionRequestStatus
 from backend.models.media import (
     MediaStatusInfo,
+    MovieVersionResponse,
     MovieWithStatus,
     PaginatedMediaResponse,
+    SeriesServiceRefResponse,
     SeriesWithStatus,
 )
 
@@ -56,7 +60,11 @@ async def get_movies(
     - Has pending exception request
     """
     # build base query
-    query = select(Movie).where(Movie.removed_at.is_(None))
+    query = (
+        select(Movie)
+        .where(Movie.removed_at.is_(None))
+        .options(selectinload(Movie.versions))
+    )
 
     # apply search filter
     if search:
@@ -141,17 +149,26 @@ async def get_movies(
             "year": movie.year,
             "tmdb_id": movie.tmdb_id,
             "size": movie.size,
-            "plex_path": movie.plex_path,
-            "jellyfin_path": movie.jellyfin_path,
-            "plex_library_name": movie.plex_library_name,
-            "jellyfin_library_name": movie.jellyfin_library_name,
+            "versions": [
+                MovieVersionResponse(
+                    id=v.id,
+                    service=v.service.value,
+                    service_item_id=v.service_item_id,
+                    service_media_id=v.service_media_id,
+                    library_id=v.library_id,
+                    library_name=v.library_name,
+                    path=v.path,
+                    size=v.size,
+                    added_at=to_utc_isoformat(v.added_at),
+                    container=v.container,
+                )
+                for v in movie.versions
+            ],
             "radarr_id": movie.radarr_id,
             "imdb_id": movie.imdb_id,
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
-            "tmdb_release_date": movie.tmdb_release_date.isoformat()
-            if movie.tmdb_release_date
-            else None,
+            "tmdb_release_date": to_utc_isoformat(movie.tmdb_release_date),
             "original_language": movie.original_language,
             "poster_url": movie.poster_url,
             "backdrop_url": movie.backdrop_url,
@@ -162,13 +179,11 @@ async def get_movies(
             "vote_count": movie.vote_count,
             "runtime": movie.runtime,
             "tagline": movie.tagline,
-            "last_viewed_at": movie.last_viewed_at.isoformat()
-            if movie.last_viewed_at
-            else None,
+            "last_viewed_at": to_utc_isoformat(movie.last_viewed_at),
             "view_count": movie.view_count,
             "never_watched": movie.never_watched,
             "status": status,
-            "added_at": movie.added_at.isoformat() if movie.added_at else None,
+            "added_at": to_utc_isoformat(movie.added_at),
         }
         items.append(MovieWithStatus(**movie_dict))
 
@@ -202,7 +217,11 @@ async def get_series(
     - Has pending exception request
     """
     # build base query
-    query = select(Series).where(Series.removed_at.is_(None))
+    query = (
+        select(Series)
+        .where(Series.removed_at.is_(None))
+        .options(selectinload(Series.service_refs))
+    )
 
     # apply search filter
     if search:
@@ -287,21 +306,23 @@ async def get_series(
             "year": series.year,
             "tmdb_id": series.tmdb_id,
             "size": series.size,
-            "plex_path": series.plex_path,
-            "jellyfin_path": series.jellyfin_path,
-            "plex_library_name": series.plex_library_name,
-            "jellyfin_library_name": series.jellyfin_library_name,
+            "service_refs": [
+                SeriesServiceRefResponse(
+                    service=ref.service.value,
+                    service_id=ref.service_id,
+                    library_id=ref.library_id,
+                    library_name=ref.library_name,
+                    path=ref.path,
+                )
+                for ref in series.service_refs
+            ],
             "sonarr_id": series.sonarr_id,
             "imdb_id": series.imdb_id,
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
             "original_title": series.original_title,
-            "tmdb_first_air_date": series.tmdb_first_air_date.isoformat()
-            if series.tmdb_first_air_date
-            else None,
-            "tmdb_last_air_date": series.tmdb_last_air_date.isoformat()
-            if series.tmdb_last_air_date
-            else None,
+            "tmdb_first_air_date": to_utc_isoformat(series.tmdb_first_air_date),
+            "tmdb_last_air_date": to_utc_isoformat(series.tmdb_last_air_date),
             "original_language": series.original_language,
             "poster_url": series.poster_url,
             "backdrop_url": series.backdrop_url,
@@ -312,13 +333,11 @@ async def get_series(
             "vote_count": series.vote_count,
             "season_count": series.season_count,
             "tagline": series.tagline,
-            "last_viewed_at": series.last_viewed_at.isoformat()
-            if series.last_viewed_at
-            else None,
+            "last_viewed_at": to_utc_isoformat(series.last_viewed_at),
             "view_count": series.view_count,
             "never_watched": series.never_watched,
             "status": status,
-            "added_at": series.added_at.isoformat() if series.added_at else None,
+            "added_at": to_utc_isoformat(series.added_at),
         }
         items.append(SeriesWithStatus(**series_dict))
 

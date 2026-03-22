@@ -21,6 +21,7 @@ class ServiceManager:
 
     def __init__(self) -> None:
         """Initialize service manager with no active clients."""
+        self._main_media_server: JellyfinService | PlexService | None = None
         self._jellyfin: JellyfinService | None = None
         self._plex: PlexService | None = None
         self._radarr: RadarrClient | None = None
@@ -28,6 +29,16 @@ class ServiceManager:
         self._seerr: SeerrClient | None = None
 
         LOG.info("ServiceManager initialized")
+
+    @property
+    def main_media_server(self) -> JellyfinService | PlexService | None:
+        """Get the main media server client (must be initialized first)."""
+        return self._main_media_server
+
+    @main_media_server.setter
+    def main_media_server(self, service: JellyfinService | PlexService) -> None:
+        """Set the main media server client (must be initialized first)."""
+        self._main_media_server = service
 
     @property
     def jellyfin(self) -> JellyfinService | None:
@@ -116,7 +127,7 @@ class ServiceManager:
             return self._seerr
 
     async def initialize_jellyfin(
-        self, base_url: str, api_key: str
+        self, base_url: str, api_key: str, is_main: bool
     ) -> JellyfinService | None:
         """Initialize Jellyfin service with provided config."""
         try:
@@ -128,12 +139,16 @@ class ServiceManager:
                 LOG.error(f"Jellyfin service health check failed: {base_url}")
                 raise ValueError(f"Jellyfin service health check failed: {base_url}")
             LOG.info(f"Jellyfin service initialized: {base_url}")
+            if is_main:
+                self._main_media_server = self._jellyfin
             return self._jellyfin
         except Exception as e:
             LOG.error(f"Failed to initialize Jellyfin service: {e}")
             return None
 
-    async def initialize_plex(self, base_url: str, token: str) -> PlexService | None:
+    async def initialize_plex(
+        self, base_url: str, token: str, is_main: bool
+    ) -> PlexService | None:
         """Initialize Plex service with provided config."""
         try:
             self._plex = PlexService(
@@ -144,6 +159,8 @@ class ServiceManager:
                 LOG.error(f"Plex service health check failed: {base_url}")
                 raise ValueError(f"Plex service health check failed: {base_url}")
             LOG.info(f"Plex service initialized: {base_url}")
+            if is_main:
+                self._main_media_server = self._plex
             return self._plex
         except Exception as e:
             LOG.error(f"Failed to initialize Plex service: {e}")
@@ -203,6 +220,8 @@ class ServiceManager:
 
     async def clear_jellyfin(self) -> None:
         """Clear Jellyfin service (call before reinitializing)."""
+        if self._main_media_server is self._jellyfin:
+            self._main_media_server = None
         if self._jellyfin and self._jellyfin.session:
             await self._jellyfin.session.close()
             LOG.info("Jellyfin service cleared")
@@ -210,6 +229,8 @@ class ServiceManager:
 
     async def clear_plex(self) -> None:
         """Clear Plex service (call before reinitializing)."""
+        if self._main_media_server is self._plex:
+            self._main_media_server = None
         if self._plex and self._plex.session:
             await self._plex.session.close()
             LOG.info("Plex service cleared")

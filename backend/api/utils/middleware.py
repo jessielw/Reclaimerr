@@ -10,11 +10,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from backend.core.auth import COOKIE_NAME, SESSION_TTL_SECONDS, create_access_token
 from backend.core.settings import settings
 
-__all__ = (
+__all__ = [
     "cors_middleware",
     "security_headers_middleware",
     "sliding_session_middleware",
-)
+]
 
 
 def cors_middleware(app: FastAPI) -> None:

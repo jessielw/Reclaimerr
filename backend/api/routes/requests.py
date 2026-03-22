@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.auth import get_current_user, has_permission, require_permission
 from backend.core.logger import LOG
+from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     ExceptionRequest,
@@ -59,7 +60,7 @@ async def resolve_effective_protection(
         return blacklist_entry.permanent, blacklist_entry.expires_at
 
     LOG.warning(
-        f"Approved request {request.id} has no blacklist entry — data inconsistency"
+        f"Approved request {request.id} has no blacklist entry - data inconsistency"
     )
     return None, None
 
@@ -264,24 +265,16 @@ async def create_exception_request(
         requested_by_user_id=user.id,
         requested_by_username=user.username,
         reason=exception_request.reason,
-        requested_expires_at=(
-            exception_request.requested_expires_at.isoformat()
-            if exception_request.requested_expires_at
-            else None
-        ),
+        requested_expires_at=to_utc_isoformat(exception_request.requested_expires_at),
         status=exception_request.status,
         reviewed_by_user_id=user.id if auto_approve else None,
         reviewed_by_username=user.username if auto_approve else None,
-        reviewed_at=exception_request.reviewed_at.isoformat()
-        if exception_request.reviewed_at
-        else None,
+        reviewed_at=to_utc_isoformat(exception_request.reviewed_at),
         admin_notes=None,
         effective_permanent=bl_permanent if auto_approve else None,
-        effective_expires_at=(bl_expires_at.isoformat() if bl_expires_at else None)
-        if auto_approve
-        else None,
-        created_at=exception_request.created_at.isoformat(),
-        updated_at=exception_request.updated_at.isoformat(),
+        effective_expires_at=to_utc_isoformat(bl_expires_at) if auto_approve else None,
+        created_at=to_utc_isoformat(exception_request.created_at) or "",
+        updated_at=to_utc_isoformat(exception_request.updated_at) or "",
     )
 
 
@@ -349,22 +342,16 @@ async def get_my_requests(
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=user.username,
                 reason=req.reason,
-                requested_expires_at=(
-                    req.requested_expires_at.isoformat()
-                    if req.requested_expires_at
-                    else None
-                ),
+                requested_expires_at=to_utc_isoformat(req.requested_expires_at),
                 status=req.status,
                 reviewed_by_user_id=req.reviewed_by_user_id,
                 reviewed_by_username=reviewed_by_username,
-                reviewed_at=req.reviewed_at.isoformat() if req.reviewed_at else None,
+                reviewed_at=to_utc_isoformat(req.reviewed_at),
                 admin_notes=req.admin_notes,
                 effective_permanent=effective_permanent,
-                effective_expires_at=(
-                    effective_expires_at.isoformat() if effective_expires_at else None
-                ),
-                created_at=req.created_at.isoformat(),
-                updated_at=req.updated_at.isoformat(),
+                effective_expires_at=to_utc_isoformat(effective_expires_at),
+                created_at=to_utc_isoformat(req.created_at) or "",
+                updated_at=to_utc_isoformat(req.updated_at) or "",
             )
         )
 
@@ -424,22 +411,16 @@ async def get_all_requests(
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=req.requested_by.username,
                 reason=req.reason,
-                requested_expires_at=(
-                    req.requested_expires_at.isoformat()
-                    if req.requested_expires_at
-                    else None
-                ),
+                requested_expires_at=to_utc_isoformat(req.requested_expires_at),
                 status=req.status,
                 reviewed_by_user_id=req.reviewed_by_user_id,
                 reviewed_by_username=reviewed_by_username,
-                reviewed_at=req.reviewed_at.isoformat() if req.reviewed_at else None,
+                reviewed_at=to_utc_isoformat(req.reviewed_at),
                 admin_notes=req.admin_notes,
                 effective_permanent=effective_permanent,
-                effective_expires_at=(
-                    effective_expires_at.isoformat() if effective_expires_at else None
-                ),
-                created_at=req.created_at.isoformat(),
-                updated_at=req.updated_at.isoformat(),
+                effective_expires_at=to_utc_isoformat(effective_expires_at),
+                created_at=to_utc_isoformat(req.created_at) or "",
+                updated_at=to_utc_isoformat(req.updated_at) or "",
             )
         )
 
@@ -566,7 +547,7 @@ async def approve_request(
     # build response
     reviewed_at_value = request.reviewed_at
     reviewed_at_str = (
-        reviewed_at_value.isoformat()
+        to_utc_isoformat(reviewed_at_value)
         if isinstance(reviewed_at_value, datetime)
         else None
     )
@@ -580,22 +561,16 @@ async def approve_request(
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
-        requested_expires_at=(
-            request.requested_expires_at.isoformat()
-            if request.requested_expires_at
-            else None
-        ),
+        requested_expires_at=to_utc_isoformat(request.requested_expires_at),
         status=request.status,
         reviewed_by_user_id=manager.id,
         reviewed_by_username=manager.username,
         reviewed_at=reviewed_at_str,
         admin_notes=request.admin_notes,
         effective_permanent=approved_permanent,
-        effective_expires_at=(
-            approved_expires_at.isoformat() if approved_expires_at else None
-        ),
-        created_at=request.created_at.isoformat(),
-        updated_at=request.updated_at.isoformat(),
+        effective_expires_at=to_utc_isoformat(approved_expires_at),
+        created_at=to_utc_isoformat(request.created_at) or "",
+        updated_at=to_utc_isoformat(request.updated_at) or "",
     )
 
 
@@ -672,7 +647,7 @@ async def deny_request(
     # build response
     reviewed_at_value = request.reviewed_at
     reviewed_at_str = (
-        reviewed_at_value.isoformat()
+        to_utc_isoformat(reviewed_at_value)
         if isinstance(reviewed_at_value, datetime)
         else None
     )
@@ -686,11 +661,7 @@ async def deny_request(
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
-        requested_expires_at=(
-            request.requested_expires_at.isoformat()
-            if request.requested_expires_at
-            else None
-        ),
+        requested_expires_at=to_utc_isoformat(request.requested_expires_at),
         status=request.status,
         reviewed_by_user_id=manager.id,
         reviewed_by_username=manager.username,
@@ -698,8 +669,8 @@ async def deny_request(
         admin_notes=request.admin_notes,
         effective_permanent=None,
         effective_expires_at=None,
-        created_at=request.created_at.isoformat(),
-        updated_at=request.updated_at.isoformat(),
+        created_at=to_utc_isoformat(request.created_at) or "",
+        updated_at=to_utc_isoformat(request.updated_at) or "",
     )
 
 

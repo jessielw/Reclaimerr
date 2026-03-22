@@ -29,7 +29,7 @@ class AsyncTMDBClient:
     _request_timestamps: deque[float] = deque[float](maxlen=50)
     _max_requests_per_second = 50
 
-    __slots__ = ("session",)
+    __slots__ = ["session"]
 
     def __init__(self, api_key: str | None = None) -> None:
         """Initialize TMDB client.

@@ -42,7 +42,7 @@ function createAuthStore() {
   }
 
   // Re-verify the session when the browser tab becomes visible again.
-  // This handles the case where the JWT expired while the user was away —
+  // This handles the case where the JWT expired while the user was away -
   // instead of getting a jarring logout mid-interaction, we check proactively.
   if (typeof document !== "undefined") {
     let lastCheck = 0;

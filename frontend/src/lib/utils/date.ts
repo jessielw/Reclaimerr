@@ -1,10 +1,19 @@
 /**
+ * Parse API timestamps, treating timezone-less ISO strings as UTC.
+ * SQLite-backed timestamps often arrive without a timezone suffix.
+ */
+const parseApiDate = (dateString: string): Date => {
+  const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(dateString);
+  return new Date(hasTimezone ? dateString : `${dateString}Z`);
+};
+
+/**
  * Formats a date string into a more readable format.
  * @param dateString The date string to format.
  * @returns A formatted date string.
  */
 const formatDate = (dateString: string): string => {
-  return new Date(dateString).toLocaleDateString("en-US", {
+  return parseApiDate(dateString).toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -17,7 +26,7 @@ const formatDate = (dateString: string): string => {
  * @returns A formatted relative time string.
  */
 const formatDistanceToNow = (dateString: string): string => {
-  const date = new Date(dateString);
+  const date = parseApiDate(dateString);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const isFuture = diffMs < 0;
@@ -50,7 +59,7 @@ const formatDistanceToNow = (dateString: string): string => {
 const formatDateToLocaleString = (dateStr: string | null): string => {
   if (!dateStr) return "Unknown";
   try {
-    return new Date(dateStr).toLocaleDateString();
+    return parseApiDate(dateStr).toLocaleDateString();
   } catch {
     return dateStr;
   }

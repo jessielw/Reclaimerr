@@ -7,108 +7,118 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
+from backend.core.service_manager import service_manager
+from backend.core.task_runtime import MAIN_SERVER_REQUIRED_TASKS, enqueue_scheduled_task
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
-from backend.tasks.cleanup import (
-    delete_cleanup_candidates,
-    scan_cleanup_candidates,
-    tag_cleanup_candidates,
-)
-from backend.tasks.house_keeping import weekly_house_keeping
-from backend.tasks.sync import (
-    sync_jellyfin_media,
-    sync_plex_media,
-    sync_service_libraries,
-)
 
 scheduler = AsyncIOScheduler()
 
 
-# map Task enum to their Python functions
-TASK_FUNCTION_MAP = {
-    Task.SYNC_PLEX_MEDIA: sync_plex_media,
-    Task.SYNC_JELLYFIN_MEDIA: sync_jellyfin_media,
-    Task.SYNC_SERVICE_LIBRARIES: sync_service_libraries,
-    Task.SCAN_CLEANUP_CANDIDATES: scan_cleanup_candidates,
-    Task.TAG_CLEANUP_CANDIDATES: tag_cleanup_candidates,
-    # Task.DELETE_CLEANUP_CANDIDATES: delete_cleanup_candidates, # TODO: enable once delete task is ready and tested
-    Task.WEEKLY_HOUSE_KEEPING: weekly_house_keeping,
-}
+DEFAULT_SCHEDULES = (
+    {
+        "task": Task.SYNC_MEDIA,
+        "description": (
+            "Synchronizes libraries, movies and series from the main media server, "
+            "plus linked watch data from non main servers"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 3 * * *",  # daily at 3 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 3 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.SYNC_MEDIA_LIBRARIES,
+        "description": "Updates the library list from connected services",
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": True,
+    },
+    {
+        "task": Task.SYNC_LINKED_DATA,
+        "description": "Updates linked data from connected services",
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": True,
+    },
+    {
+        "task": Task.RESYNC_MEDIA,
+        "description": (
+            "Resynchronizes media from connected media servers (deletes and "
+            "re-adds all media, used for fixing sync issues)"
+        ),
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": False,
+    },
+    {
+        "task": Task.SCAN_CLEANUP_CANDIDATES,
+        "description": "Identifies media that can be removed based on cleanup rules",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 10 * * *",  # daily at 10 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 10 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.TAG_CLEANUP_CANDIDATES,
+        "description": "Tags media identified as cleanup candidates for easier management",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 12 * * *",  # daily at 12 PM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 12 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.WEEKLY_HOUSE_KEEPING,
+        "description": "Performs weekly maintenance tasks to ensure system stability",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 8 * * 0",  # weekly on Sunday at 8 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 8 * * 0",
+        "enabled": True,
+    },
+)
 
 
 async def ensure_default_schedules(db: AsyncSession) -> None:
-    """Ensure default task schedules exist in database."""
-    default_schedules = (
-        {
-            "task": Task.SYNC_PLEX_MEDIA,
-            "description": "Synchronizes movies and series from Plex",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 3 * * *",  # daily at 3 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 3 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SYNC_JELLYFIN_MEDIA,
-            "description": "Synchronizes movies and series from Jellyfin",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 4 * * *",  # daily at 4 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 4 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SYNC_SERVICE_LIBRARIES,
-            "description": "Updates the library list from connected services",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 6 * * *",  # daily at 6 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 6 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.SCAN_CLEANUP_CANDIDATES,
-            "description": "Identifies media that can be removed based on cleanup rules",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 10 * * *",  # Daily at 10 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 10 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.TAG_CLEANUP_CANDIDATES,
-            "description": "Tags media identified as cleanup candidates for easier management",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 12 * * *",  # Daily at 12 PM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 12 * * *",
-            "enabled": True,
-        },
-        {
-            "task": Task.WEEKLY_HOUSE_KEEPING,
-            "description": "Performs weekly maintenance tasks to ensure system stability",
-            "schedule_type": ScheduleType.CRON,
-            "schedule_value": "0 8 * * 0",  # Weekly on Sunday at 8 AM
-            "default_schedule_type": ScheduleType.CRON,
-            "default_schedule_value": "0 8 * * 0",
-            "enabled": True,
-        },
-    )
+    """Ensure default task schedules exist in database updating existing ones if necessary."""
+    # fetch all existing schedules in one query
+    all_schedules = (await db.execute(select(TaskSchedule))).scalars().all()
+    schedule_map = {s.task: s for s in all_schedules}
 
-    for schedule_data in default_schedules:
-        # check if task schedule already exists
-        result = await db.execute(
-            select(TaskSchedule).where(TaskSchedule.task == schedule_data["task"])
-        )
-        existing = result.scalar_one_or_none()
-
-        if not existing:
-            task_schedule = TaskSchedule(**schedule_data)
+    for default in DEFAULT_SCHEDULES:
+        task = default["task"]
+        existing = schedule_map.get(task)
+        if existing:
+            updated = False
+            if existing.description != default["description"]:
+                existing.description = default["description"]
+                updated = True
+            if existing.schedule_type != default["default_schedule_type"]:
+                existing.schedule_type = default["default_schedule_type"]
+                updated = True
+            if existing.schedule_value != default["default_schedule_value"]:
+                existing.schedule_value = default["default_schedule_value"]
+                updated = True
+            # do not override enabled
+            if updated:
+                db.add(existing)
+                LOG.info(
+                    f"Updated existing schedule for {task.friendly_name()} with default values"
+                )
+        else:
+            task_schedule = TaskSchedule(**default)
             db.add(task_schedule)
-            LOG.info(
-                f"Created default schedule for {schedule_data['task'].friendly_name()}"
-            )
+            LOG.info(f"Created default schedule for {task.friendly_name()}")
 
     await db.commit()
 
@@ -126,14 +136,21 @@ async def setup_scheduler() -> None:
         task_schedules = result.scalars().all()
 
         for task_schedule in task_schedules:
-            task_func = TASK_FUNCTION_MAP.get(task_schedule.task)
-            if not task_func:
-                LOG.warning(f"No function found for task: {task_schedule.task}")
+            # create trigger based on schedule type
+            if task_schedule.schedule_type is ScheduleType.MANUAL:
+                continue  # manual tasks are not scheduled
+
+            # skip tasks that require a main media server if none is configured
+            if (
+                task_schedule.task in MAIN_SERVER_REQUIRED_TASKS
+                and not service_manager.main_media_server
+            ):
+                LOG.info(
+                    f"Skipping {task_schedule.task.friendly_name()} - no main media server configured"
+                )
                 continue
 
-            # create trigger based on schedule type
-            # interval
-            if task_schedule.schedule_type is ScheduleType.INTERVAL:
+            elif task_schedule.schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(task_schedule.schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
@@ -141,15 +158,56 @@ async def setup_scheduler() -> None:
 
             # add job to scheduler (APScheduler still uses job terminology)
             scheduler.add_job(
-                task_func,
+                enqueue_scheduled_task,
                 trigger,
-                id=task_schedule.task.value,  # Use enum value as string ID
+                args=[task_schedule.task],
+                id=str(task_schedule.task),
                 name=task_schedule.task.friendly_name(),
                 replace_existing=True,
             )
             LOG.info(f"Scheduled task: {task_schedule.task.friendly_name()}")
 
     LOG.info("Scheduler configured with tasks")
+
+
+async def refresh_main_server_tasks() -> None:
+    """Add or remove main-server-dependent tasks from the scheduler based on current state."""
+    has_main = service_manager.main_media_server is not None
+    async with async_db() as db:
+        for task in MAIN_SERVER_REQUIRED_TASKS:
+            result = await db.execute(
+                select(TaskSchedule).where(TaskSchedule.task == task)
+            )
+            db_schedule = result.scalar_one_or_none()
+            if (
+                not db_schedule
+                or not db_schedule.enabled
+                or db_schedule.schedule_type is ScheduleType.MANUAL
+            ):
+                continue
+
+            job = scheduler.get_job(task.value)
+            if has_main and not job:
+                if db_schedule.schedule_type is ScheduleType.INTERVAL:
+                    trigger = IntervalTrigger(seconds=int(db_schedule.schedule_value))
+                else:
+                    trigger = CronTrigger.from_crontab(db_schedule.schedule_value)
+                scheduler.add_job(
+                    enqueue_scheduled_task,
+                    trigger,
+                    args=[task],
+                    id=task.value,
+                    name=task.friendly_name(),
+                    replace_existing=True,
+                )
+                LOG.info(
+                    f"Scheduled {task.friendly_name()} (main server now configured)"
+                )
+            elif not has_main and job:
+                job.remove()
+                LOG.info(
+                    f"Unscheduled {task.friendly_name()} (no main server configured)"
+                )
 
 
 async def update_task_schedule(
@@ -172,13 +230,10 @@ async def update_task_schedule(
 
         # update scheduler
         if enabled:
-            task_func = TASK_FUNCTION_MAP.get(task)
-            if not task_func:
-                raise ValueError(f"No function found for task: {task}")
-
             # create trigger
-            # interval
-            if schedule_type is ScheduleType.INTERVAL:
+            if schedule_type is ScheduleType.MANUAL:
+                return task_schedule
+            elif schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
@@ -186,16 +241,17 @@ async def update_task_schedule(
 
             # update or add job
             scheduler.add_job(
-                task_func,
+                enqueue_scheduled_task,
                 trigger,
-                id=task,
+                args=[task],
+                id=str(task),
                 name=task.friendly_name(),
                 replace_existing=True,
             )
             LOG.info(f"Updated task schedule: {task.friendly_name()}")
         else:
             # remove job from scheduler if disabled
-            existing_job = scheduler.get_job(task)
+            existing_job = scheduler.get_job(task.value)
             if existing_job:
                 existing_job.remove()
                 LOG.info(f"Removed disabled task: {task.friendly_name()}")

@@ -17,13 +17,13 @@ from backend.database import async_db
 from backend.database.models import NotificationSetting, User
 from backend.enums import LogLevel, NotificationType, UserRole
 
-__all__ = (
+__all__ = [
     "notify_task_failure",
     "notify_user",
     "notify_users",
     "notify_all_users",
     "notify_admins",
-)
+]
 
 
 @retry(

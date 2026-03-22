@@ -8,7 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.core.logger import LOG
 
-__all__ = ("register_exception_handlers",)
+__all__ = ["register_exception_handlers"]
 
 
 async def global_exception_handler(request: Request, exc: Exception):

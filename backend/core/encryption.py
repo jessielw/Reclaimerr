@@ -7,13 +7,13 @@ from cryptography.fernet import Fernet
 
 from backend.core.settings import settings
 
-__all__ = ("fer_encrypt", "fer_decrypt")
+__all__ = ["fer_encrypt", "fer_decrypt"]
 
 
 class EncryptionSingleton:
     """ONLY use the `_fernet` instance below via the `fer_encrypt` and `fer_decrypt` helper functions."""
 
-    __slots__ = ("_fernet",)
+    __slots__ = ["_fernet"]
 
     def __init__(self) -> None:
         self._fernet = self._init_fernet()

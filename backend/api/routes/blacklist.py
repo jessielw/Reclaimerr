@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import get_current_user, has_permission
+from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import MediaBlacklist, Movie, Series, User
 from backend.enums import MediaType, Permission, UserRole
@@ -145,9 +146,9 @@ async def get_blacklist_entries(
                 blacklisted_by_user_id=entry.blacklisted_by_user_id,
                 blacklisted_by_username=row.actor_username or "Unknown",
                 permanent=entry.permanent,
-                expires_at=entry.expires_at.isoformat() if entry.expires_at else None,
-                created_at=entry.created_at.isoformat(),
-                updated_at=entry.updated_at.isoformat(),
+                expires_at=to_utc_isoformat(entry.expires_at),
+                created_at=to_utc_isoformat(entry.created_at) or "",
+                updated_at=to_utc_isoformat(entry.updated_at) or "",
             )
         )
 
@@ -257,9 +258,9 @@ async def create_blacklist_entry(
         blacklisted_by_user_id=user.id,
         blacklisted_by_username=user.username,
         permanent=new_entry.permanent,
-        expires_at=new_entry.expires_at.isoformat() if new_entry.expires_at else None,
-        created_at=new_entry.created_at.isoformat(),
-        updated_at=new_entry.updated_at.isoformat(),
+        expires_at=to_utc_isoformat(new_entry.expires_at),
+        created_at=to_utc_isoformat(new_entry.created_at) or "",
+        updated_at=to_utc_isoformat(new_entry.updated_at) or "",
     )
 
 
@@ -343,9 +344,9 @@ async def update_blacklist_duration(
         blacklisted_by_user_id=entry.blacklisted_by_user_id,
         blacklisted_by_username=actor.username if actor else "Unknown",
         permanent=entry.permanent,
-        expires_at=expires_at_value.isoformat() if expires_at_value else None,
-        created_at=entry.created_at.isoformat(),
-        updated_at=entry.updated_at.isoformat(),
+        expires_at=to_utc_isoformat(expires_at_value),
+        created_at=to_utc_isoformat(entry.created_at) or "",
+        updated_at=to_utc_isoformat(entry.updated_at) or "",
     )
 
 

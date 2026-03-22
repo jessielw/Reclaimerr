@@ -15,7 +15,12 @@ from tenacity import (
 from backend.core.logger import LOG
 from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
-from backend.models.media import AggregatedMovieData, AggregatedSeriesData, ExternalIDs
+from backend.models.media import (
+    AggregatedMovieData,
+    AggregatedSeriesData,
+    ExternalIDs,
+    MovieVersionData,
+)
 from backend.models.services.plex import PlexMovie, PlexSeries
 
 
@@ -276,15 +281,36 @@ class PlexService:
                 if item.get("type") != "movie":
                     continue
 
-                # calculate total size from all media parts
-                total_size = 0
-                for media in item.get("Media", []):
-                    for part in media.get("Part", []):
-                        total_size += part.get("size", 0)
-
                 ext_ids = self._parse_external_ids(item)
                 if not ext_ids:
                     continue
+
+                # build one MovieVersionData per Media entry (each = one physical file/version)
+                added_at = (
+                    datetime.fromtimestamp(item["addedAt"]).astimezone()
+                    if item.get("addedAt")
+                    else None
+                )
+                versions = []
+                for media in item.get("Media", []):
+                    media_id = str(media.get("id", ""))
+                    if not media_id:
+                        continue
+                    part = media.get("Part", [{}])[0] if media.get("Part") else {}
+                    version_size = sum(p.get("size", 0) for p in media.get("Part", []))
+                    versions.append(
+                        MovieVersionData(
+                            service=Service.PLEX,
+                            service_item_id=item["ratingKey"],
+                            service_media_id=media_id,
+                            library_id=section_uuid,
+                            library_name=section_name,
+                            path=part.get("file"),
+                            size=version_size,
+                            added_at=added_at,
+                            container=media.get("container"),
+                        )
+                    )
 
                 movie = PlexMovie(
                     id=item["ratingKey"],
@@ -292,12 +318,7 @@ class PlexService:
                     year=item.get("year"),
                     library_id=section_uuid,
                     library_name=section_name,
-                    path=item.get("Media", [{}])[0].get("Part", [{}])[0].get("file")
-                    if item.get("Media")
-                    else None,
-                    added_at=datetime.fromtimestamp(item["addedAt"]).astimezone()
-                    if item.get("addedAt")
-                    else None,
+                    added_at=added_at,
                     updated_at=datetime.fromtimestamp(item["updatedAt"]).astimezone()
                     if item.get("updatedAt")
                     else None,
@@ -308,7 +329,7 @@ class PlexService:
                     else None,
                     view_count=item.get("viewCount", 0),
                     external_ids=ext_ids,
-                    size=total_size,
+                    versions=versions,
                 )
                 all_movies.append(movie)
 
@@ -402,22 +423,15 @@ class PlexService:
 
         return [
             AggregatedMovieData(
-                id=m.id,
                 name=m.name,
                 year=m.year,
-                service=Service.PLEX,
-                library_id=m.library_id,
-                library_name=m.library_name,
-                path=m.path,
-                added_at=m.added_at,
                 premiere_date=None,  # plex doesn't provide premiere date directly
                 external_ids=m.external_ids,
-                size=m.size,
+                versions=m.versions,
                 view_count=m.view_count,
                 last_viewed_at=m.last_viewed_at,
                 never_watched=(m.view_count == 0),
                 played_by_user_count=None,  # plex provides global counts, not per-user
-                container=None,  # not readily available in plex API
             )
             for m in movies
         ]

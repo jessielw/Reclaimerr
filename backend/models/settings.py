@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
 from backend.enums import Service
+from backend.types import MEDIA_SERVERS, MediaServerType
 
 
 def _validate_notification_url(url: str) -> None:
@@ -25,6 +26,8 @@ class ServiceConfigUpdate(BaseModel):
     base_url: str
     api_key: str | None = None  # None = keep existing key (used if frontend changes it)
     enabled: bool
+    # only plex/jellyfin are eligible; at most one server may have this True
+    is_main: bool = False
     libraries: list[dict] | None = None
 
     @model_validator(mode="after")
@@ -33,11 +36,21 @@ class ServiceConfigUpdate(BaseModel):
         self.base_url = self.base_url.strip()
         if self.api_key is not None:
             self.api_key = self.api_key.strip() or None  # treat empty string as None
+        if self.is_main and self.service_type not in MEDIA_SERVERS:
+            raise PydanticCustomError(
+                "is_main_invalid",
+                "Only Plex and Jellyfin can be designated as the main media server",
+            )
         return self
 
 
 class UpdateMediaLibrariesRequest(BaseModel):
-    service_type: Literal[Service.PLEX, Service.JELLYFIN] | None = None
+    service_type: MediaServerType | None = None
+
+
+class LibrarySelectionUpdate(BaseModel):
+    id: int
+    selected: bool
 
 
 class NotificationSettingItem(BaseModel):
@@ -75,6 +88,8 @@ class NotificationTestRequest(BaseModel):
 class GeneralSettingsResponse(BaseModel):
     auto_tag_enabled: bool
     cleanup_tag_suffix: str
+    worker_poll_min_seconds: float | None = None
+    worker_poll_max_seconds: float | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -112,5 +127,35 @@ class GeneralSettingsResponse(BaseModel):
             )
 
         return v
+
+    @field_validator("worker_poll_min_seconds", "worker_poll_max_seconds")
+    @classmethod
+    def validate_worker_poll_seconds(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if v <= 0:
+            raise PydanticCustomError(
+                "worker_poll_seconds",
+                "Worker polling values must be greater than 0",
+            )
+        if v > 60:
+            raise PydanticCustomError(
+                "worker_poll_seconds",
+                "Worker polling values cannot exceed 60 seconds",
+            )
+        return float(v)
+
+    @model_validator(mode="after")
+    def validate_worker_poll_range(self) -> GeneralSettingsResponse:
+        if (
+            self.worker_poll_min_seconds is not None
+            and self.worker_poll_max_seconds is not None
+            and self.worker_poll_min_seconds > self.worker_poll_max_seconds
+        ):
+            raise PydanticCustomError(
+                "worker_poll_range",
+                "Worker poll min seconds cannot be greater than worker poll max seconds",
+            )
+        return self
 
     model_config = ConfigDict(from_attributes=True)

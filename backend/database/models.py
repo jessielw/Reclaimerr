@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -13,12 +14,15 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 from backend.enums import (
+    BackgroundJobStatus,
+    BackgroundJobType,
     ExceptionRequestStatus,
     MediaType,
     ScheduleType,
@@ -120,6 +124,9 @@ class ServiceConfig(Base):
     base_url: Mapped[str] = mapped_column(String(255))
     api_key: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # designates this as the sole source-of-truth for physical file versions;
+    # only one Plex/Jellyfin server may have is_main=True at a time
+    is_main: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=func.now(),
@@ -129,14 +136,13 @@ class ServiceConfig(Base):
 
 
 class ServiceMediaLibrary(Base):
-    """Media libraries available in configured services."""
+    """Media libraries available from the main media server."""
 
     __tablename__ = "service_media_libraries"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
     )
-    service_type: Mapped[Service] = mapped_column(Enum(Service))
     library_id: Mapped[str] = mapped_column(String(50))
     library_name: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
@@ -161,6 +167,8 @@ class GeneralSettings(Base):
     # cleanup and tagging settings
     auto_tag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     cleanup_tag_suffix: Mapped[str] = mapped_column(String(15), default="")
+    worker_poll_min_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -185,18 +193,8 @@ class Movie(Base):
     year: Mapped[int] = mapped_column(SmallInteger)
     tmdb_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
 
-    # file info
+    # aggregate file size (sum of all versions - updated during sync)
     size: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # service-specific file info (for multi-service setups with different paths)
-    plex_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    plex_library_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    plex_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    plex_path: Mapped[str | None] = mapped_column(String(1024), default=None)
-    jellyfin_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    jellyfin_library_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    jellyfin_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    jellyfin_path: Mapped[str | None] = mapped_column(String(1024), default=None)
 
     # external IDs
     radarr_id: Mapped[int | None] = mapped_column(
@@ -247,8 +245,92 @@ class Movie(Base):
     )
 
     # relationships
+    versions: Mapped[list[MovieVersion]] = relationship(
+        back_populates="movie",
+        default_factory=list,
+        lazy="noload",
+        repr=False,
+        cascade="all, delete-orphan",
+    )
     exception_requests: Mapped[list[ExceptionRequest]] = relationship(
         back_populates="movie", default_factory=list, lazy="noload", repr=False
+    )
+
+
+class MovieVersion(Base):
+    """Individual physical file version of a movie."""
+
+    __tablename__ = "movie_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "movie_id", "service", "service_media_id", name="uq_movie_version"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    movie_id: Mapped[int] = mapped_column(ForeignKey("movies.id"), index=True)
+
+    # service identification
+    service: Mapped[Service] = mapped_column(Enum(Service))
+    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    service_item_id: Mapped[str] = mapped_column(String(100))
+    # plex Media.id or jellyfin MediaSource.Id (unique per physical file)
+    service_media_id: Mapped[str] = mapped_column(String(100))
+
+    # library
+    library_id: Mapped[str] = mapped_column(String(100))
+    library_name: Mapped[str] = mapped_column(String(255))
+
+    # file info
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    container: Mapped[str | None] = mapped_column(String(20), default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    # relationships
+    movie: Mapped[Movie] = relationship(
+        back_populates="versions", init=False, lazy="noload", repr=False
+    )
+
+
+class SeriesServiceRef(Base):
+    """Service-specific reference for a series (one row per service that has it)."""
+
+    __tablename__ = "series_service_refs"
+    __table_args__ = (
+        UniqueConstraint("series_id", "service", name="uq_series_service_ref"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"), index=True)
+
+    # service identification
+    service: Mapped[Service] = mapped_column(Enum(Service))
+    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    service_id: Mapped[str] = mapped_column(String(100))
+
+    # library
+    library_id: Mapped[str] = mapped_column(String(100))
+    library_name: Mapped[str] = mapped_column(String(255))
+
+    # file info
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    # relationships
+    series: Mapped[Series] = relationship(
+        back_populates="service_refs", init=False, lazy="noload", repr=False
     )
 
 
@@ -268,16 +350,6 @@ class Series(Base):
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # service-specific file info (for multi-service setups with different paths)
-    plex_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    plex_library_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    plex_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    plex_path: Mapped[str | None] = mapped_column(String(1024), default=None)
-    jellyfin_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    jellyfin_library_id: Mapped[str | None] = mapped_column(String(50), default=None)
-    jellyfin_library_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    jellyfin_path: Mapped[str | None] = mapped_column(String(1024), default=None)
 
     # external IDs
     sonarr_id: Mapped[int | None] = mapped_column(
@@ -333,6 +405,13 @@ class Series(Base):
     )
 
     # relationships
+    service_refs: Mapped[list[SeriesServiceRef]] = relationship(
+        back_populates="series",
+        default_factory=list,
+        lazy="noload",
+        repr=False,
+        cascade="all, delete-orphan",
+    )
     exception_requests: Mapped[list[ExceptionRequest]] = relationship(
         back_populates="series", default_factory=list, lazy="noload", repr=False
     )
@@ -387,9 +466,6 @@ class ReclaimRule(Base):
     # size criteria (bytes)
     min_size: Mapped[int | None] = mapped_column(Integer, default=None)
     max_size: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # actions
-    auto_tag: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # metadata
     created_at: Mapped[datetime] = mapped_column(
@@ -623,6 +699,42 @@ class TaskSchedule(Base):
     )
 
     # timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class BackgroundJob(Base):
+    """Durable background work item executed by the standalone worker."""
+
+    __tablename__ = "background_jobs"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    job_type: Mapped[BackgroundJobType] = mapped_column(Enum(BackgroundJobType))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[BackgroundJobStatus] = mapped_column(
+        Enum(BackgroundJobStatus), default=BackgroundJobStatus.PENDING
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default_factory=dict)
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(120), default=None, index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    claimed_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, default=None, init=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )

@@ -1,13 +1,19 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.database import get_db
-from backend.database.models import ReclaimRule, User
+from backend.database.models import (
+    Movie,
+    ReclaimRule,
+    Series,
+    ServiceMediaLibrary,
+    User,
+)
 from backend.models.cleanup import (
     CleanupRuleCreate,
     CleanupRuleResponse,
@@ -19,7 +25,7 @@ router = APIRouter(prefix="/api", tags=["rules"])
 
 @router.get("/rules", response_model=list[CleanupRuleResponse])
 async def get_rules(
-    admin: Annotated[User, Depends(require_admin)],
+    _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ):
     """Get all cleanup rules."""
@@ -57,7 +63,6 @@ async def create_rule(
         max_days_since_last_watched=rule_data.max_days_since_last_watched,
         min_size=rule_data.min_size,
         max_size=rule_data.max_size,
-        auto_tag=rule_data.auto_tag,
     )
 
     db.add(new_rule)
@@ -120,6 +125,24 @@ async def delete_rule(
     msg = f"Deleted cleanup rule: {rule_name} (ID: {rule_id})"
     LOG.info(msg)
     return {"message": msg}
+
+
+@router.get("/rules/check-synced")
+async def check_synced_rules(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    """Return the count of synced libraries, movies, and series."""
+    query = select(
+        func.count(ServiceMediaLibrary.id), func.count(Movie.id), func.count(Series.id)
+    )
+    result = await db.execute(query)
+    lib_count, movie_count, series_count = result.fetchone() or (0, 0, 0)
+    return {
+        "libraries": lib_count,
+        "movies": movie_count,
+        "series": series_count,
+    }
 
 
 # @router.post("/rules/check-library-impact")

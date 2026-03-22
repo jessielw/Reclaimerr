@@ -50,13 +50,14 @@ export async function get_api<T>(
 /**
  * helper for POST requests
  */
-export async function post_api<T>(url: string, data: any): Promise<T> {
-  // Check if data is FormData (for file uploads)
+export async function post_api<T>(url: string, data?: any): Promise<T> {
+  // check if data is FormData (for file uploads)
   const isFormData = data instanceof FormData;
 
   const response = await fetchAPI(url, {
     method: "POST",
-    body: isFormData ? data : JSON.stringify(data),
+    body:
+      data === undefined ? undefined : isFormData ? data : JSON.stringify(data),
   });
 
   if (!response.ok) {
@@ -74,12 +75,13 @@ export async function post_api<T>(url: string, data: any): Promise<T> {
 /**
  * helper for PUT requests
  */
-export async function put_api<T>(url: string, data: any): Promise<T> {
+export async function put_api<T>(url: string, data?: any): Promise<T> {
   const isFormData = data instanceof FormData;
 
   const response = await fetchAPI(url, {
     method: "PUT",
-    body: isFormData ? data : JSON.stringify(data),
+    body:
+      data === undefined ? undefined : isFormData ? data : JSON.stringify(data),
   });
 
   if (!response.ok) {

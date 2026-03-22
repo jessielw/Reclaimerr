@@ -6,13 +6,14 @@ from typing import NamedTuple
 from sqlalchemy import delete, select
 
 from backend.core.logger import LOG
+from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
 from backend.database.models import TaskRun
 from backend.enums import Task
-from backend.tasks.task_tracker import track_task_execution
 
-__all__ = ("weekly_house_keeping",)
+__all__ = ["weekly_house_keeping"]
 
+# TODO: add house keeping for other stuff that we need
 
 async def _trim_task_runs(keep_recent: int) -> None:
     """Trim old task runs from the database, keeping only the most recent N runs total."""
