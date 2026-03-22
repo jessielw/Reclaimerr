@@ -13,6 +13,7 @@ from backend.enums import Task
 
 __all__ = ["weekly_house_keeping"]
 
+# TODO: add house keeping for other stuff that we need
 
 async def _trim_task_runs(keep_recent: int) -> None:
     """Trim old task runs from the database, keeping only the most recent N runs total."""
