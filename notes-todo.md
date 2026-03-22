@@ -20,7 +20,7 @@ POTENTIAL? - Settings screen is a little confusing - not immediately obvious tha
 
 [x] - Dashboard - Plex shows last sync: never even when manually synced via task run
 
-[ ] - Add a filter on movies/tv screens to only show reclaim candidates
+[x] - Add a filter on movies/tv screens to only show reclaim candidates
 
 [ ] - In individual movies/tv - when you select one, give admins the ability to exclude from deletion directly without making a request
 
