@@ -171,9 +171,9 @@
 </script>
 
 <div
-  class="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4 overflow-y-auto"
+  class="fixed inset-0 bg-black/50 z-40 flex items-center justify-center overflow-y-auto"
 >
-  <div class="bg-card rounded-lg border border-border max-w-4xl w-full my-8">
+  <div class="bg-card rounded-lg border border-border max-w-4xl w-full">
     <form onsubmit={handleSubmit}>
       <div class="p-6 border-b border-border">
         <div class="flex items-center justify-between">
@@ -195,7 +195,8 @@
         </p>
         {#if validationMessage}
           <p
-            class="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            class="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm
+            text-destructive"
           >
             {validationMessage}
           </p>
@@ -649,21 +650,28 @@
       </div>
 
       <div
-        class="p-6 border-t border-border flex items-center justify-end gap-3"
+        class="p-6 border-t border-border flex flex-col md:flex-row items-center justify-end gap-3"
       >
-        <Button
-          type="button"
-          variant="secondary"
-          onclick={onCancel}
-          disabled={saving}
-          class="cursor-pointer"
-        >
-          Cancel
-        </Button>
-        <Button type="submit" disabled={saving} class="cursor-pointer gap-2">
-          <Save class="size-4" />
-          {saving ? "Saving..." : "Save Rule"}
-        </Button>
+        <p class="text-xs text-foreground mr-3 mt-1 md:text-left">
+          <strong>Note:</strong> New candidates will appear next time the Scan Cleanup
+          Candidates task is run. If you want them sooner, you can manually trigger
+          the scan.
+        </p>
+        <div class="flex justify-end items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onclick={onCancel}
+            disabled={saving}
+            class="cursor-pointer"
+          >
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving} class="cursor-pointer gap-2">
+            <Save class="size-4" />
+            {saving ? "Saving..." : "Save Rule"}
+          </Button>
+        </div>
       </div>
     </form>
   </div>
