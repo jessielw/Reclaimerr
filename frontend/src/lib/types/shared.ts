@@ -340,4 +340,5 @@ export interface DashboardResponse {
   services: DashboardServiceSummary[];
   activity: DashboardActivityItem[];
   viewer: DashboardViewer;
+  media_server_configured: boolean;
 }
