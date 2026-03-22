@@ -32,25 +32,6 @@
   let showRuleForm = $state(false);
   let availableLibraries = $state<LibraryType[]>([]);
 
-  // state to trigger new rule info message after creating/updating a rule
-  let newRule = $state(false);
-  let newRuleTimer: ReturnType<typeof setTimeout> | null = null;
-  const newRuleDisplayDuration = 10000; // 10 seconds
-
-  $effect(() => {
-    if (!newRule) {
-      return;
-    }
-
-    toast.success(
-      "New candidates will appear next time the Scan Cleanup Candidates task is run. If you want them " +
-        "sooner, you can manually trigger the scan.",
-      {
-        duration: newRuleDisplayDuration,
-      },
-    );
-  });
-
   // delete dialog states
   let showDeleteDialog = $state(false);
   let ruleToDelete = $state<ReclaimRule | null>(null);
@@ -130,13 +111,6 @@
         toast.success(`Rule "${created.name}" created`);
       }
       closeRuleForm();
-      // debounce newRule ui
-      newRule = true;
-      if (newRuleTimer) clearTimeout(newRuleTimer);
-      newRuleTimer = setTimeout(() => {
-        newRule = false;
-        newRuleTimer = null;
-      }, newRuleDisplayDuration);
     } catch (err: any) {
       toast.error(`Error saving rule: ${err.message}`);
       throw err; // re-throw to prevent form from closing
@@ -468,7 +442,7 @@
   >
     <AlertDialog.Header>
       <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2"
-        >Delete User</AlertDialog.Title
+        >Delete Rule</AlertDialog.Title
       >
       <AlertDialog.Description class="text-muted-foreground">
         Are you sure you want to delete rule <span class="font-semibold"
