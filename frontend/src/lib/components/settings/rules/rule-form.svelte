@@ -462,7 +462,7 @@
           <Card.Header>
             <Card.Title>Watch History Criteria</Card.Title>
             <Card.Description>
-              Filter by view counts and watch patterns
+              Filter by view counts and watch patterns (all users)
             </Card.Description>
           </Card.Header>
           <Card.Content class="space-y-4">
