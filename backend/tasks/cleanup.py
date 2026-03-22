@@ -2,9 +2,11 @@ from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
+from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
 from backend.database.models import (
     GeneralSettings,
@@ -13,16 +15,17 @@ from backend.database.models import (
     ReclaimCandidate,
     ReclaimRule,
     Series,
+    ServiceConfig,
 )
-from backend.enums import MediaType, NotificationType, Task
+from backend.enums import MediaType, NotificationType, Service, Task
 from backend.services.notifications import notify_all_users
-from backend.tasks.task_tracker import track_task_execution
+from backend.types import MEDIA_SERVERS
 
-__all__ = (
+__all__ = [
     "scan_cleanup_candidates",
     "tag_cleanup_candidates",
     "delete_cleanup_candidates",
-)
+]
 
 
 async def scan_cleanup_candidates() -> None:
@@ -103,7 +106,11 @@ async def _process_media(
     """
     # get all media items
     if media_type is MediaType.MOVIE:
-        result = await db.execute(select(Movie).where(Movie.removed_at.is_(None)))
+        result = await db.execute(
+            select(Movie)
+            .where(Movie.removed_at.is_(None))
+            .options(selectinload(Movie.versions))
+        )
         media_items = result.scalars().all()
         id_field = "movie_id"
     else:
@@ -273,12 +280,11 @@ def _evaluate_rule(
     if not item.size or item.size == 0:
         return False
 
-    # check library filtering - check both plex and jellyfin library IDs
+    # check library filtering (check across all stored versions)
     if rule.library_ids is not None and len(rule.library_ids) > 0:
         item_libraries = [
-            lib
-            for lib in (item.plex_library_id, item.jellyfin_library_id)
-            if lib is not None
+            v.library_id
+            for v in item.versions  # pyright: ignore[reportAttributeAccessIssue]
         ]
         if not any(lib in rule.library_ids for lib in item_libraries):
             return False
@@ -422,7 +428,7 @@ async def tag_cleanup_candidates() -> None:
     Uses bulk operations for performance.
     """
     tag = "reclaimerr"
-    
+
     # check if services are configured before doing any work
     if not service_manager.radarr and not service_manager.sonarr:
         LOG.debug("Neither Radarr nor Sonarr configured, skipping tag sync")
@@ -906,14 +912,14 @@ async def _delete_series_candidates() -> int:
 async def _delete_movies_via_media_server(
     candidates, already_deleted: list[dict]
 ) -> int:
-    """Delete movies via Jellyfin or Plex as fallback when not in Radarr.
+    # TODO: this still needs more testing!
+    """Deletes movies via the main media server as fallback when not in Radarr.
 
-    Args:
-        candidates: All movie candidates
-        already_deleted: List of movies already deleted via Radarr
+    Uses whichever Plex/Jellyfin server is designated as main.  If no main is
+    set, falls back to whichever of Jellyfin/Plex is initialized (Jellyfin
+    first).
 
-    Returns:
-        Count of movies deleted via media servers
+    Returns count of movies deleted.
     """
     already_deleted_ids = {m["movie_id"] for m in already_deleted}
     remaining_candidates = [
@@ -924,148 +930,120 @@ async def _delete_movies_via_media_server(
         return 0
 
     LOG.info(
-        f"Attempting to delete {len(remaining_candidates)} movies via media servers (not in Radarr)"
+        f"Attempting to delete {len(remaining_candidates)} movies via media server"
     )
-    deleted_count = 0
 
-    # get movies from database to access service IDs
+    # determine main service type
+    async with async_db() as db:
+        main_result = await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                ServiceConfig.is_main.is_(True),
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+        main_cfg = main_result.scalar_one_or_none()
+
+    if main_cfg:
+        main_service_type = main_cfg.service_type
+        main_service = (
+            service_manager.jellyfin
+            if main_service_type == Service.JELLYFIN
+            else service_manager.plex
+        )
+    elif service_manager.jellyfin:
+        main_service_type = Service.JELLYFIN
+        main_service = service_manager.jellyfin
+    elif service_manager.plex:
+        main_service_type = Service.PLEX
+        main_service = service_manager.plex
+    else:
+        LOG.warning("No media server available for movie deletion fallback")
+        return 0
+
+    if not main_service:
+        LOG.warning(f"Main media server {main_service_type} is not initialised")
+        return 0
+
+    # load movies with their versions
     async with async_db() as db:
         movie_ids = [c.movie_id for c in remaining_candidates]
-        result = await db.execute(select(Movie).where(Movie.id.in_(movie_ids)))
+        result = await db.execute(
+            select(Movie)
+            .where(Movie.id.in_(movie_ids))
+            .options(selectinload(Movie.versions))
+        )
         movies = {m.id: m for m in result.scalars().all()}
 
-    # prioritize Jellyfin over Plex
-    if service_manager.jellyfin:
-        deleted_paths = []  # track paths of deleted movies for scanning
+    deleted_count = 0
+    deleted_paths: list[str] = []
 
-        for candidate in remaining_candidates:
-            movie = movies.get(candidate.movie_id)
-            if not movie or not movie.tmdb_id:
-                continue
+    for candidate in remaining_candidates:
+        movie = movies.get(candidate.movie_id)
+        if not movie or not movie.tmdb_id:
+            continue
 
-            # use stored jellyfin_id directly
-            if not movie.jellyfin_id:
-                LOG.debug(f"Movie '{movie.title}' not found in Jellyfin (no ID stored)")
-                continue
-
-            try:
-                await service_manager.jellyfin.delete_item(movie.jellyfin_id)
-
-                # track service-specific path for scanning (from database)
-                if movie.jellyfin_path:
-                    deleted_paths.append(movie.jellyfin_path)
-
-                # mark as removed and delete candidate
-                async with async_db() as db:
-                    result = await db.execute(
-                        select(Movie).where(Movie.id == candidate.movie_id)
-                    )
-                    movie_obj = result.scalar_one_or_none()
-                    if movie_obj:
-                        movie_obj.removed_at = datetime.now(timezone.utc)
-
-                    result = await db.execute(
-                        select(ReclaimCandidate).where(
-                            ReclaimCandidate.id == candidate.id
-                        )
-                    )
-                    cand = result.scalar_one_or_none()
-                    if cand:
-                        await db.delete(cand)
-
-                    # reset seerr request
-                    if service_manager.seerr and movie.tmdb_id:
-                        try:
-                            await _reset_seerr_request(movie.tmdb_id, MediaType.MOVIE)
-                        except Exception as e:
-                            LOG.warning(
-                                f"Failed to reset Seerr request for {movie.title}: {e}"
-                            )
-
-                    await db.commit()
-
-                deleted_count += 1
-                LOG.info(f"Deleted movie '{movie.title}' via Jellyfin")
-
-            except Exception as e:
-                LOG.error(f"Failed to delete movie '{movie.title}' via Jellyfin: {e}")
-
-        # trigger path-specific library scans after all deletions
-        if deleted_paths:
-            LOG.info(
-                f"Triggering Jellyfin scans for {len(deleted_paths)} deleted movie paths"
+        service_versions = [v for v in movie.versions if v.service == main_service_type]
+        if not service_versions:
+            LOG.debug(
+                f"Movie '{movie.title}' has no versions for {main_service_type} - skipping"
             )
-            for path in deleted_paths:
-                try:
-                    await service_manager.jellyfin.refresh_item_path(path)
-                except Exception as e:
-                    LOG.warning(f"Failed to trigger Jellyfin scan for {path}: {e}")
+            continue
 
-    elif service_manager.plex:
-        deleted_paths = []  # track paths of deleted movies for scanning
+        try:
+            # delete each unique item (same movie may appear in multiple libraries)
+            deleted_item_ids: set[str] = set()
+            for ver in service_versions:
+                if ver.service_item_id not in deleted_item_ids:
+                    await main_service.delete_item(ver.service_item_id)
+                    deleted_item_ids.add(ver.service_item_id)
+                if ver.path:
+                    deleted_paths.append(ver.path)
 
-        for candidate in remaining_candidates:
-            movie = movies.get(candidate.movie_id)
-            if not movie or not movie.tmdb_id:
-                continue
+            # mark as removed and delete candidate
+            async with async_db() as db:
+                result = await db.execute(
+                    select(Movie).where(Movie.id == candidate.movie_id)
+                )
+                movie_obj = result.scalar_one_or_none()
+                if movie_obj:
+                    movie_obj.removed_at = datetime.now(timezone.utc)
 
-            # use stored plex_id directly
-            if not movie.plex_id:
-                LOG.debug(f"Movie '{movie.title}' not found in Plex (no ID stored)")
-                continue
+                result = await db.execute(
+                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                )
+                cand = result.scalar_one_or_none()
+                if cand:
+                    await db.delete(cand)
 
-            try:
-                await service_manager.plex.delete_item(movie.plex_id)
-
-                # track service-specific path for scanning (from database)
-                if movie.plex_path:
-                    deleted_paths.append(movie.plex_path)
-
-                # mark as removed and delete candidate
-                async with async_db() as db:
-                    result = await db.execute(
-                        select(Movie).where(Movie.id == candidate.movie_id)
-                    )
-                    movie_obj = result.scalar_one_or_none()
-                    if movie_obj:
-                        movie_obj.removed_at = datetime.now(timezone.utc)
-
-                    result = await db.execute(
-                        select(ReclaimCandidate).where(
-                            ReclaimCandidate.id == candidate.id
+                if service_manager.seerr and movie.tmdb_id:
+                    try:
+                        await _reset_seerr_request(movie.tmdb_id, MediaType.MOVIE)
+                    except Exception as e:
+                        LOG.warning(
+                            f"Failed to reset Seerr request for '{movie.title}': {e}"
                         )
-                    )
-                    cand = result.scalar_one_or_none()
-                    if cand:
-                        await db.delete(cand)
 
-                    # reset seerr request
-                    if service_manager.seerr and movie.tmdb_id:
-                        try:
-                            await _reset_seerr_request(movie.tmdb_id, MediaType.MOVIE)
-                        except Exception as e:
-                            LOG.warning(
-                                f"Failed to reset Seerr request for {movie.title}: {e}"
-                            )
+                await db.commit()
 
-                    await db.commit()
+            deleted_count += 1
+            LOG.info(f"Deleted movie '{movie.title}' via {main_service_type}")
 
-                deleted_count += 1
-                LOG.info(f"Deleted movie '{movie.title}' via Plex")
-
-            except Exception as e:
-                LOG.error(f"Failed to delete movie '{movie.title}' via Plex: {e}")
-
-        # trigger path-specific library scans after all deletions
-        if deleted_paths:
-            LOG.info(
-                f"Triggering Plex scans for {len(deleted_paths)} deleted movie paths"
+        except Exception as e:
+            LOG.error(
+                f"Failed to delete movie '{movie.title}' via {main_service_type}: {e}"
             )
-            for path in deleted_paths:
-                try:
-                    await service_manager.plex.scan_item_path(path)
-                except Exception as e:
-                    LOG.warning(f"Failed to trigger Plex scan for {path}: {e}")
+
+    # trigger library scans for deleted paths
+    if deleted_paths:
+        LOG.info(
+            f"Triggering {main_service_type} scans for {len(deleted_paths)} deleted paths"
+        )
+        for path in deleted_paths:
+            try:
+                await main_service.scan_item_path(path)
+            except Exception as e:
+                LOG.warning(f"Failed to trigger scan for {path}: {e}")
 
     return deleted_count
 
@@ -1073,7 +1051,8 @@ async def _delete_movies_via_media_server(
 async def _delete_series_via_media_server(
     candidates, already_deleted: list[dict]
 ) -> int:
-    """Delete series via Jellyfin or Plex as fallback when not in Sonarr.
+    # TODO: this still needs more testing!
+    """Deletes series via Jellyfin or Plex as fallback when not in Sonarr.
 
     Args:
         candidates: All series candidates
@@ -1098,7 +1077,11 @@ async def _delete_series_via_media_server(
     # get series from database to access service IDs
     async with async_db() as db:
         series_ids = [c.series_id for c in remaining_candidates]
-        result = await db.execute(select(Series).where(Series.id.in_(series_ids)))
+        result = await db.execute(
+            select(Series)
+            .where(Series.id.in_(series_ids))
+            .options(selectinload(Series.service_refs))
+        )
         series = {s.id: s for s in result.scalars().all()}
 
     # prioritize Jellyfin over Plex
@@ -1110,19 +1093,22 @@ async def _delete_series_via_media_server(
             if not series_obj or not series_obj.tmdb_id:
                 continue
 
-            # use stored jellyfin_id directly
-            if not series_obj.jellyfin_id:
+            ref = next(
+                (r for r in series_obj.service_refs if r.service == Service.JELLYFIN),
+                None,
+            )
+            if not ref:
                 LOG.debug(
-                    f"Series '{series_obj.title}' not found in Jellyfin (no ID stored)"
+                    f"Series '{series_obj.title}' not found in Jellyfin (no service ref)"
                 )
                 continue
 
             try:
-                await service_manager.jellyfin.delete_item(series_obj.jellyfin_id)
+                await service_manager.jellyfin.delete_item(ref.service_id)
 
                 # track service-specific path for scanning (from database)
-                if series_obj.jellyfin_path:
-                    deleted_paths.append(series_obj.jellyfin_path)
+                if ref.path:
+                    deleted_paths.append(ref.path)
 
                 # mark as removed and delete candidate
                 async with async_db() as db:
@@ -1170,7 +1156,7 @@ async def _delete_series_via_media_server(
             )
             for path in deleted_paths:
                 try:
-                    await service_manager.jellyfin.refresh_item_path(path)
+                    await service_manager.jellyfin.scan_item_path(path)
                 except Exception as e:
                     LOG.warning(f"Failed to trigger Jellyfin scan for {path}: {e}")
 
@@ -1182,19 +1168,22 @@ async def _delete_series_via_media_server(
             if not series_obj or not series_obj.tmdb_id:
                 continue
 
-            # use stored plex_id directly
-            if not series_obj.plex_id:
+            ref = next(
+                (r for r in series_obj.service_refs if r.service == Service.PLEX),
+                None,
+            )
+            if not ref:
                 LOG.debug(
-                    f"Series '{series_obj.title}' not found in Plex (no ID stored)"
+                    f"Series '{series_obj.title}' not found in Plex (no service ref)"
                 )
                 continue
 
             try:
-                await service_manager.plex.delete_item(series_obj.plex_id)
+                await service_manager.plex.delete_item(ref.service_id)
 
                 # track service-specific path for scanning (from database)
-                if series_obj.plex_path:
-                    deleted_paths.append(series_obj.plex_path)
+                if ref.path:
+                    deleted_paths.append(ref.path)
 
                 # mark as removed and delete candidate
                 async with async_db() as db:
