@@ -135,18 +135,6 @@
     }
   });
 
-  // reset values when schedule type changes (after initialization)
-  $effect(() => {
-    if (initialized) {
-      // this will run when scheduleType changes
-      scheduleType;
-      // reset to clean state for the new schedule type
-      selectedPreset = "custom";
-      scheduleValue = "";
-      customValue = "";
-    }
-  });
-
   // types for jobs list (from Tasks.svelte)
   const handleCustomValueChange = (e: Event) => {
     const target = e.target as HTMLInputElement;
@@ -238,7 +226,15 @@
       <!-- schedule type -->
       <div class="space-y-2">
         <Label>Schedule Type</Label>
-        <Select.Root type="single" bind:value={scheduleType}>
+        <Select.Root
+          type="single"
+          bind:value={scheduleType}
+          onValueChange={() => {
+            selectedPreset = "custom";
+            scheduleValue = "";
+            customValue = "";
+          }}
+        >
           <Select.Trigger class="w-full">
             {scheduleTypeDisplay}
           </Select.Trigger>
