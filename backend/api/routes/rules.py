@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api", tags=["rules"])
 
 @router.get("/rules", response_model=list[CleanupRuleResponse])
 async def get_rules(
-    admin: Annotated[User, Depends(require_admin)],
+    _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ):
     """Get all cleanup rules."""
