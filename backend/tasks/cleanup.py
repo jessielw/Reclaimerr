@@ -114,7 +114,11 @@ async def _process_media(
         media_items = result.scalars().all()
         id_field = "movie_id"
     else:
-        result = await db.execute(select(Series).where(Series.removed_at.is_(None)))
+        result = await db.execute(
+            select(Series)
+            .where(Series.removed_at.is_(None))
+            .options(selectinload(Series.service_refs))
+        )
         media_items = result.scalars().all()
         id_field = "series_id"
 
@@ -280,12 +284,10 @@ def _evaluate_rule(
     if not item.size or item.size == 0:
         return False
 
-    # check library filtering (check across all stored versions)
+    # check library filtering (check across all stored versions/refs)
     if rule.library_ids is not None and len(rule.library_ids) > 0:
-        item_libraries = [
-            v.library_id
-            for v in item.versions  # pyright: ignore[reportAttributeAccessIssue]
-        ]
+        refs = item.versions if isinstance(item, Movie) else item.service_refs
+        item_libraries = [v.library_id for v in refs]
         if not any(lib in rule.library_ids for lib in item_libraries):
             return False
 
