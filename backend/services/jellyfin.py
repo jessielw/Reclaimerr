@@ -85,7 +85,7 @@ class JellyfinService:
         except Exception as e:
             raise ValueError(f"Failed to delete Jellyfin item {item_id}: {e}")
 
-    async def refresh_item_path(self, item_path: str) -> bool:
+    async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Jellyfin.
 
         This triggers Jellyfin to scan the specific path, similar to how Radarr/Sonarr
