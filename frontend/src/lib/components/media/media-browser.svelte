@@ -3,6 +3,7 @@
   import { get_api } from "$lib/api";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import MediaGrid from "$lib/components/media/media-grid.svelte";
   import MediaDetailDialog from "$lib/components/media/media-detail-dialog.svelte";
   import ExceptionRequestDialog from "$lib/components/media/exception-request-dialog.svelte";
@@ -41,6 +42,7 @@
   let searchQuery = $state("");
   let sortBy = $state("title");
   let sortOrder = $state("asc");
+  let candidatesOnly = $state(false);
   let currentPage = $state(1);
 
   // dialogs
@@ -73,10 +75,11 @@
     isMovie ? "Search movies..." : "Search series...",
   );
 
-  // watch for changes in sortBy and sortOrder to reload
+  // watch for changes in sortBy, sortOrder, and candidatesOnly to reload
   $effect(() => {
     sortBy;
     sortOrder;
+    candidatesOnly;
     if (mounted) {
       loadMedia(1);
     }
@@ -102,6 +105,10 @@
 
       if (searchQuery.trim()) {
         params.append("search", searchQuery.trim());
+      }
+
+      if (candidatesOnly) {
+        params.append("candidates_only", "true");
       }
 
       const data = await get_api<
@@ -221,59 +228,69 @@
     </div>
 
     <!-- filters and search -->
-    <div class="mb-6 flex flex-col sm:flex-row gap-2">
-      <!-- search -->
-      <div class="relative flex-1">
-        <Search
-          class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
-        />
-        <Input
-          type="text"
-          placeholder={searchPlaceholder}
-          value={searchQuery}
-          oninput={handleSearch}
-          class="pl-10 bg-card text-card-foreground placeholder-text-muted-foreground"
-        />
-      </div>
+    <div class="mb-6 flex flex-col gap-2">
+      <div class="flex flex-col sm:flex-row gap-2">
+        <!-- search -->
+        <div class="relative flex-1">
+          <Search
+            class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
+          />
+          <Input
+            type="text"
+            placeholder={searchPlaceholder}
+            value={searchQuery}
+            oninput={handleSearch}
+            class="pl-10 bg-card text-card-foreground placeholder-text-muted-foreground"
+          />
+        </div>
 
-      <!-- sort by -->
-      <div class="flex flex-1 flex-row gap-4">
-        <Select.Root type="single" bind:value={sortBy}>
-          <Select.Trigger class="flex-10 bg-card text-card-foreground">
-            {sortByOptions.find((opt) => opt.value === sortBy)?.label}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            {#each sortByOptions as option}
+        <!-- sort by -->
+        <div class="flex flex-1 flex-row gap-2">
+          <Select.Root type="single" bind:value={sortBy}>
+            <Select.Trigger class="flex-10 bg-card text-card-foreground">
+              {sortByOptions.find((opt) => opt.value === sortBy)?.label}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              {#each sortByOptions as option}
+                <Select.Item
+                  value={option.value}
+                  label={option.label}
+                  class="text-card-foreground"
+                >
+                  {option.label}
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+
+          <!-- sort order -->
+          <Select.Root type="single" bind:value={sortOrder}>
+            <Select.Trigger class="flex-10 bg-card text-card-foreground">
+              {sortOrder === "asc" ? "Ascending" : "Descending"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
               <Select.Item
-                value={option.value}
-                label={option.label}
-                class="text-card-foreground"
+                value="asc"
+                label="Ascending"
+                class="text-card-foreground">Ascending</Select.Item
               >
-                {option.label}
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-
-        <!-- sort order -->
-        <Select.Root type="single" bind:value={sortOrder}>
-          <Select.Trigger class="flex-10 bg-card text-card-foreground">
-            {sortOrder === "asc" ? "Ascending" : "Descending"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="asc"
-              label="Ascending"
-              class="text-card-foreground">Ascending</Select.Item
-            >
-            <Select.Item
-              value="desc"
-              label="Descending"
-              class="text-card-foreground">Descending</Select.Item
-            >
-          </Select.Content>
-        </Select.Root>
+              <Select.Item
+                value="desc"
+                label="Descending"
+                class="text-card-foreground">Descending</Select.Item
+              >
+            </Select.Content>
+          </Select.Root>
+        </div>
       </div>
+
+      <!-- candidates filter -->
+      <label class="flex items-center gap-2 cursor-pointer w-fit">
+        <Switch bind:checked={candidatesOnly} class="cursor-pointer" />
+        <span class="text-sm text-muted-foreground"
+          >Reclaim candidates only</span
+        >
+      </label>
     </div>
 
     <!-- media grid -->
