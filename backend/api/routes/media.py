@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -50,6 +50,7 @@ async def get_movies(
     sort_by: str = Query("title", pattern="^(title|added_at|size|vote_average|year)$"),
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
+    candidates_only: bool = Query(False),
 ):
     """
     Get all movies with status information.
@@ -65,11 +66,22 @@ async def get_movies(
         .where(Movie.removed_at.is_(None))
         .options(selectinload(Movie.versions))
     )
+    count_query = (
+        select(func.count()).select_from(Movie).where(Movie.removed_at.is_(None))
+    )
 
     # apply search filter
     if search:
         search_term = f"%{search}%"
         query = query.where(Movie.title.ilike(search_term))
+        count_query = count_query.where(Movie.title.ilike(search_term))
+
+    # apply candidates filter
+    if candidates_only:
+        query = query.join(ReclaimCandidate, ReclaimCandidate.movie_id == Movie.id)
+        count_query = count_query.join(
+            ReclaimCandidate, ReclaimCandidate.movie_id == Movie.id
+        )
 
     # apply sorting
     order_column = getattr(Movie, sort_by)
@@ -79,8 +91,7 @@ async def get_movies(
         query = query.order_by(order_column.asc())
 
     # get total count
-    count_result = await db.execute(select(Movie).where(Movie.removed_at.is_(None)))
-    total = len(count_result.scalars().all())
+    total = (await db.execute(count_query)).scalar_one()
 
     # apply pagination
     offset = (page - 1) * per_page
@@ -207,6 +218,7 @@ async def get_series(
     sort_by: str = Query("title", pattern="^(title|added_at|size|vote_average|year)$"),
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
+    candidates_only: bool = Query(False),
 ):
     """
     Get all series with status information.
@@ -222,11 +234,22 @@ async def get_series(
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs))
     )
+    count_query = (
+        select(func.count()).select_from(Series).where(Series.removed_at.is_(None))
+    )
 
     # apply search filter
     if search:
         search_term = f"%{search}%"
         query = query.where(Series.title.ilike(search_term))
+        count_query = count_query.where(Series.title.ilike(search_term))
+
+    # apply candidates filter
+    if candidates_only:
+        query = query.join(ReclaimCandidate, ReclaimCandidate.series_id == Series.id)
+        count_query = count_query.join(
+            ReclaimCandidate, ReclaimCandidate.series_id == Series.id
+        )
 
     # apply sorting
     order_column = getattr(Series, sort_by)
@@ -236,8 +259,7 @@ async def get_series(
         query = query.order_by(order_column.asc())
 
     # get total count
-    count_result = await db.execute(select(Series).where(Series.removed_at.is_(None)))
-    total = len(count_result.scalars().all())
+    total = (await db.execute(count_query)).scalar_one()
 
     # apply pagination
     offset = (page - 1) * per_page
