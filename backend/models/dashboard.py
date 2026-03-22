@@ -48,3 +48,4 @@ class DashboardResponse(BaseModel):
     services: list[DashboardServiceSummary]
     activity: list[DashboardActivityItem]
     viewer: DashboardViewer
+    media_server_configured: bool

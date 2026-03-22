@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, func, literal, or_, select, union_all
+from sqlalchemy import func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from backend.core.auth import get_current_user
+from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.file_utils import bytes_to_gb
 from backend.database import get_db
 from backend.database.models import (
@@ -36,16 +37,9 @@ from backend.models.dashboard import (
     DashboardServiceSummary,
     DashboardViewer,
 )
+from backend.types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
-
-
-def _to_iso(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
 
 
 @router.get("/dashboard", response_model=DashboardResponse)
@@ -125,6 +119,14 @@ async def get_dashboard(
                 )
                 .scalar_subquery()
                 .label("mine_active"),
+                select(func.count())
+                .select_from(ServiceConfig)
+                .where(
+                    ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                    ServiceConfig.enabled.is_(True),
+                )
+                .scalar_subquery()
+                .label("media_server_count"),
             )
         )
     ).one()
@@ -138,61 +140,41 @@ async def get_dashboard(
     denied_7d = summary_row.denied_7d or 0
     mine_pending = summary_row.mine_pending or 0
     mine_active = summary_row.mine_active or 0
+    media_server_configured = (summary_row.media_server_count or 0) > 0
 
     services: list[DashboardServiceSummary] = []
     if is_admin:
-        service_task_map: dict[Service, Task] = {
-            Service.PLEX: Task.SYNC_PLEX_MEDIA,
-            Service.JELLYFIN: Task.SYNC_JELLYFIN_MEDIA,
-        }
-
-        task_last_sync_subquery = (
-            select(TaskRun.task, func.max(TaskRun.completed_at).label("last_sync_at"))
-            .where(
+        # get last completed SYNC_MEDIA run (single unified sync task)
+        last_sync_result = await db.execute(
+            select(func.max(TaskRun.completed_at)).where(
+                TaskRun.task == Task.SYNC_MEDIA,
                 TaskRun.status == TaskStatus.COMPLETED,
-                TaskRun.task.in_(list(service_task_map.values())),
             )
-            .group_by(TaskRun.task)
-            .subquery()
         )
+        last_sync_at: datetime | None = last_sync_result.scalar_one_or_none()
 
-        service_to_task = case(
-            (ServiceConfig.service_type == Service.PLEX, Task.SYNC_PLEX_MEDIA),
-            (ServiceConfig.service_type == Service.JELLYFIN, Task.SYNC_JELLYFIN_MEDIA),
-            else_=None,
-        )
-
-        service_status_rows = (
-            await db.execute(
-                select(
-                    ServiceConfig.service_type,
-                    ServiceConfig.enabled,
-                    task_last_sync_subquery.c.last_sync_at,
-                ).outerjoin(
-                    task_last_sync_subquery,
-                    task_last_sync_subquery.c.task == service_to_task,
-                )
-            )
+        # get all service configs
+        service_config_rows = (
+            await db.execute(select(ServiceConfig.service_type, ServiceConfig.enabled))
         ).all()
 
         enabled_map: dict[Service, bool] = {}
-        service_last_sync_map: dict[Service, datetime | None] = {}
-        for service_type, enabled, last_sync_at in service_status_rows:
+        for service_type, enabled in service_config_rows:
             enabled_map[service_type] = enabled_map.get(service_type, False) or bool(
                 enabled
             )
-            if last_sync_at is not None:
-                service_last_sync_map[service_type] = last_sync_at
 
-        for service in sorted(Service, key=lambda service_item: service_item.value):
+        for service in sorted(Service, key=lambda s: s.value):
             enabled = bool(enabled_map.get(service, False))
-            last_sync_at = service_last_sync_map.get(service)
+            sync_at = (
+                to_utc_isoformat(last_sync_at) if service in MEDIA_SERVERS else None
+            )
             services.append(
                 DashboardServiceSummary(
                     name=service.value,
                     enabled=enabled,
                     status="healthy" if enabled else "disabled",
-                    last_sync_at=_to_iso(last_sync_at),
+                    last_sync_at=sync_at,
                 )
             )
 
@@ -286,7 +268,7 @@ async def get_dashboard(
                     type="request",
                     title=f"Exception request {row.request_status.value}",
                     subtitle=media_title,
-                    created_at=_to_iso(row.created_at) or "",
+                    created_at=to_utc_isoformat(row.created_at) or "",
                     actor_display=actor_display,
                     media_type=row.media_type.value if row.media_type else None,
                     media_title=media_title,
@@ -304,7 +286,7 @@ async def get_dashboard(
                     type="task",
                     title=f"{row.task.friendly_name()} {row.task_status.value}",
                     subtitle=subtitle,
-                    created_at=_to_iso(row.created_at) or "",
+                    created_at=to_utc_isoformat(row.created_at) or "",
                 )
             )
         elif row.activity_type == "blacklist":
@@ -314,7 +296,7 @@ async def get_dashboard(
                     type="blacklist",
                     title="Media added to blacklist",
                     subtitle=media_title,
-                    created_at=_to_iso(row.created_at) or "",
+                    created_at=to_utc_isoformat(row.created_at) or "",
                     actor_display=actor_display,
                     media_type=row.media_type.value if row.media_type else None,
                     media_title=media_title,
@@ -348,4 +330,5 @@ async def get_dashboard(
         services=services,
         activity=activity,
         viewer=viewer,
+        media_server_configured=media_server_configured,
     )
