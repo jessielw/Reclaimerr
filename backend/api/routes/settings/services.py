@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -14,9 +14,16 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.database import get_db
 from backend.database.models import ServiceConfig, ServiceMediaLibrary, User
-from backend.enums import Service
-from backend.models.settings import ServiceConfigUpdate, UpdateMediaLibrariesRequest
-from backend.tasks.sync import sync_service_libraries
+from backend.enums import BackgroundJobType, Service
+from backend.jobs import enqueue_background_job
+from backend.models.jobs import ServiceToggleJobPayload
+from backend.models.settings import (
+    LibrarySelectionUpdate,
+    ServiceConfigUpdate,
+    UpdateMediaLibrariesRequest,
+)
+from backend.tasks.sync import sync_media_libraries
+from backend.types import MEDIA_SERVERS
 
 router = APIRouter(tags=["settings", "services"])
 
@@ -38,12 +45,10 @@ async def get_service_settings(
     get_service_configs = await db.execute(select(ServiceConfig))
     service_configs = get_service_configs.scalars().all()
 
-    # gather libraries from Jellyfin and/or Plex
-    MEDIA_SERVICES = (Service.JELLYFIN, Service.PLEX)
+    # gather libraries from the main media server
     get_service_libraries = await db.execute(
         select(
             ServiceMediaLibrary.id,
-            ServiceMediaLibrary.service_type,
             ServiceMediaLibrary.library_id,
             ServiceMediaLibrary.library_name,
             ServiceMediaLibrary.media_type,
@@ -55,11 +60,12 @@ async def get_service_settings(
     return {
         config.service_type: {
             "enabled": config.enabled,
+            "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
             "base_url": config.base_url,
             "api_key": _mask_api_key(
                 fer_decrypt(config.api_key) if config.api_key else ""
             ),
-            # sort libraries for Plex and Jellyfin only
+            # libraries only for the designated main media server
             "libraries": [
                 {
                     "id": lib_id,
@@ -70,15 +76,13 @@ async def get_service_settings(
                 }
                 for (
                     lib_id,
-                    service_type,
                     library_id,
                     library_name,
                     media_type,
                     selected,
                 ) in service_libraries
-                if service_type == config.service_type
             ]
-            if config.service_type in MEDIA_SERVICES  # only include for these services
+            if config.service_type in MEDIA_SERVERS and config.is_main
             else None,
         }
         for config in service_configs
@@ -114,6 +118,25 @@ async def set_service_settings(
     if not success:
         raise HTTPException(status_code=400, detail=error_msg)
 
+    # detect if the main server is switching before we write the new config
+    main_switched = False
+    if data.is_main and data.service_type in MEDIA_SERVERS:
+        current_main_result = await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                ServiceConfig.is_main.is_(True),
+            )
+        )
+        current_main = current_main_result.scalar_one_or_none()
+        main_switched = (
+            current_main is not None and current_main.service_type != data.service_type
+        )
+
+    # determine what sync action (if any) to signal the frontend
+    sync_action: str | None = None
+    if data.is_main and data.enabled and data.service_type in MEDIA_SERVERS:
+        sync_action = "resync" if main_switched else "sync"
+
     # continue to upsert settings
     await _upsert_service_config(
         db,
@@ -122,35 +145,53 @@ async def set_service_settings(
             base_url=data.base_url,
             api_key=resolved_api_key,
             enabled=data.enabled,
+            is_main=data.is_main,
         ),
     )
 
-    # clear and enable/disable clients (trigger this to start in background)
-    asyncio.create_task(
-        _toggle_service(
-            ServiceConfigUpdate(
-                service_type=data.service_type,
-                base_url=data.base_url,
-                api_key=resolved_api_key,
-                enabled=data.enabled,
-            ),
-        )
+    queued_job = await enqueue_background_job(
+        job_type=BackgroundJobType.SERVICE_TOGGLE,
+        payload=ServiceToggleJobPayload(
+            service_type=data.service_type,
+            base_url=data.base_url,
+            api_key=resolved_api_key,
+            enabled=data.enabled,
+            is_main=data.is_main,
+            trigger_resync=main_switched,
+        ).model_dump(mode="json"),
+        dedupe_key=f"service-toggle-{data.service_type}",
+        replace_pending=True,
     )
+    if queued_job is None:
+        LOG.error(
+            f"Failed to enqueue background job for {data.service_type} service toggle"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to queue service update job",
+        )
+    LOG.info(
+        f"Queued background job {queued_job.id} for {data.service_type} service toggle"
+    )
+
+    if main_switched:
+        LOG.info(
+            f"Main media server switched to {data.service_type} - triggering full resync"
+        )
 
     # update selected toggle for libraries
-    if data.service_type in (Service.JELLYFIN, Service.PLEX) and data.libraries:
-        await _upsert_service_libraries(db, data.service_type, data.libraries)
+    if data.service_type in MEDIA_SERVERS and data.libraries:
+        await _upsert_service_libraries(db, data.libraries)
 
     return {
-        "message": (
-            f"{data.service_type.title()} settings updated "
-            f"{'' if data.enabled else 'and client disabled'}"
-        ),
+        "message": f"{data.service_type.title()} settings updated",
+        "sync_action": sync_action,
         "data": {
             "service_type": data.service_type,
             "base_url": data.base_url,
             "api_key": _mask_api_key(resolved_api_key),
             "enabled": data.enabled,
+            "is_main": data.is_main,
         },
     }
 
@@ -166,12 +207,24 @@ async def _upsert_service_config(
             "api_key must be resolved before calling _upsert_service_config"
         )
 
+    # if this server is being made main, clear is_main from all other media servers first
+    if data.is_main:
+        await db.execute(
+            sql_update(ServiceConfig)
+            .where(
+                ServiceConfig.service_type != data.service_type,
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
+            )
+            .values(is_main=False)
+        )
+
     # upsert into database
     insert_statement = sqlite_insert(ServiceConfig).values(
         service_type=data.service_type,
         base_url=data.base_url,
         api_key=fer_encrypt(data.api_key),
         enabled=data.enabled,
+        is_main=data.is_main,
     )
     upsert_statement = insert_statement.on_conflict_do_update(
         index_elements=["service_type"],
@@ -179,6 +232,7 @@ async def _upsert_service_config(
             "base_url": data.base_url,
             "api_key": fer_encrypt(data.api_key),
             "enabled": data.enabled,
+            "is_main": data.is_main,
         },
     )
     await db.execute(upsert_statement)
@@ -186,42 +240,12 @@ async def _upsert_service_config(
     return data
 
 
-async def _toggle_service(data: ServiceConfigUpdate) -> None:
-    if data.api_key is None:
-        raise ValueError("api_key must be resolved before calling _toggle_service")
-    if data.service_type is Service.JELLYFIN:
-        await service_manager.clear_jellyfin()
-        if data.enabled:
-            await service_manager.initialize_jellyfin(data.base_url, data.api_key)
-    elif data.service_type is Service.PLEX:
-        await service_manager.clear_plex()
-        if data.enabled:
-            await service_manager.initialize_plex(data.base_url, data.api_key)
-    elif data.service_type is Service.RADARR:
-        await service_manager.clear_radarr()
-        if data.enabled:
-            await service_manager.initialize_radarr(data.base_url, data.api_key)
-    elif data.service_type is Service.SONARR:
-        await service_manager.clear_sonarr()
-        if data.enabled:
-            await service_manager.initialize_sonarr(data.base_url, data.api_key)
-    elif data.service_type is Service.SEERR:
-        await service_manager.clear_seerr()
-        if data.enabled:
-            await service_manager.initialize_seerr(data.base_url, data.api_key)
-
-    # log the status after toggling
-    statuses = await service_manager.get_status()
-    LOG.debug(f"Service statuses: {statuses}")
-
-
 async def _upsert_service_libraries(
     db: AsyncSession,
-    service_type: Service,
     libraries: list[dict],
 ) -> None:
     """Update library selections by ID."""
-    LOG.info(f"Updating libraries for {service_type}")
+    LOG.info("Updating library selections")
 
     for lib in libraries:
         # update selected status by library ID
@@ -274,7 +298,7 @@ async def test_service_settings(
 async def update_service_libraries(
     service_type: UpdateMediaLibrariesRequest,
     _current_user: Annotated[User, Depends(require_admin)],
-) -> dict[Literal[Service.PLEX, Service.JELLYFIN], list[dict[str, Any]]]:
+) -> dict[str, Any]:
     """Sync library selections for a given service."""
     if not service_type.service_type or service_type.service_type not in (
         Service.JELLYFIN,
@@ -285,7 +309,18 @@ async def update_service_libraries(
             detail="Library selection is only supported for Jellyfin and Plex",
         )
 
-    # update libraries for the service
-    updated_libraries = await sync_service_libraries(service_type.service_type)
+    # update libraries from the main server
+    return await sync_media_libraries()
 
-    return updated_libraries
+
+@router.put("/libraries")
+async def update_library_selections(
+    data: list[LibrarySelectionUpdate],
+    _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update library selected state by ID."""
+    await _upsert_service_libraries(
+        db, [{"id": item.id, "selected": item.selected} for item in data]
+    )
+    return {"message": "Library selections updated"}
