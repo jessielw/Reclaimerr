@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from sqlalchemy import select
 
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
+from backend.api.routes.background_jobs import router as background_jobs_router
 from backend.api.routes.blacklist import router as blacklist_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.info import router as info_router
@@ -24,13 +26,11 @@ from backend.api.utils.middleware import (
     security_headers_middleware,
     sliding_session_middleware,
 )
-from backend.core.encryption import fer_decrypt
 from backend.core.logger import LOG
+from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
-from backend.database import close_db, get_db, init_db
-from backend.database.models import ServiceConfig
-from backend.enums import Service
+from backend.database import close_db, init_db
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
 
@@ -65,36 +65,8 @@ async def lifespan(app: FastAPI):
     # check if admin account needs created
     await create_initial_admin()
 
-    # Load service configs from database and initialize clients
-    async for db in get_db():
-        result = await db.execute(
-            select(ServiceConfig).where(ServiceConfig.enabled == True)
-        )
-        service_configs = result.scalars().all()
-
-        for config in service_configs:
-            if config.service_type is Service.JELLYFIN:
-                await service_manager.initialize_jellyfin(
-                    config.base_url, fer_decrypt(config.api_key)
-                )
-            elif config.service_type is Service.PLEX:
-                await service_manager.initialize_plex(
-                    config.base_url, fer_decrypt(config.api_key)
-                )
-            elif config.service_type is Service.RADARR:
-                await service_manager.initialize_radarr(
-                    config.base_url, fer_decrypt(config.api_key)
-                )
-            elif config.service_type is Service.SONARR:
-                await service_manager.initialize_sonarr(
-                    config.base_url, fer_decrypt(config.api_key)
-                )
-            elif config.service_type is Service.SEERR:
-                await service_manager.initialize_seerr(
-                    config.base_url, fer_decrypt(config.api_key)
-                )
-
-        break  # Only need first iteration to get db session
+    # load service configs from database and initialize clients
+    await load_enabled_services()
 
     # start scheduler
     await start_scheduler()
@@ -115,6 +87,17 @@ async def lifespan(app: FastAPI):
 
         # Close database connections
         await close_db()
+
+        remaining_tasks = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        if remaining_tasks:
+            task_names = [task.get_name() for task in remaining_tasks]
+            LOG.warning(
+                f"Shutdown left {len(remaining_tasks)} pending asyncio task(s): {task_names}"
+            )
 
         LOG.info("reclaimerr API shutdown complete")
 
@@ -145,6 +128,7 @@ app.include_router(auth_router)
 app.include_router(rules_router)
 app.include_router(account_router)
 app.include_router(tasks_router)
+app.include_router(background_jobs_router)
 app.include_router(media_router)
 app.include_router(requests_router)
 app.include_router(blacklist_router)
