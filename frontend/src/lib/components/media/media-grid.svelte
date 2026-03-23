@@ -13,6 +13,7 @@
     mediaType: MediaType;
     loading?: boolean;
     error?: string;
+    posterSize?: number;
     onRequestException?: (media: MediaItem) => void;
     onViewDetails?: (media: MediaItem) => void;
     onPageChange?: (page: number) => void;
@@ -23,6 +24,7 @@
     mediaType,
     loading = false,
     error = "",
+    posterSize = 150,
     onRequestException,
     onViewDetails,
     onPageChange,
@@ -45,7 +47,8 @@
   {:else}
     <!-- grid -->
     <div
-      class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 mb-4"
+      class="grid gap-4 mb-4"
+      style="grid-template-columns: repeat(auto-fill, minmax({posterSize}px, 1fr))"
     >
       {#each data.items as media (media.id)}
         <MediaCard {media} {mediaType} {onRequestException} {onViewDetails} />

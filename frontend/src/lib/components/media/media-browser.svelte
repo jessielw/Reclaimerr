@@ -4,6 +4,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
+  import LayoutGrid from "@lucide/svelte/icons/layout-grid";
   import MediaGrid from "$lib/components/media/media-grid.svelte";
   import MediaDetailDialog from "$lib/components/media/media-detail-dialog.svelte";
   import ExceptionRequestDialog from "$lib/components/media/exception-request-dialog.svelte";
@@ -44,6 +45,15 @@
   let sortOrder = $state("asc");
   let candidatesOnly = $state(false);
   let currentPage = $state(1);
+
+  // poster size control
+  const POSTER_SIZE_KEY = "reclaimerr_poster_size";
+  let posterSize = $state(
+    parseInt(localStorage.getItem(POSTER_SIZE_KEY) ?? "150"),
+  );
+  $effect(() => {
+    localStorage.setItem(POSTER_SIZE_KEY, posterSize.toString());
+  });
 
   // dialogs
   let showDetailDialog = $state(false);
@@ -284,13 +294,27 @@
         </div>
       </div>
 
-      <!-- candidates filter -->
-      <label class="flex items-center gap-2 cursor-pointer w-fit">
-        <Switch bind:checked={candidatesOnly} class="cursor-pointer" />
-        <span class="text-sm text-muted-foreground"
-          >Reclaim candidates only</span
-        >
-      </label>
+      <!-- candidates filter + poster size -->
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <Switch bind:checked={candidatesOnly} class="cursor-pointer" />
+          <span class="text-sm text-muted-foreground"
+            >Reclaim candidates only</span
+          >
+        </label>
+
+        <label class="flex items-center gap-2 ml-auto">
+          <LayoutGrid class="size-4 text-muted-foreground shrink-0" />
+          <input
+            type="range"
+            min="100"
+            max="300"
+            step="10"
+            bind:value={posterSize}
+            class="w-24 accent-primary cursor-pointer"
+          />
+        </label>
+      </div>
     </div>
 
     <!-- media grid -->
@@ -299,6 +323,7 @@
       {mediaType}
       {loading}
       {error}
+      {posterSize}
       onViewDetails={handleViewDetails}
       onRequestException={handleRequestException}
       onPageChange={handlePageChange}

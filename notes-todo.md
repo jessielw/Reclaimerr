@@ -24,7 +24,7 @@
 
 [ ] - In individual movies/tv - when you select one, give admins the ability to exclude from deletion directly without making a request
 
-[ ] - Add a slider to adjust the scale of the movies/tv posters so you can fit more rows/columns per user preference
+[x] - Add a slider to adjust the scale of the movies/tv posters so you can fit more rows/columns per user preference
 
 [ ] - Amended or removing a rule then re-running the scan tasks doesn't change which items have been marked for reclaiming
 
