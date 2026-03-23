@@ -1,4 +1,4 @@
-POTENTIAL? - Settings screen is a little confusing - not immediately obvious that the Jellyfin page you land on is part of the 'Services' tab above. Maybe a tab bar on the left instead with highlighted panels to show where you are?
+[x] - Settings screen is a little confusing - not immediately obvious that the Jellyfin page you land on is part of the 'Services' tab above. Maybe a tab bar on the left instead with highlighted panels to show where you are?
 
 [x] - Plex API key isn't called API key
 
