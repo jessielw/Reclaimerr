@@ -13,7 +13,6 @@
   import General from "$lib/components/settings/general.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
-  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import TestTube from "@lucide/svelte/icons/test-tube";
   import Save from "@lucide/svelte/icons/save";
   import Wrench from "@lucide/svelte/icons/wrench";
@@ -27,7 +26,6 @@
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import Filter from "@lucide/svelte/icons/filter";
-  import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import { toast } from "svelte-sonner";
   import { toTitleCase } from "$lib/utils/strings";
   import { SettingsTab, Permission, MEDIA_SERVERS } from "$lib/types/shared";
@@ -317,13 +315,14 @@
         Loading settings...
       </div>
     {:else}
-      <!-- service tabs -->
-      <div class="bg-card rounded-lg border border-border p-6">
-        <!-- mobile dropdown -->
-        <div class="md:hidden mb-6">
-          <label for="settings-tab-select" class="sr-only">
-            Select Settings Tab
-          </label>
+      <div
+        class="bg-card rounded-lg border border-border flex flex-col md:flex-row"
+      >
+        <!-- mobile: native grouped select -->
+        <div class="md:hidden p-4 border-b border-border">
+          <label for="settings-tab-select" class="sr-only"
+            >Select Settings Tab</label
+          >
           <div class="relative">
             <select
               id="settings-tab-select"
@@ -332,10 +331,12 @@
                      appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring
                      focus:border-transparent pr-10"
             >
-              {#each tabs as tab}
-                <option value={tab.id}>
-                  {tab.label}
-                </option>
+              {#each filteredTabGroups as group}
+                <optgroup label={group.label}>
+                  {#each group.tabs as tab}
+                    <option value={tab.id}>{tab.label}</option>
+                  {/each}
+                </optgroup>
               {/each}
             </select>
             <div
@@ -349,7 +350,7 @@
               >
                 <path
                   fill-rule="evenodd"
-                  d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 
+                  d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0
                   01-1.414 0l-4-4a1 1 0 010-1.414z"
                   clip-rule="evenodd"
                 />
@@ -358,143 +359,118 @@
           </div>
         </div>
 
-        <!-- desktop tabs -->
-        <div class="hidden md:block mb-6">
-          {#if isAdmin}
-            <div class="flex items-center gap-1 border-b border-border pb-2">
-              {#each filteredTabGroups as group, groupIndex}
-                <DropdownMenu.Root>
-                  <DropdownMenu.Trigger
-                    class="inline-flex items-center justify-center whitespace-nowrap 
-                      rounded-md text-sm font-medium transition-colors focus-visible:outline-none 
-                      focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 
-                      hover:bg-accent hover:text-accent-foreground text-foreground h-9 px-4 py-2 cursor-pointer"
-                  >
-                    {group.label}
-                    <ChevronDown class="ml-1 size-4" />
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Content>
-                    {#each group.tabs as tab}
-                      <DropdownMenu.Item
-                        class="cursor-pointer flex items-center gap-2 {activeTab ===
-                        tab.id
-                          ? 'bg-primary/10 text-primary'
-                          : ''}"
-                        onSelect={() => (activeTab = tab.id)}
-                      >
-                        <tab.icon class="size-4" />
-                        {tab.label}
-                      </DropdownMenu.Item>
-                    {/each}
-                  </DropdownMenu.Content>
-                </DropdownMenu.Root>
-
-                {#if groupIndex < filteredTabGroups.length - 1}
-                  <span class="text-muted-foreground">|</span>
-                {/if}
-              {/each}
-            </div>
-          {:else}
-            <!-- regular user view: simple horizontal tabs -->
-            <div class="flex gap-2 border-b border-border">
-              {#each tabs as tab}
-                <Button
-                  variant="ghost"
-                  class="cursor-pointer bg-transparent text-foreground {activeTab ===
-                  tab.id
-                    ? 'border-b-2 border-primary rounded-none'
-                    : ''}"
+        <!-- desktop: grouped left sidebar -->
+        <nav
+          class="hidden md:flex flex-col w-52 border-r border-border py-4 shrink-0"
+        >
+          {#each filteredTabGroups as group}
+            <div class="mb-3 px-3">
+              <p
+                class="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-1 px-2"
+              >
+                {group.label}
+              </p>
+              {#each group.tabs as tab}
+                <button
+                  class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm transition-colors 
+                    cursor-pointer
+                    {activeTab === tab.id
+                    ? 'bg-primary/10 text-primary font-medium'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
                   onclick={() => (activeTab = tab.id)}
                 >
-                  <tab.icon class="mr-2 size-4" />
+                  <tab.icon class="size-4 shrink-0" />
                   {tab.label}
-                </Button>
+                </button>
               {/each}
             </div>
+          {/each}
+        </nav>
+
+        <!-- content panel -->
+        <div class="flex-1 p-6 min-w-0">
+          <!-- settings -->
+          {#if serviceTabs.includes(activeTab)}
+            <ServiceConfigForm
+              tabLabel={tabs.find((t) => t.id === activeTab)?.label || ""}
+              tabIcon={getTabIcon(activeTab)}
+              enabled={serviceState[activeTab].config.enabled}
+              baseUrl={serviceState[activeTab].config.baseUrl}
+              apiKey={serviceState[activeTab].config.apiKey}
+              apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
+              baseUrlPlaceholder={tabs.find((t) => t.id === activeTab)
+                ?.baseUrlPlaceholder || "http://localhost:8096"}
+              onchange={handleServiceChange}
+            />
+
+            <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
+            <div class="flex gap-3 justify-end">
+              <Button
+                onclick={() => testServiceConnection(activeTab)}
+                disabled={testingService || savingService}
+                class="cursor-pointer gap-2"
+              >
+                {#if testingService}
+                  <Spinner class="size-4" />
+                {:else}
+                  <TestTube class="size-4" />
+                {/if}
+                Test
+              </Button>
+              <Button
+                onclick={() => saveServiceSettings(activeTab)}
+                disabled={savingService || testingService}
+                class="cursor-pointer gap-2"
+              >
+                {#if savingService}
+                  <Spinner class="size-4" />
+                {:else}
+                  <Save class="size-4" />
+                {/if}
+                Save
+              </Button>
+            </div>
+
+            <!-- media servers -->
+          {:else if activeTab === SettingsTab.MediaServers}
+            <MediaServers />
+
+            <!-- general settings -->
+          {:else if activeTab === SettingsTab.General}
+            <General svgIcon={getTabIcon(activeTab)} />
+
+            <!-- tasks -->
+          {:else if activeTab === SettingsTab.Tasks}
+            <Tasks svgIcon={getTabIcon(activeTab)} />
+
+            <!-- background jobs -->
+          {:else if activeTab === SettingsTab.BackgroundJobs}
+            <BackgroundJobs svgIcon={getTabIcon(activeTab)} />
+
+            <!-- notifications -->
+          {:else if activeTab === SettingsTab.Notifications}
+            <Notifications
+              userRole={$auth.user?.role || "user"}
+              svgIcon={getTabIcon(activeTab)}
+            />
+
+            <!-- account -->
+          {:else if activeTab === SettingsTab.Account}
+            <Account svgIcon={getTabIcon(activeTab)} />
+
+            <!-- rules -->
+          {:else if activeTab === SettingsTab.Rules}
+            <Rules svgIcon={getTabIcon(activeTab)} />
+
+            <!-- users -->
+          {:else if activeTab === SettingsTab.Users}
+            <Users svgIcon={getTabIcon(activeTab)} />
+
+            <!-- about -->
+          {:else if activeTab === SettingsTab.About}
+            <About svgIcon={getTabIcon(activeTab)} />
           {/if}
         </div>
-
-        <!-- settings -->
-        {#if serviceTabs.includes(activeTab)}
-          <ServiceConfigForm
-            tabLabel={tabs.find((t) => t.id === activeTab)?.label || ""}
-            tabIcon={getTabIcon(activeTab)}
-            enabled={serviceState[activeTab].config.enabled}
-            baseUrl={serviceState[activeTab].config.baseUrl}
-            apiKey={serviceState[activeTab].config.apiKey}
-            apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
-            baseUrlPlaceholder={tabs.find((t) => t.id === activeTab)
-              ?.baseUrlPlaceholder || "http://localhost:8096"}
-            onchange={handleServiceChange}
-          />
-
-          <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
-          <div class="flex gap-3 justify-end">
-            <Button
-              onclick={() => testServiceConnection(activeTab)}
-              disabled={testingService || savingService}
-              class="cursor-pointer gap-2"
-            >
-              {#if testingService}
-                <Spinner class="size-4" />
-              {:else}
-                <TestTube class="size-4" />
-              {/if}
-              Test
-            </Button>
-            <Button
-              onclick={() => saveServiceSettings(activeTab)}
-              disabled={savingService || testingService}
-              class="cursor-pointer gap-2"
-            >
-              {#if savingService}
-                <Spinner class="size-4" />
-              {:else}
-                <Save class="size-4" />
-              {/if}
-              Save
-            </Button>
-          </div>
-
-          <!-- media servers -->
-        {:else if activeTab === SettingsTab.MediaServers}
-          <MediaServers />
-
-          <!-- general settings -->
-        {:else if activeTab === SettingsTab.General}
-          <General svgIcon={getTabIcon(activeTab)} />
-
-          <!-- tasks -->
-        {:else if activeTab === SettingsTab.Tasks}
-          <Tasks svgIcon={getTabIcon(activeTab)} />
-
-          <!-- background jobs -->
-        {:else if activeTab === SettingsTab.BackgroundJobs}
-          <BackgroundJobs svgIcon={getTabIcon(activeTab)} />
-
-          <!-- notifications -->
-        {:else if activeTab === SettingsTab.Notifications}
-          <Notifications
-            userRole={$auth.user?.role || "user"}
-            svgIcon={getTabIcon(activeTab)}
-          />
-
-          <!-- account -->
-        {:else if activeTab === SettingsTab.Account}
-          <Account svgIcon={getTabIcon(activeTab)} />
-
-          <!-- rules -->
-        {:else if activeTab === SettingsTab.Rules}
-          <Rules svgIcon={getTabIcon(activeTab)} />
-
-          <!-- users -->
-        {:else if activeTab === SettingsTab.Users}
-          <Users svgIcon={getTabIcon(activeTab)} />
-
-          <!-- about -->
-        {:else if activeTab === SettingsTab.About}
-          <About svgIcon={getTabIcon(activeTab)} />
-        {/if}
       </div>
     {/if}
   </div>
