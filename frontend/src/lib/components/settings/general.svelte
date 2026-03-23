@@ -197,7 +197,7 @@
           id="cleanupTagSuffix"
           name="cleanupTagSuffix"
           type="text"
-          class="input-hover-el placeholder-text-muted-foreground"
+          class="input-hover-el text-foreground placeholder:text-muted-foreground"
           placeholder="e.g. '-candidate'"
           maxlength={15}
           bind:value={aarrTagging.cleanupTagSuffix}
@@ -236,7 +236,7 @@
             min="0.1"
             max="60"
             step="0.1"
-            class="input-hover-el placeholder-text-muted-foreground"
+            class="input-hover-el text-foreground placeholder:text-muted-foreground"
             placeholder="Default: 0.5"
             bind:value={aarrTagging.workerPollMinSeconds}
           />
@@ -254,7 +254,7 @@
             min="0.1"
             max="60"
             step="0.1"
-            class="input-hover-el placeholder-text-muted-foreground"
+            class="input-hover-el text-foreground placeholder:text-muted-foreground"
             placeholder="Default: 5"
             bind:value={aarrTagging.workerPollMaxSeconds}
           />

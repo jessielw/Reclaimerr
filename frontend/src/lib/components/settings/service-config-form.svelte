@@ -66,7 +66,7 @@
       value={baseUrl}
       oninput={(e) => dispatchChange("baseUrl", e.currentTarget.value)}
       placeholder={baseUrlPlaceholder || "http://localhost:8096"}
-      class="input-hover-el"
+      class="input-hover-el text-foreground placeholder:text-muted-foreground"
     />
     <p class="mt-1 text-xs text-muted-foreground">
       The URL where your {tabLabel} instance is running
@@ -85,7 +85,7 @@
       placeholder={apiKeyIsSet
         ? `Leave blank to keep existing ${apiKeyLabel.toLowerCase().replace("api", "API")}`
         : `Enter your ${apiKeyLabel.toLowerCase().replace("api", "API")}`}
-      class="input-hover-el"
+      class="input-hover-el text-foreground placeholder:text-muted-foreground"
     />
     <p class="mt-1 text-xs text-muted-foreground">
       Your {tabLabel}

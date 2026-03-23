@@ -149,7 +149,7 @@
             bind:value={reason}
             placeholder={inputPlaceHolderText}
             class="w-full min-h-30 px-3 py-2 bg-card text-card-foreground 
-              placeholder-text-muted-foreground focus:ring-1 focus:ring-focus-ring resize-none"
+              placeholder:text-muted-foreground focus:ring-1 focus:ring-focus-ring resize-none"
             disabled={submitting}
           ></Textarea>
           <p class="text-xs text-muted-foreground">

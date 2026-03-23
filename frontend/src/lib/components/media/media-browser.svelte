@@ -240,7 +240,7 @@
             placeholder={searchPlaceholder}
             value={searchQuery}
             oninput={handleSearch}
-            class="pl-10 bg-card text-card-foreground placeholder-text-muted-foreground"
+            class="pl-10 bg-card text-card-foreground placeholder:text-muted-foreground"
           />
         </div>
 
