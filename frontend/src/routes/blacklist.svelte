@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { get_api, delete_api, put_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
@@ -14,7 +14,7 @@
     MediaType,
     Permission,
     UserRole,
-    type BlacklistEntry,
+    type ProtectedEntry,
     type PaginatedResponse,
   } from "$lib/types/shared";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
@@ -26,7 +26,7 @@
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
 
   // state
-  let data = $state<PaginatedResponse<BlacklistEntry> | null>(null);
+  let data = $state<PaginatedResponse<ProtectedEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
   let searchQuery = $state("");
@@ -48,23 +48,23 @@
 
   // edit duration dialog state
   let editDialogOpen = $state(false);
-  let editTarget = $state<BlacklistEntry | null>(null);
+  let editTarget = $state<ProtectedEntry | null>(null);
   let editDuration = $state("forever");
   let editCustomDays = $state("30");
   let editSubmitting = $state(false);
 
   // remove confirmation state
   let removeDialogOpen = $state(false);
-  let removeTarget = $state<BlacklistEntry | null>(null);
+  let removeTarget = $state<ProtectedEntry | null>(null);
   let removeSubmitting = $state(false);
 
   const entries = $derived(data?.items ?? []);
 
-  const canManageBlacklist = $derived.by(() => {
+  const canManageProtection = $derived.by(() => {
     const permissions = $auth.user?.permissions ?? [];
     return (
       $auth.user?.role === UserRole.Admin ||
-      permissions.includes(Permission.ManageBlacklist)
+      permissions.includes(Permission.ManageProtection)
     );
   });
 
@@ -103,13 +103,13 @@
         params.append("media_type", mediaTypeFilter);
       }
 
-      data = await get_api<PaginatedResponse<BlacklistEntry>>(
-        `/api/blacklist?${params.toString()}`,
+      data = await get_api<PaginatedResponse<ProtectedEntry>>(
+        `/api/protected?${params.toString()}`,
         signal,
       );
     } catch (e: any) {
       if (e instanceof DOMException && e.name === "AbortError") return;
-      error = e.message ?? "Failed to load blacklist entries.";
+      error = e.message ?? "Failed to load protected entries.";
     } finally {
       if (!signal.aborted) {
         loading = false;
@@ -129,7 +129,7 @@
   };
 
   // open edit duration dialog for a specific entry
-  const openEditDuration = (entry: BlacklistEntry) => {
+  const openEditDuration = (entry: ProtectedEntry) => {
     editTarget = entry;
     editDuration = entry.permanent ? "forever" : "30";
     editCustomDays = "30";
@@ -137,7 +137,7 @@
   };
 
   // update the specific entry in the current data with the updated entry from API
-  const patchEntry = (updatedEntry: BlacklistEntry) => {
+  const patchEntry = (updatedEntry: ProtectedEntry) => {
     if (!data) return;
 
     data = {
@@ -174,8 +174,8 @@
     }
 
     try {
-      const updatedEntry = await put_api<BlacklistEntry>(
-        `/api/blacklist/${editTarget.id}/duration`,
+      const updatedEntry = await put_api<ProtectedEntry>(
+        `/api/protected/${editTarget.id}/duration`,
         {
           duration_days: durationDays,
         },
@@ -192,7 +192,7 @@
   };
 
   // open remove confirmation dialog for a specific entry
-  const openRemoveDialog = (entry: BlacklistEntry) => {
+  const openRemoveDialog = (entry: ProtectedEntry) => {
     removeTarget = entry;
     removeDialogOpen = true;
   };
@@ -203,8 +203,8 @@
     removeSubmitting = true;
 
     try {
-      await delete_api(`/api/blacklist/${removeTarget.id}`);
-      toast.success("Blacklist entry removed.");
+      await delete_api(`/api/protected/${removeTarget.id}`);
+      toast.success("Protection removed.");
       removeDialogOpen = false;
 
       if (!data) {
@@ -232,7 +232,7 @@
       };
       removeTarget = null;
     } catch (e: any) {
-      toast.error(e.message ?? "Failed to remove blacklist entry.");
+      toast.error(e.message ?? "Failed to remove protection.");
     } finally {
       removeSubmitting = false;
     }
@@ -330,11 +330,11 @@
     class="bg-card border border-border rounded-lg p-6 max-w-md w-full text-foreground"
   >
     <AlertDialog.Header>
-      <AlertDialog.Title>Remove Blacklist Entry</AlertDialog.Title>
+      <AlertDialog.Title>Remove Protection</AlertDialog.Title>
       <AlertDialog.Description>
         {#if removeTarget}
-          Remove <strong>{removeTarget.media_title}</strong> from blacklist? This
-          action cannot be undone.
+          Remove protection for <strong>{removeTarget.media_title}</strong>?
+          This action cannot be undone.
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
@@ -357,11 +357,11 @@
 
 <div class="p-2.5 md:p-8 max-w-7xl mx-auto space-y-6">
   <div class="space-y-2">
-    <h1 class="text-3xl font-bold text-foreground">Blacklist</h1>
+    <h1 class="text-3xl font-bold text-foreground">Protected</h1>
     <p class="text-muted-foreground">
-      View protected media items excluded from cleanup.
-      {#if canManageBlacklist}
-        You can also remove entries from the blacklist.
+      Media items protected from cleanup and deletion.
+      {#if canManageProtection}
+        You can also remove protection from items here.
       {/if}
     </p>
   </div>
@@ -457,11 +457,11 @@
         <div
           class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
         ></div>
-        <p class="mt-4">Loading blacklist entries...</p>
+        <p class="mt-4">Loading protected items...</p>
       </div>
     {:else if entries.length === 0}
       <div class="p-8 text-center text-muted-foreground">
-        No blacklist entries found.
+        No protected items found.
       </div>
     {:else}
       <table class="w-full">
@@ -483,7 +483,7 @@
               class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
               >Created</th
             >
-            {#if canManageBlacklist}
+            {#if canManageProtection}
               <th
                 class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
                 >Actions</th
@@ -528,14 +528,14 @@
                 {/if}
               </td>
               <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
-                {entry.blacklisted_by_username}
+                {entry.protected_by_username}
               </td>
               <td
                 class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
               >
                 {formatDate(entry.created_at)}
               </td>
-              {#if canManageBlacklist}
+              {#if canManageProtection}
                 <td class="px-6 py-4 text-right whitespace-nowrap">
                   <div class="flex justify-end gap-2">
                     <Button
