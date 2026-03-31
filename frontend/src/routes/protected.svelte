@@ -49,7 +49,7 @@
   // edit duration dialog state
   let editDialogOpen = $state(false);
   let editTarget = $state<ProtectedEntry | null>(null);
-  let editDuration = $state("forever");
+  let editDuration = $state("permanent");
   let editCustomDays = $state("30");
   let editSubmitting = $state(false);
 
@@ -131,7 +131,7 @@
   // open edit duration dialog for a specific entry
   const openEditDuration = (entry: ProtectedEntry) => {
     editTarget = entry;
-    editDuration = entry.permanent ? "forever" : "30";
+    editDuration = entry.permanent ? "permanent" : "30";
     editCustomDays = "30";
     editDialogOpen = true;
   };
@@ -154,7 +154,7 @@
     editSubmitting = true;
 
     let durationDays: number | null = null;
-    if (editDuration === "forever") {
+    if (editDuration === "permanent") {
       durationDays = null;
     } else if (editDuration === "custom") {
       const customDays = Number(editCustomDays);
@@ -269,7 +269,7 @@
             class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {(() => {
-              if (editDuration === "forever") return "Forever";
+              if (editDuration === "permanent") return "Permanent";
               if (editDuration === "custom") return "Custom days";
               if (!isNaN(Number(editDuration))) return `${editDuration} days`;
               return editDuration;
@@ -293,8 +293,10 @@
               label="Custom days"
               class="text-foreground">Custom days</Select.Item
             >
-            <Select.Item value="forever" label="Forever" class="text-foreground"
-              >Forever</Select.Item
+            <Select.Item
+              value="permanent"
+              label="Permanent"
+              class="text-foreground">Permanent</Select.Item
             >
           </Select.Content>
         </Select.Root>
@@ -455,7 +457,8 @@
     {#if loading}
       <div class="p-8 text-center text-muted-foreground">
         <div
-          class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
+          class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
+            border-r-transparent"
         ></div>
         <p class="mt-4">Loading protected items...</p>
       </div>
