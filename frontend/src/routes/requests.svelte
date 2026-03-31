@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onMount } from "svelte";
   import { get_api, post_api, delete_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
@@ -14,8 +14,8 @@
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";
   import {
-    type ExceptionRequest,
-    ExceptionRequestStatus,
+    type ProtectionRequest,
+    ProtectionRequestStatus,
     Permission,
   } from "$lib/types/shared";
   import { formatDate } from "$lib/utils/date";
@@ -25,7 +25,7 @@
 
   const TMDB_POSTER_WIDTH = 92;
 
-  type StatusFilter = "all" | ExceptionRequestStatus;
+  type StatusFilter = "all" | ProtectionRequestStatus;
   type SortOrder = "desc" | "asc";
 
   const canManageRequests = $derived(
@@ -35,8 +35,8 @@
 
   let loading = $state(false);
   let error = $state<string | null>(null);
-  let requests = $state<ExceptionRequest[]>([]);
-  let statusFilter = $state<StatusFilter>(ExceptionRequestStatus.Pending);
+  let requests = $state<ProtectionRequest[]>([]);
+  let statusFilter = $state<StatusFilter>(ProtectionRequestStatus.Pending);
   let searchQuery = $state("");
   let sortOrder = $state<SortOrder>("desc");
   let selectedRequestId = $state<number | null>(null);
@@ -44,7 +44,7 @@
 
   // approve dialog state
   let approveDialogOpen = $state(false);
-  let approveTarget = $state<ExceptionRequest | null>(null);
+  let approveTarget = $state<ProtectionRequest | null>(null);
   let approveNotes = $state("");
   let approveDuration = $state("user_requested");
   let approveCustomDays = $state("30");
@@ -52,12 +52,12 @@
 
   // deny dialog state
   let denyDialogOpen = $state(false);
-  let denyTarget = $state<ExceptionRequest | null>(null);
+  let denyTarget = $state<ProtectionRequest | null>(null);
   let denyNotes = $state("");
   let denySubmitting = $state(false);
 
   // cancel confirmation state
-  let cancelTarget = $state<ExceptionRequest | null>(null);
+  let cancelTarget = $state<ProtectionRequest | null>(null);
   let cancelDialogOpen = $state(false);
   let cancelSubmitting = $state(false);
 
@@ -95,16 +95,14 @@
     return result;
   });
 
-  // const pendingCount = $derived(
-  //   requests.filter((r) => r.status === ExceptionRequestStatus.Pending).length,
-  // );
-
   const selectedRequest = $derived(
     filteredRequests.find((r) => r.id === selectedRequestId) ?? null,
   );
 
   const pendingInView = $derived(
-    filteredRequests.filter((r) => r.status === ExceptionRequestStatus.Pending),
+    filteredRequests.filter(
+      (r) => r.status === ProtectionRequestStatus.Pending,
+    ),
   );
 
   const selectedPendingIds = $derived(
@@ -124,9 +122,13 @@
     error = null;
     try {
       if (canManageRequests) {
-        requests = await get_api<ExceptionRequest[]>("/api/requests");
+        requests = await get_api<ProtectionRequest[]>(
+          "/api/protection-requests",
+        );
       } else {
-        requests = await get_api<ExceptionRequest[]>("/api/requests/my");
+        requests = await get_api<ProtectionRequest[]>(
+          "/api/protection-requests/my",
+        );
       }
     } catch (e: any) {
       error = e.message ?? "Failed to load requests.";
@@ -146,7 +148,7 @@
   });
 
   // watch for changes in statusFilter, searchQuery, or sortOrder to reset selection
-  const openApprove = (req: ExceptionRequest) => {
+  const openApprove = (req: ProtectionRequest) => {
     approveTarget = req;
     approveNotes = "";
     approveDuration = "user_requested";
@@ -154,13 +156,13 @@
     approveDialogOpen = true;
   };
 
-  const openDeny = (req: ExceptionRequest) => {
+  const openDeny = (req: ProtectionRequest) => {
     denyTarget = req;
     denyNotes = "";
     denyDialogOpen = true;
   };
 
-  const openCancel = (req: ExceptionRequest) => {
+  const openCancel = (req: ProtectionRequest) => {
     cancelTarget = req;
     cancelDialogOpen = true;
   };
@@ -205,7 +207,7 @@
 
       if (approveDuration === "user_requested") {
         // leave both null - backend uses the user's original requested_expires_at
-      } else if (approveDuration === "forever") {
+      } else if (approveDuration === "permanent") {
         approved_permanent = true;
       } else if (approveDuration === "custom") {
         const customDays = Number(approveCustomDays);
@@ -221,7 +223,7 @@
         approved_duration_days = Number(approveDuration);
       }
 
-      await post_api(`/api/requests/${approveTarget.id}/approve`, {
+      await post_api(`/api/protection-requests/${approveTarget.id}/approve`, {
         admin_notes: approveNotes || null,
         approved_duration_days,
         approved_permanent,
@@ -240,7 +242,7 @@
     if (!denyTarget) return;
     denySubmitting = true;
     try {
-      await post_api(`/api/requests/${denyTarget.id}/deny`, {
+      await post_api(`/api/protection-requests/${denyTarget.id}/deny`, {
         admin_notes: denyNotes || null,
       });
       toast.success(`Request for "${denyTarget.media_title}" denied.`);
@@ -257,7 +259,7 @@
     if (!cancelTarget) return;
     cancelSubmitting = true;
     try {
-      await delete_api(`/api/requests/${cancelTarget.id}`);
+      await delete_api(`/api/protection-requests/${cancelTarget.id}`);
       toast.success(`Request for "${cancelTarget.media_title}" cancelled.`);
       cancelDialogOpen = false;
       await loadRequests();
@@ -278,7 +280,7 @@
 
       if (bulkDuration === "user_requested") {
         // leave as null and backend keeps each request's requested duration
-      } else if (bulkDuration === "forever") {
+      } else if (bulkDuration === "permanent") {
         approved_permanent = true;
       } else if (bulkDuration === "custom") {
         const customDays = Number(bulkCustomDays);
@@ -297,7 +299,7 @@
       let failed = 0;
       for (const requestId of selectedPendingIds) {
         try {
-          await post_api(`/api/requests/${requestId}/approve`, {
+          await post_api(`/api/protection-requests/${requestId}/approve`, {
             admin_notes: bulkNotes || null,
             approved_duration_days,
             approved_permanent,
@@ -335,7 +337,7 @@
       let failed = 0;
       for (const requestId of selectedPendingIds) {
         try {
-          await post_api(`/api/requests/${requestId}/deny`, {
+          await post_api(`/api/protection-requests/${requestId}/deny`, {
             admin_notes: bulkNotes || null,
           });
         } catch {
@@ -363,26 +365,26 @@
     }
   };
 
-  const formatProtectionLabel = (req: ExceptionRequest): string => {
-    if (!req.requested_expires_at) return "Forever";
+  const formatProtectionLabel = (req: ProtectionRequest): string => {
+    if (!req.requested_expires_at) return "Permanent";
     return `Until ${formatDate(req.requested_expires_at)}`;
   };
 
-  const formatEffectiveProtectionLabel = (req: ExceptionRequest): string => {
-    if (req.status !== ExceptionRequestStatus.Approved) {
+  const formatEffectiveProtectionLabel = (req: ProtectionRequest): string => {
+    if (req.status !== ProtectionRequestStatus.Approved) {
       return formatProtectionLabel(req);
     }
 
-    if (req.effective_permanent === true) return "Forever";
+    if (req.effective_permanent === true) return "Permanent";
     if (req.effective_expires_at)
       return `Until ${formatDate(req.effective_expires_at)}`;
 
     return formatProtectionLabel(req);
   };
 
-  const hasProtectionOverride = (req: ExceptionRequest): boolean => {
+  const hasProtectionOverride = (req: ProtectionRequest): boolean => {
     return (
-      req.status === ExceptionRequestStatus.Approved &&
+      req.status === ProtectionRequestStatus.Approved &&
       formatEffectiveProtectionLabel(req) !== formatProtectionLabel(req)
     );
   };
@@ -415,7 +417,7 @@
             {(() => {
               if (approveDuration === "user_requested")
                 return `Use requested (${approveTarget ? formatProtectionLabel(approveTarget) : "-"})`;
-              if (approveDuration === "forever") return "Forever";
+              if (approveDuration === "permanent") return "Permanent";
               if (approveDuration === "custom") return "Custom days";
               if (!isNaN(Number(approveDuration)))
                 return `${approveDuration} days`;
@@ -450,8 +452,10 @@
               label="Custom days"
               class="text-foreground">Custom days</Select.Item
             >
-            <Select.Item value="forever" label="Forever" class="text-foreground"
-              >Forever</Select.Item
+            <Select.Item
+              value="permanent"
+              label="Permanent"
+              class="text-foreground">Permanent</Select.Item
             >
           </Select.Content>
         </Select.Root>
@@ -507,7 +511,8 @@
       <Dialog.Title>Deny Request</Dialog.Title>
       <Dialog.Description>
         {#if denyTarget}
-          Denying exception request for <strong>{denyTarget.media_title}</strong
+          Denying protection request for <strong
+            >{denyTarget.media_title}</strong
           >.
         {/if}
       </Dialog.Description>
@@ -597,7 +602,7 @@
             {(() => {
               if (bulkDuration === "user_requested")
                 return "Use each request's selected duration";
-              if (bulkDuration === "forever") return "Forever";
+              if (bulkDuration === "permanent") return "Permanent";
               if (bulkDuration === "custom") return "Custom days";
               if (!isNaN(Number(bulkDuration))) return `${bulkDuration} days`;
               return bulkDuration;
@@ -627,8 +632,10 @@
               label="Custom days"
               class="text-foreground">Custom days</Select.Item
             >
-            <Select.Item value="forever" label="Forever" class="text-foreground"
-              >Forever</Select.Item
+            <Select.Item
+              value="permanent"
+              label="Permanent"
+              class="text-foreground">Permanent</Select.Item
             >
           </Select.Content>
         </Select.Root>
@@ -721,7 +728,7 @@
     <div class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-3xl font-bold text-foreground mb-1">
-          Exception Requests
+          Protection Requests
         </h1>
         <p class="text-muted-foreground text-sm">
           {#if canManageRequests}
@@ -749,11 +756,12 @@
         >
           {(() => {
             if (statusFilter === "all") return "All statuses";
-            if (statusFilter === ExceptionRequestStatus.Pending)
+            if (statusFilter === ProtectionRequestStatus.Pending)
               return "Pending";
-            if (statusFilter === ExceptionRequestStatus.Approved)
+            if (statusFilter === ProtectionRequestStatus.Approved)
               return "Approved";
-            if (statusFilter === ExceptionRequestStatus.Denied) return "Denied";
+            if (statusFilter === ProtectionRequestStatus.Denied)
+              return "Denied";
             return String(statusFilter);
           })()}
         </Select.Trigger>
@@ -762,17 +770,17 @@
             >All statuses</Select.Item
           >
           <Select.Item
-            value={ExceptionRequestStatus.Pending}
+            value={ProtectionRequestStatus.Pending}
             label="Pending"
             class="text-foreground">Pending</Select.Item
           >
           <Select.Item
-            value={ExceptionRequestStatus.Approved}
+            value={ProtectionRequestStatus.Approved}
             label="Approved"
             class="text-foreground">Approved</Select.Item
           >
           <Select.Item
-            value={ExceptionRequestStatus.Denied}
+            value={ProtectionRequestStatus.Denied}
             label="Denied"
             class="text-foreground">Denied</Select.Item
           >
@@ -809,7 +817,7 @@
         <p class="text-lg font-medium">No requests found</p>
         <p class="text-sm">
           {statusFilter === "all"
-            ? "No exception requests have been submitted yet."
+            ? "No protection requests have been submitted yet."
             : `No ${statusFilter} requests.`}
         </p>
       </div>
@@ -866,7 +874,7 @@
                 onclick={() => (selectedRequestId = req.id)}
               >
                 <div class="flex items-start gap-3">
-                  {#if req.status === ExceptionRequestStatus.Pending}
+                  {#if req.status === ProtectionRequestStatus.Pending}
                     <input
                       type="checkbox"
                       class="mt-1"
@@ -977,7 +985,7 @@
               {/if}
 
               <div class="pt-2 border-t border-border flex flex-wrap gap-2">
-                {#if selectedRequest.status === ExceptionRequestStatus.Pending}
+                {#if selectedRequest.status === ProtectionRequestStatus.Pending}
                   <Button
                     size="sm"
                     variant="outline"
@@ -1061,7 +1069,7 @@
               </div>
             {/if}
 
-            {#if req.status === ExceptionRequestStatus.Pending && req.requested_by_user_id === $auth.user?.id}
+            {#if req.status === ProtectionRequestStatus.Pending && req.requested_by_user_id === $auth.user?.id}
               <div class="mt-3 pt-3 border-t border-border">
                 <Button
                   size="sm"
