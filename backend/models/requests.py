@@ -10,7 +10,7 @@ class CreateProtectionRequest(BaseModel):
 
     media_type: MediaType
     media_id: int
-    reason: str
+    reason: str | None = None
     duration_days: int | None = None
 
 
@@ -34,7 +34,7 @@ class ProtectionRequestResponse(BaseModel):
 
     requested_by_user_id: int
     requested_by_username: str
-    reason: str
+    reason: str | None
     requested_expires_at: str | None
 
     status: ProtectionRequestStatus
