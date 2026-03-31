@@ -104,9 +104,9 @@ class MediaStatusInfo(BaseModel):
     candidate_reason: str | None = None
     candidate_space_gb: float | None = None
 
-    is_blacklisted: bool = False
-    blacklist_reason: str | None = None
-    blacklist_permanent: bool = True
+    is_protected: bool = False
+    protected_reason: str | None = None
+    protected_permanent: bool = True
 
     has_pending_request: bool = False
     request_id: int | None = None
@@ -222,3 +222,35 @@ class PaginatedMediaResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class CandidateEntry(BaseModel):
+    """A single reclaim candidate with enough info to display and act on."""
+
+    id: int
+    media_type: str
+    media_id: int
+    media_title: str
+    media_year: int | None
+    poster_url: str | None
+    reason: str
+    estimated_space_gb: float | None
+    has_pending_request: bool
+    created_at: str
+
+
+class PaginatedCandidatesResponse(BaseModel):
+    items: list[CandidateEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class DeleteCandidatesRequest(BaseModel):
+    candidate_ids: list[int]
+
+
+class DeleteCandidatesResponse(BaseModel):
+    deleted: int
+    failed: int
