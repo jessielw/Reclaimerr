@@ -574,7 +574,7 @@ class ProtectionRequest(Base):
 
     # request details (required fields first for dataclass)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    reason: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
     requested_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
