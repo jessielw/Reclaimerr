@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { get_api } from "$lib/api";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -7,12 +7,12 @@
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
   import MediaGrid from "$lib/components/media/media-grid.svelte";
   import MediaDetailDialog from "$lib/components/media/media-detail-dialog.svelte";
-  import ExceptionRequestDialog from "$lib/components/media/exception-request-dialog.svelte";
+  import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
   import Search from "@lucide/svelte/icons/search";
   import {
-    ExceptionRequestStatus,
+    ProtectionRequestStatus,
     MediaType,
-    type ExceptionRequest,
+    type ProtectionRequest,
     type MovieWithStatus,
     type SeriesWithStatus,
     type MediaItem,
@@ -176,11 +176,11 @@
   };
 
   // after successful exception request, update only the requested media card in local state
-  const handleExceptionSuccess = (request: ExceptionRequest) => {
+  const handleExceptionSuccess = (request: ProtectionRequest) => {
     if (!mediaData) return;
 
-    const isPending = request.status === ExceptionRequestStatus.Pending;
-    const isApproved = request.status === ExceptionRequestStatus.Approved;
+    const isPending = request.status === ProtectionRequestStatus.Pending;
+    const isApproved = request.status === ProtectionRequestStatus.Approved;
 
     mediaData = {
       ...mediaData,
@@ -195,7 +195,7 @@
             request_id: isPending ? request.id : null,
             request_status: request.status,
             request_reason: request.reason,
-            is_blacklisted: isApproved ? true : item.status.is_blacklisted,
+            is_protected: isApproved ? true : item.status.is_protected,
           },
         };
       }),
@@ -210,9 +210,7 @@
           request_id: isPending ? request.id : null,
           request_status: request.status,
           request_reason: request.reason,
-          is_blacklisted: isApproved
-            ? true
-            : selectedMedia.status.is_blacklisted,
+          is_protected: isApproved ? true : selectedMedia.status.is_protected,
         },
       };
     }
@@ -339,7 +337,7 @@
   onRequestException={handleRequestException}
 />
 
-<ExceptionRequestDialog
+<ProtectionRequestDialog
   bind:open={showExceptionDialog}
   media={selectedMedia}
   {mediaType}

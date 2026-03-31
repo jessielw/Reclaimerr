@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pydantic import BaseModel
 
-from backend.enums import ExceptionRequestStatus, MediaType
+from backend.enums import MediaType, ProtectionRequestStatus
 
 
-class CreateExceptionRequest(BaseModel):
+class CreateProtectionRequest(BaseModel):
     """Request to create an exception for a media item."""
 
     media_type: MediaType
@@ -14,7 +14,7 @@ class CreateExceptionRequest(BaseModel):
     duration_days: int | None = None
 
 
-class ReviewExceptionRequest(BaseModel):
+class ReviewProtectionRequest(BaseModel):
     """Admin review of an exception request."""
 
     admin_notes: str | None = None
@@ -22,7 +22,7 @@ class ReviewExceptionRequest(BaseModel):
     approved_permanent: bool | None = None
 
 
-class ExceptionRequestResponse(BaseModel):
+class ProtectionRequestResponse(BaseModel):
     """Exception request with details."""
 
     id: int
@@ -37,7 +37,7 @@ class ExceptionRequestResponse(BaseModel):
     reason: str
     requested_expires_at: str | None
 
-    status: ExceptionRequestStatus
+    status: ProtectionRequestStatus
     reviewed_by_user_id: int | None
     reviewed_by_username: str | None
     reviewed_at: str | None

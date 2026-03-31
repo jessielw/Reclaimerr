@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -23,8 +23,8 @@ from backend.database import Base
 from backend.enums import (
     BackgroundJobStatus,
     BackgroundJobType,
-    ExceptionRequestStatus,
     MediaType,
+    ProtectionRequestStatus,
     ScheduleType,
     Service,
     Task,
@@ -252,7 +252,7 @@ class Movie(Base):
         repr=False,
         cascade="all, delete-orphan",
     )
-    exception_requests: Mapped[list[ExceptionRequest]] = relationship(
+    protection_requests: Mapped[list[ProtectionRequest]] = relationship(
         back_populates="movie", default_factory=list, lazy="noload", repr=False
     )
 
@@ -412,7 +412,7 @@ class Series(Base):
         repr=False,
         cascade="all, delete-orphan",
     )
-    exception_requests: Mapped[list[ExceptionRequest]] = relationship(
+    protection_requests: Mapped[list[ProtectionRequest]] = relationship(
         back_populates="series", default_factory=list, lazy="noload", repr=False
     )
 
@@ -520,10 +520,10 @@ class ReclaimCandidate(Base):
     )
 
 
-class MediaBlacklist(Base):
+class ProtectedMedia(Base):
     """Media items protected from deletion/cleanup."""
 
-    __tablename__ = "media_blacklist"
+    __tablename__ = "protected_media"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -532,8 +532,8 @@ class MediaBlacklist(Base):
     # media identification
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
 
-    # blacklist details (required fields first for dataclass)
-    blacklisted_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # protected details (required fields first for dataclass)
+    protected_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
 
     # foreign keys (one will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(
@@ -545,7 +545,7 @@ class MediaBlacklist(Base):
 
     # optional details
     reason: Mapped[str | None] = mapped_column(Text, default=None)
-    blacklisted_by: Mapped[User] = relationship(init=False, lazy="noload", repr=False)
+    protected_by: Mapped[User] = relationship(init=False, lazy="noload", repr=False)
 
     # expiration options
     permanent: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -560,10 +560,10 @@ class MediaBlacklist(Base):
     )
 
 
-class ExceptionRequest(Base):
+class ProtectionRequest(Base):
     """User requests for media to be excluded from cleanup."""
 
-    __tablename__ = "exception_requests"
+    __tablename__ = "protection_requests"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -583,13 +583,13 @@ class ExceptionRequest(Base):
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     movie: Mapped[Movie | None] = relationship(
-        back_populates="exception_requests",
+        back_populates="protection_requests",
         init=False,
         lazy="noload",
         repr=False,
     )
     series: Mapped[Series | None] = relationship(
-        back_populates="exception_requests",
+        back_populates="protection_requests",
         init=False,
         lazy="noload",
         repr=False,
@@ -605,8 +605,8 @@ class ExceptionRequest(Base):
     )
 
     # status: pending, approved, denied
-    status: Mapped[ExceptionRequestStatus] = mapped_column(
-        Enum(ExceptionRequestStatus), default=ExceptionRequestStatus.PENDING
+    status: Mapped[ProtectionRequestStatus] = mapped_column(
+        Enum(ProtectionRequestStatus), default=ProtectionRequestStatus.PENDING
     )
 
     # admin review

@@ -1,5 +1,5 @@
-from .logging import LogLevel, LogSource
-from .media import ExceptionRequestStatus, MediaType, Service
+﻿from .logging import LogLevel, LogSource
+from .media import MediaType, ProtectionRequestStatus, Service
 from .services import SeerrRequestStatus
 from .tasks import (
     BackgroundJobStatus,
@@ -18,7 +18,7 @@ __all__ = [
     # media
     "Service",
     "MediaType",
-    "ExceptionRequestStatus",
+    "ProtectionRequestStatus",
     # tasks
     "TaskStatus",
     "BackgroundJobStatus",

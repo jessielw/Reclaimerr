@@ -73,12 +73,12 @@
     sortOrder;
     mediaTypeFilter;
     if (mounted) {
-      loadBlacklist(1);
+      loadProtectedEntries(1);
     }
   });
 
-  // load blacklist entries with current filters and pagination
-  const loadBlacklist = async (page: number = currentPage) => {
+  // load protected entries with current filters and pagination
+  const loadProtectedEntries = async (page: number = currentPage) => {
     if (abortController) abortController.abort();
     abortController = new AbortController();
     const signal = abortController.signal;
@@ -124,7 +124,7 @@
 
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      loadBlacklist(1);
+      loadProtectedEntries(1);
     }, 400);
   };
 
@@ -197,7 +197,7 @@
     removeDialogOpen = true;
   };
 
-  // remove the entry from blacklist via API and update local data accordingly
+  // remove the entry from protection list via API and update local data accordingly
   const removeEntry = async () => {
     if (!removeTarget) return;
     removeSubmitting = true;
@@ -208,7 +208,7 @@
       removeDialogOpen = false;
 
       if (!data) {
-        await loadBlacklist(currentPage);
+        await loadProtectedEntries(currentPage);
         return;
       }
 
@@ -220,7 +220,7 @@
         newTotal > 0 ? Math.ceil(newTotal / data.per_page) : 0;
 
       if (remainingItems.length === 0 && currentPage > 1) {
-        await loadBlacklist(currentPage - 1);
+        await loadProtectedEntries(currentPage - 1);
         return;
       }
 
@@ -240,7 +240,7 @@
 
   onMount(async () => {
     mounted = true;
-    await loadBlacklist();
+    await loadProtectedEntries();
   });
 
   onDestroy(() => {
@@ -580,7 +580,7 @@
         currentPage={data.page}
         totalPages={data.total_pages}
         maxVisiblePages={3}
-        onPageChange={loadBlacklist}
+        onPageChange={loadProtectedEntries}
       />
     </div>
   {/if}

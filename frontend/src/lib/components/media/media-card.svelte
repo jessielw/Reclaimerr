@@ -106,8 +106,8 @@
 
     <!-- status indicators (top right) -->
     <div class="absolute top-2 right-2 flex gap-1">
-      <!-- blacklisted -->
-      {#if media.status.is_blacklisted}
+      <!-- protected -->
+      {#if media.status.is_protected}
         <div
           class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-20"
         >
@@ -116,7 +116,7 @@
               <ShieldBan class="size-5 text-white cursor-help" />
             </Tooltip.Trigger>
             <Tooltip.Content>
-              <p>Blacklisted</p>
+              <p>Protected</p>
             </Tooltip.Content>
           </Tooltip.Root>
         </div>
@@ -159,7 +159,7 @@
     {#if isHovered}
       {@const canRequest =
         canRequestExceptions &&
-        !media.status.is_blacklisted &&
+        !media.status.is_protected &&
         !media.status.has_pending_request}
       <div
         class="absolute inset-0 bg-linear-to-t from-black/60 via-transparent

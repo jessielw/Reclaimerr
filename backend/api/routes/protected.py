@@ -12,7 +12,7 @@ from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import Movie, ProtectedMedia, Series, User
 from backend.enums import MediaType, Permission, UserRole
-from backend.models.blacklist import (
+from backend.models.protect import (
     CreateProtectedEntryRequest,
     PaginatedProtectedResponse,
     ProtectedEntryResponse,
@@ -29,7 +29,7 @@ def can_manage_protection(user: User) -> bool:
 
 
 @router.get("", response_model=PaginatedProtectedResponse)
-async def get_blacklist_entries(
+async def get_protected_entries(
     _user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
@@ -39,7 +39,7 @@ async def get_blacklist_entries(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     media_type: MediaType | None = Query(None),
 ):
-    """Retrieve a paginated list of blacklisted media entries."""
+    """Retrieve a paginated list of protected media entries."""
     base_query = (
         select(
             ProtectedMedia,
@@ -170,11 +170,11 @@ async def create_protection_entry(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a new media entry to the blacklist."""
+    """Add a new media entry to the protected list."""
     if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     if request_data.duration_days is not None and request_data.duration_days <= 0:
@@ -219,7 +219,7 @@ async def create_protection_entry(
     if existing_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This media is already blacklisted",
+            detail="This media is already protected",
         )
 
     permanent = request_data.duration_days is None
@@ -265,17 +265,17 @@ async def create_protection_entry(
 
 
 @router.put("/{entry_id}/duration", response_model=ProtectedEntryResponse)
-async def update_blacklist_duration(
+async def update_protection_duration(
     entry_id: int,
     request_data: UpdateProtectionDurationRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Update the duration of a blacklisted media entry."""
+    """Update the duration of a protected media entry."""
     if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     if request_data.duration_days is not None and request_data.duration_days <= 0:
@@ -292,7 +292,7 @@ async def update_blacklist_duration(
     if not entry:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blacklist entry not found",
+            detail="Protected entry not found",
         )
 
     if request_data.duration_days is None:
@@ -356,11 +356,11 @@ async def delete_protection_entry(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a media entry from the blacklist."""
+    """Remove a media entry from the protected list."""
     if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     result = await db.execute(
@@ -371,7 +371,7 @@ async def delete_protection_entry(
     if not entry:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blacklist entry not found",
+            detail="Protected entry not found",
         )
 
     await db.delete(entry)
