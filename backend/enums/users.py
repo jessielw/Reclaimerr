@@ -1,4 +1,4 @@
-from enum import StrEnum, auto
+﻿from enum import StrEnum, auto
 
 
 class UserRole(StrEnum):
@@ -11,4 +11,5 @@ class Permission(StrEnum):
     MANAGE_REQUESTS = auto()
     REQUEST = auto()
     AUTO_APPROVE = auto()
-    MANAGE_BLACKLIST = auto()
+    MANAGE_PROTECTION = auto()
+    MANAGE_RECLAIM = auto()
