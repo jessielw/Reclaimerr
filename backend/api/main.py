@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -30,6 +32,7 @@ from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
+from backend.core.worker import worker_loop
 from backend.database import close_db, init_db
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
@@ -71,6 +74,10 @@ async def lifespan(app: FastAPI):
     # start scheduler
     await start_scheduler()
 
+    # start in-process background worker
+    _worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    worker_task = asyncio.create_task(worker_loop(_worker_id), name="background-worker")
+
     LOG.info("reclaimerr API ready")
 
     try:
@@ -79,13 +86,20 @@ async def lifespan(app: FastAPI):
         # Cleanup - this runs on both normal shutdown and signal interruption
         LOG.info("Shutting down reclaimerr API")
 
-        # Stop scheduler and wait for jobs to complete (with timeout)
+        # stop in-process background worker
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+        # stop scheduler and wait for jobs to complete (with timeout)
         await shutdown_scheduler()
 
-        # Close all service HTTP sessions
+        # close all service HTTP sessions
         await service_manager.clear_all()
 
-        # Close database connections
+        # close database connections
         await close_db()
 
         remaining_tasks = [
