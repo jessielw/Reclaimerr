@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { get_api, post_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
@@ -27,10 +27,26 @@
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
   import Trash from "@lucide/svelte/icons/trash";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import ShieldBan from "@lucide/svelte/icons/shield-ban";
+
+  // display row (either a flat entry or a season group)
+  type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
+  type GroupRow = {
+    kind: "group";
+    // series level candidate if the whole series also has one (may be null)
+    seriesEntry: ReclaimCandidateEntry | null;
+    seasons: ReclaimCandidateEntry[];
+    // from the first season entry
+    media_id: number;
+    media_title: string;
+    media_year: number | null;
+    poster_url: string | null;
+  };
+  type DisplayRow = FlatRow | GroupRow;
 
   // state
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
@@ -46,7 +62,10 @@
   let abortController: AbortController | null = null;
   let mounted = $state(false);
 
-  // selection (admins only)
+  // which group rows are expanded (keyed by media_id)
+  let expandedGroups = $state<Set<number>>(new Set());
+
+  // selection (admins only - stores individual candidate IDs)
   let selectedIds = $state<Set<number>>(new Set());
 
   // single-item request dialog
@@ -85,6 +104,61 @@
 
   const entries = $derived(data?.items ?? []);
 
+  // build grouped display rows from the flat API response
+  //
+  // season candidates (season_id != null) with the same media_id are collapsed
+  // into a single GroupRow. everything else stays flat.
+  const displayRows = $derived((): DisplayRow[] => {
+    // collect season candidates by series media_id
+    const seasonGroups = new Map<number, ReclaimCandidateEntry[]>();
+    // collect whole-series candidates by media_id (season_id == null, type == series)
+    const seriesFlat = new Map<number, ReclaimCandidateEntry>();
+    const flatRows: DisplayRow[] = [];
+
+    for (const e of entries) {
+      if (e.season_id != null) {
+        const g = seasonGroups.get(e.media_id) ?? [];
+        g.push(e);
+        seasonGroups.set(e.media_id, g);
+      } else if (e.media_type === MediaType.Series) {
+        seriesFlat.set(e.media_id, e);
+      } else {
+        // plain movie (always flat)
+        flatRows.push({ kind: "flat", entry: e });
+      }
+    }
+
+    // whole series candidates (if there are also season candidates for the same
+    // series, merge them into a group; otherwise stay flat)
+    for (const [mid, fe] of seriesFlat) {
+      if (seasonGroups.has(mid)) {
+        // will be merged below
+      } else {
+        flatRows.push({ kind: "flat", entry: fe });
+      }
+    }
+
+    const result: DisplayRow[] = [...flatRows];
+
+    for (const [mid, seasons] of seasonGroups) {
+      const sorted = [...seasons].sort(
+        (a, b) => (a.season_number ?? 0) - (b.season_number ?? 0),
+      );
+      const first = sorted[0];
+      result.push({
+        kind: "group",
+        seriesEntry: seriesFlat.get(mid) ?? null,
+        seasons: sorted,
+        media_id: mid,
+        media_title: first.series_title ?? first.media_title,
+        media_year: first.media_year,
+        poster_url: first.poster_url,
+      });
+    }
+
+    return result;
+  });
+
   const isAdmin = $derived(
     $auth.user?.role === UserRole.Admin ||
       ($auth.user?.permissions ?? []).includes(Permission.AutoApprove),
@@ -97,8 +171,22 @@
 
   const canBulkSelect = $derived(isAdmin || canDelete);
 
+  // all selectable IDs on the current page (flat entries + all season sub entries)
+  const allSelectableIds = $derived((): number[] => {
+    const ids: number[] = [];
+    for (const row of displayRows()) {
+      if (row.kind === "flat") ids.push(row.entry.id);
+      else {
+        if (row.seriesEntry) ids.push(row.seriesEntry.id);
+        for (const s of row.seasons) ids.push(s.id);
+      }
+    }
+    return ids;
+  });
+
   const allPageSelected = $derived(
-    entries.length > 0 && entries.every((e) => selectedIds.has(e.id)),
+    allSelectableIds().length > 0 &&
+      allSelectableIds().every((id) => selectedIds.has(id)),
   );
 
   const selectedEntries = $derived(
@@ -121,6 +209,7 @@
     error = "";
     currentPage = page;
     selectedIds = new Set();
+    expandedGroups = new Set();
 
     try {
       const params = new URLSearchParams({
@@ -159,12 +248,48 @@
     selectedIds = next;
   };
 
+  // toggle all seasons in a group
+  const toggleGroupSelect = (row: GroupRow) => {
+    const groupIds = row.seasons.map((s) => s.id);
+    if (row.seriesEntry) groupIds.push(row.seriesEntry.id);
+    const allSelected = groupIds.every((id) => selectedIds.has(id));
+    const next = new Set(selectedIds);
+    if (allSelected) groupIds.forEach((id) => next.delete(id));
+    else groupIds.forEach((id) => next.add(id));
+    selectedIds = next;
+  };
+
+  // a group is fully selected if all season entries + the series entry (if exists) are selected
+  const isGroupAllSelected = (row: GroupRow): boolean => {
+    const groupIds = row.seasons.map((s) => s.id);
+    if (row.seriesEntry) groupIds.push(row.seriesEntry.id);
+    return groupIds.length > 0 && groupIds.every((id) => selectedIds.has(id));
+  };
+
+  // a group is partially selected if some (but not all) season entries or the series entry are selected
+  const isGroupPartialSelected = (row: GroupRow): boolean => {
+    const groupIds = row.seasons.map((s) => s.id);
+    if (row.seriesEntry) groupIds.push(row.seriesEntry.id);
+    const someSelected = groupIds.some((id) => selectedIds.has(id));
+    return someSelected && !isGroupAllSelected(row);
+  };
+
+  // toggle select all on the current page (flat entries + all season sub entries)
   const toggleSelectAll = () => {
+    const ids = allSelectableIds();
     if (allPageSelected) {
       selectedIds = new Set();
     } else {
-      selectedIds = new Set(entries.map((e) => e.id));
+      selectedIds = new Set(ids);
     }
+  };
+
+  // toggle expand/collapse of a season group
+  const toggleExpand = (mediaId: number) => {
+    const next = new Set(expandedGroups);
+    if (next.has(mediaId)) next.delete(mediaId);
+    else next.add(mediaId);
+    expandedGroups = next;
   };
 
   const openSingleRequest = (entry: ReclaimCandidateEntry) => {
@@ -177,36 +302,42 @@
     deleteDialogOpen = true;
   };
 
+  const removeCandidateIds = (ids: Set<number>) => {
+    if (!data) return;
+    const remaining = data.items.filter((i) => !ids.has(i.id));
+    const removed = data.items.length - remaining.length;
+    const newTotal = Math.max(0, data.total - removed);
+    data = {
+      ...data,
+      items: remaining,
+      total: newTotal,
+      total_pages: newTotal > 0 ? Math.ceil(newTotal / data.per_page) : 0,
+    };
+  };
+
   const submitSingleDelete = async () => {
     if (!deleteTarget) return;
     deleteSubmitting = true;
     try {
       const resp = await post_api<DeleteResponse>(
         "/api/media/candidates/delete",
-        {
-          candidate_ids: [deleteTarget.id],
-        },
+        { candidate_ids: [deleteTarget.id] },
       );
       if (resp.deleted > 0) {
-        toast.success(`Deleted ${deleteTarget.media_title}.`);
-        if (!data) {
-          await loadCandidates(currentPage);
-          return;
-        }
-        const remaining = data.items.filter((i) => i.id !== deleteTarget!.id);
-        const newTotal = Math.max(0, data.total - 1);
-        if (remaining.length === 0 && currentPage > 1) {
+        const label =
+          deleteTarget.season_number != null
+            ? `S${String(deleteTarget.season_number).padStart(2, "0")} of ` +
+              `${deleteTarget.series_title ?? deleteTarget.media_title}`
+            : deleteTarget.media_title;
+        toast.success(`Deleted ${label}.`);
+        const remaining = data?.items.filter((i) => i.id !== deleteTarget!.id);
+        if (!remaining || (remaining.length === 0 && currentPage > 1)) {
           await loadCandidates(currentPage - 1);
         } else {
-          data = {
-            ...data,
-            items: remaining,
-            total: newTotal,
-            total_pages: newTotal > 0 ? Math.ceil(newTotal / data.per_page) : 0,
-          };
+          removeCandidateIds(new Set([deleteTarget.id]));
         }
       } else {
-        toast.error(`Failed to delete ${deleteTarget.media_title}.`);
+        toast.error(`Failed to delete.`);
       }
       deleteDialogOpen = false;
       deleteTarget = null;
@@ -223,9 +354,7 @@
     try {
       const resp = await post_api<DeleteResponse>(
         "/api/media/candidates/delete",
-        {
-          candidate_ids: selectedEntries.map((e) => e.id),
-        },
+        { candidate_ids: selectedEntries.map((e) => e.id) },
       );
       if (resp.deleted > 0)
         toast.success(
@@ -235,12 +364,7 @@
         toast.error(
           `${resp.failed} item${resp.failed !== 1 ? "s" : ""} could not be deleted.`,
         );
-
-      if (data && resp.deleted > 0) {
-        // only remove the first resp.deleted items from selected (we don't know which failed)
-        // simplest: reload to get accurate state
-        await loadCandidates(currentPage);
-      }
+      if (resp.deleted > 0) await loadCandidates(currentPage);
     } catch (e: any) {
       toast.error(e.message ?? "Failed to delete candidates.");
     } finally {
@@ -250,7 +374,6 @@
     }
   };
 
-  // after a single request succeeds, mark the row as pending
   const handleRequestSuccess = (request: ProtectionRequest) => {
     if (!data) return;
     data = {
@@ -264,7 +387,6 @@
     };
   };
 
-  // bulk request: fire all in parallel, collect results
   const submitBulkRequest = async () => {
     if (selectedEntries.length === 0) return;
     bulkSubmitting = true;
@@ -289,6 +411,7 @@
         post_api<ProtectionRequest>("/api/protection-requests", {
           media_type: entry.media_type,
           media_id: entry.media_id,
+          season_id: entry.season_id ?? undefined,
           reason: "Admin decision",
           duration_days: durationDays,
         }),
@@ -305,40 +428,25 @@
     if (failed > 0)
       toast.error(`${failed} request${failed !== 1 ? "s" : ""} failed`);
 
-    // update local state for succeeded items
-    const succeededMediaIds = new Set(
-      results
-        .filter(
-          (r): r is PromiseFulfilledResult<ProtectionRequest> =>
-            r.status === "fulfilled",
-        )
-        .map((r) => r.value.media_id),
-    );
-
-    if (data && succeededMediaIds.size > 0) {
-      data = {
-        ...data,
-        items: data.items.map((item) =>
-          succeededMediaIds.has(item.media_id)
-            ? { ...item, has_pending_request: true }
-            : item,
-        ),
-      };
-    }
-
     selectedIds = new Set();
     bulkDialogOpen = false;
     bulkSubmitting = false;
   };
 
-  // convert a candidate entry into the shape ProtectionRequestDialog expects
   const toMediaLike = (entry: ReclaimCandidateEntry) => ({
     id: entry.media_id,
-    title: entry.media_title,
+    title: entry.series_title ?? entry.media_title,
     year: entry.media_year,
     poster_url: entry.poster_url,
     status: { is_candidate: true },
   });
+
+  const spaceLabel = (gb: number | null) =>
+    gb != null ? `${gb.toFixed(2)} GB` : "?";
+
+  const groupTotalGb = (row: GroupRow): number =>
+    row.seasons.reduce((acc, s) => acc + (s.estimated_space_gb ?? 0), 0) +
+    (row.seriesEntry?.estimated_space_gb ?? 0);
 
   onMount(async () => {
     mounted = true;
@@ -391,8 +499,16 @@
       <AlertDialog.Title>Delete Permanently?</AlertDialog.Title>
       <AlertDialog.Description>
         {#if deleteTarget}
-          Permanently delete <strong>{deleteTarget.media_title}</strong> from from
-          all configured services and remove the files from disk. This cannot be undone.
+          {#if deleteTarget.season_number != null}
+            Permanently delete <strong
+              >Season {deleteTarget.season_number} of {deleteTarget.series_title ??
+                deleteTarget.media_title}</strong
+            > from all configured services and remove the files from disk. This cannot
+            be undone.
+          {:else}
+            Permanently delete <strong>{deleteTarget.media_title}</strong> from all
+            configured services and remove the files from disk. This cannot be undone.
+          {/if}
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
@@ -477,6 +593,8 @@
   bind:open={requestDialogOpen}
   media={requestTarget ? toMediaLike(requestTarget) : null}
   mediaType={requestTarget?.media_type ?? MediaType.Movie}
+  seasonId={requestTarget?.season_id ?? null}
+  seasonNumber={requestTarget?.season_number ?? null}
   onSuccess={handleRequestSuccess}
 />
 
@@ -666,81 +784,228 @@
           </tr>
         </thead>
         <tbody class="divide-y divide-border">
-          {#each entries as entry (entry.id)}
-            <tr
-              class="hover:bg-muted/30 transition-colors {selectedIds.has(
-                entry.id,
-              )
-                ? 'bg-primary/5'
-                : ''}"
-            >
-              {#if canBulkSelect}
-                <td class="px-4 py-4 w-10">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(entry.id)}
-                    onchange={() => toggleSelect(entry.id)}
-                    class="cursor-pointer accent-primary"
-                  />
-                </td>
-              {/if}
-              <td class="px-6 py-4">
-                <div class="flex gap-4 items-center">
-                  <div class="flex flex-col items-center w-max gap-1">
-                    <PosterThumb
-                      mediaType={entry.media_type}
-                      posterUrl={entry.poster_url}
+          {#each displayRows() as row (row.kind === "flat" ? `flat-${row.entry.id}` : `group-${row.media_id}`)}
+            {#if row.kind === "flat"}
+              <!-- flat row (movie or whole series candidate) -->
+              {@const entry = row.entry}
+              <tr
+                class="hover:bg-muted/30 transition-colors {selectedIds.has(
+                  entry.id,
+                )
+                  ? 'bg-primary/5'
+                  : ''}"
+              >
+                {#if canBulkSelect}
+                  <td class="px-4 py-4 w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(entry.id)}
+                      onchange={() => toggleSelect(entry.id)}
+                      class="cursor-pointer accent-primary"
                     />
-                    <MediaTypeBadge mediaType={entry.media_type} />
+                  </td>
+                {/if}
+                <td class="px-6 py-4">
+                  <div class="flex gap-4 items-center">
+                    <div class="flex flex-col items-center w-max gap-1">
+                      <PosterThumb
+                        mediaType={entry.media_type}
+                        posterUrl={entry.poster_url}
+                      />
+                      <MediaTypeBadge mediaType={entry.media_type} />
+                    </div>
+                    <div class="text-sm font-medium text-foreground">
+                      {entry.media_title}
+                      {#if entry.media_year}
+                        <span class="text-muted-foreground"
+                          >({entry.media_year})</span
+                        >
+                      {/if}
+                    </div>
                   </div>
-                  <div class="text-sm font-medium text-foreground">
-                    {entry.media_title}
-                    {#if entry.media_year}
-                      <span class="text-muted-foreground"
-                        >({entry.media_year})</span
+                </td>
+                <td class="px-6 py-4 text-sm text-muted-foreground max-w-xs">
+                  <span class="line-clamp-3">{entry.reason}</span>
+                </td>
+                <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
+                  {spaceLabel(entry.estimated_space_gb)}
+                </td>
+                <td
+                  class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
+                >
+                  {formatDate(entry.created_at)}
+                </td>
+                <td class="px-6 py-4 text-right whitespace-nowrap">
+                  <div class="flex gap-2 justify-end items-center">
+                    {#if entry.has_pending_request}
+                      <span class="text-xs text-blue-400">Pending request</span>
+                    {:else}
+                      <Button
+                        size="icon"
+                        class="cursor-pointer rounded-full"
+                        onclick={() => openSingleRequest(entry)}
                       >
+                        <ShieldBan class="size-4" />
+                      </Button>
+                    {/if}
+                    {#if canDelete}
+                      <Button
+                        size="icon"
+                        class="cursor-pointer rounded-full bg-destructive/80 hover:bg-destructive/60"
+                        onclick={() => openSingleDelete(entry)}
+                      >
+                        <Trash class="size-4" />
+                      </Button>
                     {/if}
                   </div>
-                </div>
-              </td>
-              <td class="px-6 py-4 text-sm text-muted-foreground max-w-xs">
-                <span class="line-clamp-3">{entry.reason}</span>
-              </td>
-              <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
-                {entry.estimated_space_gb != null
-                  ? `${entry.estimated_space_gb.toFixed(2)} GB`
-                  : "—"}
-              </td>
-              <td
-                class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
+                </td>
+              </tr>
+            {:else}
+              <!-- group header row (series with season candidates) -->
+              {@const expanded = expandedGroups.has(row.media_id)}
+              {@const allSel = isGroupAllSelected(row)}
+              {@const partSel = isGroupPartialSelected(row)}
+              <tr
+                class="hover:bg-muted/30 transition-colors cursor-pointer {allSel
+                  ? 'bg-primary/5'
+                  : ''}"
+                onclick={() => toggleExpand(row.media_id)}
               >
-                {formatDate(entry.created_at)}
-              </td>
-              <td class="px-6 py-4 text-right whitespace-nowrap">
-                <div class="flex gap-2 justify-end items-center">
-                  {#if entry.has_pending_request}
-                    <span class="text-xs text-blue-400">Pending request</span>
+                {#if canBulkSelect}
+                  <td
+                    class="px-4 py-4 w-10"
+                    onclick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allSel}
+                      indeterminate={partSel}
+                      onchange={() => toggleGroupSelect(row)}
+                      class="cursor-pointer accent-primary"
+                    />
+                  </td>
+                {/if}
+                <td class="px-6 py-4">
+                  <div class="flex gap-4 items-center">
+                    <div class="flex flex-col items-center w-max gap-1">
+                      <PosterThumb
+                        mediaType={MediaType.Series}
+                        posterUrl={row.poster_url}
+                      />
+                      <MediaTypeBadge mediaType={MediaType.Series} />
+                    </div>
+                    <div class="text-sm font-medium text-foreground">
+                      {row.media_title}
+                      {#if row.media_year}
+                        <span class="text-muted-foreground"
+                          >({row.media_year})</span
+                        >
+                      {/if}
+                      <div class="mt-0.5">
+                        <span class="text-xs text-amber-400 font-normal">
+                          {row.seasons.length} season{row.seasons.length !== 1
+                            ? "s"
+                            : ""} flagged
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td class="px-6 py-4 text-sm text-muted-foreground">
+                  {#if row.seriesEntry}
+                    <span class="line-clamp-2">{row.seriesEntry.reason}</span>
                   {:else}
-                    <Button
-                      size="icon"
-                      class="cursor-pointer rounded-full"
-                      onclick={() => openSingleRequest(entry)}
+                    <span class="italic opacity-60"
+                      >Season-level only ? click to expand</span
                     >
-                      <ShieldBan class="size-4" />
-                    </Button>
                   {/if}
-                  {#if canDelete}
-                    <Button
-                      size="icon"
-                      class="cursor-pointer rounded-full bg-destructive/80 hover:bg-destructive/60"
-                      onclick={() => openSingleDelete(entry)}
+                </td>
+                <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
+                  {groupTotalGb(row).toFixed(2)} GB
+                </td>
+                <td
+                  class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
+                >
+                  {formatDate(row.seasons[0].created_at)}
+                </td>
+                <td class="px-6 py-4 text-right whitespace-nowrap">
+                  <div class="flex gap-2 justify-end items-center">
+                    <ChevronRight
+                      class="size-4 text-muted-foreground transition-transform duration-200 {expanded
+                        ? 'rotate-90'
+                        : ''}"
+                    />
+                  </div>
+                </td>
+              </tr>
+
+              <!-- expanded season sub-rows -->
+              {#if expanded}
+                {#each row.seasons as season (season.id)}
+                  <tr
+                    class="bg-muted/20 border-l-2 border-l-amber-500/40 hover:bg-muted/40 transition-colors
+                      {selectedIds.has(season.id) ? 'bg-primary/5' : ''}"
+                  >
+                    {#if canBulkSelect}
+                      <td class="px-4 py-3 w-10 pl-8">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(season.id)}
+                          onchange={() => toggleSelect(season.id)}
+                          class="cursor-pointer accent-primary"
+                        />
+                      </td>
+                    {/if}
+                    <td class="px-6 py-3 pl-14">
+                      <span class="text-sm font-medium text-foreground">
+                        Season {season.season_number}
+                      </span>
+                    </td>
+                    <td
+                      class="px-6 py-3 text-sm text-muted-foreground max-w-xs"
                     >
-                      <Trash class="size-4" />
-                    </Button>
-                  {/if}
-                </div>
-              </td>
-            </tr>
+                      <span class="line-clamp-2">{season.reason}</span>
+                    </td>
+                    <td
+                      class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
+                    >
+                      {spaceLabel(season.estimated_space_gb)}
+                    </td>
+                    <td
+                      class="px-6 py-3 text-sm text-muted-foreground whitespace-nowrap"
+                    >
+                      {formatDate(season.created_at)}
+                    </td>
+                    <td class="px-6 py-3 text-right whitespace-nowrap">
+                      <div class="flex gap-2 justify-end items-center">
+                        {#if season.has_pending_request}
+                          <span class="text-xs text-blue-400"
+                            >Pending request</span
+                          >
+                        {:else}
+                          <Button
+                            size="icon"
+                            class="cursor-pointer rounded-full size-7"
+                            onclick={() => openSingleRequest(season)}
+                          >
+                            <ShieldBan class="size-3.5" />
+                          </Button>
+                        {/if}
+                        {#if canDelete}
+                          <Button
+                            size="icon"
+                            class="cursor-pointer rounded-full size-7 bg-destructive/80 hover:bg-destructive/60"
+                            onclick={() => openSingleDelete(season)}
+                          >
+                            <Trash class="size-3.5" />
+                          </Button>
+                        {/if}
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              {/if}
+            {/if}
           {/each}
         </tbody>
       </table>
