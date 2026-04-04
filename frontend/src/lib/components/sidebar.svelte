@@ -28,7 +28,7 @@
     { path: "/series", label: "Series", icon: Tv, adminOnly: false },
     {
       path: "/protection-requests",
-      label: "Protection Requests",
+      label: "Requests",
       icon: Ticket,
       adminOnly: false,
     },
