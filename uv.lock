@@ -1303,7 +1303,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "alembic", specifier = ">=1.17.2" },
     { name = "apprise", specifier = ">=1.9.7" },
-    { name = "apscheduler", specifier = ">=3.11.2" },
+    { name = "apscheduler", specifier = ">=3.11.2,<4.0.0" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
     { name = "cryptography", specifier = ">=46.0.5" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.1" },
