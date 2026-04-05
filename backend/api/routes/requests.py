@@ -15,6 +15,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    Season,
     Series,
     User,
 )
@@ -51,7 +52,8 @@ async def resolve_effective_protection(
         )
     else:
         protected_query = protected_query.where(
-            ProtectedMedia.series_id == request.series_id
+            ProtectedMedia.series_id == request.series_id,
+            ProtectedMedia.season_id == request.season_id,
         )
 
     result = await db.execute(protected_query)
@@ -104,6 +106,26 @@ async def create_protection_request(
             detail=f"{request_data.media_type.value.title()} not found",
         )
 
+    # validate season if provided
+    season: Season | None = None
+    if request_data.season_id is not None:
+        if request_data.media_type is not MediaType.SERIES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="season_id is only valid for series",
+            )
+        season_result = await db.execute(
+            select(Season).where(
+                Season.id == request_data.season_id,
+                Season.series_id == request_data.media_id,
+            )
+        )
+        season = season_result.scalar_one_or_none()
+        if not season:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
+            )
+
     # check if already protected
     protected_query = select(ProtectedMedia).where(
         ProtectedMedia.media_type == request_data.media_type
@@ -114,7 +136,8 @@ async def create_protection_request(
         )
     else:
         protected_query = protected_query.where(
-            ProtectedMedia.series_id == request_data.media_id
+            ProtectedMedia.series_id == request_data.media_id,
+            ProtectedMedia.season_id == request_data.season_id,
         )
 
     result = await db.execute(protected_query)
@@ -136,7 +159,8 @@ async def create_protection_request(
         )
     else:
         existing_query = existing_query.where(
-            ProtectionRequest.series_id == request_data.media_id
+            ProtectionRequest.series_id == request_data.media_id,
+            ProtectionRequest.season_id == request_data.season_id,
         )
 
     result = await db.execute(existing_query)
@@ -156,7 +180,8 @@ async def create_protection_request(
         )
     else:
         candidate_query = candidate_query.where(
-            ReclaimCandidate.series_id == request_data.media_id
+            ReclaimCandidate.series_id == request_data.media_id,
+            ReclaimCandidate.season_id == request_data.season_id,
         )
 
     result = await db.execute(candidate_query)
@@ -189,6 +214,7 @@ async def create_protection_request(
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
+        season_id=request_data.season_id,
         candidate_id=candidate.id if candidate else None,
         requested_by_user_id=user.id,
         reason=request_data.reason,
@@ -219,6 +245,7 @@ async def create_protection_request(
             series_id=request_data.media_id
             if request_data.media_type == MediaType.SERIES
             else None,
+            season_id=request_data.season_id,
             reason=request_data.reason,
             protected_by_user_id=user.id,
             permanent=bl_permanent,
@@ -262,6 +289,8 @@ async def create_protection_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=protection_request.candidate_id,
+        season_id=request_data.season_id,
+        season_number=season.season_number if season else None,
         requested_by_user_id=user.id,
         requested_by_username=user.username,
         reason=protection_request.reason,
@@ -291,6 +320,7 @@ async def get_my_requests(
         .options(
             selectinload(ProtectionRequest.movie),
             selectinload(ProtectionRequest.series),
+            selectinload(ProtectionRequest.season),
         )
     )
 
@@ -339,6 +369,8 @@ async def get_my_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                season_id=req.season_id,
+                season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=user.username,
                 reason=req.reason,
@@ -368,6 +400,7 @@ async def get_all_requests(
     query = select(ProtectionRequest).options(
         selectinload(ProtectionRequest.movie),
         selectinload(ProtectionRequest.series),
+        selectinload(ProtectionRequest.season),
         selectinload(ProtectionRequest.requested_by),
         selectinload(ProtectionRequest.reviewed_by),
     )
@@ -408,6 +441,8 @@ async def get_all_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                season_id=req.season_id,
+                season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=req.requested_by.username,
                 reason=req.reason,
@@ -513,6 +548,7 @@ async def approve_request(
         media_type=request.media_type,
         movie_id=request.movie_id,
         series_id=request.series_id,
+        season_id=request.season_id,
         reason=f"Exception request approved: {request.reason}",
         protected_by_user_id=manager.id,
         permanent=approved_permanent,
@@ -555,6 +591,13 @@ async def approve_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
+    # load season_number for season-level requests
+    approve_season_number: int | None = None
+    if request.season_id:
+        sn_result = await db.execute(
+            select(Season.season_number).where(Season.id == request.season_id)
+        )
+        approve_season_number = sn_result.scalar_one_or_none()
     return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -562,6 +605,8 @@ async def approve_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        season_id=request.season_id,
+        season_number=approve_season_number,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
@@ -657,6 +702,13 @@ async def deny_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
+    # load season_number for season level requests
+    deny_season_number: int | None = None
+    if request.season_id:
+        sn_result = await db.execute(
+            select(Season.season_number).where(Season.id == request.season_id)
+        )
+        deny_season_number = sn_result.scalar_one_or_none()
     return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -664,6 +716,8 @@ async def deny_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        season_id=request.season_id,
+        season_number=deny_season_number,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
