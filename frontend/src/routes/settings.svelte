@@ -297,7 +297,8 @@
 
   // load settings on mount
   onMount(() => {
-    loadServiceSettings();
+    // only admins right now can adjust these settings
+    if (isAdmin) loadServiceSettings();
   });
 </script>
 
