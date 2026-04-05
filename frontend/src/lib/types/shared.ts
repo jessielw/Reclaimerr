@@ -239,6 +239,18 @@ export interface SeriesWithStatus {
   added_at: string | null;
 }
 
+export interface SeasonWithStatus {
+  id: number;
+  season_number: number;
+  episode_count: number | null;
+  size: number | null; // bytes
+  view_count: number;
+  last_viewed_at: string | null;
+  never_watched: boolean;
+  air_date: string | null;
+  status: MediaStatusInfo;
+}
+
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
 
 export interface PaginatedResponse<T> {
@@ -276,6 +288,8 @@ export interface ProtectionRequest {
   admin_notes: string | null;
   effective_permanent: boolean | null;
   effective_expires_at: string | null;
+  season_id: number | null;
+  season_number: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -307,6 +321,10 @@ export interface ReclaimCandidateEntry {
   estimated_space_gb: number | null;
   has_pending_request: boolean;
   created_at: string;
+  // populated for season-level candidates
+  season_id: number | null;
+  season_number: number | null;
+  series_title: string | null;
 }
 
 export interface DashboardKpis {
