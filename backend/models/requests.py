@@ -12,6 +12,8 @@ class CreateProtectionRequest(BaseModel):
     media_id: int
     reason: str | None = None
     duration_days: int | None = None
+    # set when protecting a specific season instead of the whole series
+    season_id: int | None = None
 
 
 class ReviewProtectionRequest(BaseModel):
@@ -31,6 +33,10 @@ class ProtectionRequestResponse(BaseModel):
     media_title: str
     media_year: int
     candidate_id: int | None
+
+    # season specific fields (None for series/movie level requests)
+    season_id: int | None = None
+    season_number: int | None = None
 
     requested_by_user_id: int
     requested_by_username: str
