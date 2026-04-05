@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -12,9 +12,9 @@ from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.file_utils import bytes_to_gb
 from backend.database import get_db
 from backend.database.models import (
-    ExceptionRequest,
-    MediaBlacklist,
     Movie,
+    ProtectedMedia,
+    ProtectionRequest,
     ReclaimCandidate,
     Series,
     ServiceConfig,
@@ -22,8 +22,8 @@ from backend.database.models import (
     User,
 )
 from backend.enums import (
-    ExceptionRequestStatus,
     MediaType,
+    ProtectionRequestStatus,
     Service,
     Task,
     TaskStatus,
@@ -48,7 +48,6 @@ async def get_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     """Role aware dashboard summary."""
-
     now = datetime.now(timezone.utc)
     seven_days_ago = now - timedelta(days=7)
     is_admin = current_user.role is UserRole.ADMIN
@@ -87,44 +86,44 @@ async def get_dashboard(
                 .scalar_subquery()
                 .label("all_series_size"),
                 select(func.count())
-                .select_from(ExceptionRequest)
-                .where(ExceptionRequest.status == ExceptionRequestStatus.PENDING)
+                .select_from(ProtectionRequest)
+                .where(ProtectionRequest.status == ProtectionRequestStatus.PENDING)
                 .scalar_subquery()
                 .label("pending_requests"),
                 select(func.count())
-                .select_from(ExceptionRequest)
+                .select_from(ProtectionRequest)
                 .where(
-                    ExceptionRequest.status == ExceptionRequestStatus.APPROVED,
-                    ExceptionRequest.reviewed_at.is_not(None),
-                    ExceptionRequest.reviewed_at >= seven_days_ago,
+                    ProtectionRequest.status == ProtectionRequestStatus.APPROVED,
+                    ProtectionRequest.reviewed_at.is_not(None),
+                    ProtectionRequest.reviewed_at >= seven_days_ago,
                 )
                 .scalar_subquery()
                 .label("approved_7d"),
                 select(func.count())
-                .select_from(ExceptionRequest)
+                .select_from(ProtectionRequest)
                 .where(
-                    ExceptionRequest.status == ExceptionRequestStatus.DENIED,
-                    ExceptionRequest.reviewed_at.is_not(None),
-                    ExceptionRequest.reviewed_at >= seven_days_ago,
+                    ProtectionRequest.status == ProtectionRequestStatus.DENIED,
+                    ProtectionRequest.reviewed_at.is_not(None),
+                    ProtectionRequest.reviewed_at >= seven_days_ago,
                 )
                 .scalar_subquery()
                 .label("denied_7d"),
                 select(func.count())
-                .select_from(ExceptionRequest)
+                .select_from(ProtectionRequest)
                 .where(
-                    ExceptionRequest.requested_by_user_id == current_user.id,
-                    ExceptionRequest.status == ExceptionRequestStatus.PENDING,
+                    ProtectionRequest.requested_by_user_id == current_user.id,
+                    ProtectionRequest.status == ProtectionRequestStatus.PENDING,
                 )
                 .scalar_subquery()
                 .label("mine_pending"),
                 select(func.count())
-                .select_from(ExceptionRequest)
+                .select_from(ProtectionRequest)
                 .where(
-                    ExceptionRequest.requested_by_user_id == current_user.id,
-                    ExceptionRequest.status == ExceptionRequestStatus.APPROVED,
+                    ProtectionRequest.requested_by_user_id == current_user.id,
+                    ProtectionRequest.status == ProtectionRequestStatus.APPROVED,
                     or_(
-                        ExceptionRequest.requested_expires_at.is_(None),
-                        ExceptionRequest.requested_expires_at >= now,
+                        ProtectionRequest.requested_expires_at.is_(None),
+                        ProtectionRequest.requested_expires_at >= now,
                     ),
                 )
                 .scalar_subquery()
@@ -193,36 +192,36 @@ async def get_dashboard(
     request_activity = (
         select(
             literal("request").label("activity_type"),
-            ExceptionRequest.id.label("source_id"),
-            ExceptionRequest.created_at.label("created_at"),
-            ExceptionRequest.status.label("request_status"),
+            ProtectionRequest.id.label("source_id"),
+            ProtectionRequest.created_at.label("created_at"),
+            ProtectionRequest.status.label("request_status"),
             literal(None, type_=TaskRun.task.type).label("task"),
             literal(None, type_=TaskRun.status.type).label("task_status"),
             literal(None, type_=TaskRun.items_processed.type).label("items_processed"),
-            ExceptionRequest.media_type.label("media_type"),
+            ProtectionRequest.media_type.label("media_type"),
             Movie.title.label("movie_title"),
             Series.title.label("series_title"),
             User.username.label("username"),
             User.display_name.label("display_name"),
         )
-        .outerjoin(User, User.id == ExceptionRequest.requested_by_user_id)
-        .outerjoin(Movie, Movie.id == ExceptionRequest.movie_id)
-        .outerjoin(Series, Series.id == ExceptionRequest.series_id)
+        .outerjoin(User, User.id == ProtectionRequest.requested_by_user_id)
+        .outerjoin(Movie, Movie.id == ProtectionRequest.movie_id)
+        .outerjoin(Series, Series.id == ProtectionRequest.series_id)
     )
     if not is_admin:
         request_activity = request_activity.where(
-            ExceptionRequest.requested_by_user_id == current_user.id
+            ProtectionRequest.requested_by_user_id == current_user.id
         )
 
     task_activity = select(
         literal("task").label("activity_type"),
         TaskRun.id.label("source_id"),
         TaskRun.created_at.label("created_at"),
-        literal(None, type_=ExceptionRequest.status.type).label("request_status"),
+        literal(None, type_=ProtectionRequest.status.type).label("request_status"),
         TaskRun.task.label("task"),
         TaskRun.status.label("task_status"),
         TaskRun.items_processed.label("items_processed"),
-        literal(None, type_=ExceptionRequest.media_type.type).label("media_type"),
+        literal(None, type_=ProtectionRequest.media_type.type).label("media_type"),
         literal(None, type_=Movie.title.type).label("movie_title"),
         literal(None, type_=Series.title.type).label("series_title"),
         literal(None, type_=User.username.type).label("username"),
@@ -232,12 +231,12 @@ async def get_dashboard(
     activity_parts = [request_activity, task_activity]
 
     if is_admin:
-        blacklist_activity = (
+        protected_activity = (
             select(
-                literal("blacklist").label("activity_type"),
-                MediaBlacklist.id.label("source_id"),
-                MediaBlacklist.created_at.label("created_at"),
-                literal(None, type_=ExceptionRequest.status.type).label(
+                literal("protected").label("activity_type"),
+                ProtectedMedia.id.label("source_id"),
+                ProtectedMedia.created_at.label("created_at"),
+                literal(None, type_=ProtectionRequest.status.type).label(
                     "request_status"
                 ),
                 literal(None, type_=TaskRun.task.type).label("task"),
@@ -245,17 +244,17 @@ async def get_dashboard(
                 literal(None, type_=TaskRun.items_processed.type).label(
                     "items_processed"
                 ),
-                MediaBlacklist.media_type.label("media_type"),
+                ProtectedMedia.media_type.label("media_type"),
                 Movie.title.label("movie_title"),
                 Series.title.label("series_title"),
                 User.username.label("username"),
                 User.display_name.label("display_name"),
             )
-            .outerjoin(User, User.id == MediaBlacklist.blacklisted_by_user_id)
-            .outerjoin(Movie, Movie.id == MediaBlacklist.movie_id)
-            .outerjoin(Series, Series.id == MediaBlacklist.series_id)
+            .outerjoin(User, User.id == ProtectedMedia.protected_by_user_id)
+            .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
+            .outerjoin(Series, Series.id == ProtectedMedia.series_id)
         )
-        activity_parts.append(blacklist_activity)
+        activity_parts.append(protected_activity)
 
     activity_union = union_all(*activity_parts).subquery()
     activity_rows = (
@@ -301,12 +300,12 @@ async def get_dashboard(
                     created_at=to_utc_isoformat(row.created_at) or "",
                 )
             )
-        elif row.activity_type == "blacklist":
+        elif row.activity_type == "protected":
             activity.append(
                 DashboardActivityItem(
-                    id=f"blacklist-{row.source_id}",
-                    type="blacklist",
-                    title="Media added to blacklist",
+                    id=f"protected-{row.source_id}",
+                    type="protected",
+                    title="Media added to protected list",
                     subtitle=media_title,
                     created_at=to_utc_isoformat(row.created_at) or "",
                     actor_display=actor_display,

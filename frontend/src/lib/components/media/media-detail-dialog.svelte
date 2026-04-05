@@ -111,8 +111,8 @@
 
                   <!-- status indicators (top right) -->
                   <div class="absolute top-2 right-2 flex gap-1">
-                    <!-- blacklisted -->
-                    {#if media.status.is_blacklisted}
+                    <!-- protected -->
+                    {#if media.status.is_protected}
                       <div
                         class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-40"
                       >
@@ -125,7 +125,7 @@
                             {/snippet}
                           </Tooltip.Trigger>
                           <Tooltip.Content>
-                            <p>Blacklisted</p>
+                            <p>Protected</p>
                           </Tooltip.Content>
                         </Tooltip.Root>
                       </div>
@@ -293,7 +293,7 @@
               class="bg-primary hover:bg-primary-hover cursor-pointer"
               onclick={handleClose}>Close</Button
             >
-            {#if canRequestExceptions && !media.status.is_blacklisted && !media.status.has_pending_request}
+            {#if canRequestExceptions && !media.status.is_protected && !media.status.has_pending_request}
               <Button class="cursor-pointer" onclick={handleRequestException}
                 ><ArrowDownToLine class="size-5" />Request</Button
               >

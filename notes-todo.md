@@ -26,16 +26,14 @@
 
 [x] - Add a slider to adjust the scale of the movies/tv posters so you can fit more rows/columns per user preference
 
-[ ] - Amended or removing a rule then re-running the scan tasks doesn't change which items have been marked for reclaiming
+[x] - Amended or removing a rule then re-running the scan tasks doesn't change which items have been marked for reclaiming
 
 [x] - "Unwatched" in rules isn't clear on who that's unwatched by - the server owner, home users, all users, etc
 
-[ ] - Items on movie/TV page don't always fill the last row
-
-[ ] - Allow dashboard to switch data display to MB/GB/TB, eg 1.98 TB instead of 1981.64 GB
-
-~~[ ] - Blacklist is slow to load even when there are no blacklist entries~~
+[x] - Allow dashboard to switch data display to MB/GB/TB, eg 1.98 TB instead of 1981.64 GB
 
 [x] - Adjusting a task schedule to a custom one, then using reset default, results in it being in a bugged state and requires reset being pressed twice
 
 [ ] - Ensure house keeping tasks are keeping things nice and clean
+
+[x] - TODO (next): Per-season series deletion — currently candidates.svelte deletes entire series. Should support selecting individual seasons for deletion.

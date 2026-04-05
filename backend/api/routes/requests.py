@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+﻿from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,67 +11,69 @@ from backend.core.logger import LOG
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
-    ExceptionRequest,
-    MediaBlacklist,
     Movie,
+    ProtectedMedia,
+    ProtectionRequest,
     ReclaimCandidate,
+    Season,
     Series,
     User,
 )
 from backend.enums import (
-    ExceptionRequestStatus,
     MediaType,
     NotificationType,
     Permission,
+    ProtectionRequestStatus,
 )
 from backend.models.requests import (
-    CreateExceptionRequest,
-    ExceptionRequestResponse,
-    ReviewExceptionRequest,
+    CreateProtectionRequest,
+    ProtectionRequestResponse,
+    ReviewProtectionRequest,
 )
 from backend.services.notifications import notify_all_users, notify_user
 
-router = APIRouter(prefix="/api", tags=["requests"])
+router = APIRouter(prefix="/api", tags=["protection-requests"])
 
 
 async def resolve_effective_protection(
     db: AsyncSession,
-    request: ExceptionRequest,
+    request: ProtectionRequest,
 ) -> tuple[bool | None, datetime | None]:
-    """Resolve actual approved protection from blacklist entry for approved requests."""
-    if request.status != ExceptionRequestStatus.APPROVED:
+    """Resolve actual approved protection from protected entry for approved requests."""
+    if request.status != ProtectionRequestStatus.APPROVED:
         return None, None
 
-    blacklist_query = select(MediaBlacklist).where(
-        MediaBlacklist.media_type == request.media_type
+    protected_query = select(ProtectedMedia).where(
+        ProtectedMedia.media_type == request.media_type
     )
     if request.media_type == MediaType.MOVIE:
-        blacklist_query = blacklist_query.where(
-            MediaBlacklist.movie_id == request.movie_id
+        protected_query = protected_query.where(
+            ProtectedMedia.movie_id == request.movie_id
         )
     else:
-        blacklist_query = blacklist_query.where(
-            MediaBlacklist.series_id == request.series_id
+        protected_query = protected_query.where(
+            ProtectedMedia.series_id == request.series_id,
+            ProtectedMedia.season_id == request.season_id,
         )
 
-    result = await db.execute(blacklist_query)
-    blacklist_entry = result.scalar_one_or_none()
-    if blacklist_entry:
-        return blacklist_entry.permanent, blacklist_entry.expires_at
+    result = await db.execute(protected_query)
+    protection_entry = result.scalar_one_or_none()
+    if protection_entry:
+        return protection_entry.permanent, protection_entry.expires_at
 
     LOG.warning(
-        f"Approved request {request.id} has no blacklist entry - data inconsistency"
+        f"Approved request {request.id} has no protected entry - data inconsistency"
     )
     return None, None
 
 
 @router.post(
-    "/requests",
-    response_model=ExceptionRequestResponse,
+    "/protection-requests",
+    response_model=ProtectionRequestResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_exception_request(
-    request_data: CreateExceptionRequest,
+async def create_protection_request(
+    request_data: CreateProtectionRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
@@ -104,20 +106,41 @@ async def create_exception_request(
             detail=f"{request_data.media_type.value.title()} not found",
         )
 
-    # check if already blacklisted
-    blacklist_query = select(MediaBlacklist).where(
-        MediaBlacklist.media_type == request_data.media_type
+    # validate season if provided
+    season: Season | None = None
+    if request_data.season_id is not None:
+        if request_data.media_type is not MediaType.SERIES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="season_id is only valid for series",
+            )
+        season_result = await db.execute(
+            select(Season).where(
+                Season.id == request_data.season_id,
+                Season.series_id == request_data.media_id,
+            )
+        )
+        season = season_result.scalar_one_or_none()
+        if not season:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
+            )
+
+    # check if already protected
+    protected_query = select(ProtectedMedia).where(
+        ProtectedMedia.media_type == request_data.media_type
     )
     if request_data.media_type is MediaType.MOVIE:
-        blacklist_query = blacklist_query.where(
-            MediaBlacklist.movie_id == request_data.media_id
+        protected_query = protected_query.where(
+            ProtectedMedia.movie_id == request_data.media_id
         )
     else:
-        blacklist_query = blacklist_query.where(
-            MediaBlacklist.series_id == request_data.media_id
+        protected_query = protected_query.where(
+            ProtectedMedia.series_id == request_data.media_id,
+            ProtectedMedia.season_id == request_data.season_id,
         )
 
-    result = await db.execute(blacklist_query)
+    result = await db.execute(protected_query)
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -125,18 +148,19 @@ async def create_exception_request(
         )
 
     # check if user already has a pending request for this media
-    existing_query = select(ExceptionRequest).where(
-        ExceptionRequest.media_type == request_data.media_type,
-        ExceptionRequest.requested_by_user_id == user.id,
-        ExceptionRequest.status == ExceptionRequestStatus.PENDING,
+    existing_query = select(ProtectionRequest).where(
+        ProtectionRequest.media_type == request_data.media_type,
+        ProtectionRequest.requested_by_user_id == user.id,
+        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
     )
     if request_data.media_type == MediaType.MOVIE:
         existing_query = existing_query.where(
-            ExceptionRequest.movie_id == request_data.media_id
+            ProtectionRequest.movie_id == request_data.media_id
         )
     else:
         existing_query = existing_query.where(
-            ExceptionRequest.series_id == request_data.media_id
+            ProtectionRequest.series_id == request_data.media_id,
+            ProtectionRequest.season_id == request_data.season_id,
         )
 
     result = await db.execute(existing_query)
@@ -156,7 +180,8 @@ async def create_exception_request(
         )
     else:
         candidate_query = candidate_query.where(
-            ReclaimCandidate.series_id == request_data.media_id
+            ReclaimCandidate.series_id == request_data.media_id,
+            ReclaimCandidate.season_id == request_data.season_id,
         )
 
     result = await db.execute(candidate_query)
@@ -174,14 +199,14 @@ async def create_exception_request(
             days=request_data.duration_days
         )
 
-    # users with auto approve permission are immediately approved and blacklisted
+    # users with auto approve permission are immediately approved and protected
     auto_approve = has_permission(user, Permission.AUTO_APPROVE)
     now = datetime.now(timezone.utc)
     bl_permanent: bool | None = None
     bl_expires_at: datetime | None = None
 
     # create exception request
-    exception_request = ExceptionRequest(
+    protection_request = ProtectionRequest(
         media_type=request_data.media_type,
         movie_id=request_data.media_id
         if request_data.media_type is MediaType.MOVIE
@@ -189,18 +214,19 @@ async def create_exception_request(
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
+        season_id=request_data.season_id,
         candidate_id=candidate.id if candidate else None,
         requested_by_user_id=user.id,
         reason=request_data.reason,
         requested_expires_at=requested_expires_at,
-        status=ExceptionRequestStatus.APPROVED
+        status=ProtectionRequestStatus.APPROVED
         if auto_approve
-        else ExceptionRequestStatus.PENDING,
+        else ProtectionRequestStatus.PENDING,
         reviewed_by_user_id=user.id if auto_approve else None,
         reviewed_at=now if auto_approve else None,
     )
 
-    db.add(exception_request)
+    db.add(protection_request)
 
     if auto_approve:
         # determine protection duration (same logic as approve endpoint)
@@ -211,7 +237,7 @@ async def create_exception_request(
             bl_permanent = False
             bl_expires_at = requested_expires_at
 
-        blacklist_entry = MediaBlacklist(
+        protection_entry = ProtectedMedia(
             media_type=request_data.media_type,
             movie_id=request_data.media_id
             if request_data.media_type == MediaType.MOVIE
@@ -219,19 +245,20 @@ async def create_exception_request(
             series_id=request_data.media_id
             if request_data.media_type == MediaType.SERIES
             else None,
-            reason=f"Admin exception: {request_data.reason}",
-            blacklisted_by_user_id=user.id,
+            season_id=request_data.season_id,
+            reason=request_data.reason,
+            protected_by_user_id=user.id,
             permanent=bl_permanent,
             expires_at=bl_expires_at,
         )
-        db.add(blacklist_entry)
+        db.add(protection_entry)
 
         # remove from candidates if present
         if candidate:
             await db.delete(candidate)
 
     await db.commit()
-    await db.refresh(exception_request)
+    await db.refresh(protection_request)
 
     if auto_approve:
         LOG.info(
@@ -255,49 +282,52 @@ async def create_exception_request(
             LOG.error(f"Failed to send notification: {e}")
 
     # build response
-    return ExceptionRequestResponse(
-        id=exception_request.id,
-        media_type=exception_request.media_type,
+    return ProtectionRequestResponse(
+        id=protection_request.id,
+        media_type=protection_request.media_type,
         media_id=request_data.media_id,
         media_title=media.title,
         media_year=media.year,
-        candidate_id=exception_request.candidate_id,
+        candidate_id=protection_request.candidate_id,
+        season_id=request_data.season_id,
+        season_number=season.season_number if season else None,
         requested_by_user_id=user.id,
         requested_by_username=user.username,
-        reason=exception_request.reason,
-        requested_expires_at=to_utc_isoformat(exception_request.requested_expires_at),
-        status=exception_request.status,
+        reason=protection_request.reason,
+        requested_expires_at=to_utc_isoformat(protection_request.requested_expires_at),
+        status=protection_request.status,
         reviewed_by_user_id=user.id if auto_approve else None,
         reviewed_by_username=user.username if auto_approve else None,
-        reviewed_at=to_utc_isoformat(exception_request.reviewed_at),
+        reviewed_at=to_utc_isoformat(protection_request.reviewed_at),
         admin_notes=None,
         effective_permanent=bl_permanent if auto_approve else None,
         effective_expires_at=to_utc_isoformat(bl_expires_at) if auto_approve else None,
-        created_at=to_utc_isoformat(exception_request.created_at) or "",
-        updated_at=to_utc_isoformat(exception_request.updated_at) or "",
+        created_at=to_utc_isoformat(protection_request.created_at) or "",
+        updated_at=to_utc_isoformat(protection_request.updated_at) or "",
     )
 
 
-@router.get("/requests/my", response_model=list[ExceptionRequestResponse])
+@router.get("/protection-requests/my", response_model=list[ProtectionRequestResponse])
 async def get_my_requests(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    status_filter: ExceptionRequestStatus | None = Query(None),
+    status_filter: ProtectionRequestStatus | None = Query(None),
 ):
     """Get current user's exception requests."""
     query = (
-        select(ExceptionRequest)
-        .where(ExceptionRequest.requested_by_user_id == user.id)
+        select(ProtectionRequest)
+        .where(ProtectionRequest.requested_by_user_id == user.id)
         .options(
-            selectinload(ExceptionRequest.movie),
-            selectinload(ExceptionRequest.series),
+            selectinload(ProtectionRequest.movie),
+            selectinload(ProtectionRequest.series),
+            selectinload(ProtectionRequest.season),
         )
     )
 
     if status_filter:
-        query = query.where(ExceptionRequest.status == status_filter)
+        query = query.where(ProtectionRequest.status == status_filter)
 
-    query = query.order_by(ExceptionRequest.created_at.desc())
+    query = query.order_by(ProtectionRequest.created_at.desc())
 
     result = await db.execute(query)
     requests = result.scalars().all()
@@ -328,7 +358,7 @@ async def get_my_requests(
         )
 
         responses.append(
-            ExceptionRequestResponse(
+            ProtectionRequestResponse(
                 id=req.id,
                 media_type=req.media_type,
                 media_id=(
@@ -339,6 +369,8 @@ async def get_my_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                season_id=req.season_id,
+                season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=user.username,
                 reason=req.reason,
@@ -358,24 +390,25 @@ async def get_my_requests(
     return responses
 
 
-@router.get("/requests", response_model=list[ExceptionRequestResponse])
+@router.get("/protection-requests", response_model=list[ProtectionRequestResponse])
 async def get_all_requests(
     _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
-    status_filter: ExceptionRequestStatus | None = Query(None),
+    status_filter: ProtectionRequestStatus | None = Query(None),
 ):
     """Get all exception requests (manage-requests permission)."""
-    query = select(ExceptionRequest).options(
-        selectinload(ExceptionRequest.movie),
-        selectinload(ExceptionRequest.series),
-        selectinload(ExceptionRequest.requested_by),
-        selectinload(ExceptionRequest.reviewed_by),
+    query = select(ProtectionRequest).options(
+        selectinload(ProtectionRequest.movie),
+        selectinload(ProtectionRequest.series),
+        selectinload(ProtectionRequest.season),
+        selectinload(ProtectionRequest.requested_by),
+        selectinload(ProtectionRequest.reviewed_by),
     )
 
     if status_filter:
-        query = query.where(ExceptionRequest.status == status_filter)
+        query = query.where(ProtectionRequest.status == status_filter)
 
-    query = query.order_by(ExceptionRequest.created_at.desc())
+    query = query.order_by(ProtectionRequest.created_at.desc())
 
     result = await db.execute(query)
     requests = result.scalars().all()
@@ -397,7 +430,7 @@ async def get_all_requests(
         )
 
         responses.append(
-            ExceptionRequestResponse(
+            ProtectionRequestResponse(
                 id=req.id,
                 media_type=req.media_type,
                 media_id=(
@@ -408,6 +441,8 @@ async def get_all_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                season_id=req.season_id,
+                season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=req.requested_by.username,
                 reason=req.reason,
@@ -427,10 +462,13 @@ async def get_all_requests(
     return responses
 
 
-@router.post("/requests/{request_id}/approve", response_model=ExceptionRequestResponse)
+@router.post(
+    "/protection-requests/{request_id}/approve",
+    response_model=ProtectionRequestResponse,
+)
 async def approve_request(
     request_id: int,
-    review_data: ReviewExceptionRequest,
+    review_data: ReviewProtectionRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ):
@@ -439,13 +477,14 @@ async def approve_request(
 
     This will:
     1. Mark the request as approved
-    2. Add the media to the blacklist
+    2. Add the media to the protected list with the specified duration
     3. Remove it from candidates if present
     4. Notify the requester
     """
+    print("TESTING 123", flush=True)
     # get request
     result = await db.execute(
-        select(ExceptionRequest).where(ExceptionRequest.id == request_id)
+        select(ProtectionRequest).where(ProtectionRequest.id == request_id)
     )
     request = result.scalar_one_or_none()
 
@@ -454,7 +493,7 @@ async def approve_request(
             status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
         )
 
-    if request.status != ExceptionRequestStatus.PENDING:
+    if request.status != ProtectionRequestStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Request has already been {request.status.value}",
@@ -475,7 +514,7 @@ async def approve_request(
         media_id = request.series_id
 
     # update request status
-    request.status = ExceptionRequestStatus.APPROVED
+    request.status = ProtectionRequestStatus.APPROVED
     request.reviewed_by_user_id = manager.id
     request.reviewed_at = datetime.now(timezone.utc)
     request.admin_notes = review_data.admin_notes
@@ -504,17 +543,18 @@ async def approve_request(
         approved_permanent = True
         approved_expires_at = None
 
-    # add to blacklist
-    blacklist_entry = MediaBlacklist(
+    # add to protected list
+    protection_entry = ProtectedMedia(
         media_type=request.media_type,
         movie_id=request.movie_id,
         series_id=request.series_id,
+        season_id=request.season_id,
         reason=f"Exception request approved: {request.reason}",
-        blacklisted_by_user_id=manager.id,
+        protected_by_user_id=manager.id,
         permanent=approved_permanent,
         expires_at=approved_expires_at,
     )
-    db.add(blacklist_entry)
+    db.add(protection_entry)
 
     # remove from candidates if present
     if request.candidate_id:
@@ -551,13 +591,22 @@ async def approve_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
-    return ExceptionRequestResponse(
+    # load season_number for season-level requests
+    approve_season_number: int | None = None
+    if request.season_id:
+        sn_result = await db.execute(
+            select(Season.season_number).where(Season.id == request.season_id)
+        )
+        approve_season_number = sn_result.scalar_one_or_none()
+    return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
         media_id=media_id or 0,
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        season_id=request.season_id,
+        season_number=approve_season_number,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
@@ -574,10 +623,12 @@ async def approve_request(
     )
 
 
-@router.post("/requests/{request_id}/deny", response_model=ExceptionRequestResponse)
+@router.post(
+    "/protection-requests/{request_id}/deny", response_model=ProtectionRequestResponse
+)
 async def deny_request(
     request_id: int,
-    review_data: ReviewExceptionRequest,
+    review_data: ReviewProtectionRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ):
@@ -590,7 +641,7 @@ async def deny_request(
     """
     # get request
     result = await db.execute(
-        select(ExceptionRequest).where(ExceptionRequest.id == request_id)
+        select(ProtectionRequest).where(ProtectionRequest.id == request_id)
     )
     request = result.scalar_one_or_none()
 
@@ -599,7 +650,7 @@ async def deny_request(
             status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
         )
 
-    if request.status != ExceptionRequestStatus.PENDING:
+    if request.status != ProtectionRequestStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Request has already been {request.status.value}",
@@ -620,7 +671,7 @@ async def deny_request(
         media_id = request.series_id
 
     # update request status
-    request.status = ExceptionRequestStatus.DENIED
+    request.status = ProtectionRequestStatus.DENIED
     request.reviewed_by_user_id = manager.id
     request.reviewed_at = datetime.now(timezone.utc)
     request.admin_notes = review_data.admin_notes
@@ -651,13 +702,22 @@ async def deny_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
-    return ExceptionRequestResponse(
+    # load season_number for season level requests
+    deny_season_number: int | None = None
+    if request.season_id:
+        sn_result = await db.execute(
+            select(Season.season_number).where(Season.id == request.season_id)
+        )
+        deny_season_number = sn_result.scalar_one_or_none()
+    return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
         media_id=media_id or 0,
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        season_id=request.season_id,
+        season_number=deny_season_number,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
@@ -674,7 +734,7 @@ async def deny_request(
     )
 
 
-@router.delete("/requests/{request_id}")
+@router.delete("/protection-requests/{request_id}")
 async def cancel_request(
     request_id: int,
     user: Annotated[User, Depends(get_current_user)],
@@ -683,9 +743,9 @@ async def cancel_request(
     """Cancel own pending exception request."""
     # get request
     result = await db.execute(
-        select(ExceptionRequest).where(
-            ExceptionRequest.id == request_id,
-            ExceptionRequest.requested_by_user_id == user.id,
+        select(ProtectionRequest).where(
+            ProtectionRequest.id == request_id,
+            ProtectionRequest.requested_by_user_id == user.id,
         )
     )
     request = result.scalar_one_or_none()
@@ -695,7 +755,7 @@ async def cancel_request(
             status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
         )
 
-    if request.status != ExceptionRequestStatus.PENDING:
+    if request.status != ProtectionRequestStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Can only cancel pending requests",

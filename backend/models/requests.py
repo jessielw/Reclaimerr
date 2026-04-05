@@ -1,20 +1,22 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pydantic import BaseModel
 
-from backend.enums import ExceptionRequestStatus, MediaType
+from backend.enums import MediaType, ProtectionRequestStatus
 
 
-class CreateExceptionRequest(BaseModel):
+class CreateProtectionRequest(BaseModel):
     """Request to create an exception for a media item."""
 
     media_type: MediaType
     media_id: int
-    reason: str
+    reason: str | None = None
     duration_days: int | None = None
+    # set when protecting a specific season instead of the whole series
+    season_id: int | None = None
 
 
-class ReviewExceptionRequest(BaseModel):
+class ReviewProtectionRequest(BaseModel):
     """Admin review of an exception request."""
 
     admin_notes: str | None = None
@@ -22,7 +24,7 @@ class ReviewExceptionRequest(BaseModel):
     approved_permanent: bool | None = None
 
 
-class ExceptionRequestResponse(BaseModel):
+class ProtectionRequestResponse(BaseModel):
     """Exception request with details."""
 
     id: int
@@ -32,12 +34,16 @@ class ExceptionRequestResponse(BaseModel):
     media_year: int
     candidate_id: int | None
 
+    # season specific fields (None for series/movie level requests)
+    season_id: int | None = None
+    season_number: int | None = None
+
     requested_by_user_id: int
     requested_by_username: str
-    reason: str
+    reason: str | None
     requested_expires_at: str | None
 
-    status: ExceptionRequestStatus
+    status: ProtectionRequestStatus
     reviewed_by_user_id: int | None
     reviewed_by_username: str | None
     reviewed_at: str | None

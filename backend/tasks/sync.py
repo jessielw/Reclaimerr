@@ -15,6 +15,7 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimRule,
+    Season,
     Series,
     SeriesServiceRef,
     ServiceConfig,
@@ -23,6 +24,7 @@ from backend.database.models import (
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.media import (
     AggregatedMovieData,
+    AggregatedSeasonData,
     AggregatedSeriesData,
     MovieVersionData,
 )
@@ -130,6 +132,62 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
             return True
 
     return False
+
+
+async def _sync_seasons(
+    session: AsyncSession,
+    series_id: int,
+    season_data: list[AggregatedSeasonData],
+) -> None:
+    """Upsert season rows for a series from freshly-fetched media server data."""
+    if not season_data:
+        return
+
+    result = await session.execute(select(Season).where(Season.series_id == series_id))
+    existing: dict[int, Season] = {s.season_number: s for s in result.scalars().all()}
+
+    incoming_season_numbers: set[int] = set()
+    for sd in season_data:
+        incoming_season_numbers.add(sd.season_number)
+        if sd.season_number in existing:
+            s = existing[sd.season_number]
+            s.size = sd.size
+            s.episode_count = sd.episode_count
+            s.view_count = sd.view_count
+            s.last_viewed_at = sd.last_viewed_at
+            s.never_watched = sd.never_watched
+            if sd.service_season_id:
+                # detect whether this is plex (numeric ratingKey) or jellyfin (UUID)
+                if len(sd.service_season_id) > 20:  # jellyfin UUIDs are longer
+                    s.jellyfin_season_id = sd.service_season_id
+                else:
+                    s.plex_season_rating_key = sd.service_season_id
+        else:
+            jellyfin_id = None
+            plex_key = None
+            if sd.service_season_id:
+                if len(sd.service_season_id) > 20:
+                    jellyfin_id = sd.service_season_id
+                else:
+                    plex_key = sd.service_season_id
+            session.add(
+                Season(
+                    series_id=series_id,
+                    season_number=sd.season_number,
+                    size=sd.size,
+                    episode_count=sd.episode_count,
+                    view_count=sd.view_count,
+                    last_viewed_at=sd.last_viewed_at,
+                    never_watched=sd.never_watched,
+                    jellyfin_season_id=jellyfin_id,
+                    plex_season_rating_key=plex_key,
+                )
+            )
+
+    # remove seasons no longer in the media server
+    for season_number, season_obj in existing.items():
+        if season_number not in incoming_season_numbers:
+            await session.delete(season_obj)
 
 
 async def _upsert_series_service_ref(
@@ -688,6 +746,11 @@ async def sync_series(
                             existing_series_obj, tmdb_id, tmdb_service
                         )
 
+                    # sync season data
+                    await _sync_seasons(
+                        session, existing_series_obj.id, series.season_data
+                    )
+
                 # if series doesn't exist, create new entry
                 else:
                     LOG.info(f"Adding new series: {series.name} ({tmdb_id})")
@@ -716,6 +779,8 @@ async def sync_series(
                     # flush so new_series.id is available for the service ref FK
                     await session.flush()
                     await _upsert_series_service_ref(session, new_series.id, series)
+                    # sync season data
+                    await _sync_seasons(session, new_series.id, series.season_data)
 
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:

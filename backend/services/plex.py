@@ -17,6 +17,7 @@ from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
+    AggregatedSeasonData,
     AggregatedSeriesData,
     ExternalIDs,
     MovieVersionData,
@@ -173,33 +174,8 @@ class PlexService:
         Returns:
             Dictionary mapping series rating key to total size in bytes
         """
-        # type=4 fetches all episodes in the section
-        episodes_data = await self._make_request(
-            f"library/sections/{section_id}/all",
-            params={"type": 4},
-        )
-        if not episodes_data:
-            return {}
-
-        episodes = episodes_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
-
-        # group episodes by grandparent (series) and sum sizes
-        series_sizes: dict[str, int] = {}
-        for episode in episodes:
-            series_key = episode.get("grandparentRatingKey")
-            if not series_key:
-                continue
-
-            episode_size = 0
-            for media in episode.get("Media", []):
-                for part in media.get("Part", []):
-                    episode_size += part.get("size", 0)
-
-            if series_key not in series_sizes:
-                series_sizes[series_key] = 0
-            series_sizes[series_key] += episode_size
-
-        return series_sizes
+        sizes, _, _ = await self._get_episode_data_for_section(section_id)
+        return sizes
 
     async def get_series_paths_for_section(self, section_id: str) -> dict[str, str]:
         """Get paths for all series in a library section by extracting from first episode.
@@ -210,35 +186,109 @@ class PlexService:
         Returns:
             Dictionary mapping series rating key to series directory path
         """
-        # type=4 fetches all episodes in the section
+        _, paths, _ = await self._get_episode_data_for_section(section_id)
+        return paths
+
+    async def _get_episode_data_for_section(
+        self, section_id: str
+    ) -> tuple[dict[str, int], dict[str, str], dict[tuple[str, int], AggregatedSeasonData]]:
+        """Fetch all episodes for a section once and extract sizes, paths, and season data.
+
+        Returns:
+            (series_sizes, series_paths, season_data)
+            - series_sizes: series ratingKey -> total bytes
+            - series_paths: series ratingKey -> series dir path
+            - season_data: (series ratingKey, season_number) -> AggregatedSeasonData
+        """
         episodes_data = await self._make_request(
             f"library/sections/{section_id}/all",
             params={"type": 4},
         )
         if not episodes_data:
-            return {}
+            return {}, {}, {}
 
         episodes = episodes_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
-        # extract series paths from first episode of each series
+        series_sizes: dict[str, int] = {}
         series_paths: dict[str, str] = {}
+        # (series_key, season_number) -> accumulated size + episode count
+        season_sizes: dict[tuple[str, int], int] = {}
+        season_episode_counts: dict[tuple[str, int], int] = {}
+        season_keys: dict[tuple[str, int], str] = {}  # season ratingKey
+        season_last_viewed: dict[tuple[str, int], datetime | None] = {}
+        season_view_counts: dict[tuple[str, int], int] = {}
+
         for episode in episodes:
             series_key = episode.get("grandparentRatingKey")
-            if not series_key or series_key in series_paths:
+            season_key = episode.get("parentRatingKey")
+            season_num_raw = episode.get("parentIndex")
+            if not series_key or season_num_raw is None:
+                continue
+            try:
+                season_num = int(season_num_raw)
+            except (TypeError, ValueError):
                 continue
 
-            # get file path from first episode
-            media_list = episode.get("Media", [])
-            if media_list and media_list[0].get("Part"):
-                episode_file = media_list[0]["Part"][0].get("file")
-                if episode_file:
-                    # extract series directory (parent of Season folder)
-                    # e.g., "/media/tv/Series Name/Season 01/episode.mkv" -> "/media/tv/Series Name"
-                    # go up two levels: episode file -> season dir -> series dir
-                    series_path = os.path.dirname(os.path.dirname(episode_file))
-                    series_paths[series_key] = series_path
+            # compute episode file size
+            episode_size = 0
+            for media in episode.get("Media", []):
+                for part in media.get("Part", []):
+                    episode_size += part.get("size", 0)
 
-        return series_paths
+            # accumulate series totals
+            series_sizes[series_key] = series_sizes.get(series_key, 0) + episode_size
+
+            # series path (first episode of each series)
+            if series_key not in series_paths:
+                media_list = episode.get("Media", [])
+                if media_list and media_list[0].get("Part"):
+                    ep_file = media_list[0]["Part"][0].get("file")
+                    if ep_file:
+                        series_paths[series_key] = os.path.dirname(
+                            os.path.dirname(ep_file)
+                        )
+
+            # accumulate season totals
+            sk = (series_key, season_num)
+            season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
+            season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
+            if season_key and sk not in season_keys:
+                season_keys[sk] = season_key
+
+            # watch data per season
+            ep_view_count = episode.get("viewCount", 0) or 0
+            season_view_counts[sk] = season_view_counts.get(sk, 0) + ep_view_count
+            if ep_view_count > 0 and episode.get("lastViewedAt"):
+                try:
+                    lva = datetime.fromtimestamp(
+                        int(episode["lastViewedAt"])
+                    ).astimezone()
+                    prev = season_last_viewed.get(sk)
+                    if prev is None or lva > prev:
+                        season_last_viewed[sk] = lva
+                except (TypeError, ValueError):
+                    pass
+            elif sk not in season_last_viewed:
+                season_last_viewed[sk] = None
+
+        # build AggregatedSeasonData objects
+        season_data: dict[tuple[str, int], AggregatedSeasonData] = {}
+        for sk, size in season_sizes.items():
+            series_key, season_num = sk
+            agg_view = season_view_counts.get(sk, 0)
+            lva = season_last_viewed.get(sk)
+            season_data[sk] = AggregatedSeasonData(
+                service_series_id=series_key,
+                season_number=season_num,
+                size=size,
+                episode_count=season_episode_counts.get(sk, 0),
+                view_count=agg_view,
+                last_viewed_at=lva,
+                never_watched=(agg_view == 0),
+                service_season_id=season_keys.get(sk),
+            )
+
+        return series_sizes, series_paths, season_data
 
     async def get_movies(
         self, included_libraries: list[str] | None = None
@@ -362,8 +412,9 @@ class PlexService:
             LOG.debug(f"Processing series library: {section_name} (ID: {section_id})")
 
             # fetch all episode sizes and paths for this section in one API call
-            series_sizes = await self.get_series_sizes_for_section(section_id)
-            series_paths = await self.get_series_paths_for_section(section_id)
+            series_sizes, series_paths, season_data_map = (
+                await self._get_episode_data_for_section(section_id)
+            )
 
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
@@ -410,6 +461,11 @@ class PlexService:
                     view_count=item.get("viewCount", 0),
                     external_ids=ext_ids,
                     size=total_size,
+                    season_data=list(
+                        v
+                        for k, v in season_data_map.items()
+                        if k[0] == rating_key
+                    ),
                 )
                 all_series.append(series)
 
@@ -459,6 +515,7 @@ class PlexService:
                 last_viewed_at=s.last_viewed_at,
                 never_watched=(s.view_count == 0),
                 played_by_user_count=None,  # plex provides global counts, not per-user
+                season_data=s.season_data,
             )
             for s in series
         ]

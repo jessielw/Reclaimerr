@@ -60,7 +60,27 @@
   });
 
   // helpers
-  const formatGb = (value: number) => `${value.toFixed(2)} GB`;
+  type SizeUnit = "MB" | "GB" | "TB";
+  const UNIT_CYCLE: SizeUnit[] = ["MB", "GB", "TB"];
+  const SIZE_UNIT_KEY = "reclaimerr_dashboard_size_unit";
+  const storedUnit = localStorage.getItem(SIZE_UNIT_KEY);
+  let sizeUnit = $state<SizeUnit>(
+    UNIT_CYCLE.includes(storedUnit as SizeUnit)
+      ? (storedUnit as SizeUnit)
+      : "GB",
+  );
+  $effect(() => {
+    localStorage.setItem(SIZE_UNIT_KEY, sizeUnit);
+  });
+  const cycleSizeUnit = () => {
+    const idx = UNIT_CYCLE.indexOf(sizeUnit);
+    sizeUnit = UNIT_CYCLE[(idx + 1) % UNIT_CYCLE.length];
+  };
+  const formatSize = (gbValue: number) => {
+    if (sizeUnit === "MB") return `${(gbValue * 1024).toFixed(0)} MB`;
+    if (sizeUnit === "TB") return `${(gbValue / 1024).toFixed(2)} TB`;
+    return `${gbValue.toFixed(2)} GB`;
+  };
   const formatPercent = (value: number) => `${Math.round(value)}%`;
   const getTrendClass = (value: number) => {
     if (value > 0) return "text-green-500";
@@ -79,7 +99,7 @@
       if (title.includes("pending")) return "Pending";
       return "Request";
     }
-    if (item.type === "blacklist") return "Blacklist";
+    if (item.type === "protected") return "Protected";
     if (item.type === "task") return "Task";
     return "Activity";
   };
@@ -89,7 +109,7 @@
     if (label === "Approved") return "bg-green-500/20 text-green-500";
     if (label === "Denied") return "bg-destructive/20 text-destructive";
     if (label === "Pending") return "bg-yellow-500/20 text-yellow-500";
-    if (label === "Blacklist") return "bg-primary/20 text-primary";
+    if (label === "Protected") return "bg-primary/20 text-primary";
     return "bg-muted text-muted-foreground";
   };
 
@@ -98,10 +118,10 @@
       const label = getActivityLabel(item);
       if (label === "Approved") return "Exception approved";
       if (label === "Denied") return "Exception denied";
-      if (label === "Pending") return "New exception request";
-      return "Exception request";
+      if (label === "Pending") return "New protection request";
+      return "Protection request";
     }
-    if (item.type === "blacklist") return "Media added to blacklist";
+    if (item.type === "protected") return "Media protected";
     return item.title;
   };
 
@@ -170,11 +190,20 @@
       <p class="text-muted-foreground">
         Overview of your media library cleanup status
       </p>
-      {#if lastUpdatedLabel}
-        <p class="text-xs text-muted-foreground mt-2">
-          Last updated {lastUpdatedLabel}
-        </p>
-      {/if}
+      <div class="mt-2 flex items-center gap-3">
+        {#if lastUpdatedLabel}
+          <p class="text-xs text-muted-foreground">
+            Last updated {lastUpdatedLabel}
+          </p>
+        {/if}
+        <button
+          onclick={cycleSizeUnit}
+          class="text-xs px-2 py-0.5 rounded-full border border-border bg-secondary/50 text-muted-foreground
+            hover:bg-secondary transition-colors cursor-pointer"
+        >
+          {sizeUnit}
+        </button>
+      </div>
     </div>
 
     {#if loading}
@@ -228,7 +257,8 @@
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {librarySizeTotal > 0
-                  ? `${formatPercent((dashboard.kpis.total_series_size_gb / librarySizeTotal) * 100)} of library by size`
+                  ? `${formatPercent((dashboard.kpis.total_series_size_gb / librarySizeTotal) * 100)} of ` +
+                    "library by size"
                   : "No library items yet"}
               </p>
             </article>
@@ -239,7 +269,7 @@
             >
               <p class="text-sm text-muted-foreground">Reclaimable (Movies)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
-                {formatGb(dashboard.kpis.reclaimable_movies_gb)}
+                {formatSize(dashboard.kpis.reclaimable_movies_gb)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableMovieShare}% of reclaimable total
@@ -252,7 +282,7 @@
             >
               <p class="text-sm text-muted-foreground">Reclaimable (Series)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
-                {formatGb(dashboard.kpis.reclaimable_series_gb)}
+                {formatSize(dashboard.kpis.reclaimable_series_gb)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableSeriesShare}% of reclaimable total
@@ -267,7 +297,7 @@
             >
               <p class="text-sm text-muted-foreground">Total Reclaimable</p>
               <p class="text-2xl font-bold text-primary mt-2">
-                {formatGb(dashboard.kpis.reclaimable_total_gb)}
+                {formatSize(dashboard.kpis.reclaimable_total_gb)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {dashboard.kpis.reclaimable_total_gb > 0

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import Router from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
@@ -8,7 +8,8 @@
   import Requests from "./routes/requests.svelte";
   import Movies from "./routes/movies.svelte";
   import Series from "./routes/series.svelte";
-  import Blacklist from "./routes/blacklist.svelte";
+  import Protected from "./routes/protected.svelte";
+  import Candidates from "./routes/candidates.svelte";
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import { onMount } from "svelte";
@@ -21,8 +22,9 @@
     "/": Dashboard,
     "/movies": Movies,
     "/series": Series,
-    "/blacklist": Blacklist,
-    "/requests": Requests,
+    "/protected": Protected,
+    "/protection-requests": Requests,
+    "/candidates": Candidates,
     "/settings": Settings,
   };
 

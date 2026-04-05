@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { link, location } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
@@ -13,6 +13,7 @@
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import Ticket from "@lucide/svelte/icons/ticket";
   import ShieldBan from "@lucide/svelte/icons/shield-ban";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import { toTitleCase } from "$lib/utils/strings";
   import * as Avatar from "$lib/components/ui/avatar/index.js";
 
@@ -25,11 +26,22 @@
     { path: "/", label: "Dashboard", icon: House, adminOnly: false },
     { path: "/movies", label: "Movies", icon: ClapperBoard, adminOnly: false },
     { path: "/series", label: "Series", icon: Tv, adminOnly: false },
-    { path: "/requests", label: "Requests", icon: Ticket, adminOnly: false },
     {
-      path: "/blacklist",
-      label: "Blacklist",
+      path: "/protection-requests",
+      label: "Requests",
+      icon: Ticket,
+      adminOnly: false,
+    },
+    {
+      path: "/protected",
+      label: "Protected",
       icon: ShieldBan,
+      adminOnly: false,
+    },
+    {
+      path: "/candidates",
+      label: "Candidates",
+      icon: TriangleAlert,
       adminOnly: false,
     },
     { path: "/settings", label: "Settings", icon: Settings, adminOnly: false },

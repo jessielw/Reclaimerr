@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import { auth } from "$lib/stores/auth";
@@ -85,9 +85,9 @@
       description: "Automatically approve your own requests",
     },
     {
-      value: Permission.ManageBlacklist,
-      label: "Manage blacklist",
-      description: "Manage protected media entries in the blacklist",
+      value: Permission.ManageProtection,
+      label: "Manage protection",
+      description: "Manage protected media entries in the protection list",
     },
   ];
 

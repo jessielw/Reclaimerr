@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+﻿from datetime import datetime, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,10 +10,11 @@ from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
 from backend.database.models import (
     GeneralSettings,
-    MediaBlacklist,
     Movie,
+    ProtectedMedia,
     ReclaimCandidate,
     ReclaimRule,
+    Season,
     Series,
     ServiceConfig,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "scan_cleanup_candidates",
     "tag_cleanup_candidates",
     "delete_cleanup_candidates",
+    "delete_specific_candidates",
 ]
 
 
@@ -50,10 +52,10 @@ async def scan_cleanup_candidates() -> None:
             raise
 
 
-async def _scan_with_db(db: AsyncSession) -> tuple[int, int] | None:
+async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
-    Returns (created_count, updated_count) or None if no rules found."""
+    Returns (created_count, updated_count, removed_count) or None if no rules found."""
     try:
         # load all enabled cleanup rules
         result = await db.execute(
@@ -61,48 +63,81 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int] | None:
         )
         rules = result.scalars().all()
 
-        if not rules:
-            LOG.info("No enabled cleanup rules found")
-            return
-
-        LOG.info(f"Found {len(rules)} enabled cleanup rules")
-
         # separate rules by media type
         movie_rules = [r for r in rules if r.media_type == MediaType.MOVIE]
         series_rules = [r for r in rules if r.media_type == MediaType.SERIES]
 
+        if not rules:
+            LOG.info("No enabled cleanup rules found, clearing all candidates")
+            await db.execute(delete(ReclaimCandidate))
+            await db.commit()
+            return
+
+        LOG.info(f"Found {len(rules)} enabled cleanup rules")
+
         candidates_created = 0
         candidates_updated = 0
+        candidates_removed = 0
 
         # process movies
         if movie_rules:
-            created, updated = await _process_media(db, movie_rules, MediaType.MOVIE)
+            created, updated, removed = await _process_media(
+                db, movie_rules, MediaType.MOVIE
+            )
             candidates_created += created
             candidates_updated += updated
+            candidates_removed += removed
+        else:
+            # no movie rules active — remove stale movie candidates
+            del_result = await db.execute(
+                delete(ReclaimCandidate).where(
+                    ReclaimCandidate.media_type == MediaType.MOVIE
+                )
+            )
+            candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await db.commit()
 
         # process series
         if series_rules:
-            created, updated = await _process_media(db, series_rules, MediaType.SERIES)
+            created, updated, removed = await _process_media(
+                db, series_rules, MediaType.SERIES
+            )
             candidates_created += created
             candidates_updated += updated
+            candidates_removed += removed
+
+            # also evaluate at season level for series rules
+            s_cr, s_up, s_rm = await _process_series_seasons(db, series_rules)
+            candidates_created += s_cr
+            candidates_updated += s_up
+            candidates_removed += s_rm
+        else:
+            # no series rules active — remove stale series candidates
+            del_result = await db.execute(
+                delete(ReclaimCandidate).where(
+                    ReclaimCandidate.media_type == MediaType.SERIES
+                )
+            )
+            candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await db.commit()
 
         LOG.info(
             f"Cleanup scan completed: {candidates_created} new candidates, "
-            f"{candidates_updated} updated"
+            f"{candidates_updated} updated, {candidates_removed} removed"
         )
 
-        return candidates_created, candidates_updated
+        return candidates_created, candidates_updated, candidates_removed
     except Exception:
         raise
 
 
 async def _process_media(
     db: AsyncSession, rules: list[ReclaimRule], media_type: MediaType
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """
     Process movies or series against cleanup rules.
 
-    Returns (created_count, updated_count)
+    Returns (created_count, updated_count, removed_count)
     """
     # get all media items
     if media_type is MediaType.MOVIE:
@@ -124,38 +159,36 @@ async def _process_media(
 
     LOG.info(f"Processing {len(media_items)} {media_type.value} items")
 
-    # fetch all blacklisted items for this media type to skip them
+    # fetch all protected items for this media type to skip them
     now = datetime.now(timezone.utc)
     if media_type is MediaType.MOVIE:
-        blacklist_result = await db.execute(
-            select(MediaBlacklist).where(
-                MediaBlacklist.media_type == MediaType.MOVIE,
-                MediaBlacklist.movie_id.isnot(None),
+        protected_result = await db.execute(
+            select(ProtectedMedia).where(
+                ProtectedMedia.media_type == MediaType.MOVIE,
+                ProtectedMedia.movie_id.isnot(None),
                 or_(
-                    MediaBlacklist.permanent.is_(True),
-                    MediaBlacklist.expires_at.is_(None),
-                    MediaBlacklist.expires_at > now,
+                    ProtectedMedia.permanent.is_(True),
+                    ProtectedMedia.expires_at.is_(None),
+                    ProtectedMedia.expires_at > now,
                 ),
             )
         )
-        blacklisted_ids = {b.movie_id for b in blacklist_result.scalars().all()}
+        protected_ids = {b.movie_id for b in protected_result.scalars().all()}
     else:
-        blacklist_result = await db.execute(
-            select(MediaBlacklist).where(
-                MediaBlacklist.media_type == MediaType.SERIES,
-                MediaBlacklist.series_id.isnot(None),
+        protected_result = await db.execute(
+            select(ProtectedMedia).where(
+                ProtectedMedia.media_type == MediaType.SERIES,
+                ProtectedMedia.series_id.isnot(None),
                 or_(
-                    MediaBlacklist.permanent.is_(True),
-                    MediaBlacklist.expires_at.is_(None),
-                    MediaBlacklist.expires_at > now,
+                    ProtectedMedia.permanent.is_(True),
+                    ProtectedMedia.expires_at.is_(None),
+                    ProtectedMedia.expires_at > now,
                 ),
             )
         )
-        blacklisted_ids = {b.series_id for b in blacklist_result.scalars().all()}
+        protected_ids = {b.series_id for b in protected_result.scalars().all()}
 
-    LOG.info(
-        f"Found {len(blacklisted_ids)} blacklisted {media_type.value} items to skip"
-    )
+    LOG.info(f"Found {len(protected_ids)} protected {media_type.value} items to skip")
 
     # fetch all existing candidates for this media type once (avoid N queries in loop)
     if media_type is MediaType.MOVIE:
@@ -165,9 +198,11 @@ async def _process_media(
             )
         )
     else:
+        # only series-level candidates (season_id IS NULL)
         result = await db.execute(
             select(ReclaimCandidate).where(
-                ReclaimCandidate.media_type == MediaType.SERIES
+                ReclaimCandidate.media_type == MediaType.SERIES,
+                ReclaimCandidate.season_id.is_(None),
             )
         )
     existing_candidates = result.scalars().all()
@@ -183,10 +218,11 @@ async def _process_media(
 
     candidates_created = 0
     candidates_updated = 0
+    matched_item_ids: set[int] = set()
 
     for item in media_items:
-        # skip blacklisted items
-        if item.id in blacklisted_ids:
+        # skip protected items
+        if item.id in protected_ids:
             continue
 
         # evaluate all rules against this item
@@ -200,6 +236,7 @@ async def _process_media(
 
         # if item matches at least one rule, create/update candidate
         if matched_rules:
+            matched_item_ids.add(item.id)
             # check if candidate already exists using lookup dict
             existing = candidate_lookup.get(item.id)
 
@@ -234,11 +271,343 @@ async def _process_media(
                 db.add(candidate)
                 candidates_created += 1
 
-    # add deletion candidates to db
-    if candidates_created > 0 or candidates_updated > 0:
+    # remove candidates for items that no longer match any rule (or are now protected)
+    stale_candidates = [
+        c for key, c in candidate_lookup.items() if key not in matched_item_ids
+    ]
+    candidates_removed = len(stale_candidates)
+    for candidate in stale_candidates:
+        await db.delete(candidate)
+
+    # commit if anything changed
+    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
         await db.commit()
 
-    return candidates_created, candidates_updated
+    return candidates_created, candidates_updated, candidates_removed
+
+
+async def _process_series_seasons(
+    db: AsyncSession, rules: list[ReclaimRule]
+) -> tuple[int, int, int]:
+    """Evaluate each series' seasons against rules and create/update season-level candidates.
+
+    Returns (created_count, updated_count, removed_count).
+    """
+    # load all non-deleted series with their seasons and service refs
+    result = await db.execute(
+        select(Series)
+        .where(Series.removed_at.is_(None))
+        .options(selectinload(Series.service_refs), selectinload(Series.seasons))
+    )
+    all_series = result.scalars().all()
+
+    if not all_series:
+        return 0, 0, 0
+
+    # whole-series protection also covers every season of that series
+    now = datetime.now(timezone.utc)
+    protected_series_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.series_id.isnot(None),
+            ProtectedMedia.season_id.is_(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_series_ids = {
+        b.series_id for b in protected_series_result.scalars().all()
+    }
+
+    # season-level protection entries
+    protected_season_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.season_id.isnot(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_season_ids = {
+        b.season_id for b in protected_season_result.scalars().all()
+    }
+
+    # load all existing season-level candidates
+    existing_result = await db.execute(
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.media_type == MediaType.SERIES,
+            ReclaimCandidate.season_id.isnot(None),
+        )
+    )
+    season_candidate_lookup: dict[int, ReclaimCandidate] = {
+        c.season_id: c
+        for c in existing_result.scalars().all()
+        if c.season_id is not None
+    }
+
+    candidates_created = 0
+    candidates_updated = 0
+    matched_season_ids: set[int] = set()
+
+    for series in all_series:
+        if not series.seasons:
+            continue
+        if series.id in protected_series_ids:
+            continue
+
+        for season in series.seasons:
+            if season.id in protected_season_ids:
+                continue
+
+            matched_rules: list[int] = []
+            matched_criteria: dict = {}
+            reasons: list[str] = []
+
+            for rule in rules:
+                if _evaluate_rule_for_season(
+                    series, season, rule, matched_criteria, reasons
+                ):
+                    matched_rules.append(rule.id)
+
+            if not matched_rules:
+                continue
+
+            matched_season_ids.add(season.id)
+            combined_reason = "; ".join(reasons)
+            space_gb = season.size / (1024**3) if season.size else None
+            existing = season_candidate_lookup.get(season.id)
+
+            if existing:
+                existing.matched_rule_ids = matched_rules
+                existing.matched_criteria = matched_criteria
+                existing.reason = combined_reason
+                existing.estimated_space_gb = space_gb
+                existing.updated_at = datetime.now(timezone.utc)
+                candidates_updated += 1
+            else:
+                db.add(
+                    ReclaimCandidate(
+                        media_type=MediaType.SERIES,
+                        matched_rule_ids=matched_rules,
+                        matched_criteria=matched_criteria,
+                        reason=combined_reason,
+                        estimated_space_gb=space_gb,
+                        series_id=series.id,
+                        season_id=season.id,
+                    )
+                )
+                candidates_created += 1
+
+    # remove season candidates that no longer match any rule
+    stale = [
+        c for sid, c in season_candidate_lookup.items() if sid not in matched_season_ids
+    ]
+    candidates_removed = len(stale)
+    for c in stale:
+        await db.delete(c)
+
+    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+        await db.commit()
+
+    return candidates_created, candidates_updated, candidates_removed
+
+
+def _evaluate_rule_for_season(
+    series: Series,
+    season: Season,
+    rule: ReclaimRule,
+    matched_criteria: dict,
+    reasons: list[str],
+) -> bool:
+    """Evaluate a cleanup rule against a single season.
+
+    TMDB metadata criteria (popularity, vote_average, vote_count, library_ids) are
+    sourced from the parent series; per-season watch/size data comes from the Season row.
+    """
+    has_criteria = any(
+        (
+            rule.library_ids is not None,
+            rule.min_popularity is not None,
+            rule.max_popularity is not None,
+            rule.min_vote_average is not None,
+            rule.max_vote_average is not None,
+            rule.min_vote_count is not None,
+            rule.max_vote_count is not None,
+            rule.min_view_count is not None,
+            rule.max_view_count is not None,
+            rule.include_never_watched is not None,
+            rule.min_days_since_added is not None,
+            rule.max_days_since_added is not None,
+            rule.min_days_since_last_watched is not None,
+            rule.max_days_since_last_watched is not None,
+            rule.min_size is not None,
+            rule.max_size is not None,
+        )
+    )
+    if not has_criteria:
+        return False
+
+    rule_reasons: list[str] = []
+
+    # skip seasons with no files
+    if not season.size or season.size == 0:
+        return False
+
+    # library filtering via parent series' service refs
+    if rule.library_ids is not None and len(rule.library_ids) > 0:
+        item_libraries = [ref.library_id for ref in series.service_refs]
+        if not any(lib in rule.library_ids for lib in item_libraries):
+            return False
+
+    # TMDB popularity from parent series
+    if rule.min_popularity is not None and (
+        series.popularity is None or series.popularity < rule.min_popularity
+    ):
+        return False
+    if rule.max_popularity is not None and (
+        series.popularity is None or series.popularity > rule.max_popularity
+    ):
+        return False
+    if rule.min_popularity is not None or rule.max_popularity is not None:
+        matched_criteria["popularity"] = series.popularity
+        rule_reasons.append(f"Popularity {series.popularity}")
+
+    # TMDB vote average from parent series
+    if rule.min_vote_average is not None and (
+        series.vote_average is None or series.vote_average < rule.min_vote_average
+    ):
+        return False
+    if rule.max_vote_average is not None and (
+        series.vote_average is None or series.vote_average > rule.max_vote_average
+    ):
+        return False
+    if rule.min_vote_average is not None or rule.max_vote_average is not None:
+        matched_criteria["vote_average"] = series.vote_average
+        rule_reasons.append(f"Rating {series.vote_average}/10")
+
+    # TMDB vote count from parent series
+    if rule.min_vote_count is not None and (
+        series.vote_count is None or series.vote_count < rule.min_vote_count
+    ):
+        return False
+    if rule.max_vote_count is not None and (
+        series.vote_count is None or series.vote_count > rule.max_vote_count
+    ):
+        return False
+    if rule.min_vote_count is not None or rule.max_vote_count is not None:
+        matched_criteria["vote_count"] = series.vote_count
+        rule_reasons.append(f"{series.vote_count} votes")
+
+    # season view count
+    if (
+        rule.min_view_count is not None
+        and season.view_count is not None
+        and season.view_count < rule.min_view_count
+    ):
+        return False
+    if (
+        rule.max_view_count is not None
+        and season.view_count is not None
+        and season.view_count > rule.max_view_count
+    ):
+        return False
+
+    if rule.include_never_watched is False and season.never_watched:
+        return False
+
+    if (
+        rule.min_view_count is not None
+        or rule.max_view_count is not None
+        or rule.include_never_watched is False
+    ):
+        matched_criteria["view_count"] = season.view_count
+        matched_criteria["never_watched"] = season.never_watched
+        if season.never_watched:
+            rule_reasons.append(f"S{season.season_number:02d} never watched")
+        else:
+            rule_reasons.append(
+                f"S{season.season_number:02d} watched {season.view_count} time(s)"
+            )
+
+    # days since added (season level)
+    if season.added_at:
+        days_since_added = (
+            datetime.now(timezone.utc) - season.added_at.replace(tzinfo=timezone.utc)
+        ).days
+        if (
+            rule.min_days_since_added is not None
+            and days_since_added < rule.min_days_since_added
+        ):
+            return False
+        if (
+            rule.max_days_since_added is not None
+            and days_since_added > rule.max_days_since_added
+        ):
+            return False
+        if (
+            rule.min_days_since_added is not None
+            or rule.max_days_since_added is not None
+        ):
+            matched_criteria["days_since_added"] = days_since_added
+            rule_reasons.append(
+                f"S{season.season_number:02d} added {days_since_added} days ago"
+            )
+
+    # days since last watched (season level)
+    if season.last_viewed_at:
+        days_since_last_watched = (
+            datetime.now(timezone.utc)
+            - season.last_viewed_at.replace(tzinfo=timezone.utc)
+        ).days
+        if (
+            rule.min_days_since_last_watched is not None
+            and days_since_last_watched < rule.min_days_since_last_watched
+        ):
+            return False
+        if (
+            rule.max_days_since_last_watched is not None
+            and days_since_last_watched > rule.max_days_since_last_watched
+        ):
+            return False
+        if (
+            rule.min_days_since_last_watched is not None
+            or rule.max_days_since_last_watched is not None
+        ):
+            matched_criteria["days_since_last_watched"] = days_since_last_watched
+            rule_reasons.append(
+                f"S{season.season_number:02d} last watched {days_since_last_watched} days ago"
+            )
+    elif (
+        rule.min_days_since_last_watched is not None
+        or rule.max_days_since_last_watched is not None
+    ):
+        return False
+
+    # season size
+    if rule.min_size is not None and (
+        season.size is None or season.size < rule.min_size
+    ):
+        return False
+    if rule.max_size is not None and (
+        season.size is None or season.size > rule.max_size
+    ):
+        return False
+    if rule.min_size is not None or rule.max_size is not None:
+        matched_criteria["size"] = season.size
+        size_gb = season.size / (1024**3) if season.size else 0
+        rule_reasons.append(f"S{season.season_number:02d} size {size_gb:.2f} GB")
+
+    if rule_reasons:
+        reasons.append(
+            f"{rule.name} (S{season.season_number:02d}): {', '.join(rule_reasons)}"
+        )
+    return True
 
 
 def _evaluate_rule(
@@ -672,6 +1041,7 @@ async def delete_cleanup_candidates() -> None:
         try:
             movies_deleted = 0
             series_deleted = 0
+            season_deleted = 0
 
             # process movies
             if (
@@ -688,9 +1058,11 @@ async def delete_cleanup_candidates() -> None:
                 or service_manager.plex
             ):
                 series_deleted = await _delete_series_candidates()
+                season_deleted = await _delete_season_candidates()
 
             LOG.info(
-                f"Deletion completed: {movies_deleted} movies, {series_deleted} series removed"
+                f"Deletion completed: {movies_deleted} movies, "
+                f"{series_deleted} whole series, {season_deleted} season(s) removed"
             )
 
         except Exception as e:
@@ -698,19 +1070,23 @@ async def delete_cleanup_candidates() -> None:
             raise
 
 
-async def _delete_movie_candidates() -> int:
+async def _delete_movie_candidates(
+    restrict_to_ids: frozenset[int] | None = None,
+) -> int:
     """Delete movie candidates. Returns count of deleted movies."""
     deleted_count = 0
 
     # get all movie candidates from database
     async with async_db() as db:
-        result = await db.execute(
+        query = (
             select(ReclaimCandidate)
             .join(Movie, ReclaimCandidate.movie_id == Movie.id)
             .where(ReclaimCandidate.media_type == MediaType.MOVIE)
             .where(Movie.removed_at.is_(None))
         )
-        candidates = result.scalars().all()
+        if restrict_to_ids:
+            query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
+        candidates = (await db.execute(query)).scalars().all()
 
         if not candidates:
             LOG.debug("No movie candidates to delete")
@@ -747,7 +1123,7 @@ async def _delete_movie_candidates() -> int:
                     }
                 )
 
-    # delete using Radarr
+    # delete using radarr
     if movies_to_delete and service_manager.radarr:
         LOG.info(f"Deleting {len(movies_to_delete)} movies via Radarr")
         radarr_ids = [m["radarr_id"] for m in movies_to_delete]
@@ -803,19 +1179,24 @@ async def _delete_movie_candidates() -> int:
     return deleted_count
 
 
-async def _delete_series_candidates() -> int:
+async def _delete_series_candidates(
+    restrict_to_ids: frozenset[int] | None = None,
+) -> int:
     """Delete series candidates. Returns count of deleted series."""
     deleted_count = 0
 
     # get all series candidates from database
     async with async_db() as db:
-        result = await db.execute(
+        query = (
             select(ReclaimCandidate)
             .join(Series, ReclaimCandidate.series_id == Series.id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            .where(ReclaimCandidate.season_id.is_(None))  # series-level only
             .where(Series.removed_at.is_(None))
         )
-        candidates = result.scalars().all()
+        if restrict_to_ids:
+            query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
+        candidates = (await db.execute(query)).scalars().all()
 
         if not candidates:
             LOG.debug("No series candidates to delete")
@@ -911,10 +1292,142 @@ async def _delete_series_candidates() -> int:
     return deleted_count
 
 
+async def _delete_season_candidates(
+    restrict_to_ids: frozenset[int] | None = None,
+) -> int:
+    """Delete season-level candidates.  Tries Sonarr first; falls back to media server.
+
+    Returns count of seasons successfully deleted.
+    """
+    deleted_count = 0
+
+    async with async_db() as db:
+        query = (
+            select(ReclaimCandidate)
+            .join(Season, ReclaimCandidate.season_id == Season.id)
+            .join(Series, ReclaimCandidate.series_id == Series.id)
+            .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            .where(ReclaimCandidate.season_id.isnot(None))
+            .where(Series.removed_at.is_(None))
+        )
+        if restrict_to_ids:
+            query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
+        candidates = (await db.execute(query)).scalars().all()
+
+    if not candidates:
+        LOG.debug("No season candidates to delete")
+        return 0
+
+    LOG.info(f"Found {len(candidates)} season candidates to evaluate for deletion")
+
+    # bulk-load seasons and series needed for deletion
+    async with async_db() as db:
+        season_ids = [c.season_id for c in candidates if c.season_id]
+        series_ids = list({c.series_id for c in candidates if c.series_id})
+
+        seasons_result = await db.execute(
+            select(Season).where(Season.id.in_(season_ids))
+        )
+        seasons: dict[int, Season] = {s.id: s for s in seasons_result.scalars().all()}
+
+        series_result = await db.execute(
+            select(Series)
+            .where(Series.id.in_(series_ids))
+            .options(selectinload(Series.service_refs))
+        )
+        series_map: dict[int, Series] = {s.id: s for s in series_result.scalars().all()}
+
+    for candidate in candidates:
+        if not candidate.season_id or not candidate.series_id:
+            continue
+        season = seasons.get(candidate.season_id)
+        series_obj = series_map.get(candidate.series_id)
+        if not season or not series_obj:
+            continue
+
+        season_number = season.season_number
+        deleted_via_sonarr = False
+
+        # try Sonarr first
+        if service_manager.sonarr and series_obj.sonarr_id:
+            try:
+                await service_manager.sonarr.delete_season_files(
+                    series_obj.sonarr_id, season_number
+                )
+                deleted_via_sonarr = True
+                LOG.info(
+                    f"Deleted '{series_obj.title}' S{season_number:02d} "
+                    f"via Sonarr (sonarr_id={series_obj.sonarr_id})"
+                )
+            except Exception as e:
+                LOG.warning(
+                    f"Sonarr deletion failed for '{series_obj.title}' "
+                    f"S{season_number:02d}: {e} — trying media server fallback"
+                )
+
+        # fall back to media server if Sonarr failed or unavailable
+        if not deleted_via_sonarr:
+            media_service = service_manager.jellyfin or service_manager.plex
+            season_service_id = (
+                season.jellyfin_season_id
+                if service_manager.jellyfin
+                else season.plex_season_rating_key
+            )
+            if media_service and season_service_id:
+                try:
+                    await media_service.delete_item(season_service_id)
+                    LOG.info(
+                        f"Deleted '{series_obj.title}' S{season_number:02d} via media server"
+                    )
+                except Exception as e:
+                    LOG.error(
+                        f"Media server deletion failed for '{series_obj.title}' "
+                        f"S{season_number:02d}: {e} — skipping"
+                    )
+                    continue
+            else:
+                LOG.warning(
+                    f"No deletion method available for '{series_obj.title}' "
+                    f"S{season_number:02d} — skipping"
+                )
+                continue
+
+        # remove candidate and update series size in DB
+        async with async_db() as db:
+            result = await db.execute(
+                select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+            )
+            cand = result.scalar_one_or_none()
+            if cand:
+                await db.delete(cand)
+
+            # reduce series stored size by the season's size
+            if season.size:
+                result = await db.execute(
+                    select(Series).where(Series.id == candidate.series_id)
+                )
+                series_db = result.scalar_one_or_none()
+                if series_db and series_db.size:
+                    series_db.size = max(0, series_db.size - season.size)
+
+            # delete the season row so it doesn't show stale data
+            result = await db.execute(
+                select(Season).where(Season.id == candidate.season_id)
+            )
+            season_db = result.scalar_one_or_none()
+            if season_db:
+                await db.delete(season_db)
+
+            await db.commit()
+
+        deleted_count += 1
+
+    return deleted_count
+
+
 async def _delete_movies_via_media_server(
     candidates, already_deleted: list[dict]
 ) -> int:
-    # TODO: this still needs more testing!
     """Deletes movies via the main media server as fallback when not in Radarr.
 
     Uses whichever Plex/Jellyfin server is designated as main.  If no main is
@@ -964,7 +1477,7 @@ async def _delete_movies_via_media_server(
         return 0
 
     if not main_service:
-        LOG.warning(f"Main media server {main_service_type} is not initialised")
+        LOG.warning(f"Main media server {main_service_type} is not initialized")
         return 0
 
     # load movies with their versions
@@ -1265,3 +1778,50 @@ async def _reset_seerr_request(tmdb_id: int, media_type: MediaType) -> None:
             LOG.debug(f"Deleted Seerr TV media for TMDB ID {tmdb_id}")
     except Exception as e:
         LOG.warning(f"Failed to delete Seerr data for TMDB {tmdb_id}: {e}")
+
+
+async def delete_specific_candidates(candidate_ids: list[int]) -> tuple[int, int]:
+    """Deletes specific reclaim candidates by their IDs.
+
+    Uses the same deletion priority as delete_cleanup_candidates:
+    Radarr/Sonarr first, then Jellyfin/Plex (main server first) fallback.
+
+    Returns (deleted_count, failed_count).
+    """
+    if not candidate_ids:
+        return 0, 0
+
+    restrict = frozenset(candidate_ids)
+
+    # look up which types we're dealing with so we only invoke relevant paths
+    async with async_db() as db:
+        result = await db.execute(
+            select(ReclaimCandidate.id, ReclaimCandidate.media_type).where(
+                ReclaimCandidate.id.in_(restrict)
+            )
+        )
+        rows = result.all()
+
+    found_ids = {r[0] for r in rows}
+    types = {r[1] for r in rows}
+
+    LOG.info(
+        f"Manual deletion of {len(found_ids)} candidate(s) requested "
+        f"(movies={MediaType.MOVIE in types}, series={MediaType.SERIES in types})"
+    )
+
+    deleted = 0
+    if MediaType.MOVIE in types and (
+        service_manager.radarr or service_manager.jellyfin or service_manager.plex
+    ):
+        deleted += await _delete_movie_candidates(restrict_to_ids=restrict)
+
+    if MediaType.SERIES in types and (
+        service_manager.sonarr or service_manager.jellyfin or service_manager.plex
+    ):
+        deleted += await _delete_series_candidates(restrict_to_ids=restrict)
+        deleted += await _delete_season_candidates(restrict_to_ids=restrict)
+
+    failed = max(0, len(found_ids) - deleted)
+    LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
+    return deleted, failed

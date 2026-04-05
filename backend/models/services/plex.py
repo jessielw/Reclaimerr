@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from backend.models.media import ExternalIDs, MovieVersionData
+from backend.models.media import AggregatedSeasonData, ExternalIDs, MovieVersionData
 
 
 @dataclass(slots=True, frozen=True)
@@ -39,3 +39,4 @@ class PlexSeries:
     view_count: int
     external_ids: ExternalIDs
     size: int
+    season_data: list[AggregatedSeasonData] = field(default_factory=list)

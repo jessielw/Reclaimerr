@@ -1,4 +1,4 @@
-from enum import StrEnum, auto
+﻿from enum import StrEnum, auto
 
 
 class Service(StrEnum):
@@ -14,7 +14,7 @@ class MediaType(StrEnum):
     SERIES = auto()
 
 
-class ExceptionRequestStatus(StrEnum):
+class ProtectionRequestStatus(StrEnum):
     PENDING = auto()
     APPROVED = auto()
     DENIED = auto()

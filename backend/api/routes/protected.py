@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -10,26 +10,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
-from backend.database.models import MediaBlacklist, Movie, Series, User
+from backend.database.models import Movie, ProtectedMedia, Series, User
 from backend.enums import MediaType, Permission, UserRole
-from backend.models.blacklist import (
-    BlacklistEntryResponse,
-    CreateBlacklistEntryRequest,
-    PaginatedBlacklistResponse,
-    UpdateBlacklistDurationRequest,
+from backend.models.protect import (
+    CreateProtectedEntryRequest,
+    PaginatedProtectedResponse,
+    ProtectedEntryResponse,
+    UpdateProtectionDurationRequest,
 )
 
-router = APIRouter(prefix="/api/blacklist", tags=["blacklist"])
+router = APIRouter(prefix="/api/protected", tags=["protected"])
 
 
-def can_manage_blacklist(user: User) -> bool:
+def can_manage_protection(user: User) -> bool:
     return user.role is UserRole.ADMIN or has_permission(
-        user, Permission.MANAGE_BLACKLIST
+        user, Permission.MANAGE_PROTECTION
     )
 
 
-@router.get("", response_model=PaginatedBlacklistResponse)
-async def get_blacklist_entries(
+@router.get("", response_model=PaginatedProtectedResponse)
+async def get_protected_entries(
     _user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
@@ -39,10 +39,10 @@ async def get_blacklist_entries(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     media_type: MediaType | None = Query(None),
 ):
-    """Retrieve a paginated list of blacklisted media entries."""
+    """Retrieve a paginated list of protected media entries."""
     base_query = (
         select(
-            MediaBlacklist,
+            ProtectedMedia,
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
             Movie.poster_url.label("movie_poster_url"),
@@ -51,13 +51,13 @@ async def get_blacklist_entries(
             Series.poster_url.label("series_poster_url"),
             User.username.label("actor_username"),
         )
-        .outerjoin(Movie, Movie.id == MediaBlacklist.movie_id)
-        .outerjoin(Series, Series.id == MediaBlacklist.series_id)
-        .outerjoin(User, User.id == MediaBlacklist.blacklisted_by_user_id)
+        .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
+        .outerjoin(Series, Series.id == ProtectedMedia.series_id)
+        .outerjoin(User, User.id == ProtectedMedia.protected_by_user_id)
     )
 
     if media_type:
-        base_query = base_query.where(MediaBlacklist.media_type == media_type)
+        base_query = base_query.where(ProtectedMedia.media_type == media_type)
 
     if search:
         search_term = f"%{search}%"
@@ -65,20 +65,20 @@ async def get_blacklist_entries(
             or_(
                 Movie.title.ilike(search_term),
                 Series.title.ilike(search_term),
-                MediaBlacklist.reason.ilike(search_term),
+                ProtectedMedia.reason.ilike(search_term),
                 User.username.ilike(search_term),
             )
         )
 
     count_query = (
-        select(func.count(MediaBlacklist.id))
-        .outerjoin(Movie, Movie.id == MediaBlacklist.movie_id)
-        .outerjoin(Series, Series.id == MediaBlacklist.series_id)
-        .outerjoin(User, User.id == MediaBlacklist.blacklisted_by_user_id)
+        select(func.count(ProtectedMedia.id))
+        .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
+        .outerjoin(Series, Series.id == ProtectedMedia.series_id)
+        .outerjoin(User, User.id == ProtectedMedia.protected_by_user_id)
     )
 
     if media_type:
-        count_query = count_query.where(MediaBlacklist.media_type == media_type)
+        count_query = count_query.where(ProtectedMedia.media_type == media_type)
 
     if search:
         search_term = f"%{search}%"
@@ -86,7 +86,7 @@ async def get_blacklist_entries(
             or_(
                 Movie.title.ilike(search_term),
                 Series.title.ilike(search_term),
-                MediaBlacklist.reason.ilike(search_term),
+                ProtectedMedia.reason.ilike(search_term),
                 User.username.ilike(search_term),
             )
         )
@@ -98,9 +98,9 @@ async def get_blacklist_entries(
     if sort_by == "media_title":
         order_expr = media_title_expr
     elif sort_by == "expires_at":
-        order_expr = MediaBlacklist.expires_at
+        order_expr = ProtectedMedia.expires_at
     else:
-        order_expr = MediaBlacklist.created_at
+        order_expr = ProtectedMedia.created_at
 
     if sort_order == "desc":
         order_expr = order_expr.desc()
@@ -113,9 +113,9 @@ async def get_blacklist_entries(
     )
     rows = result.all()
 
-    responses: list[BlacklistEntryResponse] = []
+    responses: list[ProtectedEntryResponse] = []
     for row in rows:
-        entry: MediaBlacklist = row[0]
+        entry: ProtectedMedia = row[0]
         media_title = (
             row.movie_title if entry.media_type is MediaType.MOVIE else row.series_title
         )
@@ -135,7 +135,7 @@ async def get_blacklist_entries(
             continue
 
         responses.append(
-            BlacklistEntryResponse(
+            ProtectedEntryResponse(
                 id=entry.id,
                 media_type=entry.media_type,
                 media_id=media_id,
@@ -143,8 +143,8 @@ async def get_blacklist_entries(
                 media_year=media_year,
                 poster_url=poster_url,
                 reason=entry.reason,
-                blacklisted_by_user_id=entry.blacklisted_by_user_id,
-                blacklisted_by_username=row.actor_username or "Unknown",
+                protected_by_user_id=entry.protected_by_user_id,
+                protected_by_username=row.actor_username or "Unknown",
                 permanent=entry.permanent,
                 expires_at=to_utc_isoformat(entry.expires_at),
                 created_at=to_utc_isoformat(entry.created_at) or "",
@@ -153,7 +153,7 @@ async def get_blacklist_entries(
         )
 
     total_pages = (total + per_page - 1) // per_page if total else 0
-    return PaginatedBlacklistResponse(
+    return PaginatedProtectedResponse(
         items=responses,
         total=total,
         page=page,
@@ -163,18 +163,18 @@ async def get_blacklist_entries(
 
 
 @router.post(
-    "", response_model=BlacklistEntryResponse, status_code=status.HTTP_201_CREATED
+    "", response_model=ProtectedEntryResponse, status_code=status.HTTP_201_CREATED
 )
-async def create_blacklist_entry(
-    request_data: CreateBlacklistEntryRequest,
+async def create_protection_entry(
+    request_data: CreateProtectedEntryRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a new media entry to the blacklist."""
-    if not can_manage_blacklist(user):
+    """Add a new media entry to the protected list."""
+    if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     if request_data.duration_days is not None and request_data.duration_days <= 0:
@@ -192,9 +192,9 @@ async def create_blacklist_entry(
             )
         )
         media = media_result.scalar_one_or_none()
-        existing_query = select(MediaBlacklist).where(
-            MediaBlacklist.media_type == MediaType.MOVIE,
-            MediaBlacklist.movie_id == request_data.media_id,
+        existing_query = select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.MOVIE,
+            ProtectedMedia.movie_id == request_data.media_id,
         )
     else:
         media_result = await db.execute(
@@ -204,9 +204,9 @@ async def create_blacklist_entry(
             )
         )
         media = media_result.scalar_one_or_none()
-        existing_query = select(MediaBlacklist).where(
-            MediaBlacklist.media_type == MediaType.SERIES,
-            MediaBlacklist.series_id == request_data.media_id,
+        existing_query = select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.series_id == request_data.media_id,
         )
 
     if not media:
@@ -219,7 +219,7 @@ async def create_blacklist_entry(
     if existing_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This media is already blacklisted",
+            detail="This media is already protected",
         )
 
     permanent = request_data.duration_days is None
@@ -229,7 +229,7 @@ async def create_blacklist_entry(
             days=request_data.duration_days
         )
 
-    new_entry = MediaBlacklist(
+    new_entry = ProtectedMedia(
         media_type=request_data.media_type,
         movie_id=request_data.media_id
         if request_data.media_type is MediaType.MOVIE
@@ -238,7 +238,7 @@ async def create_blacklist_entry(
         if request_data.media_type is MediaType.SERIES
         else None,
         reason=request_data.reason,
-        blacklisted_by_user_id=user.id,
+        protected_by_user_id=user.id,
         permanent=permanent,
         expires_at=expires_at,
     )
@@ -247,7 +247,7 @@ async def create_blacklist_entry(
     await db.commit()
     await db.refresh(new_entry)
 
-    return BlacklistEntryResponse(
+    return ProtectedEntryResponse(
         id=new_entry.id,
         media_type=new_entry.media_type,
         media_id=request_data.media_id,
@@ -255,8 +255,8 @@ async def create_blacklist_entry(
         media_year=media.year,
         poster_url=media.poster_url,
         reason=new_entry.reason,
-        blacklisted_by_user_id=user.id,
-        blacklisted_by_username=user.username,
+        protected_by_user_id=user.id,
+        protected_by_username=user.username,
         permanent=new_entry.permanent,
         expires_at=to_utc_isoformat(new_entry.expires_at),
         created_at=to_utc_isoformat(new_entry.created_at) or "",
@@ -264,18 +264,18 @@ async def create_blacklist_entry(
     )
 
 
-@router.put("/{entry_id}/duration", response_model=BlacklistEntryResponse)
-async def update_blacklist_duration(
+@router.put("/{entry_id}/duration", response_model=ProtectedEntryResponse)
+async def update_protection_duration(
     entry_id: int,
-    request_data: UpdateBlacklistDurationRequest,
+    request_data: UpdateProtectionDurationRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Update the duration of a blacklisted media entry."""
-    if not can_manage_blacklist(user):
+    """Update the duration of a protected media entry."""
+    if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     if request_data.duration_days is not None and request_data.duration_days <= 0:
@@ -285,14 +285,14 @@ async def update_blacklist_duration(
         )
 
     result = await db.execute(
-        select(MediaBlacklist).where(MediaBlacklist.id == entry_id)
+        select(ProtectedMedia).where(ProtectedMedia.id == entry_id)
     )
     entry = result.scalar_one_or_none()
 
     if not entry:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blacklist entry not found",
+            detail="Protected entry not found",
         )
 
     if request_data.duration_days is None:
@@ -328,12 +328,12 @@ async def update_blacklist_duration(
         )
 
     actor_result = await db.execute(
-        select(User).where(User.id == entry.blacklisted_by_user_id)
+        select(User).where(User.id == entry.protected_by_user_id)
     )
     actor = actor_result.scalar_one_or_none()
     expires_at_value = entry.expires_at
 
-    return BlacklistEntryResponse(
+    return ProtectedEntryResponse(
         id=entry.id,
         media_type=entry.media_type,
         media_id=media_id,
@@ -341,8 +341,8 @@ async def update_blacklist_duration(
         media_year=media.year,
         poster_url=media.poster_url,
         reason=entry.reason,
-        blacklisted_by_user_id=entry.blacklisted_by_user_id,
-        blacklisted_by_username=actor.username if actor else "Unknown",
+        protected_by_user_id=entry.protected_by_user_id,
+        protected_by_username=actor.username if actor else "Unknown",
         permanent=entry.permanent,
         expires_at=to_utc_isoformat(expires_at_value),
         created_at=to_utc_isoformat(entry.created_at) or "",
@@ -351,30 +351,30 @@ async def update_blacklist_duration(
 
 
 @router.delete("/{entry_id}")
-async def delete_blacklist_entry(
+async def delete_protection_entry(
     entry_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a media entry from the blacklist."""
-    if not can_manage_blacklist(user):
+    """Remove a media entry from the protected list."""
+    if not can_manage_protection(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manage blacklist permission required",
+            detail="Manage protection permission required",
         )
 
     result = await db.execute(
-        select(MediaBlacklist).where(MediaBlacklist.id == entry_id)
+        select(ProtectedMedia).where(ProtectedMedia.id == entry_id)
     )
     entry = result.scalar_one_or_none()
 
     if not entry:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blacklist entry not found",
+            detail="Protected entry not found",
         )
 
     await db.delete(entry)
     await db.commit()
 
-    return {"message": "Blacklist entry removed successfully"}
+    return {"message": "Protection removed successfully"}

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import socket
 from time import monotonic
 
 from sqlalchemy import select
 
 from backend.core.logger import LOG
-from backend.core.service_bootstrap import load_enabled_services
-from backend.core.service_manager import service_manager
-from backend.database import async_db, close_db, init_db
+from backend.database import async_db
 from backend.database.models import GeneralSettings
 from backend.jobs import (
     claim_next_background_job,
@@ -46,7 +42,7 @@ async def _load_worker_poll_settings() -> tuple[float, float]:
 
 
 async def worker_loop(worker_id: str) -> None:
-    """Main loop for the background worker process. Continuously polls for new background jobs to run."""
+    """Job processing loop. Runs in-process as an asyncio task alongside the API server."""
     poll_min_seconds, poll_max_seconds = await _load_worker_poll_settings()
     idle_poll_delay = poll_min_seconds
     next_settings_refresh = monotonic() + POLL_SETTINGS_REFRESH_SECONDS
@@ -72,9 +68,7 @@ async def worker_loop(worker_id: str) -> None:
 
             idle_poll_delay = poll_min_seconds
 
-            LOG.info(
-                f"Worker {worker_id} running background job {job.id} ({job.job_type})"
-            )
+            LOG.info(f"Worker {worker_id} running background job {job.id} ({job.job_type})")
             result_payload = await run_background_job(job)
             await complete_background_job(job.id, result_payload=result_payload)
             LOG.info(f"Worker {worker_id} completed background job {job.id}")
@@ -89,18 +83,3 @@ async def worker_loop(worker_id: str) -> None:
             )
             await fail_background_job(job.id, str(exc))
             idle_poll_delay = poll_min_seconds
-
-
-async def do_the_thing() -> None:
-    """Start the background worker loop."""
-    worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    LOG.info(f"Starting background worker {worker_id}")
-    await init_db()
-    await load_enabled_services()
-
-    try:
-        await worker_loop(worker_id)
-    finally:
-        await service_manager.clear_all()
-        await close_db()
-        LOG.info(f"Background worker {worker_id} stopped")

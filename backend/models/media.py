@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -53,6 +53,23 @@ class AggregatedMovieData:
 
 
 @dataclass(slots=True, frozen=True)
+class AggregatedSeasonData:
+    """Season with aggregated watch data from a media server."""
+
+    # (service_series_id, season_number) uniquely identifies this season
+    service_series_id: str  # plex grandparentRatingKey or jellyfin SeriesId
+    season_number: int
+    size: int
+    episode_count: int
+    view_count: int
+    last_viewed_at: datetime | None
+    never_watched: bool
+    air_date: datetime | None = None
+    # plex parentRatingKey or jellyfin season item ID for direct ops
+    service_season_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class AggregatedSeriesData:
     """Series with aggregated watch data across all users."""
 
@@ -71,8 +88,10 @@ class AggregatedSeriesData:
     view_count: int
     last_viewed_at: datetime | None
     never_watched: bool
-    # jellyfin-specific (None for Plex)
+    # jellyfin specific (None for Plex)
     played_by_user_count: int | None = None
+    # season level breakdown (populated by service layer)
+    season_data: list[AggregatedSeasonData] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,9 +123,9 @@ class MediaStatusInfo(BaseModel):
     candidate_reason: str | None = None
     candidate_space_gb: float | None = None
 
-    is_blacklisted: bool = False
-    blacklist_reason: str | None = None
-    blacklist_permanent: bool = True
+    is_protected: bool = False
+    protected_reason: str | None = None
+    protected_permanent: bool = True
 
     has_pending_request: bool = False
     request_id: int | None = None
@@ -209,9 +228,25 @@ class SeriesWithStatus(BaseModel):
 
     # status
     status: MediaStatusInfo
+    # true when at least one season (but not the whole series) is a reclaim candidate
+    has_season_candidates: bool = False
 
     # timestamps
     added_at: str | None
+
+
+class SeasonWithStatus(BaseModel):
+    """Season with its reclaim / protection status."""
+
+    id: int
+    season_number: int
+    episode_count: int | None
+    size: int | None
+    view_count: int
+    last_viewed_at: str | None
+    never_watched: bool
+    air_date: str | None
+    status: MediaStatusInfo
 
 
 class PaginatedMediaResponse(BaseModel):
@@ -222,3 +257,40 @@ class PaginatedMediaResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class CandidateEntry(BaseModel):
+    """A single reclaim candidate with enough info to display and act on."""
+
+    id: int
+    media_type: str
+    media_id: int
+    media_title: str
+    media_year: int | None
+    poster_url: str | None
+    reason: str
+    estimated_space_gb: float | None
+    has_pending_request: bool
+    created_at: str
+    # set for season level candidates
+    season_id: int | None = None
+    season_number: int | None = None
+    # parent series title when candidate is season level
+    series_title: str | None = None
+
+
+class PaginatedCandidatesResponse(BaseModel):
+    items: list[CandidateEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class DeleteCandidatesRequest(BaseModel):
+    candidate_ids: list[int]
+
+
+class DeleteCandidatesResponse(BaseModel):
+    deleted: int
+    failed: int

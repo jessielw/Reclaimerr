@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,10 +14,10 @@ from sqlalchemy import select
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.background_jobs import router as background_jobs_router
-from backend.api.routes.blacklist import router as blacklist_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.info import router as info_router
 from backend.api.routes.media import router as media_router
+from backend.api.routes.protected import router as protected_router
 from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
 from backend.api.routes.settings import router as settings_router
@@ -30,6 +32,7 @@ from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
+from backend.core.worker import worker_loop
 from backend.database import close_db, init_db
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
@@ -71,6 +74,10 @@ async def lifespan(app: FastAPI):
     # start scheduler
     await start_scheduler()
 
+    # start in-process background worker
+    _worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    worker_task = asyncio.create_task(worker_loop(_worker_id), name="background-worker")
+
     LOG.info("reclaimerr API ready")
 
     try:
@@ -79,13 +86,20 @@ async def lifespan(app: FastAPI):
         # Cleanup - this runs on both normal shutdown and signal interruption
         LOG.info("Shutting down reclaimerr API")
 
-        # Stop scheduler and wait for jobs to complete (with timeout)
+        # stop in-process background worker
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+        # stop scheduler and wait for jobs to complete (with timeout)
         await shutdown_scheduler()
 
-        # Close all service HTTP sessions
+        # close all service HTTP sessions
         await service_manager.clear_all()
 
-        # Close database connections
+        # close database connections
         await close_db()
 
         remaining_tasks = [
@@ -131,7 +145,7 @@ app.include_router(tasks_router)
 app.include_router(background_jobs_router)
 app.include_router(media_router)
 app.include_router(requests_router)
-app.include_router(blacklist_router)
+app.include_router(protected_router)
 
 
 # mount static files LAST - after all routes

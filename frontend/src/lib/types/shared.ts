@@ -1,4 +1,4 @@
-export enum UserRole {
+﻿export enum UserRole {
   Admin = "admin",
   User = "user",
 }
@@ -17,7 +17,8 @@ export enum Permission {
   ManageRequests = "manage_requests",
   Request = "request",
   AutoApprove = "auto_approve",
-  ManageBlacklist = "manage_blacklist",
+  ManageProtection = "manage_protection",
+  ManageReclaim = "manage_reclaim",
 }
 
 export interface UserProfile extends User {
@@ -162,9 +163,9 @@ export interface MediaStatusInfo {
   candidate_id: number | null;
   candidate_reason: string | null;
   candidate_space_gb: number | null;
-  is_blacklisted: boolean;
-  blacklist_reason: string | null;
-  blacklist_permanent: boolean;
+  is_protected: boolean;
+  protected_reason: string | null;
+  protected_permanent: boolean;
   has_pending_request: boolean;
   request_id: number | null;
   request_status: string | null;
@@ -238,6 +239,18 @@ export interface SeriesWithStatus {
   added_at: string | null;
 }
 
+export interface SeasonWithStatus {
+  id: number;
+  season_number: number;
+  episode_count: number | null;
+  size: number | null; // bytes
+  view_count: number;
+  last_viewed_at: string | null;
+  never_watched: boolean;
+  air_date: string | null;
+  status: MediaStatusInfo;
+}
+
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
 
 export interface PaginatedResponse<T> {
@@ -249,14 +262,14 @@ export interface PaginatedResponse<T> {
 }
 
 // exception requests
-export enum ExceptionRequestStatus {
+export enum ProtectionRequestStatus {
   Pending = "pending",
   Approved = "approved",
   Denied = "denied",
 }
 
 // exception request type used for both movie and series requests
-export interface ExceptionRequest {
+export interface ProtectionRequest {
   id: number;
   media_type: MediaType;
   poster_url: string | null;
@@ -268,18 +281,20 @@ export interface ExceptionRequest {
   requested_by_username: string;
   reason: string;
   requested_expires_at: string | null;
-  status: ExceptionRequestStatus;
+  status: ProtectionRequestStatus;
   reviewed_by_user_id: number | null;
   reviewed_by_username: string | null;
   reviewed_at: string | null;
   admin_notes: string | null;
   effective_permanent: boolean | null;
   effective_expires_at: string | null;
+  season_id: number | null;
+  season_number: number | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface BlacklistEntry {
+export interface ProtectedEntry {
   id: number;
   media_type: MediaType;
   media_id: number;
@@ -287,12 +302,29 @@ export interface BlacklistEntry {
   media_year: number;
   poster_url: string | null;
   reason: string | null;
-  blacklisted_by_user_id: number;
-  blacklisted_by_username: string;
+  protected_by_user_id: number;
+  protected_by_username: string;
   permanent: boolean;
   expires_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ReclaimCandidateEntry {
+  id: number;
+  media_type: MediaType;
+  media_id: number;
+  media_title: string;
+  media_year: number | null;
+  poster_url: string | null;
+  reason: string;
+  estimated_space_gb: number | null;
+  has_pending_request: boolean;
+  created_at: string;
+  // populated for season-level candidates
+  season_id: number | null;
+  season_number: number | null;
+  series_title: string | null;
 }
 
 export interface DashboardKpis {
