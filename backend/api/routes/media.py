@@ -14,6 +14,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    Season,
     Series,
     User,
 )
@@ -27,6 +28,7 @@ from backend.models.media import (
     MovieWithStatus,
     PaginatedCandidatesResponse,
     PaginatedMediaResponse,
+    SeasonWithStatus,
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
@@ -279,11 +281,25 @@ async def get_series(
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
 
-    # get candidates
+    # get series level candidates (no season)
     candidates_result = await db.execute(
-        select(ReclaimCandidate).where(ReclaimCandidate.series_id.in_(series_ids))
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.series_id.in_(series_ids),
+            ReclaimCandidate.season_id.is_(None),
+        )
     )
     candidates = {c.series_id: c for c in candidates_result.scalars().all()}
+
+    # collect series_ids that have at least one season level candidate
+    season_cands_result = await db.execute(
+        select(ReclaimCandidate.series_id).where(
+            ReclaimCandidate.series_id.in_(series_ids),
+            ReclaimCandidate.season_id.isnot(None),
+        )
+    )
+    series_with_season_cands: set[int] = {
+        row[0] for row in season_cands_result.all() if row[0] is not None
+    }
 
     # get protected entries
     now = datetime.now(timezone.utc)
@@ -368,6 +384,8 @@ async def get_series(
             "view_count": series.view_count,
             "never_watched": series.never_watched,
             "status": status,
+            "has_season_candidates": series.id in series_with_season_cands
+            and candidate is None,
             "added_at": to_utc_isoformat(series.added_at),
         }
         items.append(SeriesWithStatus(**series_dict))
@@ -381,6 +399,84 @@ async def get_series(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.get("/series/{series_id}/seasons", response_model=list[SeasonWithStatus])
+async def get_series_seasons(
+    series_id: int,
+    _user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Get per-season status for a series."""
+    series_result = await db.execute(
+        select(Series).where(Series.id == series_id, Series.removed_at.is_(None))
+    )
+    if series_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Series not found"
+        )
+
+    seasons_result = await db.execute(
+        select(Season)
+        .where(Season.series_id == series_id)
+        .order_by(Season.season_number)
+    )
+    seasons = seasons_result.scalars().all()
+
+    season_ids = [s.id for s in seasons]
+    if not season_ids:
+        return []
+
+    # season level reclaim candidates
+    cand_result = await db.execute(
+        select(ReclaimCandidate).where(ReclaimCandidate.season_id.in_(season_ids))
+    )
+    season_candidates = {c.season_id: c for c in cand_result.scalars().all()}
+
+    # season level protection entries
+    now = datetime.now(timezone.utc)
+    prot_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.season_id.in_(season_ids),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    season_protected = {p.season_id: p for p in prot_result.scalars().all()}
+
+    items: list[SeasonWithStatus] = []
+    for season in seasons:
+        cand = season_candidates.get(season.id)
+        prot = season_protected.get(season.id)
+        season_status = MediaStatusInfo(
+            is_candidate=cand is not None,
+            candidate_id=cand.id if cand else None,
+            candidate_reason=cand.reason if cand else None,
+            candidate_space_gb=cand.estimated_space_gb if cand else None,
+            is_protected=prot is not None,
+            protected_reason=prot.reason if prot else None,
+            protected_permanent=prot.permanent if prot else True,
+        )
+        items.append(
+            SeasonWithStatus(
+                id=season.id,
+                season_number=season.season_number,
+                episode_count=season.episode_count,
+                size=season.size,
+                view_count=season.view_count or 0,
+                last_viewed_at=to_utc_isoformat(season.last_viewed_at),
+                never_watched=season.never_watched
+                if season.never_watched is not None
+                else True,
+                air_date=to_utc_isoformat(season.air_date),
+                status=season_status,
+            )
+        )
+
+    return items
 
 
 @router.get("/candidates", response_model=PaginatedCandidatesResponse)
@@ -407,9 +503,11 @@ async def get_candidates(
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
+            Season.season_number.label("season_number"),
         )
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
         .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+        .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
     )
 
     if media_type:
@@ -429,6 +527,7 @@ async def get_candidates(
         select(func.count(ReclaimCandidate.id))
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
         .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+        .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
     )
 
     if media_type:
@@ -521,6 +620,9 @@ async def get_candidates(
                 estimated_space_gb=c.estimated_space_gb,
                 has_pending_request=has_pending,
                 created_at=to_utc_isoformat(c.created_at) or "",
+                season_id=c.season_id,
+                season_number=row.season_number,
+                series_title=row.series_title if c.season_id is not None else None,
             )
         )
 
