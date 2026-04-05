@@ -14,15 +14,11 @@
 
 [x] - Relevant tasks don't seem to auto-run when a new service is added - eg, you'd expect a 'Sync Plex Media' task to run when a Plex server is added
 
-~~[ ] - Enabling tagging on a rule could be greyed out when tagging is not enabled? Or maybe show a warning.~~
-
 [x] - The percentages on dashboard are a bit misleading, as they're just on numbers of seasons vs number of movies - using data % might be a fairer reflection?
 
 [x] - Dashboard - Plex shows last sync: never even when manually synced via task run
 
 [x] - Add a filter on movies/tv screens to only show reclaim candidates
-
-[ ] - In individual movies/tv - when you select one, give admins the ability to exclude from deletion directly without making a request
 
 [x] - Add a slider to adjust the scale of the movies/tv posters so you can fit more rows/columns per user preference
 
