@@ -17,6 +17,7 @@ from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
+    AggregatedSeasonData,
     AggregatedSeriesData,
     ExternalIDs,
     MovieVersionData,
@@ -314,32 +315,37 @@ class JellyfinService:
 
     async def get_series_sizes_for_library(
         self, library_id: str, user_id: str
-    ) -> tuple[dict[str, int], dict[str, datetime]]:
-        """Get total sizes and oldest DateCreated for all series in a library.
+    ) -> tuple[dict[str, int], dict[str, datetime], dict[tuple[str, int], AggregatedSeasonData]]:
+        """Get total sizes, oldest DateCreated, and season data for all series in a library.
 
         Args:
             library_id: The Jellyfin library ID
             user_id: The user ID to fetch episodes for
 
         Returns:
-            Tuple of (series_sizes, series_dates) where:
+            Tuple of (series_sizes, series_dates, season_data) where:
             - series_sizes: Dictionary mapping series_id to total size in bytes
             - series_dates: Dictionary mapping series_id to oldest episode DateCreated
+            - season_data: Dictionary mapping (series_id, season_number) to AggregatedSeasonData
         """
-        # group episodes by series and sum sizes, track oldest date
         series_sizes: dict[str, int] = {}
         series_dates: dict[str, datetime] = {}
+        # season accumulation
+        season_sizes: dict[tuple[str, int], int] = {}
+        season_episode_counts: dict[tuple[str, int], int] = {}
+        season_view_counts: dict[tuple[str, int], int] = {}
+        season_last_viewed: dict[tuple[str, int], datetime | None] = {}
+        season_ids: dict[tuple[str, int], str] = {}  # jellyfin SeasonId
 
-        # fetch episodes in paginated batches to avoid timeout on large libraries
         start_index = 0
-        limit = 500  # process 500 episodes at a time
+        limit = 500
 
         while True:
             params = {
                 "userId": user_id,
                 "includeItemTypes": "Episode",
                 "recursive": "true",
-                "Fields": "MediaSources,SeriesId,DateCreated",
+                "Fields": "MediaSources,SeriesId,DateCreated,ParentIndexNumber,SeasonId,UserData",
                 "ParentId": library_id,
                 "StartIndex": str(start_index),
                 "Limit": str(limit),
@@ -364,15 +370,12 @@ class JellyfinService:
 
                 # sum sizes
                 episode_size = 0
-                media_sources = episode.get("MediaSources", [])
-                for source in media_sources:
+                for source in episode.get("MediaSources", []):
                     episode_size += source.get("Size", 0)
 
-                if series_id not in series_sizes:
-                    series_sizes[series_id] = 0
-                series_sizes[series_id] += episode_size
+                series_sizes[series_id] = series_sizes.get(series_id, 0) + episode_size
 
-                # track oldest DateCreated (first episode added)
+                # track oldest DateCreated
                 if episode.get("DateCreated"):
                     episode_date = datetime.fromisoformat(episode["DateCreated"])
                     if (
@@ -381,13 +384,61 @@ class JellyfinService:
                     ):
                         series_dates[series_id] = episode_date
 
-            # check if we've fetched all episodes
+                # season accumulation
+                season_num_raw = episode.get("ParentIndexNumber")
+                if season_num_raw is None:
+                    continue
+                try:
+                    season_num = int(season_num_raw)
+                except (TypeError, ValueError):
+                    continue
+
+                sk = (series_id, season_num)
+                season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
+                season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
+
+                # store jellyfin SeasonId for first episode of each season
+                if sk not in season_ids and episode.get("SeasonId"):
+                    season_ids[sk] = episode["SeasonId"]
+
+                # watch data
+                user_data = episode.get("UserData", {})
+                play_count = user_data.get("PlayCount", 0) or 0
+                season_view_counts[sk] = season_view_counts.get(sk, 0) + play_count
+                if play_count > 0 and user_data.get("LastPlayedDate"):
+                    try:
+                        lva = datetime.fromisoformat(user_data["LastPlayedDate"])
+                        prev = season_last_viewed.get(sk)
+                        if prev is None or lva > prev:
+                            season_last_viewed[sk] = lva
+                    except (TypeError, ValueError):
+                        pass
+                elif sk not in season_last_viewed:
+                    season_last_viewed[sk] = None
+
             total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
             start_index += len(episodes)
             if start_index >= total_record_count:
                 break
 
-        return series_sizes, series_dates
+        # build AggregatedSeasonData objects
+        season_data: dict[tuple[str, int], AggregatedSeasonData] = {}
+        for sk, size in season_sizes.items():
+            series_id, season_num = sk
+            agg_view = season_view_counts.get(sk, 0)
+            lva = season_last_viewed.get(sk)
+            season_data[sk] = AggregatedSeasonData(
+                service_series_id=series_id,
+                season_number=season_num,
+                size=size,
+                episode_count=season_episode_counts.get(sk, 0),
+                view_count=agg_view,
+                last_viewed_at=lva,
+                never_watched=(agg_view == 0),
+                service_season_id=season_ids.get(sk),
+            )
+
+        return series_sizes, series_dates, season_data
 
     async def get_all_watched_episodes_for_user(
         self, user_id: str
@@ -559,8 +610,8 @@ class JellyfinService:
                 continue
 
             # fetch series sizes once per library (not per user as this is expensive)
-            series_sizes, series_dates = await self.get_series_sizes_for_library(
-                library_id, users[0].id
+            series_sizes, series_dates, season_data_map = (
+                await self.get_series_sizes_for_library(library_id, users[0].id)
             )
 
             for user in users:
@@ -601,6 +652,11 @@ class JellyfinService:
                             else 0,
                             "last_viewed_at": episode_last_watched,
                             "played_by_user_count": 1 if episode_last_watched else 0,
+                            "season_data": [
+                                v
+                                for k, v in season_data_map.items()
+                                if k[0] == series.id
+                            ],
                         }
                     else:
                         # aggregate data
@@ -620,8 +676,9 @@ class JellyfinService:
         # convert to final format
         return [
             AggregatedSeriesData(
-                **data,
+                **{k: v for k, v in data.items() if k != "season_data"},
                 never_watched=(data["played_by_user_count"] == 0),
+                season_data=data.get("season_data", []),
             )
             for data in series_data.values()
         ]
