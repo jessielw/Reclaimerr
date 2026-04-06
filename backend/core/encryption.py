@@ -19,10 +19,6 @@ class EncryptionSingleton:
         self._fernet = self._init_fernet()
 
     def _init_fernet(self) -> Fernet:
-        if not settings.encryption_key:
-            raise ValueError(
-                "'ENCRYPTION_KEY' must be set in environment variables for encryption to work."
-            )
         raw = settings.encryption_key.encode()
         key = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
         return Fernet(key)
