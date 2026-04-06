@@ -64,8 +64,6 @@ def create_access_token(
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT token."""
     try:
-        if settings.jwt_secret is None:
-            raise RuntimeError("JWT secret is not set")
         payload = jwt.decode(
             token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
         )
