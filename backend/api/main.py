@@ -137,7 +137,7 @@ app.include_router(requests_router)
 app.include_router(protected_router)
 
 
-# mount static files LAST - after all routes
+# mount static files LAST
 app.mount("/static", StaticFiles(directory=settings.static_dir_path), name="static")
 app.mount("/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars")
 
