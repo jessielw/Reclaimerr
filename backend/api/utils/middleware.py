@@ -5,16 +5,54 @@ import time
 import jwt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.core.auth import COOKIE_NAME, SESSION_TTL_SECONDS, create_access_token
 from backend.core.settings import settings
+from backend.core.setup_state import setup_state
 
 __all__ = [
     "cors_middleware",
     "security_headers_middleware",
+    "setup_guard_middleware",
     "sliding_session_middleware",
 ]
+
+
+def setup_guard_middleware(app: FastAPI) -> None:
+    """Redirect all traffic to the setup wizard until setup is complete."""
+    app.add_middleware(SetupGuardMiddleware)
+
+
+class SetupGuardMiddleware(BaseHTTPMiddleware):
+    """
+    Block API requests until the first run setup wizard has been completed.
+
+    Non API requests (SPA index, static assets) are always passed through, since
+    the frontend handles the setup wizard via the /api/setup/status check in
+    app.svelte. Redirecting browser page loads here would cause an infinite
+    redirect loop because hash fragments (#/setup) are never sent to the server.
+    """
+
+    _ALLOWED_PREFIXES = ("/api/setup", "/api/info")
+
+    async def dispatch(self, request, call_next):
+        if not setup_state.needs_setup:
+            return await call_next(request)
+
+        path = request.url.path
+
+        # always allow setup + info endpoints and all non API traffic
+        if not path.startswith("/api/") or any(
+            path.startswith(p) for p in self._ALLOWED_PREFIXES
+        ):
+            return await call_next(request)
+
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "setup_required"},
+        )
 
 
 def cors_middleware(app: FastAPI) -> None:
@@ -73,8 +111,6 @@ class SlidingSessionMiddleware(BaseHTTPMiddleware):
             return response
 
         try:
-            if not settings.jwt_secret:
-                raise RuntimeError("JWT secret is not set")
             payload = jwt.decode(
                 token,
                 settings.jwt_secret,
