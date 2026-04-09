@@ -26,6 +26,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff", "uvicorn>=0.41.0"]
+desktop = [
+    "pyinstaller",
+    "pystray",
+    "platformdirs>=4.9.6",
+    "filelock>=3.16.0",
+    "uvicorn>=0.41.0",
+]
 
 [build-system]
 requires = ["hatchling"]

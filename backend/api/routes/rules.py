@@ -133,15 +133,13 @@ async def check_synced_rules(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, int]:
     """Return the count of synced libraries, movies, and series."""
-    query = select(
-        func.count(ServiceMediaLibrary.id), func.count(Movie.id), func.count(Series.id)
-    )
-    result = await db.execute(query)
-    lib_count, movie_count, series_count = result.fetchone() or (0, 0, 0)
+    lib_count = await db.scalar(select(func.count(ServiceMediaLibrary.id)))
+    movie_count = await db.scalar(select(func.count(Movie.id)))
+    series_count = await db.scalar(select(func.count(Series.id)))
     return {
-        "libraries": lib_count,
-        "movies": movie_count,
-        "series": series_count,
+        "libraries": lib_count or 0,
+        "movies": movie_count or 0,
+        "series": series_count or 0,
     }
 
 

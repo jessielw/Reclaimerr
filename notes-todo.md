@@ -32,4 +32,4 @@
 
 [ ] - Ensure house keeping tasks are keeping things nice and clean
 
-[x] - TODO (next): Per-season series deletion — currently candidates.svelte deletes entire series. Should support selecting individual seasons for deletion.
+[x] - TODO (next): Per-season series deletion - currently candidates.svelte deletes entire series. Should support selecting individual seasons for deletion.

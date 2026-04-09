@@ -4,6 +4,7 @@
   import { ModeWatcher } from "mode-watcher";
   import Sidebar from "$lib/components/sidebar.svelte";
   import Login from "./routes/login.svelte";
+  import Setup from "./routes/setup.svelte";
   import Dashboard from "./routes/dashboard.svelte";
   import Requests from "./routes/requests.svelte";
   import Movies from "./routes/movies.svelte";
@@ -26,15 +27,28 @@
     "/protection-requests": Requests,
     "/candidates": Candidates,
     "/settings": Settings,
+    "/setup": Setup,
   };
 
   let sidebarOpen = $state(false);
+  let needsSetup = $state(false);
 
   function closeSidebar() {
     sidebarOpen = false;
   }
 
-  onMount(() => {
+  onMount(async () => {
+    // Check setup status before auth so we show the wizard immediately on
+    // first run instead of briefly flashing the login screen.
+    try {
+      const res = await fetch("/api/setup/status");
+      if (res.ok) {
+        const data = await res.json();
+        needsSetup = data.needs_setup ?? false;
+      }
+    } catch {
+      // server not yet ready (auth.init() will handle the loading state)
+    }
     auth.init();
   });
 </script>
@@ -50,6 +64,9 @@
       <p class="mt-4 text-muted-foreground">Loading...</p>
     </div>
   </div>
+{:else if needsSetup}
+  <!-- first run setup wizard -->
+  <Setup onComplete={() => (needsSetup = false)} />
 {:else if !$auth.isAuthenticated}
   <!-- show login screen if not authenticated -->
   <Login />

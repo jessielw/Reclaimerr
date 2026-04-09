@@ -6,10 +6,10 @@ import socket
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import select
 
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
@@ -21,11 +21,13 @@ from backend.api.routes.protected import router as protected_router
 from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
 from backend.api.routes.settings import router as settings_router
+from backend.api.routes.setup import router as setup_router
 from backend.api.routes.tasks import router as tasks_router
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
     cors_middleware,
     security_headers_middleware,
+    setup_guard_middleware,
     sliding_session_middleware,
 )
 from backend.core.logger import LOG
@@ -43,77 +45,63 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize client manager on startup."""
-    LOG.info("Starting reclaimerr API server")
-    LOG.info(f"Log level: {settings.log_level_enum}")
-
-    if settings.cors_origins == "*":
-        LOG.warning(
-            "CORS is configured to allow ALL origins ('*'). "
-            "This is insecure for production. Set CORS_ORIGINS to your frontend URL."
-        )
-
-    # # Setup signal handlers for graceful shutdown # TODO: potentially?
-    # def signal_handler(signum, frame):
-    #     LOG.warning(f"Received signal {signum}, initiating graceful shutdown...")
-    #     # The actual cleanup will happen in the finally block below
-    #     sys.exit(0)
-
-    # # Register signal handlers (SIGINT = Ctrl+C, SIGTERM = Docker stop)
-    # signal.signal(signal.SIGINT, signal_handler)
-    # signal.signal(signal.SIGTERM, signal_handler)
-
-    # init db
-    await init_db()
-
-    # check if admin account needs created
-    await create_initial_admin()
-
-    # load service configs from database and initialize clients
-    await load_enabled_services()
-
-    # start scheduler
-    await start_scheduler()
-
-    # start in-process background worker
-    _worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    worker_task = asyncio.create_task(worker_loop(_worker_id), name="background-worker")
-
-    LOG.info("reclaimerr API ready")
+    worker_task: asyncio.Task | None = None
+    scheduler_started = False
 
     try:
-        yield
-    finally:
-        # Cleanup - this runs on both normal shutdown and signal interruption
-        LOG.info("Shutting down reclaimerr API")
+        LOG.info("Starting reclaimerr API server")
+        LOG.info(f"Log level: {settings.log_level_enum}")
 
-        # stop in-process background worker
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
-
-        # stop scheduler and wait for jobs to complete (with timeout)
-        await shutdown_scheduler()
-
-        # close all service HTTP sessions
-        await service_manager.clear_all()
-
-        # close database connections
-        await close_db()
-
-        remaining_tasks = [
-            task
-            for task in asyncio.all_tasks()
-            if task is not asyncio.current_task() and not task.done()
-        ]
-        if remaining_tasks:
-            task_names = [task.get_name() for task in remaining_tasks]
+        if settings.cors_origins == "*":
             LOG.warning(
-                f"Shutdown left {len(remaining_tasks)} pending asyncio task(s): {task_names}"
+                "CORS is configured to allow ALL origins ('*'). "
+                "This is insecure for production. Set CORS_ORIGINS to your frontend URL."
             )
 
+        # init db
+        await init_db()
+
+        # check if admin account needs created
+        await create_initial_admin()
+
+        # load service configs from database and initialize clients
+        await load_enabled_services()
+
+        # start scheduler
+        await start_scheduler()
+        scheduler_started = True
+
+        # start in-process background worker
+        _worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        worker_task = asyncio.create_task(
+            worker_loop(_worker_id), name="background-worker"
+        )
+
+        LOG.info("reclaimerr API ready")
+
+        yield
+
+    except Exception as e:
+        LOG.exception(f"Error in API lifespan: {e}")
+        raise
+    finally:
+        LOG.info("Shutting down reclaimerr API")
+
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+
+        if scheduler_started:
+            await shutdown_scheduler()
+
+        await service_manager.clear_all()
+        await close_db()
+
         LOG.info("reclaimerr API shutdown complete")
+        LOG.stop()  # flush and join the logging background thread
 
 
 app = FastAPI(
@@ -129,12 +117,14 @@ register_exception_handlers(app)
 # setup limiter
 app.state.limiter = limiter
 
-# add middleware
+# add middleware (order matters: outermost middleware added last)
 cors_middleware(app)
 security_headers_middleware(app)
 sliding_session_middleware(app)
+setup_guard_middleware(app)
 
 # routers
+app.include_router(setup_router)
 app.include_router(info_router)
 app.include_router(settings_router)
 app.include_router(dashboard_router)
@@ -148,12 +138,20 @@ app.include_router(requests_router)
 app.include_router(protected_router)
 
 
-# mount static files LAST - after all routes
+# mount static files LAST
 app.mount("/static", StaticFiles(directory=settings.static_dir_path), name="static")
 app.mount("/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars")
 
+# serve built frontend (desktop mode) when FRONTEND_DIST is set
+if settings.frontend_dist and settings.frontend_dist.is_dir():
+    fe_dist = settings.frontend_dist
+    app.mount(
+        "/assets", StaticFiles(directory=fe_dist / "assets"), name="frontend-assets"
+    )
 
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        candidate = fe_dist / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(fe_dist / "index.html")

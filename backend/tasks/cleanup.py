@@ -88,7 +88,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             candidates_updated += updated
             candidates_removed += removed
         else:
-            # no movie rules active — remove stale movie candidates
+            # no movie rules active - remove stale movie candidates
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.MOVIE
@@ -112,7 +112,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             candidates_updated += s_up
             candidates_removed += s_rm
         else:
-            # no series rules active — remove stale series candidates
+            # no series rules active - remove stale series candidates
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.SERIES
@@ -1362,7 +1362,7 @@ async def _delete_season_candidates(
             except Exception as e:
                 LOG.warning(
                     f"Sonarr deletion failed for '{series_obj.title}' "
-                    f"S{season_number:02d}: {e} — trying media server fallback"
+                    f"S{season_number:02d}: {e} - trying media server fallback"
                 )
 
         # fall back to media server if Sonarr failed or unavailable
@@ -1382,13 +1382,13 @@ async def _delete_season_candidates(
                 except Exception as e:
                     LOG.error(
                         f"Media server deletion failed for '{series_obj.title}' "
-                        f"S{season_number:02d}: {e} — skipping"
+                        f"S{season_number:02d}: {e} - skipping"
                     )
                     continue
             else:
                 LOG.warning(
                     f"No deletion method available for '{series_obj.title}' "
-                    f"S{season_number:02d} — skipping"
+                    f"S{season_number:02d} - skipping"
                 )
                 continue
 

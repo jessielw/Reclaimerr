@@ -1,5 +1,6 @@
 import logging
-from logging.handlers import RotatingFileHandler
+import queue
+from logging.handlers import QueueHandler, QueueListener, TimedRotatingFileHandler
 from pathlib import Path
 
 from backend.core.__version__ import __version__, program_name
@@ -18,41 +19,47 @@ class Logger:
         to_console: bool = False,
         default_source: LogSource = LogSource.BE,
     ) -> None:
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("reclaimerr")
         self.logger.setLevel(log_level.value)
         self.log_file = log_file
         self.log_level = log_level
-        self.file_handler = None
-        self.console_handler = None
         self.to_console = to_console
         self.default_source = default_source
+        self._queue_listener: QueueListener | None = None
+        self._initialized = False
 
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
     def _initialize_file_handler(self) -> None:
-        # already initialized, nothing to do
-        if self.file_handler is not None:
+        if self._initialized:  # already initialized, nothing to do
             return
+        self._initialized = True
 
-        # initialize file handler
-        self.file_handler = RotatingFileHandler(
+        fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+        file_handler = TimedRotatingFileHandler(
             self.log_file,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
+            when="midnight",
+            backupCount=30,
             encoding="utf-8",
         )
-        self.file_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        )
-        self.logger.addHandler(self.file_handler)
+        file_handler.setFormatter(fmt)
+        sinks: list[logging.Handler] = [file_handler]
 
-        # initialize console handler if needed
         if self.to_console:
-            self.console_handler = logging.StreamHandler()
-            self.console_handler.setFormatter(
-                logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            )
-            self.logger.addHandler(self.console_handler)
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(fmt)
+            sinks.append(console_handler)
+
+        # QueueListener runs the sinks on a background thread, keeping I/O off the event loop
+        log_queue: queue.Queue = queue.Queue(maxsize=-1)
+        self._queue_listener = QueueListener(
+            log_queue, *sinks, respect_handler_level=True
+        )
+        self._queue_listener.start()
+
+        # attach a QueueHandler so all logger.* calls enqueue (non blocking)
+        self.logger.addHandler(QueueHandler(log_queue))
 
         # log initial program info on first initialization
         self.info(f"{program_name} v{__version__}")
@@ -110,6 +117,12 @@ class Logger:
 
     def set_log_level(self, log_level: LogLevel) -> None:
         self.logger.setLevel(log_level.value)
+
+    def stop(self) -> None:
+        """Stop the queue listener (flush and join the background thread). Call on app shutdown."""
+        if self._queue_listener is not None:
+            self._queue_listener.stop()
+            self._queue_listener = None
 
 
 # initialize global logger instance with a static filename
