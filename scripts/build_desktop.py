@@ -10,8 +10,8 @@ Output (onedir mode):
     Linux   : dist/Reclaimerr/Reclaimerr
 
 User data (DB, logs, avatars) is stored in the platform data dir at runtime
-(%%LOCALAPPDATA%%/Reclaimerr on Windows, ~/Library/Application Support/Reclaimerr
-on macOS, ~/.local/share/Reclaimerr on Linux).
+(%%LOCALAPPDATA%%/reclaimerr on Windows, ~/Library/Application Support/reclaimerr
+on macOS, ~/.local/share/reclaimerr on Linux).
 """
 
 import platform
@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
 FRONTEND_DIST = FRONTEND_DIR / "dist"
 DESKTOP_DIR = REPO_ROOT / "desktop"
-OUTPUT_NAME = "Reclaimerr"
+OUTPUT_NAME = "reclaimerr"
 SPEC_FILE = REPO_ROOT / f"{OUTPUT_NAME}.spec"
 
 PLATFORM = platform.system()

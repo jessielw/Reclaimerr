@@ -7,6 +7,9 @@ wheels/
 *.egg-info
 .python-version
 
+# generated PyInstaller spec (produced by build_desktop.py)
+reclaimerr.spec
+
 # Virtual environments
 .venv
 
