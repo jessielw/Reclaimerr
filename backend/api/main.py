@@ -101,6 +101,7 @@ async def lifespan(app: FastAPI):
         await close_db()
 
         LOG.info("reclaimerr API shutdown complete")
+        LOG.stop()  # flush and join the logging background thread
 
 
 app = FastAPI(
