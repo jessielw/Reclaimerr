@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import secrets
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -21,6 +23,12 @@ class Settings(BaseSettings):
     # static directory
     static_dir: Path = Field(
         default=Path("./data/static"), description="Directory for static files."
+    )
+
+    # optional: path to built frontend dist folder (enables SPA serving)
+    frontend_dist: Path | None = Field(
+        default=None,
+        description="Path to built frontend dist/ folder. When set, serves the SPA.",
     )
 
     # avatars directory
@@ -50,8 +58,9 @@ class Settings(BaseSettings):
     )
 
     # JWT authentication
-    jwt_secret: str | None = Field(
-        default=None, description="Secret key for JWT tokens (min 32 characters)."
+    jwt_secret: str = Field(
+        default="",
+        description="Secret key for JWT tokens (min 32 characters). Auto generated if not set.",
     )
     jwt_algorithm: str = "HS256"
 
@@ -68,9 +77,9 @@ class Settings(BaseSettings):
     )
 
     # encryption key for sensitive DB fields
-    encryption_key: str | None = Field(
-        default=None,
-        description="Key for encrypting sensitive DB fields (min 32 characters).",
+    encryption_key: str = Field(
+        default="",
+        description="Key for encrypting sensitive DB fields (min 32 characters). Auto generated if not set.",
     )
 
     model_config = SettingsConfigDict(
@@ -91,13 +100,25 @@ class Settings(BaseSettings):
 
     @field_validator("jwt_secret", mode="before")
     @classmethod
-    def validate_jwt_secret(cls, v: str | None) -> str | None:
-        return cls._validate_secret(v, "jwt_secret")
+    def validate_jwt_secret(cls, v: str | None) -> str:
+        return cls._resolve_secret(v, "jwt_secret")
 
     @field_validator("encryption_key", mode="before")
     @classmethod
-    def validate_encryption_key(cls, v: str | None) -> str | None:
-        return cls._validate_secret(v, "encryption_key")
+    def validate_encryption_key(cls, v: str | None) -> str:
+        _log = logging.getLogger("reclaimerr")
+        if isinstance(v, str):
+            v = v.strip()
+        if not v:
+            # only safe moment to generate (nothing is set yet, so no existing data to corrupt)
+            _log.warning(
+                "ENCRYPTION_KEY is not set - generating a random value. "
+                "Persist ENCRYPTION_KEY in your .env / secrets.env before storing any data. "
+                "Changing the key after encrypted data exists will make that data unreadable."
+            )
+            return secrets.token_hex(32)
+        # any explicitly set value is used as is
+        return v
 
     @property
     def data_dir_path(self) -> Path:
@@ -152,39 +173,44 @@ class Settings(BaseSettings):
         return str(__version__)
 
     @staticmethod
-    def _validate_secret(v: str | None, field: str) -> str | None:
-        """Shared secret validation logic for jwt_secret and encryption_key using hardcoded error messages."""
+    def _resolve_secret(v: str | None, field: str) -> str:
+        """
+        Return the secret value, auto-generating one only when genuinely absent.
+
+        If a value is explicitly set (even a weak one) it is used as is so that
+        existing encrypted data remains readable. A random secret is only
+        generated when nothing was provided at all
+
+        Note: desktop mode persists the generated value in secrets.env so it survives restarts.
+        """
+        # we're avoiding importing LOG here to prevent circular imports, but we still want
+        # to log through the same logger ASAP that's in backend.core.settings.logger (LOG)
+        _log = logging.getLogger("reclaimerr")
+
         if isinstance(v, str):
             v = v.strip()
+
         if not v:
-            if field == "jwt_secret":
-                raise PydanticCustomError("jwt_secret", "JWT secret must be set")
-            else:
-                raise PydanticCustomError(
-                    "encryption_key", "Encryption key must be set"
-                )
-        if v == "CHANGE_ME_IN_PRODUCTION":
-            if field == "jwt_secret":
-                raise PydanticCustomError(
-                    "jwt_secret",
-                    "JWT secret must not be a known default value. Generate a strong random secret.",
-                )
-            else:
-                raise PydanticCustomError(
-                    "encryption_key",
-                    "Encryption key must not be a known default value. Generate a strong random secret.",
-                )
+            # truly absent (safe to generate a new key)
+            _log.warning(
+                "%s is not set - generating a random value. "
+                "Set %s in your .env / secrets.env for a stable secret across restarts.",
+                field,
+                field,
+            )
+            return secrets.token_hex(32)
+
+        # value was explicitly provided (reject if too short)
         if len(v) < 32:
-            if field == "jwt_secret":
-                raise PydanticCustomError(
-                    "jwt_secret",
-                    "JWT secret must be at least 32 characters long",
-                )
-            else:
-                raise PydanticCustomError(
-                    "encryption_key",
-                    "Encryption key must be at least 32 characters long",
-                )
+            raise PydanticCustomError(
+                "field_too_short",
+                (
+                    "{field} is set but shorter than 32 characters. Provide a strong random value (e.g. "
+                    "`openssl rand -hex 32`) or remove it to auto-generate one."
+                ),
+                {"field": field},
+            )
+
         return v
 
 
