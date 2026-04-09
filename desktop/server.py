@@ -9,7 +9,6 @@ from pathlib import Path
 import uvicorn
 from platformdirs import user_data_dir
 
-from backend.api.main import app
 from desktop.utils import is_bundled
 
 APP_NAME = "Reclaimerr"
@@ -102,6 +101,10 @@ class ReclaimerServer:
         Must be called from the **main thread** so asyncio owns it.
         Returns only after stop() is called.
         """
+        # This must be imported here (not at module level) so that prepare_env() has already
+        # set DATA_DIR / FRONTEND_DIST / etc. before Settings() is instantiated.
+        from backend.api.main import app
+
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
