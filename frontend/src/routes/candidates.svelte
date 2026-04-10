@@ -91,7 +91,7 @@
   const sortByOptions = [
     { value: "created_at", label: "Date Added" },
     { value: "media_title", label: "Title" },
-    { value: "estimated_space_gb", label: "Space" },
+    { value: "estimated_space_gb", label: "Size" },
   ];
 
   const durationOptions = [
@@ -442,7 +442,7 @@
     status: { is_candidate: true },
   });
 
-  const spaceLabel = (gb: number | null) =>
+  const sizeLabel = (gb: number | null) =>
     gb != null ? `${gb.toFixed(2)} GB` : "?";
 
   const groupTotalGb = (row: GroupRow): number =>
@@ -786,7 +786,7 @@
             >
             <th
               class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >Space</th
+              >Size</th
             >
             <th
               class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
@@ -843,7 +843,7 @@
                   <span class="line-clamp-3">{entry.reason}</span>
                 </td>
                 <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
-                  {spaceLabel(entry.estimated_space_gb)}
+                  {sizeLabel(entry.estimated_space_gb)}
                 </td>
                 <td
                   class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
@@ -998,7 +998,7 @@
                     <td
                       class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
                     >
-                      {spaceLabel(season.estimated_space_gb)}
+                      {sizeLabel(season.estimated_space_gb)}
                     </td>
                     <td
                       class="px-6 py-3 text-sm text-muted-foreground whitespace-nowrap"
