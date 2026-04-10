@@ -77,8 +77,8 @@
 >
   <!-- main card -->
   <div
-    class="relative aspect-2/3 bg-gray-800 rounded-lg overflow-hidden ring-1 ring-gray-700
-      transition-all duration-300 hover:ring-2 hover:ring-gray-500 hover:scale-105"
+    class="relative aspect-2/3 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-400
+      dark:border-gray-700 hover:scale-105"
   >
     <!-- poster image -->
     {#if media.poster_url}
@@ -162,8 +162,8 @@
         !media.status.is_protected &&
         !media.status.has_pending_request}
       <div
-        class="absolute inset-0 bg-linear-to-t from-black/60 via-transparent
-          to-black/60 flex flex-col justify-end p-4 transition-opacity duration-200"
+        class="absolute inset-0 bg-linear-to-t from-black/50 via-black/75
+          to-black/50 flex flex-col justify-end p-4 transition-opacity duration-200"
       >
         <!-- title and year -->
         <div class="text-left mb-3">
@@ -183,8 +183,8 @@
           {#if canRequest}
             <Button
               size="sm"
-              class="cursor-pointer text-gray-200/30 hover:text-gray-200
-              bg-primary/30 hover:bg-primary transition-colors rounded-tr-none rounded-br-none
+              class="cursor-pointer text-gray-200 bg-primary transition-colors rounded-tr-none 
+                rounded-br-none hover:scale-103
               {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}
               {!canRequest ? '' : 'rounded-tr-none rounded-br-none'}"
               onclick={handleRequestException}
@@ -200,8 +200,7 @@
           <div>
             <Button
               size="sm"
-              class="cursor-pointer text-gray-200/30 hover:text-gray-200
-              bg-primary/30 hover:bg-primary transition-colors 
+              class="cursor-pointer text-gray-200 bg-primary transition-colors hover:scale-103
               {!canRequest ? '' : 'rounded-tl-none rounded-bl-none'}"
               onclick={handleInfoClick}
             >
