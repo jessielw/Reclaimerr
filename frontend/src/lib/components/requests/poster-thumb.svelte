@@ -21,7 +21,9 @@
 </script>
 
 <div
-  class="w-16 shrink-0 rounded-md border border-border bg-muted/40 flex items-center justify-center aspect-2/3"
+  class="w-16 shrink-0 rounded-md bg-muted/40 flex items-center justify-center aspect-2/3 border-2
+    transition-transform duration-150 border-gray-400 dark:border-gray-700 hover:scale-105
+    cursor-default"
 >
   {#if normalizedPosterUrl}
     <img
