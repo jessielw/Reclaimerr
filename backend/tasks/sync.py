@@ -14,6 +14,8 @@ from backend.database import async_db
 from backend.database.models import (
     Movie,
     MovieVersion,
+    ProtectedMedia,
+    ReclaimCandidate,
     ReclaimRule,
     Season,
     Series,
@@ -598,9 +600,28 @@ async def sync_movies(
                     LOG.info(
                         f"Soft-deleting {len(movies_to_delete)} movies no longer in {effective_service.value}"
                     )
+                    deleted_movie_ids = []
                     for movie in movies_to_delete:
                         movie.removed_at = datetime.now(timezone.utc)
+                        deleted_movie_ids.append(movie.id)
                         LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
+
+                    # clean up orphaned candidates and protection entries
+                    if deleted_movie_ids:
+                        await session.execute(
+                            sql_delete(ReclaimCandidate).where(
+                                ReclaimCandidate.movie_id.in_(deleted_movie_ids)
+                            )
+                        )
+                        await session.execute(
+                            sql_delete(ProtectedMedia).where(
+                                ProtectedMedia.movie_id.in_(deleted_movie_ids)
+                            )
+                        )
+                        LOG.debug(
+                            f"Cleaned up candidates/protection entries for {len(deleted_movie_ids)} soft-deleted movies"
+                        )
+
                     await session.commit()
 
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -804,9 +825,28 @@ async def sync_series(
                     LOG.info(
                         f"Soft-deleting {len(series_to_delete)} series no longer in {source_label}"
                     )
+                    deleted_series_ids = []
                     for s in series_to_delete:
                         s.removed_at = datetime.now(timezone.utc)
+                        deleted_series_ids.append(s.id)
                         LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
+
+                    # clean up orphaned candidates and protection entries
+                    if deleted_series_ids:
+                        await session.execute(
+                            sql_delete(ReclaimCandidate).where(
+                                ReclaimCandidate.series_id.in_(deleted_series_ids)
+                            )
+                        )
+                        await session.execute(
+                            sql_delete(ProtectedMedia).where(
+                                ProtectedMedia.series_id.in_(deleted_series_ids)
+                            )
+                        )
+                        LOG.debug(
+                            f"Cleaned up candidates/protection entries for {len(deleted_series_ids)} soft-deleted series"
+                        )
+
                     await session.commit()
 
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
