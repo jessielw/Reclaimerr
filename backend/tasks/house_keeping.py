@@ -8,12 +8,11 @@ from sqlalchemy import delete, select
 from backend.core.logger import LOG
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
-from backend.database.models import TaskRun
+from backend.database.models import BackgroundJob, TaskRun
 from backend.enums import Task
 
 __all__ = ["weekly_house_keeping"]
 
-# TODO: add house keeping for other stuff that we need
 
 async def _trim_task_runs(keep_recent: int) -> None:
     """Trim old task runs from the database, keeping only the most recent N runs total."""
@@ -35,6 +34,26 @@ async def _trim_task_runs(keep_recent: int) -> None:
             await session.rollback()
 
 
+async def _trim_background_jobs(keep_recent: int) -> None:
+    """Trim old background jobs from the database, keeping only the most recent N runs total."""
+    async with async_db() as session:
+        try:
+            rows_to_del = (
+                select(BackgroundJob.id)
+                .order_by(BackgroundJob.created_at.desc())
+                .offset(keep_recent)
+            )
+            del_stmt = delete(BackgroundJob).where(BackgroundJob.id.in_(rows_to_del))
+            result = await session.execute(del_stmt)
+            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await session.commit()
+            if count > 0:
+                LOG.debug(f"Trimmed {count} old background jobs")
+        except Exception as e:
+            LOG.error(f"Error trimming background jobs: {e}")
+            await session.rollback()
+
+
 class HouseKeepingTask(NamedTuple):
     """Represents a house keeping task (used only internally for this module)."""
 
@@ -49,6 +68,11 @@ _WEEKLY_HOUSE_KEEPING_TASKS = (
     HouseKeepingTask(
         name="Trim old task runs",
         func=_trim_task_runs,
+        kwargs={"keep_recent": 200},
+    ),
+    HouseKeepingTask(
+        name="Trim old background jobs",
+        func=_trim_background_jobs,
         kwargs={"keep_recent": 200},
     ),
 )
