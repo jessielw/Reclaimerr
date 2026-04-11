@@ -1,4 +1,4 @@
-# Python-generated files
+# python generated files
 __pycache__/
 *.py[oc]
 build/
@@ -10,17 +10,17 @@ wheels/
 # generated PyInstaller spec (produced by build_desktop.py)
 reclaimerr.spec
 
-# Virtual environments
+# virtual environments
 .venv
 
-# Environment variables
+# environment variables
 .env
 
-# Runtime/config directories
+# runtime/config directories
 runtime/
 config.toml
 
-# Logs
+# logs
 logs
 *.log
 
@@ -41,3 +41,7 @@ node_modules
 dist
 dist-ssr
 *.local
+
+# docker
+compose.yml
+compose.yaml
