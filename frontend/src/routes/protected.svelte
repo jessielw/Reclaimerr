@@ -18,6 +18,11 @@
     type PaginatedResponse,
   } from "$lib/types/shared";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
+  import {
+    createPerPageState,
+    createFilterState,
+    PER_PAGE_OPTIONS,
+  } from "$lib/utils/pagination";
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
   import Pencil from "@lucide/svelte/icons/pencil";
@@ -30,11 +35,15 @@
   let loading = $state(true);
   let error = $state("");
   let searchQuery = $state("");
-  let sortBy = $state("created_at");
-  let sortOrder = $state("desc");
-  let mediaTypeFilter = $state("all");
+  const _sortByStore = createFilterState("protected_sort_by", "created_at");
+  const _sortOrderStore = createFilterState("protected_sort_order", "desc");
+  const _mediaTypeStore = createFilterState("protected_media_type", "all");
+  let sortBy = $state(_sortByStore.getInitial());
+  let sortOrder = $state(_sortOrderStore.getInitial());
+  let mediaTypeFilter = $state(_mediaTypeStore.getInitial());
   let currentPage = $state(1);
-  const PER_PAGE = 25;
+  const _perPageStore = createPerPageState("protected_per_page");
+  let perPage = $state(_perPageStore.getInitial());
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let abortController: AbortController | null = null;
   let mounted = $state(false);
@@ -68,10 +77,15 @@
     );
   });
 
+  $effect(() => _sortByStore.save(sortBy));
+  $effect(() => _sortOrderStore.save(sortOrder));
+  $effect(() => _mediaTypeStore.save(mediaTypeFilter));
+
   $effect(() => {
     sortBy;
     sortOrder;
     mediaTypeFilter;
+    perPage;
     if (mounted) {
       loadProtectedEntries(1);
     }
@@ -90,7 +104,7 @@
     try {
       const params = new URLSearchParams({
         page: page.toString(),
-        per_page: PER_PAGE.toString(),
+        per_page: perPage.toString(),
         sort_by: sortBy,
         sort_order: sortOrder,
       });
@@ -382,71 +396,105 @@
       />
     </div>
 
-    <div class="flex flex-1 flex-row gap-2">
-      <!-- sort by -->
-      <Select.Root type="single" bind:value={sortBy}>
-        <Select.Trigger class="flex-10 bg-card text-card-foreground">
-          {sortByOptions.find((opt) => opt.value === sortBy)?.label}
-        </Select.Trigger>
-        <Select.Content class="bg-card">
-          {#each sortByOptions as option}
+    <div class="flex flex-1 flex-col gap-2 sm:flex-row">
+      <!-- row 1 on mobile: sort by + sort order -->
+      <div class="flex flex-1 gap-2">
+        <!-- sort by -->
+        <Select.Root type="single" bind:value={sortBy}>
+          <Select.Trigger class="flex-1 bg-card text-card-foreground">
+            {sortByOptions.find((opt) => opt.value === sortBy)?.label}
+          </Select.Trigger>
+          <Select.Content class="bg-card">
+            {#each sortByOptions as option}
+              <Select.Item
+                value={option.value}
+                label={option.label}
+                class="text-card-foreground"
+              >
+                {option.label}
+              </Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
+
+        <!-- sort order -->
+        <Select.Root type="single" bind:value={sortOrder}>
+          <Select.Trigger class="flex-1 bg-card text-card-foreground">
+            {sortOrder === "asc" ? "Ascending" : "Descending"}
+          </Select.Trigger>
+          <Select.Content class="bg-card">
             <Select.Item
-              value={option.value}
-              label={option.label}
-              class="text-card-foreground"
+              value="asc"
+              label="Ascending"
+              class="text-card-foreground">Ascending</Select.Item
             >
-              {option.label}
-            </Select.Item>
-          {/each}
-        </Select.Content>
-      </Select.Root>
+            <Select.Item
+              value="desc"
+              label="Descending"
+              class="text-card-foreground">Descending</Select.Item
+            >
+          </Select.Content>
+        </Select.Root>
+      </div>
 
-      <!-- sort order -->
-      <Select.Root type="single" bind:value={sortOrder}>
-        <Select.Trigger class="flex-10 bg-card text-card-foreground">
-          {sortOrder === "asc" ? "Ascending" : "Descending"}
-        </Select.Trigger>
-        <Select.Content class="bg-card">
-          <Select.Item
-            value="asc"
-            label="Ascending"
-            class="text-card-foreground">Ascending</Select.Item
-          >
-          <Select.Item
-            value="desc"
-            label="Descending"
-            class="text-card-foreground">Descending</Select.Item
-          >
-        </Select.Content>
-      </Select.Root>
+      <!-- row 2 on mobile: media type + per page -->
+      <div class="flex flex-1 gap-2">
+        <!-- media type filter -->
+        <Select.Root type="single" bind:value={mediaTypeFilter}>
+          <Select.Trigger class="flex-1 bg-card text-card-foreground">
+            {mediaTypeFilter === "all"
+              ? "All Media"
+              : mediaTypeFilter === MediaType.Movie
+                ? "Movies"
+                : "Series"}
+          </Select.Trigger>
+          <Select.Content class="bg-card">
+            <Select.Item
+              value="all"
+              label="All Media"
+              class="text-card-foreground">All Media</Select.Item
+            >
+            <Select.Item
+              value={MediaType.Movie}
+              label="Movies"
+              class="text-card-foreground">Movies</Select.Item
+            >
+            <Select.Item
+              value={MediaType.Series}
+              label="Series"
+              class="text-card-foreground">Series</Select.Item
+            >
+          </Select.Content>
+        </Select.Root>
 
-      <!-- media type filter -->
-      <Select.Root type="single" bind:value={mediaTypeFilter}>
-        <Select.Trigger class="flex-10 bg-card text-card-foreground">
-          {mediaTypeFilter === "all"
-            ? "All Media"
-            : mediaTypeFilter === MediaType.Movie
-              ? "Movies"
-              : "Series"}
-        </Select.Trigger>
-        <Select.Content class="bg-card">
-          <Select.Item
-            value="all"
-            label="All Media"
-            class="text-card-foreground">All Media</Select.Item
-          >
-          <Select.Item
-            value={MediaType.Movie}
-            label="Movies"
-            class="text-card-foreground">Movies</Select.Item
-          >
-          <Select.Item
-            value={MediaType.Series}
-            label="Series"
-            class="text-card-foreground">Series</Select.Item
-          >
-        </Select.Content>
-      </Select.Root>
+        <!-- per page -->
+        <Select.Root
+          type="single"
+          value={perPage.toString()}
+          onValueChange={(v) => {
+            const n = parseInt(v, 10);
+            if (!isNaN(n)) {
+              perPage = n;
+              _perPageStore.save(n);
+            }
+          }}
+        >
+          <Select.Trigger class="flex-1 bg-card text-card-foreground">
+            {perPage} / page
+          </Select.Trigger>
+          <Select.Content class="bg-card">
+            {#each PER_PAGE_OPTIONS as opt}
+              <Select.Item
+                value={opt.toString()}
+                label={`${opt} / page`}
+                class="text-card-foreground"
+              >
+                {opt} / page
+              </Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
+      </div>
     </div>
   </div>
 
