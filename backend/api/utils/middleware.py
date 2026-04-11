@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.core.auth import COOKIE_NAME, SESSION_TTL_SECONDS, create_access_token
+from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.setup_state import setup_state
 
@@ -133,6 +134,7 @@ class SlidingSessionMiddleware(BaseHTTPMiddleware):
                     path="/",
                 )
         except Exception:
-            pass  # don't interfere with the response if refresh fails
+            # don't interfere with the response
+            LOG.debug("Failed to refresh session token", exc_info=True)
 
         return response
