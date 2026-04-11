@@ -15,9 +15,15 @@ from backend.enums import BackgroundJobStatus, BackgroundJobType
 router = APIRouter(prefix="/api/tasks", tags=["background-jobs"])
 
 
+_REDACTED_PAYLOAD_KEYS = {"api_key", "password", "token", "secret"}
+
+
 def _serialize_background_job(job: BackgroundJob) -> dict[str, Any]:
     """Serialize a BackgroundJob instance into a dictionary for API responses."""
-    payload = job.payload or {}
+    raw_payload = job.payload or {}
+    payload = {
+        k: "***" if k in _REDACTED_PAYLOAD_KEYS else v for k, v in raw_payload.items()
+    }
     summary: str | None = None
 
     if job.job_type is BackgroundJobType.TASK_RUN:
