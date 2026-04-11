@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { get_api } from "$lib/api";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
@@ -19,6 +19,11 @@
     type PaginatedResponse,
   } from "$lib/types/shared";
   import { toast } from "svelte-sonner";
+  import {
+    createPerPageState,
+    createFilterState,
+    PER_PAGE_OPTIONS,
+  } from "$lib/utils/pagination";
 
   const sortByOptions = [
     { value: "title", label: "Title" },
@@ -33,6 +38,21 @@
   }
   let { mediaType }: Props = $props();
 
+  // mediaType is fixed at the call site (movies.svelte / series.svelte) and
+  // never changes, so capturing it once with untrack is intentional.
+  const _prefix = untrack(() =>
+    mediaType === MediaType.Movie ? "movies" : "series",
+  );
+  const _perPageStore = createPerPageState(`${_prefix}_per_page`);
+  let perPage = $state(_perPageStore.getInitial());
+
+  const _sortByStore = createFilterState(`${_prefix}_sort_by`, "title");
+  const _sortOrderStore = createFilterState(`${_prefix}_sort_order`, "asc");
+  const _candidatesOnlyStore = createFilterState(
+    `${_prefix}_candidates_only`,
+    false,
+  );
+
   let loading = $state(true);
   let error = $state("");
   let mediaData = $state<PaginatedResponse<
@@ -41,9 +61,9 @@
 
   // filters and search
   let searchQuery = $state("");
-  let sortBy = $state("title");
-  let sortOrder = $state("asc");
-  let candidatesOnly = $state(false);
+  let sortBy = $state(_sortByStore.getInitial());
+  let sortOrder = $state(_sortOrderStore.getInitial());
+  let candidatesOnly = $state(_candidatesOnlyStore.getInitial());
   let currentPage = $state(1);
 
   // poster size control
@@ -85,11 +105,16 @@
     isMovie ? "Search movies..." : "Search series...",
   );
 
-  // watch for changes in sortBy, sortOrder, and candidatesOnly to reload
+  $effect(() => _sortByStore.save(sortBy));
+  $effect(() => _sortOrderStore.save(sortOrder));
+  $effect(() => _candidatesOnlyStore.save(candidatesOnly));
+
+  // watch for changes in sortBy, sortOrder, candidatesOnly, and perPage to reload
   $effect(() => {
     sortBy;
     sortOrder;
     candidatesOnly;
+    perPage;
     if (mounted) {
       loadMedia(1);
     }
@@ -108,7 +133,7 @@
     try {
       const params = new URLSearchParams({
         page: page.toString(),
-        per_page: "50",
+        per_page: perPage.toString(),
         sort_by: sortBy,
         sort_order: sortOrder,
       });
@@ -301,17 +326,46 @@
           >
         </label>
 
-        <label class="flex items-center gap-2 ml-auto">
-          <LayoutGrid class="size-4 text-muted-foreground shrink-0" />
-          <input
-            type="range"
-            min="100"
-            max="300"
-            step="10"
-            bind:value={posterSize}
-            class="w-24 accent-primary cursor-pointer"
-          />
-        </label>
+        <!-- per page + poster size -->
+        <div class="flex items-center gap-3 sm:contents">
+          <!-- per page -->
+          <Select.Root
+            type="single"
+            value={perPage.toString()}
+            onValueChange={(v) => {
+              const n = parseInt(v);
+              perPage = n;
+              _perPageStore.save(n);
+            }}
+          >
+            <Select.Trigger class="w-28 bg-card text-card-foreground">
+              {perPage} / page
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              {#each PER_PAGE_OPTIONS as option}
+                <Select.Item
+                  value={option.toString()}
+                  label={option.toString()}
+                  class="text-card-foreground"
+                >
+                  {option}
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+
+          <label class="flex items-center gap-2 sm:ml-auto">
+            <LayoutGrid class="size-4 text-muted-foreground shrink-0" />
+            <input
+              type="range"
+              min="100"
+              max="300"
+              step="10"
+              bind:value={posterSize}
+              class="w-24 accent-primary cursor-pointer"
+            />
+          </label>
+        </div>
       </div>
     </div>
 
