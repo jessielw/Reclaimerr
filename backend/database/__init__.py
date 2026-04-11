@@ -24,6 +24,7 @@ engine = create_async_engine(
 def set_sqlite_pragma(dbapi_conn, _connection_record):
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
