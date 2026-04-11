@@ -15,6 +15,7 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ProtectedMedia,
+    ProtectionRequest,
     ReclaimCandidate,
     ReclaimRule,
     Season,
@@ -187,9 +188,31 @@ async def _sync_seasons(
             )
 
     # remove seasons no longer in the media server
-    for season_number, season_obj in existing.items():
-        if season_number not in incoming_season_numbers:
-            await session.delete(season_obj)
+    removed_season_ids = [
+        season_obj.id
+        for season_number, season_obj in existing.items()
+        if season_number not in incoming_season_numbers
+    ]
+    if removed_season_ids:
+        # clean up orphaned candidates and protection entries before deleting seasons
+        await session.execute(
+            sql_delete(ReclaimCandidate).where(
+                ReclaimCandidate.season_id.in_(removed_season_ids)
+            )
+        )
+        await session.execute(
+            sql_delete(ProtectedMedia).where(
+                ProtectedMedia.season_id.in_(removed_season_ids)
+            )
+        )
+        await session.execute(
+            sql_delete(ProtectionRequest).where(
+                ProtectionRequest.season_id.in_(removed_season_ids)
+            )
+        )
+        for season_number, season_obj in existing.items():
+            if season_number not in incoming_season_numbers:
+                await session.delete(season_obj)
 
 
 async def _upsert_series_service_ref(
@@ -618,6 +641,11 @@ async def sync_movies(
                                 ProtectedMedia.movie_id.in_(deleted_movie_ids)
                             )
                         )
+                        await session.execute(
+                            sql_delete(ProtectionRequest).where(
+                                ProtectionRequest.movie_id.in_(deleted_movie_ids)
+                            )
+                        )
                         LOG.debug(
                             f"Cleaned up candidates/protection entries for {len(deleted_movie_ids)} soft-deleted movies"
                         )
@@ -843,6 +871,11 @@ async def sync_series(
                                 ProtectedMedia.series_id.in_(deleted_series_ids)
                             )
                         )
+                        await session.execute(
+                            sql_delete(ProtectionRequest).where(
+                                ProtectionRequest.series_id.in_(deleted_series_ids)
+                            )
+                        )
                         LOG.debug(
                             f"Cleaned up candidates/protection entries for {len(deleted_series_ids)} soft-deleted series"
                         )
@@ -952,7 +985,10 @@ async def sync_linked_data(
 
         async with async_db() as session:
             result = await session.execute(
-                select(Movie).where(Movie.tmdb_id.in_(watch_by_tmdb.keys()))
+                select(Movie).where(
+                    Movie.tmdb_id.in_(watch_by_tmdb.keys()),
+                    Movie.removed_at.is_(None),
+                )
             )
             updated = 0
             for movie in result.scalars().all():
