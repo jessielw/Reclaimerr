@@ -84,11 +84,15 @@ async def get_movies(
         count_query = count_query.where(Movie.title.ilike(search_term))
 
     # apply candidates filter
+    # Note: use distinct() to guard against row multiplication if a movie ever ends up
+    # with more than one ReclaimCandidate row (this should really not ever happen)
     if candidates_only:
-        query = query.join(ReclaimCandidate, ReclaimCandidate.movie_id == Movie.id)
+        query = query.join(
+            ReclaimCandidate, ReclaimCandidate.movie_id == Movie.id
+        ).distinct()
         count_query = count_query.join(
             ReclaimCandidate, ReclaimCandidate.movie_id == Movie.id
-        )
+        ).distinct()
 
     # apply sorting
     order_column = getattr(Movie, sort_by)
@@ -254,11 +258,15 @@ async def get_series(
         count_query = count_query.where(Series.title.ilike(search_term))
 
     # apply candidates filter
+    # Note: we're using distinct() to avoid row multiplication when a series has multiple
+    # season level candidates (each shares the same series_id)
     if candidates_only:
-        query = query.join(ReclaimCandidate, ReclaimCandidate.series_id == Series.id)
+        query = query.join(
+            ReclaimCandidate, ReclaimCandidate.series_id == Series.id
+        ).distinct()
         count_query = count_query.join(
             ReclaimCandidate, ReclaimCandidate.series_id == Series.id
-        )
+        ).distinct()
 
     # apply sorting
     order_column = getattr(Series, sort_by)
