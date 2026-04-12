@@ -1,0 +1,18 @@
+services:
+  reclaimerr:
+    image: ghcr.io/jessielw/reclaimerr:latest
+    container_name: reclaimerr
+    restart: unless-stopped
+    env_file: ".env"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+
+    # optional healthcheck to monitor container health (adjust the URL and parameters as needed)
+    # healthcheck:
+    #   test: ["CMD", "curl", "-sf", "http://localhost:8000/api/info/health"]
+    #   interval: 15s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 20s
