@@ -50,7 +50,7 @@ def run(cmd: list[str], **kwargs):
 
 def build_frontend():
     print("\n=== Building frontend ===")
-    run(["npm", "run", "build"], cwd=FRONTEND_DIR, shell=True)
+    run(["npm", "run", "build"], cwd=FRONTEND_DIR)
     if not FRONTEND_DIST.exists():
         print("ERROR: frontend/dist not found after build")
         sys.exit(1)
