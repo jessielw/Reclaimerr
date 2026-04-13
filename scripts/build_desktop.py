@@ -50,7 +50,8 @@ def run(cmd: list[str], **kwargs):
 
 def build_frontend():
     print("\n=== Building frontend ===")
-    run(["npm", "run", "build"], cwd=FRONTEND_DIR)
+    # shell=True is required on Windows because npm is a .cmd file (we don't need this on Unix).
+    run(["npm", "run", "build"], cwd=FRONTEND_DIR, shell=(PLATFORM == "Windows"))
     if not FRONTEND_DIST.exists():
         print("ERROR: frontend/dist not found after build")
         sys.exit(1)
