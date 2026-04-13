@@ -191,7 +191,9 @@ class PlexService:
 
     async def _get_episode_data_for_section(
         self, section_id: str
-    ) -> tuple[dict[str, int], dict[str, str], dict[tuple[str, int], AggregatedSeasonData]]:
+    ) -> tuple[
+        dict[str, int], dict[str, str], dict[tuple[str, int], AggregatedSeasonData]
+    ]:
         """Fetch all episodes for a section once and extract sizes, paths, and season data.
 
         Returns:
@@ -412,9 +414,11 @@ class PlexService:
             LOG.debug(f"Processing series library: {section_name} (ID: {section_id})")
 
             # fetch all episode sizes and paths for this section in one API call
-            series_sizes, series_paths, season_data_map = (
-                await self._get_episode_data_for_section(section_id)
-            )
+            (
+                series_sizes,
+                series_paths,
+                season_data_map,
+            ) = await self._get_episode_data_for_section(section_id)
 
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
@@ -462,9 +466,7 @@ class PlexService:
                     external_ids=ext_ids,
                     size=total_size,
                     season_data=list(
-                        v
-                        for k, v in season_data_map.items()
-                        if k[0] == rating_key
+                        v for k, v in season_data_map.items() if k[0] == rating_key
                     ),
                 )
                 all_series.append(series)

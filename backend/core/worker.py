@@ -68,7 +68,9 @@ async def worker_loop(worker_id: str) -> None:
 
             idle_poll_delay = poll_min_seconds
 
-            LOG.info(f"Worker {worker_id} running background job {job.id} ({job.job_type})")
+            LOG.info(
+                f"Worker {worker_id} running background job {job.id} ({job.job_type})"
+            )
             result_payload = await run_background_job(job)
             await complete_background_job(job.id, result_payload=result_payload)
             LOG.info(f"Worker {worker_id} completed background job {job.id}")

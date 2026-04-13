@@ -315,7 +315,9 @@ class JellyfinService:
 
     async def get_series_sizes_for_library(
         self, library_id: str, user_id: str
-    ) -> tuple[dict[str, int], dict[str, datetime], dict[tuple[str, int], AggregatedSeasonData]]:
+    ) -> tuple[
+        dict[str, int], dict[str, datetime], dict[tuple[str, int], AggregatedSeasonData]
+    ]:
         """Get total sizes, oldest DateCreated, and season data for all series in a library.
 
         Args:
@@ -610,9 +612,11 @@ class JellyfinService:
                 continue
 
             # fetch series sizes once per library (not per user as this is expensive)
-            series_sizes, series_dates, season_data_map = (
-                await self.get_series_sizes_for_library(library_id, users[0].id)
-            )
+            (
+                series_sizes,
+                series_dates,
+                season_data_map,
+            ) = await self.get_series_sizes_for_library(library_id, users[0].id)
 
             for user in users:
                 # get all watched episodes for this user in one API call
