@@ -1,4 +1,4 @@
-name: Desktop
+name: Desktop Build
 
 on:
   push:
