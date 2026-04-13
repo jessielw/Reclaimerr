@@ -1577,7 +1577,6 @@ async def _delete_movies_via_media_server(
 async def _delete_series_via_media_server(
     candidates, already_deleted: list[dict]
 ) -> int:
-    # TODO: this still needs more testing!
     """Deletes series via Jellyfin or Plex as fallback when not in Sonarr.
 
     Args:
