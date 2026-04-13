@@ -20,7 +20,7 @@
 
 I explored numerous open source applications for server cleanup, and [Maintainerr](https://github.com/Maintainerr/Maintainerr) stood out as a major inspiration for Reclaimerr's design. When I began development, Maintainerr didn't support Jellyfin, though support was added in [v3.0.0](https://github.com/Maintainerr/Maintainerr/releases/tag/v3.0.0), it still didn't fully meet my needs.
 
-I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Additionally I wanted a solution that didn't rely on **Sonarr** and **Radarr**. Reclaimerr is designed to only use them if configured but doesn't rely on them. Everything can be directly handled via **Plex** and **Jellyfin**.
+I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Additionally I wanted a solution that didn't rely on **Sonarr** and **Radarr**. Reclaimerr is designed to only use them if configured but doesn't rely on them. Everything can be directly handled via **Plex** and/or **Jellyfin**.
 
 Driven by the increasing cost of storage and the need to reclaim used disk space, inspired by Maintainerr, **Reclaimerr** was born.
 
@@ -30,35 +30,36 @@ AI (LLMs) are _everywhere_ and _everyone_ is using them. I understand that many 
 
 LLMs have only been used as a tool for tasks such as searching for information, automating repetitive work, debugging, occasional CSS/UI assistance, and minor grammar suggestions/fixes. All design and code have been written by hand, ensuring I have a deep understanding on how all the gears turn. Even this readme here is hand written and then I utilized an LLM to correct grammar and clarity 😆.
 
-As a result, this project will **not** accept pull requests that are large, AI generated slop.
+As a result, this project will close pull requests that appear to be mostly or wholly AI generated.
 
 # Features
 
 - Configure rules to automatically reclaim disk space
-- Supports both Jellyfin and Plex _(plan to support Emby in the future)_
-  - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the other  
+- Supports both Jellyfin and/or Plex _(plan to support Emby in the future)_
+  - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the other if using more than one media server
     **Note:** Both servers must manage the same physical media library
 - Configurable task scheduling (cron/time based)
 - Automatically scans media eligible for reclamation
-- Protection system
+- Media library items **protection** system
+  - This system adds "protection" that will prevent them from being considered for deletion
   - Users can request protection (to be approved or denied by users with appropriate permissions)
   - Time based control for protection duration
 - Multi-user support with a permission system
 - Notifications via [Apprise](https://appriseit.com/services/), supporting over **133** services at the time of writing
-- Remove or unmonitor media from Radarr and Sonarr where applicable
+- Remove or unmonitor media from Radarr and Sonarr (if configured)
 - Remove requests from Seerr
 - Delete files from disk
-  - If Radarr/Sonarr is configured, Reclaimerr prioritizes deletion through them, falling back to the main server if needed
+  - If Radarr or Sonarr are configured, Reclaimerr processes deletion through them, only falling back to the main server if needed
 - Very lightweight and efficient; avoids spinning up disks outside of deletions (all data is sourced directly from your media servers)
 - Light and dark mode
-- Response UI (works great on mobile)
+- Responsive UI (works great on mobile)
 
-# Addition Info
+# Additional Info
 
 - While Reclaimerr is in early beta, the task to **automatically delete** media will **not** be enabled or visible in the UI. I do not want to risk permanent deletion of anyone's media due to a bug with full automation until the things have been **thoroughly tested**.
   - For now, only admins or users with appropriate permissions can manage deletions through the UI or API
   - Once automatic deletions are added it will be **opt in**
-- This is in **beta** so things are definitely subject to change as feedback is received
+- While Reclaimerr is in **beta**, things are subject to change in response to user feedback and testing
 - Proper documentation will be made as the app matures a bit more
 
 # Install
