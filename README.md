@@ -90,6 +90,45 @@ services:
       - "8000:8000"
 ```
 
+## Run from Source
+
+**Requirements:** Python 3.11+, Node.js 20+, [uv](https://docs.astral.sh/uv/)
+
+1. Clone the repository
+
+```bash
+git clone https://github.com/jessielw/Reclaimerr.git
+cd Reclaimerr
+```
+
+2. Install Python dependencies
+
+```bash
+uv sync
+```
+
+3. Create your environment file and fill in the required values (see the Docker `.env` example above)
+
+```bash
+cp .env.example .env
+```
+
+4. Start the backend
+
+```bash
+uv run uvicorn backend.api.main:app
+```
+
+5. Start the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The backend is available at [http://localhost:8000](http://localhost:8000) and the frontend at [http://localhost:3000](http://localhost:3000).
+
 ## Preview
 
 ![image](public/dashboard.png)
