@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 import niquests
+from niquests.exceptions import ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -36,7 +37,7 @@ class JellyfinService:
     def __init__(self, api_key: str, jellyfin_url: str) -> None:
         self.api_key = api_key
         self.jellyfin_url = jellyfin_url
-        self.session = niquests.AsyncSession()
+        self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
                 "X-Emby-Token": self.api_key,
@@ -50,7 +51,7 @@ class JellyfinService:
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=(
-            retry_if_exception_type((ConnectionError, TimeoutError))
+            retry_if_exception_type((ConnectionError, TimeoutError, ReadTimeout))
             | retry_if_exception(should_retry_on_status)
         ),
     )

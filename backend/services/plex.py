@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timezone
 
 import niquests
+from niquests.exceptions import ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -31,7 +32,7 @@ class PlexService:
     def __init__(self, token: str, plex_url: str) -> None:
         self.token = token
         self.plex_url = plex_url
-        self.session = niquests.AsyncSession()
+        self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
                 "X-Plex-Token": self.token,
@@ -43,7 +44,7 @@ class PlexService:
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=(
-            retry_if_exception_type((ConnectionError, TimeoutError))
+            retry_if_exception_type((ConnectionError, TimeoutError, ReadTimeout))
             | retry_if_exception(should_retry_on_status)
         ),
     )
