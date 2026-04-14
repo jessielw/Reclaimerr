@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import socket
 import sys
 from pathlib import Path
 
@@ -95,6 +96,21 @@ class ReclaimerServer:
             self._ensure_secrets()
         # DEV: the repo root .env is picked up by pydantic settings automatically to keep things simple.
 
+    def _find_free_port(self, start: int, max_attempts: int = 10) -> int:
+        """Return the first free TCP port at or after `start`."""
+        for port in range(start, start + max_attempts):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind(("127.0.0.1", port))
+                    return port
+                except OSError:
+                    continue
+        raise OSError(
+            f"Could not find a free port in range {start}-{start + max_attempts - 1}. "
+            "Close other applications and try again."
+        )
+
     def serve(self) -> None:
         """
         Block the calling thread on the uvicorn server.
@@ -104,6 +120,9 @@ class ReclaimerServer:
         # This must be imported here (not at module level) so that prepare_env() has already
         # set DATA_DIR / FRONTEND_DIST / etc. before Settings() is instantiated.
         from backend.api.main import app
+
+        self.port = self._find_free_port(self.port)
+        os.environ["API_PORT"] = str(self.port)  # keep settings in sync
 
         config = uvicorn.Config(
             app,
