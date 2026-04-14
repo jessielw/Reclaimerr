@@ -87,7 +87,7 @@ class NotificationSetting(Base):
     )
 
     # relationships
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     user: Mapped[User] = relationship(
         back_populates="notification_settings", init=False, lazy="noload", repr=False
     )
@@ -175,7 +175,7 @@ class GeneralSettings(Base):
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
     updated_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id"), default=None
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
 
 
@@ -580,7 +580,9 @@ class ProtectedMedia(Base):
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
 
     # protected details (required fields first for dataclass)
-    protected_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    protected_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
 
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
@@ -619,7 +621,9 @@ class ProtectionRequest(Base):
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
 
     # request details (required fields first for dataclass)
-    requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    requested_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
     reason: Mapped[str | None] = mapped_column(Text, default=None)
     requested_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
@@ -653,7 +657,7 @@ class ProtectionRequest(Base):
 
     # candidate reference (if it was a candidate when requested)
     candidate_id: Mapped[int | None] = mapped_column(
-        ForeignKey("reclaim_candidates.id"), default=None
+        ForeignKey("reclaim_candidates.id", ondelete="SET NULL"), default=None
     )
 
     requested_by: Mapped[User] = relationship(
@@ -667,7 +671,7 @@ class ProtectionRequest(Base):
 
     # admin review
     reviewed_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id"), default=None
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
     reviewed_by: Mapped[User | None] = relationship(
         foreign_keys=[reviewed_by_user_id], init=False, lazy="noload", repr=False
