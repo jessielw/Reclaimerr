@@ -160,4 +160,4 @@ The backend is available at [http://localhost:8000](http://localhost:8000) and t
 
 ## Contributing
 
-![How to contribute](CONTRIBUTING.md)
+![Contribution guide](docs/CONTRIBUTING.md)
