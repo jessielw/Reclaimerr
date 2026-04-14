@@ -157,3 +157,7 @@ The backend is available at [http://localhost:8000](http://localhost:8000) and t
 ![image](public/settings-servers.png)
 ![image](public/settings-tasks.png)
 ![image](public/settings-users.png)
+
+## Contributing
+
+![How to contribute](CONTRIBUTING.md)
