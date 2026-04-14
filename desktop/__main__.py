@@ -9,9 +9,9 @@ import sys
 from filelock import FileLock, Timeout
 
 from desktop.server import ReclaimerServer
-from desktop.tray import PORT, create_icon
+from desktop.tray import create_icon
 
-server = ReclaimerServer(port=PORT)
+server = ReclaimerServer()
 
 # Single instance enforcement. FileLock uses an OS level exclusive file lock
 # that is automatically released if the process crashes (no stale lock files).

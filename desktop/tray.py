@@ -11,8 +11,6 @@ from desktop.utils import is_bundled
 if TYPE_CHECKING:
     from desktop.server import ReclaimerServer
 
-PORT = 7474
-
 
 def _resource(relative: str) -> Path:
     """Resolve a bundled resource path that works in both dev and PyInstaller onedir."""
