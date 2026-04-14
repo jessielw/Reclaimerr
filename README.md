@@ -162,7 +162,7 @@ The backend is available at [http://localhost:8000](http://localhost:8000) and t
 
 ## Contributing
 
-![Contribution guide](docs/CONTRIBUTING.md)
+[Contribution guide](docs/CONTRIBUTING.md)
 
 ## Credits
 
