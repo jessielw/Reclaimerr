@@ -48,6 +48,20 @@ Backend runs at `http://localhost:8000`, frontend at `http://localhost:3000`.
 
 The CI workflows enforce both on every pull request.
 
+## Database Migrations
+
+Reclaimerr uses [Alembic](https://alembic.sqlalchemy.org/) for database schema migrations. Migrations run automatically on every startup so users never need to run anything manually.
+
+### If your PR changes a model in `backend/database/models.py`
+
+Generate a migration after making your changes:
+
+```bash
+uv run alembic revision --autogenerate -m "describe the change"
+```
+
+Review the generated file in `backend/alembic/versions/` — autogenerate is not always perfect (it can't detect renamed columns, for instance). Commit the migration file with your PR.
+
 ## Releasing a New Version
 
 > **This section is for maintainers only.** If you're opening a PR, you don't need to worry about any of this.
