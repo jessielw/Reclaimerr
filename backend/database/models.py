@@ -190,8 +190,8 @@ class Movie(Base):
 
     # basic info
     title: Mapped[str] = mapped_column(String(512))
-    year: Mapped[int] = mapped_column(SmallInteger)
     tmdb_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    year: Mapped[int | None] = mapped_column(SmallInteger, default=None)
 
     # aggregate file size (sum of all versions - updated during sync)
     size: Mapped[int | None] = mapped_column(Integer, default=None)
@@ -345,8 +345,8 @@ class Series(Base):
 
     # basic info
     title: Mapped[str] = mapped_column(String(512))
-    year: Mapped[int] = mapped_column(SmallInteger)
     tmdb_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    year: Mapped[int | None] = mapped_column(SmallInteger, default=None)
 
     # file info
     size: Mapped[int | None] = mapped_column(Integer, default=None)

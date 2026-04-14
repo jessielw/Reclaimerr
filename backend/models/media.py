@@ -40,7 +40,7 @@ class AggregatedMovieData:
     """Movie with aggregated watch data across all users, plus all physical file versions."""
 
     name: str
-    year: int
+    year: int | None
     external_ids: ExternalIDs
     premiere_date: datetime | None
     versions: list[MovieVersionData]
@@ -75,7 +75,7 @@ class AggregatedSeriesData:
 
     id: str
     name: str
-    year: int
+    year: int | None
     service: MediaServerType
     library_name: str
     library_id: str
@@ -139,7 +139,7 @@ class MovieWithStatus(BaseModel):
     # basic info
     id: int
     title: str
-    year: int
+    year: int | None
     tmdb_id: int
 
     # file info
@@ -193,7 +193,7 @@ class SeriesWithStatus(BaseModel):
     # basic info
     id: int
     title: str
-    year: int
+    year: int | None
     tmdb_id: int
 
     # file info

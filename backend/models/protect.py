@@ -8,7 +8,7 @@ class ProtectedEntryResponse(BaseModel):
     media_type: MediaType
     media_id: int
     media_title: str
-    media_year: int
+    media_year: int | None
     poster_url: str | None
     reason: str | None
     protected_by_user_id: int

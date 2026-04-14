@@ -175,7 +175,7 @@ export interface MediaStatusInfo {
 export interface MovieWithStatus {
   id: number;
   title: string;
-  year: number;
+  year: number | null;
   tmdb_id: number;
   size: number | null;
   radarr_id: number | null;
@@ -211,7 +211,7 @@ export interface SeriesServiceRef {
 export interface SeriesWithStatus {
   id: number;
   title: string;
-  year: number;
+  year: number | null;
   tmdb_id: number;
   size: number | null;
   service_refs: SeriesServiceRef[];
@@ -275,7 +275,7 @@ export interface ProtectionRequest {
   poster_url: string | null;
   media_id: number;
   media_title: string;
-  media_year: number;
+  media_year: number | null;
   candidate_id: number | null;
   requested_by_user_id: number;
   requested_by_username: string;
@@ -299,7 +299,7 @@ export interface ProtectedEntry {
   media_type: MediaType;
   media_id: number;
   media_title: string;
-  media_year: number;
+  media_year: number | null;
   poster_url: string | null;
   reason: string | null;
   protected_by_user_id: number;

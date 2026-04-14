@@ -31,7 +31,7 @@ class ProtectionRequestResponse(BaseModel):
     media_type: MediaType
     media_id: int
     media_title: str
-    media_year: int
+    media_year: int | None
     candidate_id: int | None
 
     # season specific fields (None for series/movie level requests)

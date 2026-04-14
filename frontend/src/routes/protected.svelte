@@ -556,7 +556,7 @@
                   </div>
                   <div>
                     <div class="text-sm font-medium text-foreground">
-                      {entry.media_title} ({entry.media_year})
+                      {entry.media_title}{entry.media_year ? ` (${entry.media_year})` : ''}
                     </div>
                   </div>
                 </div>

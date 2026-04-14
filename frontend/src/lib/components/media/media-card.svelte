@@ -170,7 +170,7 @@
           <h3 class="text-base font-semibold text-white line-clamp-2 mb-1">
             {media.title}
           </h3>
-          <p class="text-sm text-gray-300">{media.year}</p>
+          <p class="text-sm text-gray-300">{media.year ?? 'Unknown'}</p>
         </div>
 
         <!-- request button and info -->

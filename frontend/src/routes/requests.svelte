@@ -896,7 +896,7 @@
                         {req.media_title}
                       </h3>
                       <span class="text-sm text-muted-foreground"
-                        >{req.media_year}</span
+                        >{req.media_year ?? 'Unknown'}</span
                       >
                     </div>
 
@@ -1031,7 +1031,7 @@
                   {req.media_title}
                 </h3>
                 <span class="text-sm text-muted-foreground"
-                  >{req.media_year}</span
+                  >{req.media_year ?? 'Unknown'}</span
                 >
                 <p class="mt-1 text-xs text-muted-foreground">
                   Requested {formatDate(req.created_at)} · {formatEffectiveProtectionLabel(

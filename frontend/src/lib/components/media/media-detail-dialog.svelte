@@ -186,7 +186,7 @@
                 <div class="flex flex-wrap gap-3 text-sm text-muted-foreground">
                   <div class="flex items-center gap-1">
                     <Calendar class="w-4 h-4" />
-                    <span>{media.year}</span>
+                    <span>{media.year ?? 'Unknown'}</span>
                   </div>
                   {#if isMovie(media) && media.runtime}
                     <div class="flex items-center gap-1">
