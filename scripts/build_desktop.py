@@ -99,9 +99,12 @@ for pkg in (
     hiddenimports += h
 
 # Built frontend SPA and tray icon are not Python packages - add manually.
+# alembic.ini lives at repo root and is needed by backend/database/__init__.py
+# to run migrations on startup.
 datas += [
     ("{frontend_dist}", "frontend/dist"),
     ("{icon_dir}",      "frontend/static"),
+    ("alembic.ini",     "."),
 ]
 
 # Runtime-only imports that static analysis can never see:
