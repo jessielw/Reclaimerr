@@ -49,6 +49,7 @@ include = [
     "backend/api/**/*.py",
     "backend/services/**/*.py",
 ]
+exclude = ["backend/alembic/**/versions/*.py"]
 
 [tool.ruff.lint]
 select = ["I", "UP"]
