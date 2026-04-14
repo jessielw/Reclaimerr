@@ -42,7 +42,9 @@
     </div>
   {:else if !data || data.items.length === 0}
     <div class="text-center py-20">
-      <p class="text-muted-foreground text-lg">No {mediaType}s found</p>
+      <p class="text-muted-foreground text-lg">
+        No {mediaType === "movie" ? "movies" : "series"} found
+      </p>
     </div>
   {:else}
     <!-- grid -->
