@@ -27,9 +27,10 @@ engine = create_async_engine(
 def set_sqlite_pragma(dbapi_conn, _connection_record):
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 
@@ -73,7 +74,6 @@ async def init_db():
         "script_location", str(Path(__file__).resolve().parent.parent / "alembic")
     )
     async with engine.begin() as conn:
-        await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         # inject the open connection into config.attributes so env.py reuses
         # it directly instead of opening a second conflicting SQLite connection.
         await conn.run_sync(_run_alembic_upgrade, cfg)
