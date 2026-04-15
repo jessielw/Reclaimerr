@@ -284,6 +284,49 @@ async def _process_media(
     if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
         await db.commit()
 
+    # diagnostic: if nothing matched at all, log a breakdown of why
+    # evaluable = [
+    #     item
+    #     for item in media_items
+    #     if item.id not in {b for b in protected_ids}
+    # ]
+    # if candidates_created == 0 and candidates_updated == 0 and evaluable:
+    #     no_size = sum(1 for item in evaluable if not item.size or item.size == 0)
+    #     null_popularity = sum(
+    #         1 for item in evaluable if item.popularity is None
+    #     ) if any(r.min_popularity is not None or r.max_popularity is not None for r in rules) else 0
+    #     null_vote_avg = sum(
+    #         1 for item in evaluable if item.vote_average is None
+    #     ) if any(r.min_vote_average is not None or r.max_vote_average is not None for r in rules) else 0
+
+    #     # check library filter: count items that have no version matching any rule's library_ids
+    #     lib_filtered_rules = [r for r in rules if r.library_ids and len(r.library_ids) > 0]
+    #     all_rule_lib_ids: set[str] = set()
+    #     for r in lib_filtered_rules:
+    #         all_rule_lib_ids.update(r.library_ids or [])
+    #     if all_rule_lib_ids:
+    #         no_lib_match = sum(
+    #             1
+    #             for item in evaluable
+    #             if item.size and item.size > 0
+    #             and not any(
+    #                 v.library_id in all_rule_lib_ids
+    #                 for v in (item.versions if isinstance(item, Movie) else item.service_refs)
+    #             )
+    #         )
+    #     else:
+    #         no_lib_match = 0
+
+    #     LOG.warning(
+    #         f"Scan produced 0 {media_type.value} candidates from {len(evaluable)} eligible items. "
+    #         f"Breakdown: {no_size} excluded (size=0/None), "
+    #         f"{null_popularity} excluded (popularity=None), "
+    #         f"{null_vote_avg} excluded (vote_average=None), "
+    #         f"{no_lib_match} excluded (library_ids filter mismatch). "
+    #         f"If library_ids mismatch is high, your rules reference library IDs from a previous "
+    #         f"media server. Re-save or clear the library filter on your rules to fix this."
+    #     )
+
     return candidates_created, candidates_updated, candidates_removed
 
 
@@ -1107,6 +1150,30 @@ async def _delete_movie_candidates(
             for row in result.all()
         }
 
+    # For movies with a missing radarr_id, attempt a live lookup by TMDB ID.
+    # Note: this will actually only ever need to be ran if something is missing, once a full
+    # sync is ran this will all be cached
+    if service_manager.radarr:
+        missing = [
+            (mid, info)
+            for mid, info in movie_data.items()
+            if info["radarr_id"] is None and info["tmdb_id"]
+        ]
+        if missing:
+            try:
+                all_radarr = await service_manager.radarr.get_all_movies()
+                radarr_by_tmdb = {m.tmdb_id: m.id for m in all_radarr if m.tmdb_id}
+                for _movie_id, info in missing:
+                    found = radarr_by_tmdb.get(info["tmdb_id"])
+                    if found:
+                        info["radarr_id"] = found
+                        LOG.debug(
+                            f"Resolved missing Radarr ID for '{info['title']}' "
+                            f"via live lookup (radarr_id={found})"
+                        )
+            except Exception as e:
+                LOG.warning(f"Live Radarr lookup for missing IDs failed: {e}")
+
     # delete all candidates that exist in Radarr (by radarr_id)
     movies_to_delete = []
     if service_manager.radarr:
@@ -1216,6 +1283,30 @@ async def _delete_series_candidates(
             row[0]: {"sonarr_id": row[1], "title": row[2], "tmdb_id": row[3]}
             for row in result.all()
         }
+
+    # For series with a missing sonarr_id, attempt a live lookup by TMDB ID.
+    # Note: this will actually only ever need to be ran if something is missing, once a full
+    # sync is ran this will all be cached
+    if service_manager.sonarr:
+        missing = [
+            (sid, info)
+            for sid, info in series_data.items()
+            if info["sonarr_id"] is None and info["tmdb_id"]
+        ]
+        if missing:
+            try:
+                all_sonarr = await service_manager.sonarr.get_all_series()
+                sonarr_by_tmdb = {s.tmdb_id: s.id for s in all_sonarr if s.tmdb_id}
+                for _series_id, info in missing:
+                    found = sonarr_by_tmdb.get(info["tmdb_id"])
+                    if found:
+                        info["sonarr_id"] = found
+                        LOG.debug(
+                            f"Resolved missing Sonarr ID for '{info['title']}' "
+                            f"via live lookup (sonarr_id={found})"
+                        )
+            except Exception as e:
+                LOG.warning(f"Live Sonarr lookup for missing IDs failed: {e}")
 
     # delete all candidates that exist in Sonarr (by sonarr_id)
     series_to_delete = []
