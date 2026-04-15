@@ -752,11 +752,10 @@ async def sync_series(
             for idx, series in enumerate[AggregatedSeriesData](
                 aggregated_series.values(), start=1
             ):
-                tmdb_id = int(series.external_ids.tmdb)
+                tmdb_id = series.external_ids.tmdb
                 parsed_tmdb_ids.add(tmdb_id)
 
                 # match Sonarr by tmdb_id if available
-                tmdb_id = series.external_ids.tmdb
                 sonarr_obj = (
                     sonarr_series.get(tmdb_id) if tmdb_id in sonarr_series else None
                 )
