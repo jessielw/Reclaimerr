@@ -3,6 +3,7 @@ from .queue import (
     complete_background_job,
     enqueue_background_job,
     fail_background_job,
+    reset_stale_jobs,
 )
 from .runner import run_background_job
 
@@ -11,5 +12,6 @@ __all__ = [
     "claim_next_background_job",
     "complete_background_job",
     "fail_background_job",
+    "reset_stale_jobs",
     "run_background_job",
 ]

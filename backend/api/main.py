@@ -36,6 +36,7 @@ from backend.core.service_manager import service_manager
 from backend.core.settings import settings
 from backend.core.worker import worker_loop
 from backend.database import close_db, init_db
+from backend.jobs import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
 
@@ -70,6 +71,9 @@ async def lifespan(app: FastAPI):
         # start scheduler
         await start_scheduler()
         scheduler_started = True
+
+        # reset any jobs left in RUNNING state from a previous process
+        await reset_stale_jobs()
 
         # start in-process background worker
         _worker_id = f"{socket.gethostname()}:{os.getpid()}"
