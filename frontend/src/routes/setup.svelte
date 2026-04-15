@@ -144,11 +144,6 @@
             maxlength={64}
           />
 
-          <p class="text-xs text-muted-foreground">
-            Min 8 characters · uppercase · lowercase · number · special
-            character
-          </p>
-
           <Button
             type="submit"
             disabled={loading}
