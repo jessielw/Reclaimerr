@@ -1,4 +1,5 @@
-﻿from .logging import LogLevel, LogSource
+﻿from .alerts import AlertLevel
+from .logging import LogLevel, LogSource
 from .media import MediaType, ProtectionRequestStatus, Service
 from .services import SeerrRequestStatus
 from .tasks import (
@@ -12,6 +13,8 @@ from .tasks import (
 from .users import Permission, UserRole
 
 __all__ = [
+    # alerts
+    "AlertLevel",
     # users
     "Permission",
     "UserRole",

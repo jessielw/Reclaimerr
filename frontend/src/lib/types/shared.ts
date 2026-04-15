@@ -12,6 +12,12 @@ export interface User {
   permissions: Permission[];
 }
 
+export enum AlertLevel {
+  // INFO = "info", // reserved for future use if we want non admin alerts
+  WARNING = "warning",
+  ERROR = "error",
+}
+
 export enum Permission {
   ManageUsers = "manage_users",
   ManageRequests = "manage_requests",
