@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improve Seerr API permission errors and log warnings a bit better
+- Ensure old main server stays enabled during main server swap
 
 ### Fixed
 

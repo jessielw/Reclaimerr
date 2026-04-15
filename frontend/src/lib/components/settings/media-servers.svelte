@@ -347,6 +347,8 @@
           apiKey: "",
           isMain: config.is_main ?? false,
         };
+        // ensure old main is enabled
+        enabledBeforePromotion[serverKey] = config.enabled;
         servers[serverKey].apiKeyIsSet = !!config.api_key;
         if (config.is_main) {
           savedMainServer = serverKey;
