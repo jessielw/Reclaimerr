@@ -442,7 +442,7 @@
             bind:value={newUser.password}
             required
             placeholder="Enter password"
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
         </div>
@@ -634,7 +634,7 @@
             bind:value={editUser.password}
             placeholder="Leave blank to keep current password"
             class="input-hover-el"
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
           <p class="mt-1 text-xs text-muted-foreground">

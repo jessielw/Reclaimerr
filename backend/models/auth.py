@@ -62,7 +62,7 @@ class PasswordValidationMixin:
     @classmethod
     def validate_password(cls, v: str) -> str:
         pw_stripped = v.strip()
-        MIN_LEN = 8
+        MIN_LEN = 3
         MAX_LEN = 64
         pw_len = len(pw_stripped)
         if pw_len < MIN_LEN or pw_len > MAX_LEN:
@@ -71,12 +71,12 @@ class PasswordValidationMixin:
                 "Password must be between {min_len} and {max_len} characters long",
                 {"min_len": MIN_LEN, "max_len": MAX_LEN},
             )
-        if not re.match(PASSWORD_REGEX, pw_stripped):
-            raise PydanticCustomError(
-                "password_complexity",
-                "Password must contain at least one lowercase letter, one uppercase letter, one digit, "
-                "and one special character",
-            )
+        # if not re.match(PASSWORD_REGEX, pw_stripped):
+        #     raise PydanticCustomError(
+        #         "password_complexity",
+        #         "Password must contain at least one lowercase letter, one uppercase letter, one digit, "
+        #         "and one special character",
+        #     )
         return pw_stripped
 
 

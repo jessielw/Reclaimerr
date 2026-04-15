@@ -125,7 +125,7 @@
               rounded-md text-white placeholder-gray-500"
             placeholder="Admin password"
             autocomplete="new-password"
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
 
@@ -140,7 +140,7 @@
               rounded-md text-white placeholder-gray-500"
             placeholder="Confirm password"
             autocomplete="new-password"
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
 

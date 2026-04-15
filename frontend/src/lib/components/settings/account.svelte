@@ -100,8 +100,8 @@
         return;
       }
 
-      if (passwordForm.new_password.trim().length < 8) {
-        toast.warning("Password must be at least 8 characters");
+      if (passwordForm.new_password.trim().length < 3) {
+        toast.warning("Password must be at least 3 characters");
         return;
       }
 
@@ -397,7 +397,7 @@
             placeholder="Enter current password"
             id="current_password"
             disabled={passwordUpdating}
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
         </div>
@@ -417,7 +417,7 @@
             placeholder="Enter new password"
             id="new_password"
             disabled={passwordUpdating}
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
         </div>
@@ -437,7 +437,7 @@
             placeholder="Confirm new password"
             id="confirm_password"
             disabled={passwordUpdating}
-            minlength={8}
+            minlength={3}
             maxlength={64}
           />
         </div>

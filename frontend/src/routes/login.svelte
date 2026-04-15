@@ -193,7 +193,7 @@
             rounded-md text-white placeholder-gray-500"
           placeholder="Password"
           autocomplete="current-password"
-          minlength={8}
+          minlength={3}
           maxlength={64}
         />
 
