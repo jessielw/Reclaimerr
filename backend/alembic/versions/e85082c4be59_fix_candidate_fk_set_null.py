@@ -148,44 +148,55 @@ def upgrade() -> None:
     ):
         conn.execute(sa.text(f'DROP TABLE IF EXISTS "{tbl}"'))
 
-    with op.batch_alter_table('notification_settings', recreate='always',
-                              copy_from=_notification_settings_table(cascade_user=True)) as batch_op:
-        pass
+    # SQLite batch recreate drops and renames tables (FK enforcement must be off)
+    # or the DROP TABLE step fails when child tables reference the one being recreated.
+    conn.execute(sa.text('PRAGMA foreign_keys=OFF'))
+    try:
+        with op.batch_alter_table('notification_settings', recreate='always',
+                                  copy_from=_notification_settings_table(cascade_user=True)) as batch_op:
+            pass
 
-    with op.batch_alter_table('general_settings', recreate='always',
-                              copy_from=_general_settings_table(set_null_user=True)) as batch_op:
-        pass
+        with op.batch_alter_table('general_settings', recreate='always',
+                                  copy_from=_general_settings_table(set_null_user=True)) as batch_op:
+            pass
 
-    with op.batch_alter_table('protected_media', recreate='always',
-                              copy_from=_protected_media_table(cascade_user=True)) as batch_op:
-        pass
+        with op.batch_alter_table('protected_media', recreate='always',
+                                  copy_from=_protected_media_table(cascade_user=True)) as batch_op:
+            pass
 
-    with op.batch_alter_table('protection_requests', recreate='always',
-                              copy_from=_protection_requests_table(
-                                  set_null_candidate=True,
-                                  cascade_requester=True,
-                                  set_null_reviewer=True,
-                              )) as batch_op:
-        pass
+        with op.batch_alter_table('protection_requests', recreate='always',
+                                  copy_from=_protection_requests_table(
+                                      set_null_candidate=True,
+                                      cascade_requester=True,
+                                      set_null_reviewer=True,
+                                  )) as batch_op:
+            pass
+    finally:
+        conn.execute(sa.text('PRAGMA foreign_keys=ON'))
 
 
 def downgrade() -> None:
-    with op.batch_alter_table('protection_requests', recreate='always',
-                              copy_from=_protection_requests_table(
-                                  set_null_candidate=False,
-                                  cascade_requester=False,
-                                  set_null_reviewer=False,
-                              )) as batch_op:
-        pass
+    conn = op.get_bind()
+    conn.execute(sa.text('PRAGMA foreign_keys=OFF'))
+    try:
+        with op.batch_alter_table('protection_requests', recreate='always',
+                                  copy_from=_protection_requests_table(
+                                      set_null_candidate=False,
+                                      cascade_requester=False,
+                                      set_null_reviewer=False,
+                                  )) as batch_op:
+            pass
 
-    with op.batch_alter_table('protected_media', recreate='always',
-                              copy_from=_protected_media_table(cascade_user=False)) as batch_op:
-        pass
+        with op.batch_alter_table('protected_media', recreate='always',
+                                  copy_from=_protected_media_table(cascade_user=False)) as batch_op:
+            pass
 
-    with op.batch_alter_table('general_settings', recreate='always',
-                              copy_from=_general_settings_table(set_null_user=False)) as batch_op:
-        pass
+        with op.batch_alter_table('general_settings', recreate='always',
+                                  copy_from=_general_settings_table(set_null_user=False)) as batch_op:
+            pass
 
-    with op.batch_alter_table('notification_settings', recreate='always',
-                              copy_from=_notification_settings_table(cascade_user=False)) as batch_op:
-        pass
+        with op.batch_alter_table('notification_settings', recreate='always',
+                                  copy_from=_notification_settings_table(cascade_user=False)) as batch_op:
+            pass
+    finally:
+        conn.execute(sa.text('PRAGMA foreign_keys=ON'))
