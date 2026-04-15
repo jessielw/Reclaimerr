@@ -76,6 +76,37 @@ async def enqueue_background_job(
     return job
 
 
+async def reset_stale_jobs() -> int:
+    """
+    Mark any RUNNING jobs as FAILED on startup.
+
+    Because the worker runs in process, any job still in RUNNING state at
+    startup is guaranteed to be from a previous process that was killed before
+    it could complete or fail the job.  Leaving them as RUNNING would block the
+    the new job from running again.
+    """
+    now = datetime.now(timezone.utc)
+    async with async_db() as session:
+        result = await session.execute(
+            sql_update(BackgroundJob)
+            .where(BackgroundJob.status == BackgroundJobStatus.RUNNING)
+            .values(
+                status=BackgroundJobStatus.FAILED,
+                completed_at=now,
+                error_message="Server restarted while job was running",
+            )
+            .returning(BackgroundJob.id)
+        )
+        stale_ids = result.scalars().all()
+        await session.commit()
+
+    if stale_ids:
+        LOG.warning(
+            f"Reset {len(stale_ids)} stale RUNNING job(s) to FAILED on startup: {stale_ids}"
+        )
+    return len(stale_ids)
+
+
 async def claim_next_background_job(worker_id: str) -> BackgroundJob | None:
     """Claim the next available background job for processing, marking it as RUNNING."""
     now = datetime.now(timezone.utc)
