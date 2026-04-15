@@ -20,7 +20,7 @@
 
 I explored numerous open source applications for server cleanup, and [Maintainerr](https://github.com/Maintainerr/Maintainerr) stood out as a major inspiration for Reclaimerr's design. When I began development, Maintainerr didn't support Jellyfin, though support was added in [v3.0.0](https://github.com/Maintainerr/Maintainerr/releases/tag/v3.0.0), it still didn't fully meet my needs.
 
-I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Additionally I wanted a solution that didn't rely on **Sonarr** and **Radarr**. Reclaimerr is designed to only use them if configured but doesn't rely on them. Everything can be directly handled via **Plex** and/or **Jellyfin**.
+I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Same as with Maintainerr - Reclaimerr can also be run without Sonarr/Radarr, directly integrated with Jellyfin/Plex.
 
 Driven by the increasing cost of storage and the need to reclaim used disk space, inspired by Maintainerr, **Reclaimerr** was born.
 
