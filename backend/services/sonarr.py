@@ -120,7 +120,7 @@ class SonarrClient:
         Returns:
             List of all series
         """
-        _, data = await self._make_request("GET", "series")
+        _, data = await self._make_request("GET", "series", timeout=300)
         if not isinstance(data, list):
             return []
         return [build_sonarr_series_from_dict(series) for series in data]
@@ -131,7 +131,7 @@ class SonarrClient:
         Returns:
             List of all tags
         """
-        _, data = await self._make_request("GET", "tag")
+        _, data = await self._make_request("GET", "tag", timeout=60)
         if not isinstance(data, list):
             return []
         return [ArrTag(id=tag["id"], label=tag["label"]) for tag in data]
@@ -192,6 +192,7 @@ class SonarrClient:
                 "tags": [tag_id],
                 "applyTags": "add",
             },
+            timeout=60,
         )
 
         if not isinstance(data, list):
@@ -226,6 +227,7 @@ class SonarrClient:
                 "tags": [tag_id],
                 "applyTags": "remove",
             },
+            timeout=60,
         )
 
         if not isinstance(data, list):
@@ -258,6 +260,7 @@ class SonarrClient:
             "DELETE",
             f"series/{series_id}",
             params=params,
+            timeout=60,
         )
         if status_code != 200:
             raise ValueError(
@@ -285,6 +288,7 @@ class SonarrClient:
                 "deleteFiles": delete_files,
                 "addImportListExclusion": add_import_exclusion,
             },
+            timeout=60,
         )
         if status_code != 200:
             raise ValueError(
@@ -349,9 +353,7 @@ class SonarrClient:
         """
         # get all episodes for this series
         status_code, episodes = await self._make_request(
-            "GET",
-            "episode",
-            params={"seriesId": series_id},
+            "GET", "episode", params={"seriesId": series_id}, timeout=60
         )
         if not isinstance(episodes, list):
             raise ValueError(
@@ -374,6 +376,7 @@ class SonarrClient:
             "DELETE",
             "episodefile/bulk",
             json={"episodeFileIds": episode_file_ids},
+            timeout=120,
         )
         if status_code != 200:
             raise ValueError(

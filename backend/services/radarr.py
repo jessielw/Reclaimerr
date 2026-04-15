@@ -93,7 +93,7 @@ class RadarrClient:
 
     async def get_all_movies(self) -> list[RadarrMovie]:
         """Get all movies from Radarr."""
-        _, data = await self._make_request("GET", "movie")
+        _, data = await self._make_request("GET", "movie", timeout=300)
         if not isinstance(data, list):
             return []
         return [build_radarr_movie_from_dict(movie) for movie in data]

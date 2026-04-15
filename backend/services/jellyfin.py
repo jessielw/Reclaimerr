@@ -56,12 +56,13 @@ class JellyfinService:
         ),
     )
     async def _make_request(
-        self, endpoint: str, params: dict | None = None
+        self, endpoint: str, params: dict | None = None, **kwargs
     ) -> list | dict:
         """Make HTTP request to Jellyfin API with automatic retry."""
         response = await self.session.get(
             f"{self.jellyfin_url}/{endpoint}",
             params=params,
+            **kwargs,
         )
         response.raise_for_status()
         return response.json()
@@ -114,7 +115,9 @@ class JellyfinService:
 
     async def _get_media_libraries(self, media_type: str) -> list[dict[str, str]]:
         """Get list of media libraries of a specific type with their IDs and names."""
-        virtual_folders = await self._make_request("Library/VirtualFolders")  # pyright: ignore [reportAttributeAccessIssue]
+        virtual_folders = await self._make_request(
+            "Library/VirtualFolders", timeout=300
+        )  # pyright: ignore [reportAttributeAccessIssue]
         media_libs = []
         for vf in virtual_folders:
             if vf.get("CollectionType") == media_type:
@@ -165,7 +168,7 @@ class JellyfinService:
 
         if filters:
             params.update(filters)
-        get_data = await self._make_request("Items", params=params)
+        get_data = await self._make_request("Items", params=params, timeout=300)
         if not get_data:
             return []
         items_data = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
@@ -267,7 +270,7 @@ class JellyfinService:
 
         if filters:
             params.update(filters)
-        get_data = await self._make_request("Items", params=params)
+        get_data = await self._make_request("Items", params=params, timeout=300)
         if not get_data:
             return []
         items_data = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
@@ -366,7 +369,7 @@ class JellyfinService:
                 "Limit": str(limit),
             }
 
-            get_data = await self._make_request("Items", params=params)
+            get_data = await self._make_request("Items", params=params, timeout=60)
             if not get_data:
                 break
 
@@ -481,7 +484,7 @@ class JellyfinService:
                     "StartIndex": str(start_index),
                     "Limit": str(limit),
                 }
-                get_data = await self._make_request("Items", params=params)
+                get_data = await self._make_request("Items", params=params, timeout=60)
                 if not get_data:
                     break
 

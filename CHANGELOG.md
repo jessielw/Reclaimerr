@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ensure old main server stays enabled during main server swap
 - Relaxed password complexity, we'll let users be responsible for the complexity of their passwords
   - The only requirements are a min length of 3 and a max length of 64
+- Increase time out for long running api calls for Plex, Jellyfin, Radarr, Seerr, and Sonarr
 
 ### Fixed
 

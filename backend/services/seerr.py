@@ -109,7 +109,10 @@ class SeerrClient:
             List of user's requests
         """
         _, data = await self._make_request(
-            "GET", f"user/{user_id}/requests", params={"take": take, "skip": skip}
+            "GET",
+            f"user/{user_id}/requests",
+            params={"take": take, "skip": skip},
+            timeout=60,
         )
         if not isinstance(data, dict):
             return SeerrPageInfo(0, 0, 0), []
@@ -156,7 +159,7 @@ class SeerrClient:
         if requested_by:
             params["requestedBy"] = requested_by
 
-        _, data = await self._make_request("GET", "request", params=params)
+        _, data = await self._make_request("GET", "request", params=params, timeout=300)
         if not isinstance(data, dict):
             return SeerrPageInfo(0, 0, 0), []
 

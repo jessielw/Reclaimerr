@@ -49,10 +49,12 @@ class PlexService:
         ),
     )
     async def _make_request(
-        self, endpoint: str, params: dict | None = None
+        self, endpoint: str, params: dict | None = None, **kwargs
     ) -> dict | list:
         """Make HTTP request to Plex API with automatic retry."""
-        response = await self.session.get(f"{self.plex_url}/{endpoint}", params=params)
+        response = await self.session.get(
+            f"{self.plex_url}/{endpoint}", params=params, **kwargs
+        )
         response.raise_for_status()
         return response.json()
 
@@ -104,7 +106,8 @@ class PlexService:
 
                 # get section details to check locations
                 section_details = await self._make_request(
-                    f"library/sections/{section_id}"
+                    f"library/sections/{section_id}",
+                    timeout=60,
                 )
                 directories = section_details.get("MediaContainer", {}).get(  # pyright: ignore [reportAttributeAccessIssue]
                     "Directory", []
@@ -206,6 +209,7 @@ class PlexService:
         episodes_data = await self._make_request(
             f"library/sections/{section_id}/all",
             params={"type": 4},
+            timeout=300,
         )
         if not episodes_data:
             return {}, {}, {}
@@ -324,6 +328,7 @@ class PlexService:
             items_data = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 1, "includeGuids": 1},
+                timeout=300,
             )
             if not items_data:
                 continue
@@ -428,6 +433,7 @@ class PlexService:
             items_data = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 2, "includeGuids": 1},
+                timeout=300,
             )
             if not items_data:
                 continue
