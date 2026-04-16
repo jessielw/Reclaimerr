@@ -178,12 +178,26 @@ export interface MediaStatusInfo {
   request_reason: string | null;
 }
 
+export interface MovieVersion {
+  id: number;
+  service: string;
+  service_item_id: string;
+  service_media_id: string;
+  library_id: string;
+  library_name: string;
+  path: string | null;
+  size: number;
+  added_at: string | null;
+  container: string | null;
+}
+
 export interface MovieWithStatus {
   id: number;
   title: string;
   year: number | null;
   tmdb_id: number;
   size: number | null;
+  versions: MovieVersion[];
   radarr_id: number | null;
   imdb_id: string | null;
   tmdb_title: string | null;

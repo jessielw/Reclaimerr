@@ -254,9 +254,15 @@
                 <div>
                   <span class="text-muted-foreground">Library:</span>
                   <span class="text-foreground ml-2">
-                    {"service_refs" in media && media.service_refs.length > 0
+                    {isSeries(media) && media.service_refs.length > 0
                       ? media.service_refs.map((r) => r.library_name).join(", ")
-                      : "Unknown"}
+                      : isMovie(media) && media.versions.length > 0
+                        ? [
+                            ...new Set(
+                              media.versions.map((v) => v.library_name),
+                            ),
+                          ].join(", ")
+                        : "Unknown"}
                   </span>
                 </div>
                 <div>
