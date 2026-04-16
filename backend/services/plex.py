@@ -276,7 +276,7 @@ class PlexService:
             # watch data per season
             ep_view_count = episode.get("viewCount", 0) or 0
             season_view_counts[sk] = season_view_counts.get(sk, 0) + ep_view_count
-            if ep_view_count > 0 and episode.get("lastViewedAt"):
+            if episode.get("lastViewedAt"):
                 try:
                     lva = datetime.fromtimestamp(
                         int(episode["lastViewedAt"]), tz=timezone.utc
@@ -285,7 +285,8 @@ class PlexService:
                     if prev is None or lva > prev:
                         season_last_viewed[sk] = lva
                 except (TypeError, ValueError, OSError):
-                    pass
+                    if sk not in season_last_viewed:
+                        season_last_viewed[sk] = None
             elif sk not in season_last_viewed:
                 season_last_viewed[sk] = None
 
@@ -302,7 +303,7 @@ class PlexService:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
-                never_watched=(agg_view == 0),
+                never_watched=(agg_view == 0 and lva is None),
                 service_season_id=season_keys.get(sk),
             )
 
@@ -488,7 +489,7 @@ class PlexService:
                 versions=m.versions,
                 view_count=m.view_count,
                 last_viewed_at=m.last_viewed_at,
-                never_watched=(m.view_count == 0),
+                never_watched=(m.view_count == 0 and m.last_viewed_at is None),
                 played_by_user_count=None,  # plex provides global counts, not per-user
             )
             for m in movies
@@ -515,7 +516,7 @@ class PlexService:
                 size=s.size,
                 view_count=s.view_count,
                 last_viewed_at=s.last_viewed_at,
-                never_watched=(s.view_count == 0),
+                never_watched=(s.view_count == 0 and s.last_viewed_at is None),
                 played_by_user_count=None,  # plex provides global counts, not per-user
                 season_data=s.season_data,
             )

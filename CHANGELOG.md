@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta7] - 2026-04-1?
 
+### Changed
+
+- Improved false positives (for candidates where `added_at` is unknown they will now be skipped)
+
 ### Fixed
 
 - Add safe timestamp conversion method for invalid/out of range timestamps from Plex on Windows
+- Plex false positives for **Never watched** and new items bypassing age filter
 
 ## [0.1.0-beta6] - 2026-04-15
 

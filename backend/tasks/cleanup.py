@@ -602,6 +602,9 @@ def _evaluate_rule_for_season(
             rule_reasons.append(
                 f"S{season.season_number:02d} added {days_since_added} days ago"
             )
+    elif rule.min_days_since_added is not None or rule.max_days_since_added is not None:
+        # added_at is unknown (exclude to avoid false positives on age rules)
+        return False
 
     # days since last watched (season level)
     if season.last_viewed_at:
@@ -790,6 +793,9 @@ def _evaluate_rule(
         ):
             matched_criteria["days_since_added"] = days_since_added
             rule_reasons.append(f"Added {days_since_added} days ago")
+    elif rule.min_days_since_added is not None or rule.max_days_since_added is not None:
+        # added_at is unknown (exclude to avoid false positives on age rules)
+        return False
 
     # check days since last watched
     if item.last_viewed_at:
