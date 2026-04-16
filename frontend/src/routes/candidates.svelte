@@ -895,8 +895,10 @@
                     </div>
                   </div>
                 </td>
-                <td class="px-6 py-4 text-sm text-muted-foreground max-w-xs">
-                  <span class="line-clamp-3">{entry.reason}</span>
+                <td
+                  class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
+                >
+                  <span>{entry.reason}</span>
                 </td>
                 <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
                   {sizeLabel(entry.estimated_space_gb)}
@@ -996,9 +998,11 @@
                     </div>
                   </div>
                 </td>
-                <td class="px-6 py-4 text-sm text-muted-foreground">
+                <td
+                  class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
+                >
                   {#if row.seriesEntry}
-                    <span class="line-clamp-2">{row.seriesEntry.reason}</span>
+                    <span>{row.seriesEntry.reason}</span>
                   {:else}
                     <span class="italic opacity-60"
                       >Season-level only ? click to expand</span
@@ -1047,9 +1051,9 @@
                       </span>
                     </td>
                     <td
-                      class="px-6 py-3 text-sm text-muted-foreground max-w-xs"
+                      class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
                     >
-                      <span class="line-clamp-2">{season.reason}</span>
+                      <span>{season.reason}</span>
                     </td>
                     <td
                       class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
