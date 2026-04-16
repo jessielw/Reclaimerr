@@ -927,16 +927,29 @@ async def _sync_radarr_tags(cleanup_tag: str) -> tuple[int, int]:
 
     # build lookup: radarr_id -> movie
     movies_by_id = {movie.id: movie for movie in all_movies}
+    # also build tmdb_id -> radarr_id for resolving candidates that lack a stored radarr_id
+    radarr_by_tmdb = {m.tmdb_id: m.id for m in all_movies if m.tmdb_id}
 
-    # get radarr IDs for all movie candidates from database
+    # get radarr IDs for all movie candidates from database (including those not yet resolved)
     async with async_db() as db:
         result = await db.execute(
-            select(Movie.radarr_id)
+            select(Movie.id, Movie.radarr_id, Movie.tmdb_id)
             .join(ReclaimCandidate, Movie.id == ReclaimCandidate.movie_id)
             .where(ReclaimCandidate.media_type == MediaType.MOVIE)
-            .where(Movie.radarr_id.isnot(None))
         )
-        candidate_radarr_ids = {row[0] for row in result.all()}
+        candidate_rows = result.all()
+
+    candidate_radarr_ids: set[int] = set()
+    for movie_db_id, radarr_id, tmdb_id in candidate_rows:
+        if radarr_id is not None:
+            candidate_radarr_ids.add(radarr_id)
+        elif tmdb_id and tmdb_id in radarr_by_tmdb:
+            resolved = radarr_by_tmdb[tmdb_id]
+            candidate_radarr_ids.add(resolved)
+            LOG.debug(
+                f"Resolved missing Radarr ID for movie db_id={movie_db_id} "
+                f"via live lookup (radarr_id={resolved})"
+            )
 
     LOG.debug(f"Found {len(candidate_radarr_ids)} movie candidates with Radarr IDs")
 
@@ -1013,16 +1026,29 @@ async def _sync_sonarr_tags(cleanup_tag: str) -> tuple[int, int]:
 
     # build lookup: sonarr_id -> series
     series_by_id = {series.id: series for series in all_series}
+    # also build tmdb_id -> sonarr_id for resolving candidates that lack a stored sonarr_id
+    sonarr_by_tmdb = {s.tmdb_id: s.id for s in all_series if s.tmdb_id}
 
-    # get sonarr IDs for all series candidates from database
+    # get sonarr IDs for all series candidates from database (including those not yet resolved)
     async with async_db() as db:
         result = await db.execute(
-            select(Series.sonarr_id)
+            select(Series.id, Series.sonarr_id, Series.tmdb_id)
             .join(ReclaimCandidate, Series.id == ReclaimCandidate.series_id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
-            .where(Series.sonarr_id.isnot(None))
         )
-        candidate_sonarr_ids = {row[0] for row in result.all()}
+        candidate_rows = result.all()
+
+    candidate_sonarr_ids: set[int] = set()
+    for series_db_id, sonarr_id, tmdb_id in candidate_rows:
+        if sonarr_id is not None:
+            candidate_sonarr_ids.add(sonarr_id)
+        elif tmdb_id and tmdb_id in sonarr_by_tmdb:
+            resolved = sonarr_by_tmdb[tmdb_id]
+            candidate_sonarr_ids.add(resolved)
+            LOG.debug(
+                f"Resolved missing Sonarr ID for series db_id={series_db_id} "
+                f"via live lookup (sonarr_id={resolved})"
+            )
 
     LOG.debug(f"Found {len(candidate_sonarr_ids)} series candidates with Sonarr IDs")
 
