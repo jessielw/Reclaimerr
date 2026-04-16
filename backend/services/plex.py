@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from typing import Any
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -57,6 +58,16 @@ class PlexService:
         )
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _fromtimestamp(ts: Any) -> datetime | None:
+        """Safe wrapper around datetime.fromtimestamp (returns None for invalid/out of range values)."""
+        if not ts:
+            return None
+        try:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
 
     async def health(self) -> bool:
         """Check server health and API key."""
@@ -344,11 +355,7 @@ class PlexService:
                     continue
 
                 # build one MovieVersionData per Media entry (each = one physical file/version)
-                added_at = (
-                    datetime.fromtimestamp(item["addedAt"], tz=timezone.utc)
-                    if item.get("addedAt")
-                    else None
-                )
+                added_at = self._fromtimestamp(item.get("addedAt"))
                 versions = []
                 for media in item.get("Media", []):
                     media_id = str(media.get("id", ""))
@@ -377,16 +384,8 @@ class PlexService:
                     library_id=section_uuid,
                     library_name=section_name,
                     added_at=added_at,
-                    updated_at=datetime.fromtimestamp(
-                        item["updatedAt"], tz=timezone.utc
-                    )
-                    if item.get("updatedAt")
-                    else None,
-                    last_viewed_at=datetime.fromtimestamp(
-                        item["lastViewedAt"], tz=timezone.utc
-                    )
-                    if item.get("lastViewedAt")
-                    else None,
+                    updated_at=self._fromtimestamp(item.get("updatedAt")),
+                    last_viewed_at=self._fromtimestamp(item.get("lastViewedAt")),
                     view_count=item.get("viewCount", 0),
                     external_ids=ext_ids,
                     versions=versions,
@@ -460,19 +459,9 @@ class PlexService:
                     library_id=section_uuid,
                     library_name=section_name,
                     path=series_path,
-                    added_at=datetime.fromtimestamp(item["addedAt"], tz=timezone.utc)
-                    if item.get("addedAt")
-                    else None,
-                    updated_at=datetime.fromtimestamp(
-                        item["updatedAt"], tz=timezone.utc
-                    )
-                    if item.get("updatedAt")
-                    else None,
-                    last_viewed_at=datetime.fromtimestamp(
-                        item["lastViewedAt"], tz=timezone.utc
-                    )
-                    if item.get("lastViewedAt")
-                    else None,
+                    added_at=self._fromtimestamp(item.get("addedAt")),
+                    updated_at=self._fromtimestamp(item.get("updatedAt")),
+                    last_viewed_at=self._fromtimestamp(item.get("lastViewedAt")),
                     view_count=item.get("viewCount", 0),
                     external_ids=ext_ids,
                     size=total_size,
