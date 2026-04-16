@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improved false positives (for candidates where `added_at` is unknown they will now be skipped)
+- Improved word wrap on the Reason column in candidates
 
 ### Fixed
 
