@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add safe timestamp conversion method for invalid/out of range timestamps from Plex on Windows
 - Plex false positives for **Never watched** and new items bypassing age filter
 - Alignment of fields in rule form
+- Failure on duplicate movie versions for initial ingestion
 
 ## [0.1.0-beta6] - 2026-04-15
 

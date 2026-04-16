@@ -355,7 +355,16 @@ async def gather_movies(
             unique_movies[tmdb_id] = movie
         else:
             existing = unique_movies[tmdb_id]
-            merged_versions = existing.versions + movie.versions
+            # deduplicate by (service, service_media_id) as the same physical file can appear
+            # in multiple Jellyfin/Plex libraries with identical MediaSource IDs
+            seen_version_keys: set[tuple] = {
+                (v.service, v.service_media_id) for v in existing.versions
+            }
+            merged_versions = existing.versions + [
+                v
+                for v in movie.versions
+                if (v.service, v.service_media_id) not in seen_version_keys
+            ]
             lva_candidates = [
                 dt for dt in [existing.last_viewed_at, movie.last_viewed_at] if dt
             ]
@@ -585,7 +594,12 @@ async def sync_movies(
                     session.add(new_movie)
                     # flush so new_movie.id is available for version FK
                     await session.flush()
+                    seen_new_ver_keys: set[tuple] = set()
                     for ver in movie.versions:
+                        key = (ver.service, ver.service_media_id)
+                        if key in seen_new_ver_keys:
+                            continue
+                        seen_new_ver_keys.add(key)
                         session.add(
                             MovieVersion(
                                 movie_id=new_movie.id,
