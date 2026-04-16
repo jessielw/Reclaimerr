@@ -315,21 +315,22 @@
             </Card.Description>
           </Card.Header>
           <Card.Content class="space-y-4">
+            <!-- popularity -->
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
-                <Label for="min-popularity">
-                  Min Popularity
+                <div class="flex items-center gap-1">
+                  <Label for="min-popularity" class="m-0 p-0"
+                    >Min Popularity</Label
+                  >
                   <Tooltip.Root>
                     <Tooltip.Trigger>
-                      <Info
-                        class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                      />
+                      <Info class="size-4 text-muted-foreground cursor-help" />
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                       <p>TMDB popularity score (higher = more popular)</p>
                     </Tooltip.Content>
                   </Tooltip.Root>
-                </Label>
+                </div>
                 <Input
                   id="min-popularity"
                   type="number"
@@ -345,7 +346,13 @@
               </div>
 
               <div class="space-y-2">
-                <Label for="max-popularity">Max Popularity</Label>
+                <div class="flex items-center gap-1">
+                  <Label for="max-popularity" class="m-0 p-0"
+                    >Max Popularity</Label
+                  >
+                  <!-- empty span to match the icon's space for alignment -->
+                  <span class="inline-block w-4 h-4"></span>
+                </div>
                 <Input
                   id="max-popularity"
                   type="number"
@@ -361,21 +368,20 @@
               </div>
             </div>
 
+            <!-- rating -->
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
-                <Label for="min-vote-avg">
-                  Min Rating
+                <div class="flex items-center gap-1">
+                  <Label for="min-vote-avg" class="m-0 p-0">Min Rating</Label>
                   <Tooltip.Root>
                     <Tooltip.Trigger>
-                      <Info
-                        class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                      />
+                      <Info class="size-4 text-muted-foreground cursor-help" />
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                       <p>TMDB vote average (0-10)</p>
                     </Tooltip.Content>
                   </Tooltip.Root>
-                </Label>
+                </div>
                 <Input
                   id="min-vote-avg"
                   type="number"
@@ -393,7 +399,11 @@
               </div>
 
               <div class="space-y-2">
-                <Label for="max-vote-avg">Max Rating</Label>
+                <div class="flex items-center gap-1">
+                  <Label for="max-vote-avg" class="m-0 p-0">Max Rating</Label>
+                  <!-- empty span to match the icon's space for alignment -->
+                  <span class="inline-block w-4 h-4"></span>
+                </div>
                 <Input
                   id="max-vote-avg"
                   type="number"
@@ -411,21 +421,22 @@
               </div>
             </div>
 
+            <!-- vote count -->
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
-                <Label for="min-vote-count">
-                  Min Vote Count
+                <div class="flex items-center gap-1">
+                  <Label for="min-vote-count" class="m-0 p-0"
+                    >Min Vote Count</Label
+                  >
                   <Tooltip.Root>
                     <Tooltip.Trigger>
-                      <Info
-                        class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                      />
+                      <Info class="size-4 text-muted-foreground cursor-help" />
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                       <p>Minimum number of TMDB votes</p>
                     </Tooltip.Content>
                   </Tooltip.Root>
-                </Label>
+                </div>
                 <Input
                   id="min-vote-count"
                   type="number"
@@ -440,7 +451,13 @@
               </div>
 
               <div class="space-y-2">
-                <Label for="max-vote-count">Max Vote Count</Label>
+                <div class="flex items-center gap-1">
+                  <Label for="max-vote-count" class="m-0 p-0"
+                    >Max Vote Count</Label
+                  >
+                  <!-- empty span to match the icon's space for alignment -->
+                  <span class="inline-block w-4 h-4"></span>
+                </div>
                 <Input
                   id="max-vote-count"
                   type="number"
@@ -522,19 +539,19 @@
           <Card.Content class="space-y-4">
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
-                <Label for="min-days-added">
-                  Min Days Since Added
+                <div class="flex items-center gap-1">
+                  <Label for="min-days-added" class="m-0 p-0"
+                    >Min Days Since Added</Label
+                  >
                   <Tooltip.Root>
                     <Tooltip.Trigger>
-                      <Info
-                        class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                      />
+                      <Info class="size-4 text-muted-foreground cursor-help" />
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                       <p>How many days ago it was added (minimum)</p>
                     </Tooltip.Content>
                   </Tooltip.Root>
-                </Label>
+                </div>
                 <Input
                   id="min-days-added"
                   type="number"
@@ -549,7 +566,13 @@
               </div>
 
               <div class="space-y-2">
-                <Label for="max-days-added">Max Days Since Added</Label>
+                <div class="flex items-center gap-1">
+                  <Label for="max-days-added" class="m-0 p-0"
+                    >Max Days Since Added</Label
+                  >
+                  <!-- empty span to match the icon's space for alignment -->
+                  <span class="inline-block w-4 h-4"></span>
+                </div>
                 <Input
                   id="max-days-added"
                   type="number"
@@ -566,19 +589,19 @@
 
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
-                <Label for="min-days-watched">
-                  Min Days Since Last Watched
+                <div class="flex items-center gap-1">
+                  <Label for="min-days-watched" class="m-0 p-0"
+                    >Min Days Since Last Watched</Label
+                  >
                   <Tooltip.Root>
                     <Tooltip.Trigger>
-                      <Info
-                        class="inline size-4 ml-1 text-muted-foreground cursor-help"
-                      />
+                      <Info class="size-4 text-muted-foreground cursor-help" />
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                       <p>How long since it was last watched (minimum)</p>
                     </Tooltip.Content>
                   </Tooltip.Root>
-                </Label>
+                </div>
                 <Input
                   id="min-days-watched"
                   type="number"
@@ -593,8 +616,13 @@
               </div>
 
               <div class="space-y-2">
-                <Label for="max-days-watched">Max Days Since Last Watched</Label
-                >
+                <div class="flex items-center gap-1">
+                  <Label for="max-days-watched" class="m-0 p-0"
+                    >Max Days Since Last Watched</Label
+                  >
+                  <!-- empty span to match the icon's space for alignment -->
+                  <span class="inline-block w-4 h-4"></span>
+                </div>
                 <Input
                   id="max-days-watched"
                   type="number"
