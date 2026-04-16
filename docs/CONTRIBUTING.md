@@ -68,13 +68,14 @@ Review the generated file in `backend/alembic/versions/` — autogenerate is not
 
 Tags drive all release automation (Docker image push, desktop builds). Tags must **not** have a `v` prefix - use `0.1.0`, not `v0.1.0`.
 
-### Version files - update all three
+### Version files - update all four
 
-| File                          | Field                             |
-| ----------------------------- | --------------------------------- |
-| `pyproject.toml`              | `version = "X.Y.Z"`               |
-| `frontend/package.json`       | `"version": "X.Y.Z"`              |
-| `frontend/src/lib/version.ts` | `export const VERSION = "X.Y.Z";` |
+| File                          |
+| ----------------------------- |
+| `pyproject.toml`              |
+| `__version__.py`              |
+| `frontend/package.json`       |
+| `frontend/src/lib/version.ts` |
 
 ### Release checklist
 
