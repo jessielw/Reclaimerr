@@ -89,6 +89,8 @@ As of **v0.1.0-beta8**, you can control a _few_ customizable options via a **.en
 API_PORT=8049
 # API_HOST=127.0.0.1
 # CORS_ORIGINS=http://localhost:3000
+# optional (only use if you want to reset or set the admin password on first launch, min 3 / max 64)
+# ADMIN_PASSWORD=
 ```
 
 ## Docker
@@ -112,6 +114,9 @@ CORS_ORIGINS=http://localhost:3000
 # logging (options: DEBUG, INFO, WARNING, ERROR, CRITICAL)
 # LOG_LEVEL=INFO
 
+# optional (only use if you want to reset or set the admin password on first launch, min 3 / max 64)
+# ADMIN_PASSWORD=
+
 # set to true when serving over HTTPS
 # COOKIE_SECURE=false
 ```
@@ -130,6 +135,12 @@ services:
     ports:
       - "8000:8000"
 ```
+
+## Reset Admin Password
+
+To reset the admin password, set the `ADMIN_PASSWORD` environment variable and restart the application. The new password will be applied to the admin account on startup.
+
+> **Note:** For security, it is recommended to remove or unset this variable after the application has started and the password has been updated.
 
 ## Run from Source
 
