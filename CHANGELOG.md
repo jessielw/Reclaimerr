@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A bug on desktop release showing wrong version in the logger
 - Sidebar menu item not automatically scrolling out of the way when navigating on certain routes
+- Plex's watch data was only being pulled from the user the token was generated from, this is now fixed and will display accurate watch history across all users (a full scan is needed to be ran to see these changes right away or wait for the scheduled run)
 
 ## [0.1.0-beta7] - 2026-04-16
 

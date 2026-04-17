@@ -27,6 +27,9 @@ from backend.models.media import (
 )
 from backend.models.services.plex import PlexMovie, PlexSeries
 
+# history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
+_HistEntry = tuple[int, datetime | None, int]
+
 
 class PlexService:
     """Plex media server backend."""
@@ -487,11 +490,101 @@ class PlexService:
 
         return all_series
 
+    async def _get_all_history(
+        self,
+        rating_keys: set[str] | None = None,
+        history_type: str = "movie",
+        key_field: str = "ratingKey",
+    ) -> dict[str, _HistEntry]:
+        """Fetch watch history for ALL users from /status/sessions/history/all.
+
+        Uses the admin token so records from every account on the server are returned.
+        Paginates automatically until all records are parsed.
+
+        Args:
+            rating_keys: Optional set of ratingKey/parentRatingKey/grandparentRatingKey
+                values to keep.  Records not matching are skipped early.
+            history_type: Plex metadata type string passed as ``type`` param
+                ("movie" = movies, "episode" = episodes).
+            key_field: Which field on each history record to use as the dict key
+                ("ratingKey", "parentRatingKey", or "grandparentRatingKey").
+
+        Returns:
+            Dict mapping the chosen key field value to
+            (total_view_count, max_last_viewed_at, distinct_user_count).
+        """
+        PAGE_SIZE = 1000
+        container_start = 0
+        # key -> [view_count, max_lva, set(accountIDs)]
+        aggregated: dict[str, list] = {}
+
+        type_map = {"movie": 1, "episode": 4}
+        plex_type = type_map.get(history_type)
+
+        while True:
+            params: dict = {
+                "X-Plex-Container-Start": container_start,
+                "X-Plex-Container-Size": PAGE_SIZE,
+                "sort": "viewedAt:desc",
+            }
+            if plex_type:
+                params["type"] = plex_type
+
+            try:
+                data = await self._make_request(
+                    "status/sessions/history/all", params=params, timeout=300
+                )
+            except Exception as e:
+                LOG.warning(
+                    f"Plex history fetch failed at offset {container_start}: {e}"
+                )
+                break
+
+            if not isinstance(data, dict):
+                break
+
+            container = data.get("MediaContainer", {})
+            records = container.get("Metadata", [])
+            if not records:
+                break
+
+            for record in records:
+                key = str(record.get(key_field, ""))
+                if not key:
+                    continue
+                if rating_keys is not None and key not in rating_keys:
+                    continue
+
+                viewed_at = self._fromtimestamp(record.get("viewedAt"))
+                account_id = str(record.get("accountID", ""))
+
+                if key not in aggregated:
+                    aggregated[key] = [0, None, set()]
+
+                aggregated[key][0] += 1  # each history record = one play
+                if viewed_at:
+                    if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
+                        aggregated[key][1] = viewed_at
+                if account_id:
+                    aggregated[key][2].add(account_id)
+
+            # check if there are more pages
+            total_size = container.get("size", len(records))
+            container_start += len(records)
+            if container_start >= total_size:
+                break
+
+        return {k: (v[0], v[1], len(v[2])) for k, v in aggregated.items()}
+
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data with optional section inclusion."""
         movies = await self.get_movies(included_libraries=included_libraries)
+
+        # build ratingKey set for movies so history fetch can be scoped
+        movie_keys = {m.id for m in movies}
+        history = await self._get_all_history(rating_keys=movie_keys)
 
         return [
             AggregatedMovieData(
@@ -500,10 +593,14 @@ class PlexService:
                 premiere_date=None,  # plex doesn't provide premiere date directly
                 external_ids=m.external_ids,
                 versions=m.versions,
-                view_count=m.view_count,
-                last_viewed_at=m.last_viewed_at,
-                never_watched=(m.view_count == 0 and m.last_viewed_at is None),
-                played_by_user_count=None,  # plex provides global counts, not per-user
+                view_count=self._merge_view_count(m.view_count, history.get(m.id)),
+                last_viewed_at=self._merge_last_viewed(
+                    m.last_viewed_at, history.get(m.id)
+                ),
+                never_watched=self._merge_never_watched(
+                    m.view_count, m.last_viewed_at, history.get(m.id)
+                ),
+                played_by_user_count=history[m.id][2] if m.id in history else None,
             )
             for m in movies
         ]
@@ -514,27 +611,75 @@ class PlexService:
         """Get aggregated series data with optional section inclusion."""
         series = await self.get_series(included_libraries=included_libraries)
 
-        return [
-            AggregatedSeriesData(
-                id=s.id,
-                name=s.name,
-                year=s.year,
-                service=Service.PLEX,
-                library_id=s.library_id,
-                library_name=s.library_name,
-                path=s.path,
-                added_at=s.added_at,
-                premiere_date=None,  # plex doesn't provide premiere date directly
-                external_ids=s.external_ids,
-                size=s.size,
-                view_count=s.view_count,
-                last_viewed_at=s.last_viewed_at,
-                never_watched=(s.view_count == 0 and s.last_viewed_at is None),
-                played_by_user_count=None,  # plex provides global counts, not per-user
-                season_data=s.season_data,
+        # collect all series and season rating keys to scope the history fetch
+        series_keys: set[str] = set()
+        season_keys: set[str] = set()
+        for s in series:
+            series_keys.add(s.id)
+            for sd in s.season_data:
+                if sd.service_season_id:
+                    season_keys.add(sd.service_season_id)
+
+        # fetch full cross user history keyed by season ratingKey
+        # (episodes roll up to parentRatingKey = season, grandparentRatingKey = series)
+        season_history = await self._get_all_history(
+            rating_keys=season_keys, history_type="episode"
+        )
+        series_history = await self._get_all_history(
+            rating_keys=series_keys,
+            history_type="episode",
+            key_field="grandparentRatingKey",
+        )
+
+        result = []
+        for s in series:
+            merged_seasons = []
+            for sd in s.season_data:
+                hist = (
+                    season_history.get(sd.service_season_id or "")
+                    if sd.service_season_id
+                    else None
+                )
+                merged_seasons.append(
+                    AggregatedSeasonData(
+                        service_series_id=sd.service_series_id,
+                        season_number=sd.season_number,
+                        size=sd.size,
+                        episode_count=sd.episode_count,
+                        view_count=self._merge_view_count(sd.view_count, hist),
+                        last_viewed_at=self._merge_last_viewed(sd.last_viewed_at, hist),
+                        never_watched=self._merge_never_watched(
+                            sd.view_count, sd.last_viewed_at, hist
+                        ),
+                        air_date=sd.air_date,
+                        service_season_id=sd.service_season_id,
+                    )
+                )
+
+            s_hist = series_history.get(s.id)
+            result.append(
+                AggregatedSeriesData(
+                    id=s.id,
+                    name=s.name,
+                    year=s.year,
+                    service=Service.PLEX,
+                    library_id=s.library_id,
+                    library_name=s.library_name,
+                    path=s.path,
+                    added_at=s.added_at,
+                    premiere_date=None,
+                    external_ids=s.external_ids,
+                    size=s.size,
+                    view_count=self._merge_view_count(s.view_count, s_hist),
+                    last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
+                    never_watched=self._merge_never_watched(
+                        s.view_count, s.last_viewed_at, s_hist
+                    ),
+                    played_by_user_count=s_hist[2] if s_hist else None,
+                    season_data=merged_seasons,
+                )
             )
-            for s in series
-        ]
+        return result
 
     async def _resolve_tvdb_to_tmdb(self, tvdb_id: str) -> int | None:
         """Resolve a TVDB series ID to a TMDB series ID via the TMDB /find endpoint."""
@@ -610,6 +755,36 @@ class PlexService:
             return None
         raw = guid.split("://", 1)[1].split("?")[0].split("/")[0]
         return raw if raw.isdigit() else None
+
+    @staticmethod
+    def _merge_view_count(scan_count: int, hist: _HistEntry | None) -> int:
+        """Return the higher of the library-scan view count and the history count."""
+        if hist is None:
+            return scan_count
+        return max(scan_count, hist[0])
+
+    @staticmethod
+    def _merge_last_viewed(
+        scan_lva: datetime | None, hist: _HistEntry | None
+    ) -> datetime | None:
+        """Return the most recent last-viewed timestamp between scan and history."""
+        if hist is None:
+            return scan_lva
+        hist_lva = hist[1]
+        if scan_lva is None:
+            return hist_lva
+        if hist_lva is None:
+            return scan_lva
+        return max(scan_lva, hist_lva)
+
+    @staticmethod
+    def _merge_never_watched(
+        scan_count: int, scan_lva: datetime | None, hist: _HistEntry | None
+    ) -> bool:
+        """Item is never-watched only if both the scan AND the history show zero plays."""
+        if hist is not None and (hist[0] > 0 or hist[1] is not None):
+            return False
+        return scan_count == 0 and scan_lva is None
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
