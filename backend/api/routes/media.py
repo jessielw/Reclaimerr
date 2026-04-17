@@ -563,12 +563,14 @@ async def get_candidates(
 
     if sort_order == "desc":
         order_expr = order_expr.desc()
+        id_tiebreak = ReclaimCandidate.id.desc()
     else:
         order_expr = order_expr.asc()
+        id_tiebreak = ReclaimCandidate.id.asc()
 
     offset = (page - 1) * per_page
     result = await db.execute(
-        base_query.order_by(order_expr).offset(offset).limit(per_page)
+        base_query.order_by(order_expr, id_tiebreak).offset(offset).limit(per_page)
     )
     rows = result.all()
 

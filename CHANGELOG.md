@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Enhance Radarr and Sonarr ID resolution for movie and series candidates during tagging (if not yet cached from full scan)
+- Improved accuracy of date time sort order for candidates
 
 ### Fixed
 
