@@ -111,20 +111,41 @@
     {#each navItems as item}
       {#if !item.adminOnly || $auth.user?.role === "admin"}
         <Tooltip.Root>
-          <Tooltip.Trigger disabled={!item.tooltip}>
+          <!-- we'll only add a trigger if tooltip exists -->
+          {#if item.tooltip}
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <a
+                  href={item.path}
+                  use:link
+                  onclick={onNavigate}
+                  class="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200
+                    {isActive(item.path)
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
+                >
+                  <item.icon />
+                  <span class="font-medium">{item.label}</span>
+                </a>
+              </Tooltip.Trigger>
+              <Tooltip.Content>
+                <p>{item.tooltip}</p>
+              </Tooltip.Content>
+            </Tooltip.Root>
+          {:else}
             <a
               href={item.path}
               use:link
               onclick={onNavigate}
               class="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200
-                  {isActive(item.path)
+                {isActive(item.path)
                 ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
             >
               <item.icon />
               <span class="font-medium">{item.label}</span>
             </a>
-          </Tooltip.Trigger>
+          {/if}
           <Tooltip.Content>
             <p>{item.tooltip}</p>
           </Tooltip.Content>

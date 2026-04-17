@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A bug on desktop release showing wrong version in the logger
+- Sidebar menu item not automatically scrolling out of the way when navigating on certain routes
 
 ## [0.1.0-beta7] - 2026-04-16
 
