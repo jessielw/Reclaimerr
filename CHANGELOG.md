@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Enhance Radarr and Sonarr ID resolution for movie and series candidates during tagging (if not yet cached from full scan)
 
+### Fixed
+
+- A bug on desktop release showing wrong version in the logger
+
 ## [0.1.0-beta7] - 2026-04-16
 
 ### Changed
