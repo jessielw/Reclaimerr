@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added the ability for desktop users to set **API_HOST, API_PORT, and CORS_ORIGINS** via a **.env** file that is placed directly beside the executable
+- Can now reset the **admin** password via `ADMIN_PASSWORD` env variable
 
 ### Changed
 

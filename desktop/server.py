@@ -47,6 +47,10 @@ class ReclaimerServer:
         self.port = int(env_vars.get("API_PORT", self.port))
         self.cors_origin = env_vars.get("CORS_ORIGIN", self.cors_origin)
 
+        # forward ADMIN_PASSWORD if present so the backend can reset the admin password on startup if needed.
+        if "ADMIN_PASSWORD" in env_vars:
+            os.environ["ADMIN_PASSWORD"] = env_vars["ADMIN_PASSWORD"]
+
     #### path helpers
     @property
     def app_dir(self) -> Path:
