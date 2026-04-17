@@ -485,7 +485,7 @@ def _evaluate_rule_for_season(
             rule.max_vote_count is not None,
             rule.min_view_count is not None,
             rule.max_view_count is not None,
-            rule.include_never_watched is not None,
+            rule.include_never_watched is True,
             rule.min_days_since_added is not None,
             rule.max_days_since_added is not None,
             rule.min_days_since_last_watched is not None,
@@ -562,13 +562,14 @@ def _evaluate_rule_for_season(
     ):
         return False
 
-    if rule.include_never_watched is False and season.never_watched:
+    # include_never_watched=True (only match seasons that have never been watched)
+    if rule.include_never_watched is True and not season.never_watched:
         return False
 
     if (
         rule.min_view_count is not None
         or rule.max_view_count is not None
-        or rule.include_never_watched is False
+        or rule.include_never_watched is True
     ):
         matched_criteria["view_count"] = season.view_count
         matched_criteria["never_watched"] = season.never_watched
@@ -680,7 +681,7 @@ def _evaluate_rule(
             rule.max_vote_count is not None,
             rule.min_view_count is not None,
             rule.max_view_count is not None,
-            rule.include_never_watched is not None,
+            rule.include_never_watched is True,
             rule.min_days_since_added is not None,
             rule.max_days_since_added is not None,
             rule.min_days_since_last_watched is not None,
@@ -753,17 +754,17 @@ def _evaluate_rule(
         return False
 
     # check never watched flag
-    # include_never_watched=True (default/None): Include both watched and never-watched (no filter)
-    # include_never_watched=False: Exclude never-watched items (only watched items)
-    if rule.include_never_watched is False:
-        if item.never_watched:
+    # include_never_watched=True (only match items that have never been watched)
+    # include_never_watched=False (default): no filter on watch status
+    if rule.include_never_watched is True:
+        if not item.never_watched:
             return False
 
     # log view/watch status if we're filtering by it
     if (
         rule.min_view_count is not None
         or rule.max_view_count is not None
-        or rule.include_never_watched is False
+        or rule.include_never_watched is True
     ):
         matched_criteria["view_count"] = item.view_count
         matched_criteria["never_watched"] = item.never_watched
