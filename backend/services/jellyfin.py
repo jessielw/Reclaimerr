@@ -117,7 +117,7 @@ class JellyfinService:
         """Get list of media libraries of a specific type with their IDs and names."""
         virtual_folders = await self._make_request(
             "Library/VirtualFolders", timeout=300
-        )  # pyright: ignore [reportAttributeAccessIssue]
+        )
         media_libs = []
         for vf in virtual_folders:
             if vf.get("CollectionType") == media_type:
