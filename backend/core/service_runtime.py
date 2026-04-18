@@ -28,6 +28,12 @@ async def handle_service_toggle(
                 await service_manager.initialize_jellyfin(
                     data.base_url, data.api_key, data.is_main
                 )
+        elif data.service_type is Service.EMBY:
+            await service_manager.clear_emby()
+            if data.enabled:
+                await service_manager.initialize_emby(
+                    data.base_url, data.api_key, data.is_main
+                )
         elif data.service_type is Service.PLEX:
             await service_manager.clear_plex()
             if data.enabled:

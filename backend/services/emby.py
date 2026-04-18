@@ -23,20 +23,20 @@ from backend.models.media import (
     ExternalIDs,
     MovieVersionData,
 )
-from backend.models.services.jellyfin import (
-    JellyfinMovie,
-    JellyfinSeries,
-    JellyfinUser,
-    JellyfinUserData,
+from backend.models.services.emby import (
+    EmbyMovie,
+    EmbySeries,
+    EmbyUser,
+    EmbyUserData,
 )
 
 
-class JellyfinService:
-    """Jellyfin media server backend."""
+class EmbyService:
+    """Emby media server backend."""
 
-    def __init__(self, api_key: str, jellyfin_url: str) -> None:
+    def __init__(self, api_key: str, emby_url: str) -> None:
         self.api_key = api_key
-        self.jellyfin_url = jellyfin_url.rstrip("/")
+        self.emby_url = emby_url.rstrip("/")
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
@@ -58,9 +58,9 @@ class JellyfinService:
     async def _make_request(
         self, endpoint: str, params: dict | None = None, **kwargs
     ) -> list | dict:
-        """Make HTTP request to Jellyfin API with automatic retry."""
+        """Make HTTP request to Emby API with automatic retry."""
         response = await self.session.get(
-            f"{self.jellyfin_url}/{endpoint}",
+            f"{self.emby_url}/{endpoint}",
             params=params,
             **kwargs,
         )
@@ -76,23 +76,20 @@ class JellyfinService:
             return False
 
     async def delete_item(self, item_id: str) -> None:
-        """Delete an item (movie or series) from Jellyfin.
+        """Delete an item (movie or series) from Emby.
 
         Args:
-            item_id: Jellyfin item ID
+            item_id: Emby item ID
         """
         try:
-            response = await self.session.delete(f"{self.jellyfin_url}/Items/{item_id}")
+            response = await self.session.delete(f"{self.emby_url}/Items/{item_id}")
             response.raise_for_status()
-            LOG.debug(f"Deleted Jellyfin item {item_id}")
+            LOG.debug(f"Deleted Emby item {item_id}")
         except Exception as e:
-            raise ValueError(f"Failed to delete Jellyfin item {item_id}: {e}")
+            raise ValueError(f"Failed to delete Emby item {item_id}: {e}")
 
     async def scan_item_path(self, item_path: str) -> bool:
-        """Refresh a specific item by its filesystem path in Jellyfin.
-
-        This triggers Jellyfin to scan the specific path, similar to how Radarr/Sonarr
-        notify Jellyfin to update specific movie/series paths after deletion.
+        """Refresh a specific item by its filesystem path in Emby.
 
         Args:
             item_path: Filesystem path to the item (e.g., '/movies/The Matrix (1999)')
@@ -101,16 +98,15 @@ class JellyfinService:
             True if refresh was triggered successfully, False otherwise
         """
         try:
-            # jellyfin's Library/Media/Updated endpoint accepts path-specific updates
             response = await self.session.post(
-                f"{self.jellyfin_url}/Library/Media/Updated",
+                f"{self.emby_url}/Library/Media/Updated",
                 json={"Updates": [{"Path": item_path, "UpdateType": "Deleted"}]},
             )
             response.raise_for_status()
-            LOG.debug(f"Triggered Jellyfin refresh for path: {item_path}")
+            LOG.debug(f"Triggered Emby refresh for path: {item_path}")
             return True
         except Exception as e:
-            LOG.error(f"Failed to refresh Jellyfin path {item_path}: {e}")
+            LOG.error(f"Failed to refresh Emby path {item_path}: {e}")
             return False
 
     async def _get_media_libraries(self, media_type: str) -> list[dict[str, str]]:
@@ -135,12 +131,12 @@ class JellyfinService:
         """Get list of TV series libraries with their IDs and names."""
         return await self._get_media_libraries("tvshows")
 
-    async def get_users(self) -> list[JellyfinUser]:
-        """Get all Jellyfin users."""
+    async def get_users(self) -> list[EmbyUser]:
+        """Get all Emby users."""
         users_data = await self._make_request("Users")
         if not users_data:
             return []
-        return [JellyfinUser(name=user["Name"], id=user["Id"]) for user in users_data]
+        return [EmbyUser(name=user["Name"], id=user["Id"]) for user in users_data]
 
     async def get_movies_for_user(
         self,
@@ -148,11 +144,11 @@ class JellyfinService:
         library_id: str,
         library_name: str,
         filters: dict | None = None,
-    ) -> list[JellyfinMovie]:
+    ) -> list[EmbyMovie]:
         """Get movies for a specific user, optionally filtered by library.
 
         Args:
-            user_id: The Jellyfin user ID
+            user_id: The Emby user ID
             library_id: Library ID to query
             library_name: The name of the library
             filters: Additional query filters
@@ -162,7 +158,7 @@ class JellyfinService:
             "includeItemTypes": "Movie",
             "recursive": "true",
             "enableTotalRecordCount": "true",
-            "Fields": "ProviderIds,MediaSources,DateCreated,Path",
+            "Fields": "ProviderIds,MediaSources,DateCreated,Path,UserData,ProductionYear,PremiereDate",
             "ParentId": library_id,
         }
 
@@ -178,23 +174,22 @@ class JellyfinService:
             provider_ids = item.get("ProviderIds", {})
             tmdb_id = provider_ids.get("Tmdb")
             if not tmdb_id:
-                continue  # skip items without TMDB ID (will be logged after aggregation)
+                continue  # skip items without TMDB ID
             if not str(tmdb_id).isdigit():
                 LOG.warning(
                     f"Skipping movie '{item.get('Name', item.get('Id'))}': "
-                    f"invalid TMDb ID '{tmdb_id}' in Jellyfin ProviderIds"
+                    f"invalid TMDb ID '{tmdb_id}' in Emby ProviderIds"
                 )
                 continue
-            user_data = JellyfinUserData(
-                id=item["UserData"]["ItemId"],
-                key=item["UserData"]["Key"],
-                play_count=item["UserData"]["PlayCount"],
-                last_played_date=datetime.fromisoformat(
-                    item["UserData"]["LastPlayedDate"]
-                )
-                if item["UserData"].get("LastPlayedDate")
+            user_data_raw = item.get("UserData", {})
+            user_data = EmbyUserData(
+                id=item["Id"],
+                key=user_data_raw.get("Key", ""),
+                play_count=user_data_raw.get("PlayCount", 0),
+                last_played_date=datetime.fromisoformat(user_data_raw["LastPlayedDate"])
+                if user_data_raw.get("LastPlayedDate")
                 else None,
-                played=item["UserData"]["Played"],
+                played=user_data_raw.get("Played", False),
             )
             external_ids = ExternalIDs(
                 imdb=provider_ids.get("Imdb"),
@@ -202,7 +197,6 @@ class JellyfinService:
                 tmdb_collection=provider_ids.get("TmdbCollection"),
                 tvdb=provider_ids.get("Tvdb"),
             )
-            # build one MovieVersionData per MediaSource (each = one physical file)
             added_at = (
                 datetime.fromisoformat(item["DateCreated"])
                 if item.get("DateCreated")
@@ -210,7 +204,7 @@ class JellyfinService:
             )
             versions = [
                 MovieVersionData(
-                    service=Service.JELLYFIN,
+                    service=Service.EMBY,
                     service_item_id=item["Id"],
                     service_media_id=source["Id"],
                     library_id=library_id,
@@ -223,7 +217,7 @@ class JellyfinService:
                 for source in item.get("MediaSources", [])
                 if source.get("Id")
             ]
-            movie = JellyfinMovie(
+            movie = EmbyMovie(
                 id=item["Id"],
                 name=item["Name"],
                 year=item.get("ProductionYear"),
@@ -248,11 +242,11 @@ class JellyfinService:
         series_sizes: dict[str, int] | None = None,
         series_dates: dict[str, datetime] | None = None,
         filters: dict | None = None,
-    ) -> list[JellyfinSeries]:
+    ) -> list[EmbySeries]:
         """Get TV series for a specific user, optionally filtered by library.
 
         Args:
-            user_id: The Jellyfin user ID
+            user_id: The Emby user ID
             library_id: Library ID to query
             library_name: The name of the library
             series_sizes: Pre-calculated series sizes (series_id -> total bytes)
@@ -264,7 +258,7 @@ class JellyfinService:
             "includeItemTypes": "Series",
             "recursive": "true",
             "enableTotalRecordCount": "true",
-            "Fields": "ProviderIds,Path",
+            "Fields": "ProviderIds,Path,UserData,ProductionYear,PremiereDate",
             "ParentId": library_id,
         }
 
@@ -284,21 +278,19 @@ class JellyfinService:
             if not str(tmdb_id).lstrip("-").isdigit():
                 LOG.warning(
                     f"Skipping series '{item.get('Name', item.get('Id'))}': "
-                    f"invalid TMDb ID '{tmdb_id}' in Jellyfin ProviderIds"
+                    f"invalid TMDb ID '{tmdb_id}' in Emby ProviderIds"
                 )
                 continue
-            user_data = JellyfinUserData(
-                id=item["UserData"]["ItemId"],
-                key=item["UserData"]["Key"],
-                play_count=item["UserData"]["PlayCount"],
-                last_played_date=datetime.fromisoformat(
-                    item["UserData"]["LastPlayedDate"]
-                )
-                if item["UserData"].get("LastPlayedDate")
+            user_data_raw = item.get("UserData", {})
+            user_data = EmbyUserData(
+                id=item["Id"],
+                key=user_data_raw.get("Key", ""),
+                play_count=user_data_raw.get("PlayCount", 0),
+                last_played_date=datetime.fromisoformat(user_data_raw["LastPlayedDate"])
+                if user_data_raw.get("LastPlayedDate")
                 else None,
-                played=item["UserData"]["Played"],
+                played=user_data_raw.get("Played", False),
             )
-            provider_ids = item.get("ProviderIds", {})
             external_ids = ExternalIDs(
                 imdb=provider_ids.get("Imdb"),
                 tmdb=int(tmdb_id),
@@ -306,12 +298,10 @@ class JellyfinService:
                 tvdb=provider_ids.get("Tvdb"),
             )
 
-            # get size from pre-calculated series sizes (if available)
             total_size = series_sizes.get(item["Id"], 0) if series_sizes else 0
-            # get oldest episode date (if available)
             series_date = series_dates.get(item["Id"]) if series_dates else None
 
-            series = JellyfinSeries(
+            series = EmbySeries(
                 id=item["Id"],
                 name=item["Name"],
                 year=item.get("ProductionYear"),
@@ -337,7 +327,7 @@ class JellyfinService:
         """Get total sizes, oldest DateCreated, and season data for all series in a library.
 
         Args:
-            library_id: The Jellyfin library ID
+            library_id: The Emby library ID
             user_id: The user ID to fetch episodes for
 
         Returns:
@@ -348,12 +338,11 @@ class JellyfinService:
         """
         series_sizes: dict[str, int] = {}
         series_dates: dict[str, datetime] = {}
-        # season accumulation
         season_sizes: dict[tuple[str, int], int] = {}
         season_episode_counts: dict[tuple[str, int], int] = {}
         season_view_counts: dict[tuple[str, int], int] = {}
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
-        season_ids: dict[tuple[str, int], str] = {}  # jellyfin SeasonId
+        season_ids: dict[tuple[str, int], str] = {}  # emby SeasonId
 
         start_index = 0
         limit = 500
@@ -386,14 +375,12 @@ class JellyfinService:
                 if not series_id:
                     continue
 
-                # sum sizes
                 episode_size = 0
                 for source in episode.get("MediaSources", []):
                     episode_size += source.get("Size", 0)
 
                 series_sizes[series_id] = series_sizes.get(series_id, 0) + episode_size
 
-                # track oldest DateCreated
                 if episode.get("DateCreated"):
                     episode_date = datetime.fromisoformat(episode["DateCreated"])
                     if (
@@ -402,7 +389,6 @@ class JellyfinService:
                     ):
                         series_dates[series_id] = episode_date
 
-                # season accumulation
                 season_num_raw = episode.get("ParentIndexNumber")
                 if season_num_raw is None:
                     continue
@@ -415,11 +401,9 @@ class JellyfinService:
                 season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
                 season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
 
-                # store jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
                     season_ids[sk] = episode["SeasonId"]
 
-                # watch data
                 user_data = episode.get("UserData", {})
                 play_count = user_data.get("PlayCount", 0) or 0
                 season_view_counts[sk] = season_view_counts.get(sk, 0) + play_count
@@ -439,7 +423,6 @@ class JellyfinService:
             if start_index >= total_record_count:
                 break
 
-        # build AggregatedSeasonData objects
         season_data: dict[tuple[str, int], AggregatedSeasonData] = {}
         for sk, size in season_sizes.items():
             series_id, season_num = sk
@@ -461,14 +444,10 @@ class JellyfinService:
     async def get_all_watched_episodes_for_user(
         self, user_id: str
     ) -> dict[str, datetime]:
-        """Get all watched episodes for a user and return a map of seriesId -> most recent watch date.
-
-        This is much more efficient than querying each series individually.
-        """
+        """Get all watched episodes for a user and return a map of seriesId -> most recent watch date."""
         series_watch_dates: dict[str, datetime] = {}
 
         try:
-            # fetch in paginated batches to avoid timeout on large libraries
             start_index = 0
             limit = 500
 
@@ -492,21 +471,17 @@ class JellyfinService:
                 if not items_data:
                     break
 
-                # group by series and keep the most recent watch date
                 for item in items_data:
                     series_id = item.get("SeriesId")
                     last_played = item.get("UserData", {}).get("LastPlayedDate")
 
                     if series_id and last_played:
                         watch_date = datetime.fromisoformat(last_played)
-
-                        # keep the most recent date (items are already sorted by DatePlayed descending)
                         if series_id not in series_watch_dates:
                             series_watch_dates[series_id] = watch_date
                         elif watch_date > series_watch_dates[series_id]:
                             series_watch_dates[series_id] = watch_date
 
-                # check if we've fetched all episodes
                 total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
                 start_index += len(items_data)
                 if start_index >= total_record_count:
@@ -522,10 +497,8 @@ class JellyfinService:
         """Get aggregated movie data across all users with optional library filters."""
         movie_data: dict[str, dict[str, Any]] = {}
 
-        # get all movie libraries
         all_libraries = await self.get_movie_libraries()
 
-        # filter to included libraries if specified
         if included_libraries:
             libraries_to_query = [
                 lib for lib in all_libraries if lib["name"] in included_libraries
@@ -545,7 +518,6 @@ class JellyfinService:
 
                 for movie in user_movies:
                     if movie.id not in movie_data:
-                        # first time seeing this movie - capture versions once (same files for all users)
                         movie_data[movie.id] = {
                             "name": movie.name,
                             "year": movie.year,
@@ -563,7 +535,6 @@ class JellyfinService:
                             else 0,
                         }
                     else:
-                        # aggregate data
                         existing = movie_data[movie.id]
                         if movie.user_data:
                             existing["view_count"] += movie.user_data.play_count
@@ -579,7 +550,6 @@ class JellyfinService:
                             if movie.user_data.played:
                                 existing["played_by_user_count"] += 1
 
-        # convert to final format
         return [
             AggregatedMovieData(
                 name=data["name"],
@@ -598,18 +568,11 @@ class JellyfinService:
     async def get_aggregated_series(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedSeriesData]:
-        """Get aggregated series data across all users with optional library inclusion.
-
-        Note: Jellyfin doesn't populate LastPlayedDate at the series level, so we check
-        episodes to get accurate watch dates. We optimize by getting all watched episodes
-        per user in a single API call instead of querying each series individually.
-        """
+        """Get aggregated series data across all users with optional library inclusion."""
         series_data: dict[str, dict[str, Any]] = {}
 
-        # get all TV libraries
         all_libraries = await self.get_series_libraries()
 
-        # filter to included libraries if specified
         if included_libraries:
             libraries_to_query = [
                 lib for lib in all_libraries if lib["name"] in included_libraries
@@ -622,12 +585,10 @@ class JellyfinService:
             library_name = library["name"]
             LOG.debug(f"Processing series library: {library_name} (ID: {library_id})")
 
-            # get first user to fetch series sizes (sizes are same for all users)
             users = await self.get_users()
             if not users:
                 continue
 
-            # fetch series sizes once per library (not per user as this is expensive)
             (
                 series_sizes,
                 series_dates,
@@ -635,12 +596,10 @@ class JellyfinService:
             ) = await self.get_series_sizes_for_library(library_id, users[0].id)
 
             for user in users:
-                # get all watched episodes for this user in one API call
                 user_series_watch_dates = await self.get_all_watched_episodes_for_user(
                     user.id
                 )
 
-                # get series list for this user from this library
                 user_series = await self.get_series_for_user(
                     user.id,
                     library_id=library_id,
@@ -650,16 +609,14 @@ class JellyfinService:
                 )
 
                 for series in user_series:
-                    # get watch date from our pre-fetched data
                     episode_last_watched = user_series_watch_dates.get(series.id)
 
                     if series.id not in series_data:
-                        # first time seeing this series
                         series_data[series.id] = {
                             "id": series.id,
                             "name": series.name,
                             "year": series.year,
-                            "service": Service.JELLYFIN,
+                            "service": Service.EMBY,
                             "library_id": series.library_id,
                             "library_name": series.library_name,
                             "path": series.path,
@@ -679,12 +636,10 @@ class JellyfinService:
                             ],
                         }
                     else:
-                        # aggregate data
                         existing = series_data[series.id]
                         if series.user_data:
                             existing["view_count"] += series.user_data.play_count
 
-                        # update last_viewed_at if this user's episodes were watched more recently
                         if episode_last_watched:
                             if (
                                 not existing["last_viewed_at"]
@@ -693,7 +648,6 @@ class JellyfinService:
                                 existing["last_viewed_at"] = episode_last_watched
                             existing["played_by_user_count"] += 1
 
-        # convert to final format
         return [
             AggregatedSeriesData(
                 **{k: v for k, v in data.items() if k != "season_data"},
@@ -705,7 +659,7 @@ class JellyfinService:
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
-        """Test Jellyfin service connection without full initialization."""
+        """Test Emby service connection without full initialization."""
         async with niquests.AsyncSession() as session:
             response = await session.get(
                 f"{url.rstrip('/')}/System/Info",

@@ -33,6 +33,7 @@ from backend.models.media import (
 )
 from backend.models.services.radarr import RadarrMovie
 from backend.models.services.sonarr import SonarrSeries
+from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.notifications import notify_admins
 from backend.services.plex import PlexService
@@ -80,13 +81,13 @@ async def _get_main_media_server(session: AsyncSession) -> ServiceConfig | None:
 
 async def _get_media_service_instance(
     service_type: Service,
-) -> JellyfinService | PlexService | None:
-    """Return initialized media service instance for Plex/Jellyfin or None."""
+) -> JellyfinService | EmbyService | PlexService | None:
+    """Return initialized media service instance for Plex/Jellyfin/Emby or None."""
     service_instance = await service_manager.return_service(service_type)
     if not service_instance:
         LOG.error(f"Service {service_type} not initialized")
         return None
-    if not isinstance(service_instance, (JellyfinService, PlexService)):
+    if not isinstance(service_instance, (JellyfinService, EmbyService, PlexService)):
         LOG.error(f"Service {service_type} is not a media server")
         return None
     return service_instance
@@ -141,6 +142,7 @@ async def _sync_seasons(
     session: AsyncSession,
     series_id: int,
     season_data: list[AggregatedSeasonData],
+    service_type: Service = Service.JELLYFIN,
 ) -> None:
     """Upsert season rows for a series from freshly-fetched media server data."""
     if not season_data:
@@ -160,17 +162,21 @@ async def _sync_seasons(
             s.last_viewed_at = sd.last_viewed_at
             s.never_watched = sd.never_watched
             if sd.service_season_id:
-                # detect whether this is plex (numeric ratingKey) or jellyfin (UUID)
-                if len(sd.service_season_id) > 20:  # jellyfin UUIDs are longer
+                if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
+                elif service_type is Service.EMBY:
+                    s.emby_season_id = sd.service_season_id
                 else:
                     s.plex_season_rating_key = sd.service_season_id
         else:
             jellyfin_id = None
+            emby_id = None
             plex_key = None
             if sd.service_season_id:
-                if len(sd.service_season_id) > 20:
+                if service_type is Service.JELLYFIN:
                     jellyfin_id = sd.service_season_id
+                elif service_type is Service.EMBY:
+                    emby_id = sd.service_season_id
                 else:
                     plex_key = sd.service_season_id
             session.add(
@@ -183,6 +189,7 @@ async def _sync_seasons(
                     last_viewed_at=sd.last_viewed_at,
                     never_watched=sd.never_watched,
                     jellyfin_season_id=jellyfin_id,
+                    emby_season_id=emby_id,
                     plex_season_rating_key=plex_key,
                 )
             )
@@ -751,6 +758,9 @@ async def sync_series(
 
             # convert to dictionary keyed by tmdb_id
             existing_series = {s.tmdb_id: s for s in existing_series_list if s.tmdb_id}
+            # fallback lookups by tvdb_id / imdb_id for cross-service de-dup
+            existing_by_tvdb = {s.tvdb_id: s for s in existing_series_list if s.tvdb_id}
+            existing_by_imdb = {s.imdb_id: s for s in existing_series_list if s.imdb_id}
 
             # track all tmdb_ids seen in this sync
             parsed_tmdb_ids = set[int]()
@@ -774,10 +784,17 @@ async def sync_series(
                     sonarr_series.get(tmdb_id) if tmdb_id in sonarr_series else None
                 )
 
-                # if series already exists, update it
-                if tmdb_id in existing_series:
-                    existing_series_obj = existing_series[tmdb_id]
+                # locate existing series: primary key is tmdb_id, fall back to
+                # tvdb_id / imdb_id to avoid UNIQUE constraint violations when two
+                # services report the same show with different TMDB IDs
+                existing_series_obj = existing_series.get(tmdb_id)
+                if existing_series_obj is None and series.external_ids.tvdb:
+                    existing_series_obj = existing_by_tvdb.get(series.external_ids.tvdb)
+                if existing_series_obj is None and series.external_ids.imdb:
+                    existing_series_obj = existing_by_imdb.get(series.external_ids.imdb)
 
+                # if series already exists, update it
+                if existing_series_obj is not None:
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
 
@@ -814,7 +831,10 @@ async def sync_series(
 
                     # sync season data
                     await _sync_seasons(
-                        session, existing_series_obj.id, series.season_data
+                        session,
+                        existing_series_obj.id,
+                        series.season_data,
+                        series.service,
                     )
 
                 # if series doesn't exist, create new entry
@@ -844,9 +864,18 @@ async def sync_series(
                     session.add(new_series)
                     # flush so new_series.id is available for the service ref FK
                     await session.flush()
+                    # register in lookup dicts so later iterations (from another service)
+                    # don't attempt a duplicate insert
+                    existing_series[tmdb_id] = new_series
+                    if new_series.tvdb_id:
+                        existing_by_tvdb[new_series.tvdb_id] = new_series
+                    if new_series.imdb_id:
+                        existing_by_imdb[new_series.imdb_id] = new_series
                     await _upsert_series_service_ref(session, new_series.id, series)
                     # sync season data
-                    await _sync_seasons(session, new_series.id, series.season_data)
+                    await _sync_seasons(
+                        session, new_series.id, series.season_data, series.service
+                    )
 
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
