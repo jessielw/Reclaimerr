@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 
 from backend.core.encryption import fer_decrypt
@@ -29,10 +30,20 @@ async def load_enabled_services() -> None:
         )
 
     for config in service_configs:
-        api_key = fer_decrypt(config.api_key)
+        try:
+            api_key = fer_decrypt(config.api_key)
+        except InvalidToken:
+            LOG.critical("Failed to decrypt API key - The ENCRYPTION_KEY has changed")
+            raise RuntimeError(
+                f"ENCRYPTION_KEY mismatch: cannot decrypt stored API key for {config.service_type}."
+            ) from None
 
         if config.service_type is Service.JELLYFIN:
             await service_manager.initialize_jellyfin(
+                config.base_url, api_key, config.is_main
+            )
+        elif config.service_type is Service.EMBY:
+            await service_manager.initialize_emby(
                 config.base_url, api_key, config.is_main
             )
         elif config.service_type is Service.PLEX:

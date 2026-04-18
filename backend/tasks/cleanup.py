@@ -1124,6 +1124,7 @@ async def delete_cleanup_candidates() -> None:
             if (
                 service_manager.radarr
                 or service_manager.jellyfin
+                or service_manager.emby
                 or service_manager.plex
             ):
                 movies_deleted = await _delete_movie_candidates()
@@ -1132,6 +1133,7 @@ async def delete_cleanup_candidates() -> None:
             if (
                 service_manager.sonarr
                 or service_manager.jellyfin
+                or service_manager.emby
                 or service_manager.plex
             ):
                 series_deleted = await _delete_series_candidates()
@@ -1492,12 +1494,13 @@ async def _delete_season_candidates(
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
-            media_service = service_manager.jellyfin or service_manager.plex
-            season_service_id = (
-                season.jellyfin_season_id
-                if service_manager.jellyfin
-                else season.plex_season_rating_key
-            )
+            media_service = service_manager.jellyfin or service_manager.emby or service_manager.plex
+            if service_manager.jellyfin:
+                season_service_id = season.jellyfin_season_id
+            elif service_manager.emby:
+                season_service_id = season.emby_season_id
+            else:
+                season_service_id = season.plex_season_rating_key
             if media_service and season_service_id:
                 try:
                     await media_service.delete_item(season_service_id)
