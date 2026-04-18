@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 
+- Service section in Dashboard will now only show services that are active
+- Services in Dashboard are properly capitalized
 
 ### Fixed
 

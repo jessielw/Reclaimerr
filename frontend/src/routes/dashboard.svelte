@@ -11,6 +11,7 @@
     DashboardActivityItem,
     DashboardResponse,
   } from "$lib/types/shared";
+  import { capitalizeFirstLetter } from "$lib/utils/strings";
 
   // state
   let dashboard = $state<DashboardResponse | null>(null);
@@ -413,31 +414,33 @@
                     class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >
                     {#each dashboard.services as service (service.name)}
-                      <div
-                        class="rounded-md border border-border bg-secondary/20 p-3 min-w-0"
-                      >
-                        <div class="flex items-center justify-between gap-2">
-                          <p class="font-medium text-foreground truncate">
-                            {service.name}
-                          </p>
-                          <span
-                            class="text-xs px-2 py-0.5 rounded-full {service.enabled
-                              ? 'bg-green-500/20 text-green-500'
-                              : 'bg-muted text-muted-foreground'}"
-                          >
-                            {service.status}
-                          </span>
+                      {#if service.enabled}
+                        <div
+                          class="rounded-md border border-border bg-secondary/20 p-3 min-w-0"
+                        >
+                          <div class="flex items-center justify-between gap-2">
+                            <p class="font-medium text-foreground truncate">
+                              {capitalizeFirstLetter(service.name)}
+                            </p>
+                            <span
+                              class="text-xs px-2 py-0.5 rounded-full {service.enabled
+                                ? 'bg-green-500/20 text-green-500'
+                                : 'bg-muted text-muted-foreground'}"
+                            >
+                              {service.status}
+                            </span>
+                          </div>
+                          {#if shouldShowServiceSync(service.name)}
+                            <p
+                              class="text-xs text-muted-foreground mt-2 truncate"
+                            >
+                              Last sync: {service.last_sync_at
+                                ? formatDistanceToNow(service.last_sync_at)
+                                : "never"}
+                            </p>
+                          {/if}
                         </div>
-                        {#if shouldShowServiceSync(service.name)}
-                          <p
-                            class="text-xs text-muted-foreground mt-2 truncate"
-                          >
-                            Last sync: {service.last_sync_at
-                              ? formatDistanceToNow(service.last_sync_at)
-                              : "never"}
-                          </p>
-                        {/if}
-                      </div>
+                      {/if}
                     {/each}
                   </div>
                 {/if}
