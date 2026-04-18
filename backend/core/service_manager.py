@@ -5,6 +5,7 @@ import urllib3.exceptions as url3_exceptions
 
 from backend.core.logger import LOG
 from backend.enums import Service
+from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
 from backend.services.radarr import RadarrClient
@@ -21,8 +22,11 @@ class ServiceManager:
 
     def __init__(self) -> None:
         """Initialize service manager with no active clients."""
-        self._main_media_server: JellyfinService | PlexService | None = None
+        self._main_media_server: JellyfinService | EmbyService | PlexService | None = (
+            None
+        )
         self._jellyfin: JellyfinService | None = None
+        self._emby: EmbyService | None = None
         self._plex: PlexService | None = None
         self._radarr: RadarrClient | None = None
         self._sonarr: SonarrClient | None = None
@@ -31,12 +35,14 @@ class ServiceManager:
         LOG.info("ServiceManager initialized")
 
     @property
-    def main_media_server(self) -> JellyfinService | PlexService | None:
+    def main_media_server(self) -> JellyfinService | EmbyService | PlexService | None:
         """Get the main media server client (must be initialized first)."""
         return self._main_media_server
 
     @main_media_server.setter
-    def main_media_server(self, service: JellyfinService | PlexService) -> None:
+    def main_media_server(
+        self, service: JellyfinService | EmbyService | PlexService
+    ) -> None:
         """Set the main media server client (must be initialized first)."""
         self._main_media_server = service
 
@@ -44,6 +50,11 @@ class ServiceManager:
     def jellyfin(self) -> JellyfinService | None:
         """Get Jellyfin service (must be initialized first)."""
         return self._jellyfin
+
+    @property
+    def emby(self) -> EmbyService | None:
+        """Get Emby service (must be initialized first)."""
+        return self._emby
 
     @property
     def plex(self) -> PlexService | None:
@@ -69,6 +80,7 @@ class ServiceManager:
         """Get connection status of all clients."""
         return {
             "jellyfin": self._jellyfin is not None,
+            "emby": self._emby is not None,
             "plex": self._plex is not None,
             "radarr": self._radarr is not None,
             "sonarr": self._sonarr is not None,
@@ -82,6 +94,8 @@ class ServiceManager:
         try:
             if service_type is Service.JELLYFIN:
                 return await JellyfinService.test_service(url, api_key), ""
+            elif service_type is Service.EMBY:
+                return await EmbyService.test_service(url, api_key), ""
             elif service_type is Service.PLEX:
                 return await PlexService.test_service(url, api_key), ""
             elif service_type is Service.RADARR:
@@ -112,11 +126,19 @@ class ServiceManager:
     async def return_service(
         self, service_type: Service
     ) -> (
-        JellyfinService | PlexService | RadarrClient | SonarrClient | SeerrClient | None
+        JellyfinService
+        | EmbyService
+        | PlexService
+        | RadarrClient
+        | SonarrClient
+        | SeerrClient
+        | None
     ):
         """Return the requested service instance."""
         if service_type is Service.JELLYFIN:
             return self._jellyfin
+        elif service_type is Service.EMBY:
+            return self._emby
         elif service_type is Service.PLEX:
             return self._plex
         elif service_type is Service.RADARR:
@@ -144,6 +166,26 @@ class ServiceManager:
             return self._jellyfin
         except Exception as e:
             LOG.error(f"Failed to initialize Jellyfin service: {e}")
+            return None
+
+    async def initialize_emby(
+        self, base_url: str, api_key: str, is_main: bool
+    ) -> EmbyService | None:
+        """Initialize Emby service with provided config."""
+        try:
+            self._emby = EmbyService(
+                api_key=api_key,
+                emby_url=base_url,
+            )
+            if not await self._emby.health():
+                LOG.error(f"Emby service health check failed: {base_url}")
+                raise ValueError(f"Emby service health check failed: {base_url}")
+            LOG.info(f"Emby service initialized: {base_url}")
+            if is_main:
+                self._main_media_server = self._emby
+            return self._emby
+        except Exception as e:
+            LOG.error(f"Failed to initialize Emby service: {e}")
             return None
 
     async def initialize_plex(
@@ -227,6 +269,15 @@ class ServiceManager:
             LOG.info("Jellyfin service cleared")
         self._jellyfin = None
 
+    async def clear_emby(self) -> None:
+        """Clear Emby service (call before reinitializing)."""
+        if self._main_media_server is self._emby:
+            self._main_media_server = None
+        if self._emby and self._emby.session:
+            await self._emby.session.close()
+            LOG.info("Emby service cleared")
+        self._emby = None
+
     async def clear_plex(self) -> None:
         """Clear Plex service (call before reinitializing)."""
         if self._main_media_server is self._plex:
@@ -261,6 +312,7 @@ class ServiceManager:
         """Clear all clients (call before reinitializing from database)."""
         LOG.info("Clearing all clients")
         await self.clear_jellyfin()
+        await self.clear_emby()
         await self.clear_plex()
         await self.clear_radarr()
         await self.clear_sonarr()

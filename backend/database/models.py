@@ -448,6 +448,7 @@ class Season(Base):
 
     # service-specific IDs for direct ops
     jellyfin_season_id: Mapped[str | None] = mapped_column(String(100), default=None)
+    emby_season_id: Mapped[str | None] = mapped_column(String(100), default=None)
     plex_season_rating_key: Mapped[str | None] = mapped_column(
         String(100), default=None
     )

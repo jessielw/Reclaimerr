@@ -5,6 +5,7 @@ class Service(StrEnum):
     SONARR = auto()
     RADARR = auto()
     JELLYFIN = auto()
+    EMBY = auto()
     PLEX = auto()
     SEERR = auto()
 

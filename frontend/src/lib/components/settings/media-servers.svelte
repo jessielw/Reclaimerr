@@ -5,6 +5,7 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
+  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import TestButton from "$lib/components/test-button.svelte";
@@ -64,16 +65,19 @@
 
   const SERVER_ICONS: Record<ServerKey, any> = {
     jellyfin: JellyfinSVG,
+    emby: EmbySVG,
     plex: PlexSVG,
   };
 
   const SERVER_LABELS: Record<ServerKey, string> = {
     jellyfin: "Jellyfin",
+    emby: "Emby",
     plex: "Plex",
   };
 
   const SERVER_URL_PLACEHOLDERS: Record<ServerKey, string> = {
     jellyfin: "e.g. http://localhost:8096",
+    emby: "e.g. http://localhost:8096",
     plex: "e.g. http://localhost:32400",
   };
 
@@ -86,6 +90,7 @@
 
   let servers = $state<Record<ServerKey, MediaServerState>>({
     jellyfin: emptyState(),
+    emby: emptyState(),
     plex: emptyState(),
   });
 
@@ -214,6 +219,7 @@
   // track original config for change detection
   let originalConfigs = $state<Record<ServerKey, MediaServerConfig>>({
     jellyfin: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
+    emby: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
     plex: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
   });
 

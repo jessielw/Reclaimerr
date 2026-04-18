@@ -302,11 +302,12 @@ async def update_service_libraries(
     """Sync library selections for a given service."""
     if not service_type.service_type or service_type.service_type not in (
         Service.JELLYFIN,
+        Service.EMBY,
         Service.PLEX,
     ):
         raise HTTPException(
             status_code=400,
-            detail="Library selection is only supported for Jellyfin and Plex",
+            detail="Library selection is only supported for Jellyfin, Emby and Plex",
         )
 
     # update libraries from the main server

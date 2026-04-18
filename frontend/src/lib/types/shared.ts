@@ -40,6 +40,7 @@ export enum MediaType {
 export enum SettingsTab {
   MediaServers = "media_servers",
   Jellyfin = "jellyfin",
+  Emby = "emby",
   Plex = "plex",
   Radarr = "radarr",
   Sonarr = "sonarr",
@@ -54,7 +55,11 @@ export enum SettingsTab {
   About = "about",
 }
 
-export const MEDIA_SERVERS = [SettingsTab.Jellyfin, SettingsTab.Plex] as const;
+export const MEDIA_SERVERS = [
+  SettingsTab.Jellyfin,
+  SettingsTab.Emby,
+  SettingsTab.Plex,
+] as const;
 
 export type LibraryType = {
   id: number;
