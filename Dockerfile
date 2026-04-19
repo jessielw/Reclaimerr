@@ -29,4 +29,5 @@ EXPOSE 8000
 ## API image (includes frontend build)
 FROM backend-base AS api
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
-CMD ["granian", "--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "backend.api.main:app"]
+CMD ["sh", "-c", \
+	"granian --interface asgi --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000} backend.api.main:app"]

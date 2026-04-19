@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Improve health check to prevent any potential false positives for Plex
 
+### Fixed
+
+- Ability to change host/port in the Docker release
+
 ## [0.1.0-beta9] - 2026-04-18
 
 ### Added
