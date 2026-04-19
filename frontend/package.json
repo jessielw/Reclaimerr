@@ -1,6 +1,6 @@
 {
   "name": "reclaimerr-web",
-  "version": "0.1.0-beta9",
+  "version": "0.1.0-beta10",
   "type": "module",
   "scripts": {
     "dev": "vite",
