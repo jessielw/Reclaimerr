@@ -36,8 +36,7 @@ As a result, this project will close pull requests that appear to be mostly or w
 
 - Configure rules to automatically reclaim disk space
 - Supports **Jellyfin**, **Plex**, and **Emby** _(all at once if needed)_
-  - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the others if using more than one media server
-    **Note:** All servers **must** manage the same physical media library
+  - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the others if using more than one media server. **Note: All servers must manage the same physical media library**
 - Configurable task scheduling (cron/time based)
 - Automatically scans media eligible for reclamation
 - Media library items **protection** system
