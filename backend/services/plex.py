@@ -55,13 +55,13 @@ class PlexService:
     )
     async def _make_request(
         self, endpoint: str, params: dict | None = None, **kwargs
-    ) -> dict | list:
+    ) -> tuple[dict | list, int | None]:
         """Make HTTP request to Plex API with automatic retry."""
         response = await self.session.get(
             f"{self.plex_url}/{endpoint}", params=params, **kwargs
         )
         response.raise_for_status()
-        return response.json()
+        return response.json(), response.status_code
 
     @staticmethod
     def _fromtimestamp(ts: Any) -> datetime | None:
@@ -76,10 +76,12 @@ class PlexService:
     async def health(self) -> bool:
         """Check server health and API key."""
         try:
-            await self._make_request("")
-            return True
+            response, status_code = await self._make_request("identity")
+            if status_code == 200 and self._check_plex_healthy(response):
+                return True
         except Exception:
-            return False
+            pass
+        return False
 
     async def delete_item(self, rating_key: str) -> None:
         """Delete an item (movie or series) from Plex.
@@ -120,7 +122,7 @@ class PlexService:
                     continue
 
                 # get section details to check locations
-                section_details = await self._make_request(
+                section_details, _ = await self._make_request(
                     f"library/sections/{section_id}",
                     timeout=60,
                 )
@@ -159,7 +161,7 @@ class PlexService:
 
     async def _get_media_libraries(self, media_type: str) -> list[dict[str, str]]:
         """Get list of media libraries of a specific type with their IDs and names."""
-        virtual_folders = await self._make_request("library/sections/all")  # pyright: ignore [reportAttributeAccessIssue]
+        virtual_folders, _ = await self._make_request("library/sections/all")  # pyright: ignore [reportAttributeAccessIssue]
         media_libs = []
         for section in virtual_folders.get("MediaContainer", {}).get("Directory", []):  # pyright: ignore [reportAttributeAccessIssue]
             if section.get("type") == media_type:
@@ -179,7 +181,7 @@ class PlexService:
 
     async def get_library_sections(self) -> list[dict]:
         """Get all library sections."""
-        data = await self._make_request("library/sections")
+        data, _ = await self._make_request("library/sections")
         if not isinstance(data, dict):
             return []
         return data.get("MediaContainer", {}).get("Directory", [])  # pyright: ignore [reportAttributeAccessIssue]
@@ -221,7 +223,7 @@ class PlexService:
             - series_paths: series ratingKey -> series dir path
             - season_data: (series ratingKey, season_number) -> AggregatedSeasonData
         """
-        episodes_data = await self._make_request(
+        episodes_data, _ = await self._make_request(
             f"library/sections/{section_id}/all",
             params={"type": 4},
             timeout=300,
@@ -341,7 +343,7 @@ class PlexService:
 
             # type=1 to only fetch movies, not collections
             # includeGuids=1 to get external IDs
-            items_data = await self._make_request(
+            items_data, _ = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 1, "includeGuids": 1},
                 timeout=300,
@@ -434,7 +436,7 @@ class PlexService:
 
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
-            items_data = await self._make_request(
+            items_data, _ = await self._make_request(
                 f"library/sections/{section_id}/all",
                 params={"type": 2, "includeGuids": 1},
                 timeout=300,
@@ -531,7 +533,7 @@ class PlexService:
                 params["type"] = plex_type
 
             try:
-                data = await self._make_request(
+                data, _ = await self._make_request(
                     "status/sessions/history/all", params=params, timeout=300
                 )
             except Exception as e:
@@ -787,14 +789,37 @@ class PlexService:
         return scan_count == 0 and scan_lva is None
 
     @staticmethod
+    def _check_plex_healthy(response: Any) -> bool:
+        """Check if the Plex /identity response indicates a healthy connection.
+
+        We'll verify the response is a dict and has the expected structure:
+        ```python
+        {'MediaContainer': {'size': 0, 'apiVersion': '1.2.0', 'claimed': True,
+        'machineIdentifier': 'someMachineID', 'version': '1.43.1.10611-1e34174b1'}}
+        ```
+        """
+        return (
+            isinstance(response, dict)
+            and "MediaContainer" in response
+            and isinstance(response["MediaContainer"], dict)
+            and "machineIdentifier" in response["MediaContainer"]
+        )
+
+    @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         """Test Plex service connection without full initialization."""
         async with niquests.AsyncSession() as session:
             response = await session.get(
-                url,
-                headers={"X-Plex-Token": api_key},
+                f"{url.rstrip('/')}/identity",
+                headers={"X-Plex-Token": api_key, "Accept": "application/json"},
             )
             response.raise_for_status()
-            if response.status_code == 200:
-                return True
-            raise ValueError(f"Unexpected status code: {response.status_code}")
+            try:
+                data = response.json()
+                if PlexService._check_plex_healthy(data):
+                    return True
+            except Exception:
+                pass  # we can just pass and raise the ValueError
+            raise ValueError(
+                f"Unexpected response (status code: {response.status_code})"
+            )
