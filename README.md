@@ -18,7 +18,7 @@
 
 **Reclaimerr** is designed to help you reclaim disk space from your media library. I was inspired to create Reclaimerr when the 100TB of storage on my home server was nearly full and I saw the rising cost of new drives. I realized it was time to start cleaning up all the unwatched and low-rated media on my server.
 
-I explored numerous open source applications for server cleanup, and [Maintainerr](https://github.com/Maintainerr/Maintainerr) stood out as a major inspiration for Reclaimerr's design. When I began development, Maintainerr didn't support Jellyfin, though support was added in [v3.0.0](https://github.com/Maintainerr/Maintainerr/releases/tag/v3.0.0), it still didn't fully meet my needs.
+I explored numerous open source applications for server cleanup, and [Maintainerr](https://github.com/Maintainerr/Maintainerr) stood out as a major inspiration for Reclaimerr's design. When I began development, Maintainerr didn't support Jellyfin or Emby, though support was added to Jellyfin in [v3.0.0](https://github.com/Maintainerr/Maintainerr/releases/tag/v3.0.0), it still didn't fully meet my needs.
 
 I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Same as with Maintainerr - Reclaimerr can also be run without Sonarr/Radarr, directly integrated with Jellyfin/Plex.
 
@@ -35,7 +35,7 @@ As a result, this project will close pull requests that appear to be mostly or w
 # Features
 
 - Configure rules to automatically reclaim disk space
-- Supports both Jellyfin and/or Plex _(plan to support Emby in the future)_
+- Supports Jellyfin, Plex, and Emby (all at once if needed)
   - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the other if using more than one media server
     **Note:** Both servers must manage the same physical media library
 - Configurable task scheduling (cron/time based)
