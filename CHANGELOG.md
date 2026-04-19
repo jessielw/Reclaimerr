@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta10] - 2026-04-?
 
+### Added
+
+- UserDataLastPlayedDate and UserDataPlayCount to emby api calls to improve accuracy (@phendryx)
+
 ### Changed
 
 - Improve health check to prevent any potential false positives for Plex
