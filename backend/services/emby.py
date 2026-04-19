@@ -158,7 +158,7 @@ class EmbyService:
             "includeItemTypes": "Movie",
             "recursive": "true",
             "enableTotalRecordCount": "true",
-            "Fields": "ProviderIds,MediaSources,DateCreated,Path,UserData,ProductionYear,PremiereDate",
+            "Fields": "ProviderIds,MediaSources,DateCreated,Path,UserData,UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate",
             "ParentId": library_id,
         }
 
@@ -258,7 +258,7 @@ class EmbyService:
             "includeItemTypes": "Series",
             "recursive": "true",
             "enableTotalRecordCount": "true",
-            "Fields": "ProviderIds,Path,UserData,ProductionYear,PremiereDate",
+            "Fields": "ProviderIds,Path,UserData,UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate",
             "ParentId": library_id,
         }
 
@@ -352,7 +352,7 @@ class EmbyService:
                 "userId": user_id,
                 "includeItemTypes": "Episode",
                 "recursive": "true",
-                "Fields": "MediaSources,SeriesId,DateCreated,ParentIndexNumber,SeasonId,UserData",
+                "Fields": "MediaSources,SeriesId,DateCreated,ParentIndexNumber,SeasonId,UserData,UserDataLastPlayedDate,UserDataPlayCount",
                 "ParentId": library_id,
                 "StartIndex": str(start_index),
                 "Limit": str(limit),
@@ -457,7 +457,7 @@ class EmbyService:
                     "includeItemTypes": "Episode",
                     "recursive": "true",
                     "Filters": "IsPlayed",
-                    "Fields": "SeriesId",
+                    "Fields": "SeriesId,UserData,UserDataLastPlayedDate,UserDataPlayCount",
                     "SortBy": "DatePlayed",
                     "SortOrder": "Descending",
                     "StartIndex": str(start_index),
