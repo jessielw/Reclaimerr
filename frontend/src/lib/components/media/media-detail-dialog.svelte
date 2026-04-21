@@ -268,7 +268,7 @@
                 <div>
                   <span class="text-muted-foreground">Watch Count:</span>
                   <span class="text-foreground ml-2">
-                    {media.never_watched
+                    {!media.last_viewed_at
                       ? "Never watched"
                       : `${media.view_count} views`}
                   </span>

@@ -220,7 +220,6 @@ export interface MovieWithStatus {
   tagline: string | null;
   last_viewed_at: string | null;
   view_count: number;
-  never_watched: boolean;
   status: MediaStatusInfo;
   added_at: string | null;
 }
@@ -259,7 +258,6 @@ export interface SeriesWithStatus {
   tagline: string | null;
   last_viewed_at: string | null;
   view_count: number;
-  never_watched: boolean;
   status: MediaStatusInfo;
   added_at: string | null;
 }
@@ -271,7 +269,6 @@ export interface SeasonWithStatus {
   size: number | null; // bytes
   view_count: number;
   last_viewed_at: string | null;
-  never_watched: boolean;
   air_date: string | null;
   status: MediaStatusInfo;
 }

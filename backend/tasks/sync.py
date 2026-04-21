@@ -160,7 +160,6 @@ async def _sync_seasons(
             s.episode_count = sd.episode_count
             s.view_count = sd.view_count
             s.last_viewed_at = sd.last_viewed_at
-            s.never_watched = sd.never_watched
             if sd.service_season_id:
                 if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
@@ -187,7 +186,6 @@ async def _sync_seasons(
                     episode_count=sd.episode_count,
                     view_count=sd.view_count,
                     last_viewed_at=sd.last_viewed_at,
-                    never_watched=sd.never_watched,
                     jellyfin_season_id=jellyfin_id,
                     emby_season_id=emby_id,
                     plex_season_rating_key=plex_key,
@@ -386,11 +384,9 @@ async def gather_movies(
                 name=existing.name,
                 year=existing.year,
                 external_ids=existing.external_ids,
-                premiere_date=existing.premiere_date or movie.premiere_date,
                 versions=merged_versions,
                 view_count=merged_view_count,
                 last_viewed_at=merged_lva,
-                never_watched=(merged_lva is None and merged_view_count == 0),
                 played_by_user_count=max(pbu_candidates) if pbu_candidates else None,
             )
 
@@ -551,7 +547,6 @@ async def sync_movies(
                         existing_movie.added_at = earliest_added
                     existing_movie.last_viewed_at = movie.last_viewed_at
                     existing_movie.view_count = movie.view_count
-                    existing_movie.never_watched = movie.never_watched
 
                     # restore if soft-deleted
                     if existing_movie.removed_at:
@@ -590,7 +585,6 @@ async def sync_movies(
                         imdb_id=movie.external_ids.imdb,
                         last_viewed_at=movie.last_viewed_at,
                         view_count=movie.view_count,
-                        never_watched=movie.never_watched,
                     )
 
                     if earliest_added:
@@ -811,7 +805,6 @@ async def sync_series(
                         existing_series_obj.added_at = series.added_at
                     existing_series_obj.last_viewed_at = series.last_viewed_at
                     existing_series_obj.view_count = series.view_count
-                    existing_series_obj.never_watched = series.never_watched
 
                     # restore if soft-deleted
                     if existing_series_obj.removed_at:
@@ -850,7 +843,6 @@ async def sync_series(
                         tvdb_id=series.external_ids.tvdb,
                         last_viewed_at=series.last_viewed_at,
                         view_count=series.view_count,
-                        never_watched=series.never_watched,
                     )
 
                     # set service-specific fields based on source
@@ -1050,7 +1042,6 @@ async def sync_linked_data(
                     not movie.last_viewed_at or last_viewed_at > movie.last_viewed_at
                 ):
                     movie.last_viewed_at = last_viewed_at
-                    movie.never_watched = False
                     changed = True
                 if changed:
                     updated += 1

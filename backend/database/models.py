@@ -228,7 +228,6 @@ class Movie(Base):
     # watch tracking (from Plex/Jellyfin)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
-    never_watched: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
@@ -388,7 +387,6 @@ class Series(Base):
     # watch tracking (from Plex/Jellyfin)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
-    never_watched: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
@@ -443,7 +441,6 @@ class Season(Base):
     episode_count: Mapped[int | None] = mapped_column(Integer, default=None)
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    never_watched: Mapped[bool | None] = mapped_column(Boolean, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # service-specific IDs for direct ops

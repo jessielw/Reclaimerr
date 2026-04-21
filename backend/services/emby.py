@@ -221,9 +221,6 @@ class EmbyService:
                 id=item["Id"],
                 name=item["Name"],
                 year=item.get("ProductionYear"),
-                premiere_date=datetime.fromisoformat(item["PremiereDate"])
-                if item.get("PremiereDate")
-                else None,
                 date_created=added_at,
                 library_id=library_id,
                 library_name=library_name,
@@ -305,9 +302,6 @@ class EmbyService:
                 id=item["Id"],
                 name=item["Name"],
                 year=item.get("ProductionYear"),
-                premiere_date=datetime.fromisoformat(item["PremiereDate"])
-                if item.get("PremiereDate")
-                else None,
                 date_created=series_date,
                 library_id=library_id,
                 library_name=library_name,
@@ -435,7 +429,6 @@ class EmbyService:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
-                never_watched=(agg_view == 0),
                 service_season_id=season_ids.get(sk),
             )
 
@@ -521,7 +514,6 @@ class EmbyService:
                         movie_data[movie.id] = {
                             "name": movie.name,
                             "year": movie.year,
-                            "premiere_date": movie.premiere_date,
                             "external_ids": movie.external_ids,
                             "versions": list(movie.versions),
                             "view_count": movie.user_data.play_count
@@ -554,12 +546,10 @@ class EmbyService:
             AggregatedMovieData(
                 name=data["name"],
                 year=data["year"],
-                premiere_date=data["premiere_date"],
                 external_ids=data["external_ids"],
                 versions=data["versions"],
                 view_count=data["view_count"],
                 last_viewed_at=data["last_viewed_at"],
-                never_watched=(data["played_by_user_count"] == 0),
                 played_by_user_count=data["played_by_user_count"],
             )
             for data in movie_data.values()
@@ -621,7 +611,6 @@ class EmbyService:
                             "library_name": series.library_name,
                             "path": series.path,
                             "added_at": series.date_created,
-                            "premiere_date": series.premiere_date,
                             "external_ids": series.external_ids,
                             "size": series.size,
                             "view_count": series.user_data.play_count
@@ -651,7 +640,6 @@ class EmbyService:
         return [
             AggregatedSeriesData(
                 **{k: v for k, v in data.items() if k != "season_data"},
-                never_watched=(data["played_by_user_count"] == 0),
                 season_data=data.get("season_data", []),
             )
             for data in series_data.values()

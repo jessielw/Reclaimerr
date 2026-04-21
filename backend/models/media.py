@@ -42,12 +42,10 @@ class AggregatedMovieData:
     name: str
     year: int | None
     external_ids: ExternalIDs
-    premiere_date: datetime | None
     versions: list[MovieVersionData]
     # watch data
     view_count: int
     last_viewed_at: datetime | None
-    never_watched: bool
     # jellyfin-specific (None for Plex)
     played_by_user_count: int | None = None
 
@@ -63,7 +61,6 @@ class AggregatedSeasonData:
     episode_count: int
     view_count: int
     last_viewed_at: datetime | None
-    never_watched: bool
     air_date: datetime | None = None
     # plex parentRatingKey or jellyfin season item ID for direct ops
     service_season_id: str | None = None
@@ -81,13 +78,11 @@ class AggregatedSeriesData:
     library_id: str
     path: str | None
     added_at: datetime | None
-    premiere_date: datetime | None
     external_ids: ExternalIDs
     size: int
     # watch data
     view_count: int
     last_viewed_at: datetime | None
-    never_watched: bool
     # jellyfin specific (None for Plex)
     played_by_user_count: int | None = None
     # season level breakdown (populated by service layer)
@@ -168,7 +163,6 @@ class MovieWithStatus(BaseModel):
     # watch tracking
     last_viewed_at: str | None
     view_count: int
-    never_watched: bool
 
     # status
     status: MediaStatusInfo
@@ -224,7 +218,6 @@ class SeriesWithStatus(BaseModel):
     # watch tracking
     last_viewed_at: str | None
     view_count: int
-    never_watched: bool
 
     # status
     status: MediaStatusInfo
@@ -244,7 +237,6 @@ class SeasonWithStatus(BaseModel):
     size: int | None
     view_count: int
     last_viewed_at: str | None
-    never_watched: bool
     air_date: str | None
     status: MediaStatusInfo
 

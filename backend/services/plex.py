@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -309,7 +310,6 @@ class PlexService:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
-                never_watched=(agg_view == 0 and lva is None),
                 service_season_id=season_keys.get(sk),
             )
 
@@ -495,86 +495,94 @@ class PlexService:
     async def _get_all_history(
         self,
         rating_keys: set[str] | None = None,
-        history_type: str = "movie",
+        library_section_ids: list[str] | None = None,
         key_field: str = "ratingKey",
+        page_size: int = 1000,
     ) -> dict[str, _HistEntry]:
         """Fetch watch history for ALL users from /status/sessions/history/all.
 
-        Uses the admin token so records from every account on the server are returned.
-        Paginates automatically until all records are parsed.
+        Requires an admin token so records from every account on the server are returned.
+        Iterates each library section separately (if provided) and paginates fully
+        through each section's history before moving to the next.
 
         Args:
-            rating_keys: Optional set of ratingKey/parentRatingKey/grandparentRatingKey
-                values to keep.  Records not matching are skipped early.
-            history_type: Plex metadata type string passed as ``type`` param
-                ("movie" = movies, "episode" = episodes).
-            key_field: Which field on each history record to use as the dict key
-                ("ratingKey", "parentRatingKey", or "grandparentRatingKey").
+            rating_keys: Optional set of key values to keep. Records whose extracted
+                key (via key_field) is not in this set are skipped.
+            library_section_ids: Numeric section IDs (the ``key`` from library sections).
+                If provided, history is fetched per section. If None, a single
+                server-wide call is made (no librarySectionID filter).
+            key_field: Which field on each history record to use as the dict key.
+                Movies: "ratingKey".
+                Season-level episode roll-up: "parentRatingKey".
+                Series-level episode roll-up: "grandparentRatingKey".
 
         Returns:
             Dict mapping the chosen key field value to
             (total_view_count, max_last_viewed_at, distinct_user_count).
         """
-        PAGE_SIZE = 1000
-        container_start = 0
         # key -> [view_count, max_lva, set(accountIDs)]
         aggregated: dict[str, list] = {}
 
-        type_map = {"movie": 1, "episode": 4}
-        plex_type = type_map.get(history_type)
+        # iterate each section separately, or do one global pass if no sections given
+        sections_to_fetch: Sequence[str | None] = (
+            library_section_ids if library_section_ids else [None]
+        )
 
-        while True:
-            params: dict = {
-                "X-Plex-Container-Start": container_start,
-                "X-Plex-Container-Size": PAGE_SIZE,
-                "sort": "viewedAt:desc",
-            }
-            if plex_type:
-                params["type"] = plex_type
+        for section_id in sections_to_fetch:
+            container_start = 0
+            while True:
+                params: dict = {
+                    "X-Plex-Container-Start": container_start,
+                    "X-Plex-Container-Size": page_size,
+                    "sort": "viewedAt:desc",
+                }
+                if section_id is not None:
+                    params["librarySectionID"] = section_id
 
-            try:
-                data, _ = await self._make_request(
-                    "status/sessions/history/all", params=params, timeout=300
-                )
-            except Exception as e:
-                LOG.warning(
-                    f"Plex history fetch failed at offset {container_start}: {e}"
-                )
-                break
+                try:
+                    data, _ = await self._make_request(
+                        "status/sessions/history/all", params=params, timeout=300
+                    )
+                except Exception as e:
+                    LOG.warning(
+                        f"Plex history fetch failed at offset {container_start} "
+                        f"section={section_id}: {e}"
+                    )
+                    break
 
-            if not isinstance(data, dict):
-                break
+                if not isinstance(data, dict):
+                    break
 
-            container = data.get("MediaContainer", {})
-            records = container.get("Metadata", [])
-            if not records:
-                break
+                container = data.get("MediaContainer", {})
+                records = container.get("Metadata", [])
+                if not records:
+                    break
 
-            for record in records:
-                key = str(record.get(key_field, ""))
-                if not key:
-                    continue
-                if rating_keys is not None and key not in rating_keys:
-                    continue
+                for record in records:
+                    key = str(record.get(key_field, ""))
+                    if not key:
+                        continue
+                    if rating_keys is not None and key not in rating_keys:
+                        continue
 
-                viewed_at = self._fromtimestamp(record.get("viewedAt"))
-                account_id = str(record.get("accountID", ""))
+                    viewed_at = self._fromtimestamp(record.get("viewedAt"))
+                    account_id = str(record.get("accountID", ""))
 
-                if key not in aggregated:
-                    aggregated[key] = [0, None, set()]
+                    if key not in aggregated:
+                        aggregated[key] = [0, None, set()]
 
-                aggregated[key][0] += 1  # each history record = one play
-                if viewed_at:
-                    if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
-                        aggregated[key][1] = viewed_at
-                if account_id:
-                    aggregated[key][2].add(account_id)
+                    aggregated[key][0] += 1  # each history record = one play
+                    if viewed_at:
+                        if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
+                            aggregated[key][1] = viewed_at
+                    if account_id:
+                        aggregated[key][2].add(account_id)
 
-            # check if there are more pages
-            total_size = container.get("size", len(records))
-            container_start += len(records)
-            if container_start >= total_size:
-                break
+                # paginate until all records for this section are consumed
+                total_size = container.get("totalSize", len(records))
+                container_start += len(records)
+                if container_start >= total_size:
+                    break
 
         return {k: (v[0], v[1], len(v[2])) for k, v in aggregated.items()}
 
@@ -584,23 +592,31 @@ class PlexService:
         """Get aggregated movie data with optional section inclusion."""
         movies = await self.get_movies(included_libraries=included_libraries)
 
-        # build ratingKey set for movies so history fetch can be scoped
+        # collect the numeric section IDs that were actually used so history is
+        # scoped to the same libraries (avoids pulling all server history)
+        sections = await self.get_library_sections()
+        movie_sections = [s for s in sections if s.get("type") == "movie"]
+        if included_libraries:
+            movie_sections = [
+                s for s in movie_sections if s.get("title") in included_libraries
+            ]
+        movie_section_ids = [s["key"] for s in movie_sections if s.get("key")]
+
         movie_keys = {m.id for m in movies}
-        history = await self._get_all_history(rating_keys=movie_keys)
+        history = await self._get_all_history(
+            rating_keys=movie_keys,
+            library_section_ids=movie_section_ids,
+        )
 
         return [
             AggregatedMovieData(
                 name=m.name,
                 year=m.year,
-                premiere_date=None,  # plex doesn't provide premiere date directly
                 external_ids=m.external_ids,
                 versions=m.versions,
                 view_count=self._merge_view_count(m.view_count, history.get(m.id)),
                 last_viewed_at=self._merge_last_viewed(
                     m.last_viewed_at, history.get(m.id)
-                ),
-                never_watched=self._merge_never_watched(
-                    m.view_count, m.last_viewed_at, history.get(m.id)
                 ),
                 played_by_user_count=history[m.id][2] if m.id in history else None,
             )
@@ -622,14 +638,25 @@ class PlexService:
                 if sd.service_season_id:
                     season_keys.add(sd.service_season_id)
 
-        # fetch full cross user history keyed by season ratingKey
-        # (episodes roll up to parentRatingKey = season, grandparentRatingKey = series)
+        # collect the numeric section IDs for show libraries
+        sections = await self.get_library_sections()
+        show_sections = [s for s in sections if s.get("type") == "show"]
+        if included_libraries:
+            show_sections = [
+                s for s in show_sections if s.get("title") in included_libraries
+            ]
+        show_section_ids = [s["key"] for s in show_sections if s.get("key")]
+
+        # fetch cross user episode history keyed by season/series ratingKey
+        # episodes: ratingKey=episode, parentRatingKey=season, grandparentRatingKey=series
         season_history = await self._get_all_history(
-            rating_keys=season_keys, history_type="episode"
+            rating_keys=season_keys,
+            library_section_ids=show_section_ids,
+            key_field="parentRatingKey",
         )
         series_history = await self._get_all_history(
             rating_keys=series_keys,
-            history_type="episode",
+            library_section_ids=show_section_ids,
             key_field="grandparentRatingKey",
         )
 
@@ -650,9 +677,6 @@ class PlexService:
                         episode_count=sd.episode_count,
                         view_count=self._merge_view_count(sd.view_count, hist),
                         last_viewed_at=self._merge_last_viewed(sd.last_viewed_at, hist),
-                        never_watched=self._merge_never_watched(
-                            sd.view_count, sd.last_viewed_at, hist
-                        ),
                         air_date=sd.air_date,
                         service_season_id=sd.service_season_id,
                     )
@@ -669,14 +693,10 @@ class PlexService:
                     library_name=s.library_name,
                     path=s.path,
                     added_at=s.added_at,
-                    premiere_date=None,
                     external_ids=s.external_ids,
                     size=s.size,
                     view_count=self._merge_view_count(s.view_count, s_hist),
                     last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
-                    never_watched=self._merge_never_watched(
-                        s.view_count, s.last_viewed_at, s_hist
-                    ),
                     played_by_user_count=s_hist[2] if s_hist else None,
                     season_data=merged_seasons,
                 )
@@ -778,15 +798,6 @@ class PlexService:
         if hist_lva is None:
             return scan_lva
         return max(scan_lva, hist_lva)
-
-    @staticmethod
-    def _merge_never_watched(
-        scan_count: int, scan_lva: datetime | None, hist: _HistEntry | None
-    ) -> bool:
-        """Item is never-watched only if both the scan AND the history show zero plays."""
-        if hist is not None and (hist[0] > 0 or hist[1] is not None):
-            return False
-        return scan_count == 0 and scan_lva is None
 
     @staticmethod
     def _check_plex_healthy(response: Any) -> bool:

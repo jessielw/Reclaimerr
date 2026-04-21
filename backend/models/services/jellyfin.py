@@ -32,7 +32,6 @@ class JellyfinMovie:
     id: str
     name: str
     year: int | None
-    premiere_date: datetime | None
     date_created: datetime | None
     library_id: str
     library_name: str
@@ -48,7 +47,6 @@ class JellyfinSeries:
     id: str
     name: str
     year: int | None
-    premiere_date: datetime | None
     date_created: datetime | None
     library_id: str
     library_name: str

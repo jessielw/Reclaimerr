@@ -205,7 +205,6 @@ async def get_movies(
             "tagline": movie.tagline,
             "last_viewed_at": to_utc_isoformat(movie.last_viewed_at),
             "view_count": movie.view_count,
-            "never_watched": movie.never_watched,
             "status": status,
             "added_at": to_utc_isoformat(movie.added_at),
         }
@@ -390,7 +389,6 @@ async def get_series(
             "tagline": series.tagline,
             "last_viewed_at": to_utc_isoformat(series.last_viewed_at),
             "view_count": series.view_count,
-            "never_watched": series.never_watched,
             "status": status,
             "has_season_candidates": series.id in series_with_season_cands
             and candidate is None,
@@ -476,9 +474,6 @@ async def get_series_seasons(
                 size=season.size,
                 view_count=season.view_count or 0,
                 last_viewed_at=to_utc_isoformat(season.last_viewed_at),
-                never_watched=season.never_watched
-                if season.never_watched is not None
-                else True,
                 air_date=to_utc_isoformat(season.air_date),
                 status=season_status,
             )

@@ -562,8 +562,8 @@ def _evaluate_rule_for_season(
     ):
         return False
 
-    # include_never_watched=True (only match seasons that have never been watched)
-    if rule.include_never_watched is True and not season.never_watched:
+    # include_never_watched=True (only match seasons with no recorded watch date)
+    if rule.include_never_watched is True and season.last_viewed_at is not None:
         return False
 
     if (
@@ -572,8 +572,8 @@ def _evaluate_rule_for_season(
         or rule.include_never_watched is True
     ):
         matched_criteria["view_count"] = season.view_count
-        matched_criteria["never_watched"] = season.never_watched
-        if season.never_watched:
+        matched_criteria["never_watched"] = season.last_viewed_at is None
+        if season.last_viewed_at is None:
             rule_reasons.append(f"S{season.season_number:02d} never watched")
         else:
             rule_reasons.append(
@@ -753,12 +753,9 @@ def _evaluate_rule(
     if rule.max_view_count is not None and item.view_count > rule.max_view_count:
         return False
 
-    # check never watched flag
-    # include_never_watched=True (only match items that have never been watched)
-    # include_never_watched=False (default): no filter on watch status
-    if rule.include_never_watched is True:
-        if not item.never_watched:
-            return False
+    # include_never_watched=True (only match seasons with no recorded watch date)
+    if rule.include_never_watched is True and item.last_viewed_at is not None:
+        return False
 
     # log view/watch status if we're filtering by it
     if (
@@ -767,8 +764,8 @@ def _evaluate_rule(
         or rule.include_never_watched is True
     ):
         matched_criteria["view_count"] = item.view_count
-        matched_criteria["never_watched"] = item.never_watched
-        if item.never_watched:
+        matched_criteria["never_watched"] = item.last_viewed_at is None
+        if item.last_viewed_at is None:
             rule_reasons.append("Never watched")
         else:
             rule_reasons.append(f"Watched {item.view_count} time(s)")
@@ -1494,7 +1491,9 @@ async def _delete_season_candidates(
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
-            media_service = service_manager.jellyfin or service_manager.emby or service_manager.plex
+            media_service = (
+                service_manager.jellyfin or service_manager.emby or service_manager.plex
+            )
             if service_manager.jellyfin:
                 season_service_id = season.jellyfin_season_id
             elif service_manager.emby:
