@@ -257,7 +257,6 @@ class EmbyServiceBase:
         library_id: str,
         library_name: str,
         series_sizes: dict[str, int] | None = None,
-        series_dates: dict[str, datetime] | None = None,
         filters: dict | None = None,
     ) -> list[EmbySeriesBase]:
         """Get TV series for a specific user, optionally filtered by library.
@@ -267,7 +266,6 @@ class EmbyServiceBase:
             library_id: Library ID to query
             library_name: The name of the library
             series_sizes: Pre-calculated series sizes (series_id -> total bytes)
-            series_dates: Pre-calculated series dates (series_id -> oldest episode DateCreated)
             filters: Additional query filters
         """
         params = {
@@ -277,7 +275,7 @@ class EmbyServiceBase:
             "enableTotalRecordCount": "true",
             "Fields": (
                 "ProviderIds,Path,UserData,UserDataLastPlayedDate,UserDataPlayCount,"
-                "ProductionYear,PremiereDate"
+                "ProductionYear,PremiereDate,DateCreated"
             ),
             "ParentId": library_id,
         }
@@ -321,14 +319,12 @@ class EmbyServiceBase:
 
             # get size from pre-calculated series sizes (if available)
             total_size = series_sizes.get(item["Id"], 0) if series_sizes else 0
-            # get oldest episode date (if available)
-            series_date = series_dates.get(item["Id"]) if series_dates else None
 
             series = EmbySeriesBase(
                 id=item["Id"],
                 name=item["Name"],
                 year=item.get("ProductionYear"),
-                date_created=series_date,
+                date_created=datetime.fromisoformat(item.get("DateCreated")),
                 library_id=library_id,
                 library_name=library_name,
                 path=item.get("Path"),
@@ -342,22 +338,20 @@ class EmbyServiceBase:
     async def get_series_sizes_for_library(
         self, library_id: str, user_id: str
     ) -> tuple[
-        dict[str, int], dict[str, datetime], dict[tuple[str, int], AggregatedSeasonData]
+        dict[str, int], dict[tuple[str, int], AggregatedSeasonData]
     ]:
-        """Get total sizes, oldest DateCreated, and season data for all series in a library.
+        """Get total sizes and season data for all series in a library.
 
         Args:
             library_id: The Emby/Jellyfin library ID
             user_id: The Emby/Jellyfin user ID to fetch episodes for
 
         Returns:
-            Tuple of (series_sizes, series_dates, season_data) where:
+            Tuple of (series_sizes, season_data) where:
             - series_sizes: Dictionary mapping series_id to total size in bytes
-            - series_dates: Dictionary mapping series_id to oldest episode DateCreated
             - season_data: Dictionary mapping (series_id, season_number) to AggregatedSeasonData
         """
         series_sizes: dict[str, int] = {}
-        series_dates: dict[str, datetime] = {}
         # season accumulation
         season_sizes: dict[tuple[str, int], int] = {}
         season_episode_counts: dict[tuple[str, int], int] = {}
@@ -405,15 +399,6 @@ class EmbyServiceBase:
                     episode_size += source.get("Size", 0)
 
                 series_sizes[series_id] = series_sizes.get(series_id, 0) + episode_size
-
-                # track oldest DateCreated
-                if episode.get("DateCreated"):
-                    episode_date = datetime.fromisoformat(episode["DateCreated"])
-                    if (
-                        series_id not in series_dates
-                        or episode_date < series_dates[series_id]
-                    ):
-                        series_dates[series_id] = episode_date
 
                 # season accumulation
                 season_num_raw = episode.get("ParentIndexNumber")
@@ -468,7 +453,7 @@ class EmbyServiceBase:
                 service_season_id=season_ids.get(sk),
             )
 
-        return series_sizes, series_dates, season_data
+        return series_sizes, season_data
 
     async def get_all_watched_episodes_for_user(
         self, user_id: str
@@ -639,7 +624,6 @@ class EmbyServiceBase:
             # fetch series sizes once per library (not per user as this is expensive)
             (
                 series_sizes,
-                series_dates,
                 season_data_map,
             ) = await self.get_series_sizes_for_library(library_id, users[0].id)
 
@@ -655,7 +639,6 @@ class EmbyServiceBase:
                     library_id=library_id,
                     library_name=library_name,
                     series_sizes=series_sizes,
-                    series_dates=series_dates,
                 )
 
                 for series in user_series:
