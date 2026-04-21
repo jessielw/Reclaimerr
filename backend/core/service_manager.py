@@ -155,7 +155,7 @@ class ServiceManager:
         try:
             self._jellyfin = JellyfinService(
                 api_key=api_key,
-                jellyfin_url=base_url,
+                base_url=base_url,
             )
             if not await self._jellyfin.health():
                 LOG.error(f"Jellyfin service health check failed: {base_url}")
@@ -175,7 +175,7 @@ class ServiceManager:
         try:
             self._emby = EmbyService(
                 api_key=api_key,
-                emby_url=base_url,
+                base_url=base_url,
             )
             if not await self._emby.health():
                 LOG.error(f"Emby service health check failed: {base_url}")
