@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Plex was not parsing all data correctly across all users/history
   - This will slightly increase the sync time
+- Never watched false positives
 
 ## [0.1.0-beta10] - 2026-04-19
 
