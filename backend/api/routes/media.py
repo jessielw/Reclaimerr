@@ -647,10 +647,10 @@ async def delete_candidates(
     user: Annotated[User, Depends(get_current_user)],
     _db: AsyncSession = Depends(get_db),
 ):
-    """Delete specific reclaim candidates, removing them from Radarr/Sonarr/Plex/Jellyfin.
+    """Deletes specific reclaim candidates, removing them from the media server.
 
     Requires admin or manage_reclaim permission. Uses same deletion priority as
-    the automated task: Radarr/Sonarr first, then Jellyfin/Plex fallback.
+    the automated task: Radarr/Sonarr first, then media server fallback.
     """
     if not (
         user.role is UserRole.ADMIN or has_permission(user, Permission.MANAGE_RECLAIM)

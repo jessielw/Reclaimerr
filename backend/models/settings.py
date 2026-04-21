@@ -25,7 +25,7 @@ class ServiceConfigUpdate(BaseModel):
     base_url: str
     api_key: str | None = None  # None = keep existing key (used if frontend changes it)
     enabled: bool
-    # only plex/jellyfin are eligible; at most one server may have this True
+    # only plex/jellyfin/emby are eligible; at most one server may have this True
     is_main: bool = False
     libraries: list[dict] | None = None
 
@@ -38,7 +38,7 @@ class ServiceConfigUpdate(BaseModel):
         if self.is_main and self.service_type not in MEDIA_SERVERS:
             raise PydanticCustomError(
                 "is_main_invalid",
-                "Only Plex and Jellyfin can be designated as the main media server",
+                "Only Plex, Jellyfin, and Emby can be designated as the main media server",
             )
         return self
 

@@ -112,7 +112,7 @@ class NotificationSetting(Base):
 
 class ServiceConfig(Base):
     """
-    Configuration for external services (Plex, Jellyfin, Radarr, Sonarr, Seerr).
+    Configuration for external services (Media servers, Radarr, Sonarr, Seerr).
     """
 
     __tablename__ = "service_configs"
@@ -125,7 +125,7 @@ class ServiceConfig(Base):
     api_key: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # designates this as the sole source-of-truth for physical file versions;
-    # only one Plex/Jellyfin server may have is_main=True at a time
+    # only one media server may have is_main=True at a time
     is_main: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -225,7 +225,7 @@ class Movie(Base):
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
 
-    # watch tracking (from Plex/Jellyfin)
+    # watch tracking (from media server)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -273,9 +273,9 @@ class MovieVersion(Base):
 
     # service identification
     service: Mapped[Service] = mapped_column(Enum(Service))
-    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    # plex ratingKey or jellyfin/emby item ID (used for item-level ops like delete)
     service_item_id: Mapped[str] = mapped_column(String(100))
-    # plex Media.id or jellyfin MediaSource.Id (unique per physical file)
+    # plex Media.id or jellyfin/emby MediaSource.Id (unique per physical file)
     service_media_id: Mapped[str] = mapped_column(String(100))
 
     # library
@@ -313,7 +313,7 @@ class SeriesServiceRef(Base):
 
     # service identification
     service: Mapped[Service] = mapped_column(Enum(Service))
-    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    # plex ratingKey or jellyfin/emby item ID (used for item-level ops like delete)
     service_id: Mapped[str] = mapped_column(String(100))
 
     # library
@@ -384,7 +384,7 @@ class Series(Base):
     # series-specific info
     season_count: Mapped[int | None] = mapped_column(Integer, default=None, init=False)
 
-    # watch tracking (from Plex/Jellyfin)
+    # watch tracking (from plex/jellyfin/emby)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
 

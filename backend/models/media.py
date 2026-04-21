@@ -23,9 +23,9 @@ class MovieVersionData:
     """Single physical file version of a movie."""
 
     service: MediaServerType
-    # plex ratingKey or jellyfin item ID (used for item-level ops like delete)
+    # plex ratingKey or jellyfin/emby item ID (used for item level ops like delete)
     service_item_id: str
-    # plex Media.id or jellyfin MediaSource.Id (unique per physical file)
+    # plex Media.id or jellyfin/emby MediaSource.Id (unique per physical file)
     service_media_id: str
     library_id: str
     library_name: str
@@ -55,14 +55,14 @@ class AggregatedSeasonData:
     """Season with aggregated watch data from a media server."""
 
     # (service_series_id, season_number) uniquely identifies this season
-    service_series_id: str  # plex grandparentRatingKey or jellyfin SeriesId
+    service_series_id: str  # plex grandparentRatingKey or jellyfin/emby SeriesId
     season_number: int
     size: int
     episode_count: int
     view_count: int
     last_viewed_at: datetime | None
     air_date: datetime | None = None
-    # plex parentRatingKey or jellyfin season item ID for direct ops
+    # plex parentRatingKey or jellyfin/emby season item ID for direct ops
     service_season_id: str | None = None
 
 
@@ -83,7 +83,7 @@ class AggregatedSeriesData:
     # watch data
     view_count: int
     last_viewed_at: datetime | None
-    # jellyfin specific (None for Plex)
+    # jellyfin/emby specific (None for Plex)
     played_by_user_count: int | None = None
     # season level breakdown (populated by service layer)
     season_data: list[AggregatedSeasonData] = field(default_factory=list)

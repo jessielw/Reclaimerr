@@ -273,8 +273,3 @@ class ChangePasswordRequest(BaseModel, PasswordValidationMixin):
         if self.old_password is not None:
             self.old_password = self.old_password.strip() or None
         return self
-
-
-# class LinkJellyfinRequest(BaseModel):
-#     username: str
-#     password: str
