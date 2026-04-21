@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Unified Emby/Jellyfin to reduce duplicate code
+- Enhance media server deletion logic for cleanup candidates
 
 ### Fixed
 
-- 
+- Emby deletion fallback on cleanup
 
 ## [0.1.0-beta.11] - 2026-04-20
 
