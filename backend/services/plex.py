@@ -35,9 +35,12 @@ _HistEntry = tuple[int, datetime | None, int]
 class PlexService:
     """Plex media server backend."""
 
+    __slots__ = ("token", "plex_url", "session")
+
     def __init__(self, token: str, plex_url: str) -> None:
         self.token = token
         self.plex_url = plex_url.rstrip("/")
+
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {

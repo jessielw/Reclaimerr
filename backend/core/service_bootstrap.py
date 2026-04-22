@@ -51,8 +51,10 @@ async def load_enabled_services() -> None:
                 config.base_url, api_key, config.is_main
             )
         elif config.service_type is Service.RADARR:
-            await service_manager.initialize_radarr(config.base_url, api_key)
+            timeout = int((config.extra_settings or {}).get("timeout", 300))
+            await service_manager.initialize_radarr(config.base_url, api_key, timeout)
         elif config.service_type is Service.SONARR:
-            await service_manager.initialize_sonarr(config.base_url, api_key)
+            timeout = int((config.extra_settings or {}).get("timeout", 300))
+            await service_manager.initialize_sonarr(config.base_url, api_key, timeout)
         elif config.service_type is Service.SEERR:
             await service_manager.initialize_seerr(config.base_url, api_key)

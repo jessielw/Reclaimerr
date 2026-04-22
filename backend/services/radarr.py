@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import niquests
+from niquests.exceptions import ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -29,15 +30,22 @@ def build_radarr_movie_from_dict(data: dict) -> RadarrMovie:
 
 
 class RadarrClient:
-    def __init__(self, api_key: str, base_url: str) -> None:
+    """Client for interacting with Radarr API."""
+
+    __slots__ = ("api_key", "base_url", "timeout", "session")
+
+    def __init__(self, api_key: str, base_url: str, timeout: int = 300) -> None:
         """Initialize Radarr client.
 
         Args:
             api_key: Radarr API key
             base_url: Radarr server URL
+            timeout: Request timeout in seconds (default: 300)
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
         self.session = niquests.AsyncSession()
         self.session.headers.update(
             {
@@ -50,7 +58,7 @@ class RadarrClient:
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=(
-            retry_if_exception_type((ConnectionError, TimeoutError))
+            retry_if_exception_type((ConnectionError, TimeoutError, ReadTimeout))
             | retry_if_exception(should_retry_on_status)
         ),
     )
@@ -93,7 +101,7 @@ class RadarrClient:
 
     async def get_all_movies(self) -> list[RadarrMovie]:
         """Get all movies from Radarr."""
-        _, data = await self._make_request("GET", "movie", timeout=300)
+        _, data = await self._make_request("GET", "movie", timeout=self.timeout)
         if not isinstance(data, list):
             return []
         return [build_radarr_movie_from_dict(movie) for movie in data]

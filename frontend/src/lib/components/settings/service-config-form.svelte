@@ -13,6 +13,7 @@
     apiKeyLabel?: string;
     baseUrlPlaceholder?: string;
     disableToggle?: boolean;
+    extraSettings?: Record<string, string>;
     onchange?: (event: CustomEvent) => void;
   }
 
@@ -26,6 +27,7 @@
     apiKeyLabel = "API Key",
     baseUrlPlaceholder,
     disableToggle = false,
+    extraSettings = {},
     onchange,
   }: Props = $props();
 
@@ -92,4 +94,45 @@
       {apiKeyLabel.toLowerCase().replace("api", "API")} for authentication
     </p>
   </div>
+
+  <!-- extra settings (these can be customized per service but for now there is only timeout) -->
+  {#if Object.keys(extraSettings).length > 0}
+    <!-- timeout -->
+    {#if "timeout" in extraSettings}
+      <div>
+        <div>
+          <label
+            for="timetout"
+            class="block text-sm font-medium text-foreground mb-2"
+            >Timeout</label
+          >
+          <Input
+            type="number"
+            name="timeout"
+            step={10}
+            min={30}
+            max={3600}
+            value={extraSettings.timeout}
+            oninput={(e) => {
+              let val =
+                e.currentTarget.value === ""
+                  ? 300
+                  : Number(e.currentTarget.value);
+              // clamp value between 30 and 3600
+              if (val < 30) val = 30;
+              if (val > 3600) val = 3600;
+              // ensure value is a multiple of 10
+              if (val % 10 !== 0) val = Math.round(val / 10) * 10;
+              dispatchChange("extraSettings.timeout", val);
+            }}
+            class="input-hover-el text-foreground placeholder:text-muted-foreground"
+          />
+          <p class="mt-1 text-xs text-muted-foreground">
+            If your {tabLabel} instance takes a long time to respond, you can increase
+            this timeout value (in seconds). Default is 300 seconds.
+          </p>
+        </div>
+      </div>
+    {/if}
+  {/if}
 </div>

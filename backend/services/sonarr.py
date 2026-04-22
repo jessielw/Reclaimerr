@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import niquests
+from niquests.exceptions import ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -45,15 +46,20 @@ def build_sonarr_series_from_dict(data: dict) -> SonarrSeries:
 class SonarrClient:
     """Client for Sonarr API operations."""
 
-    def __init__(self, api_key: str, base_url: str) -> None:
+    __slots__ = ("api_key", "base_url", "timeout", "session")
+
+    def __init__(self, api_key: str, base_url: str, timeout: int = 300) -> None:
         """Initialize Sonarr client.
 
         Args:
             api_key: Sonarr API key
             base_url: Sonarr server URL
+            timeout: Request timeout in seconds (default: 300)
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
         self.session = niquests.AsyncSession()
         self.session.headers.update(
             {
@@ -66,7 +72,7 @@ class SonarrClient:
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=(
-            retry_if_exception_type((ConnectionError, TimeoutError))
+            retry_if_exception_type((ConnectionError, TimeoutError, ReadTimeout))
             | retry_if_exception(should_retry_on_status)
         ),
     )
@@ -120,7 +126,7 @@ class SonarrClient:
         Returns:
             List of all series
         """
-        _, data = await self._make_request("GET", "series", timeout=300)
+        _, data = await self._make_request("GET", "series", timeout=self.timeout)
         if not isinstance(data, list):
             return []
         return [build_sonarr_series_from_dict(series) for series in data]

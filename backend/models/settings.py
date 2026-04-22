@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -25,6 +26,7 @@ class ServiceConfigUpdate(BaseModel):
     base_url: str
     api_key: str | None = None  # None = keep existing key (used if frontend changes it)
     enabled: bool
+    extra_settings: dict[str, Any] | None = None
     # only plex/jellyfin/emby are eligible; at most one server may have this True
     is_main: bool = False
     libraries: list[dict] | None = None

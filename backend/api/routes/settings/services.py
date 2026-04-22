@@ -60,11 +60,12 @@ async def get_service_settings(
     return {
         config.service_type: {
             "enabled": config.enabled,
-            "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
             "base_url": config.base_url,
             "api_key": _mask_api_key(
                 fer_decrypt(config.api_key) if config.api_key else ""
             ),
+            "extra_settings": config.extra_settings,
+            "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
             # libraries only for the designated main media server
             "libraries": [
                 {
@@ -146,6 +147,7 @@ async def set_service_settings(
             api_key=resolved_api_key,
             enabled=data.enabled,
             is_main=data.is_main,
+            extra_settings=data.extra_settings,
         ),
     )
 
@@ -192,6 +194,7 @@ async def set_service_settings(
             "api_key": _mask_api_key(resolved_api_key),
             "enabled": data.enabled,
             "is_main": data.is_main,
+            "extra_settings": data.extra_settings,
         },
     }
 
@@ -225,6 +228,7 @@ async def _upsert_service_config(
         api_key=fer_encrypt(data.api_key),
         enabled=data.enabled,
         is_main=data.is_main,
+        extra_settings=data.extra_settings,
     )
     upsert_statement = insert_statement.on_conflict_do_update(
         index_elements=["service_type"],
@@ -233,6 +237,7 @@ async def _upsert_service_config(
             "api_key": fer_encrypt(data.api_key),
             "enabled": data.enabled,
             "is_main": data.is_main,
+            "extra_settings": data.extra_settings,
         },
     )
     await db.execute(upsert_statement)

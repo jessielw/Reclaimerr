@@ -209,13 +209,14 @@ class ServiceManager:
             return None
 
     async def initialize_radarr(
-        self, base_url: str, api_key: str
+        self, base_url: str, api_key: str, timeout: int = 300
     ) -> RadarrClient | None:
         """Initialize Radarr service with provided config."""
         try:
             self._radarr = RadarrClient(
                 api_key=api_key,
                 base_url=base_url,
+                timeout=timeout,
             )
             if not await self._radarr.health():
                 LOG.error(f"Radarr service health check failed: {base_url}")
@@ -227,13 +228,14 @@ class ServiceManager:
             return None
 
     async def initialize_sonarr(
-        self, base_url: str, api_key: str
+        self, base_url: str, api_key: str, timeout: int = 300
     ) -> SonarrClient | None:
         """Initialize Sonarr service with provided config."""
         try:
             self._sonarr = SonarrClient(
                 api_key=api_key,
                 base_url=base_url,
+                timeout=timeout,
             )
             if not await self._sonarr.health():
                 LOG.error(f"Sonarr service health check failed: {base_url}")
