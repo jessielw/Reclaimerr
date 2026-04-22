@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-0?-?
 
+### Added
+
+- Sonarr/Radarr
+  - Retry on their GET routes (API lacks pagination for some reason)
+  - Can now set timeout length from 30 - 3600 seconds to tune the length before it'll time out (in case of large libraries/slow systems/storage)
+
 ### Changed
 
 - Unified Emby/Jellyfin to reduce duplicate code
@@ -23,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plex was not parsing all data correctly across all users/history
   - This will slightly increase the sync time
 - Never watched false positives
+- Test/Save button spacing on Radarr/Sonarr/Seerr settings pages
 
 ## [0.1.0-beta10] - 2026-04-19
 

@@ -124,6 +124,7 @@ class ServiceConfig(Base):
     base_url: Mapped[str] = mapped_column(String(255))
     api_key: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    extra_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     # designates this as the sole source-of-truth for physical file versions;
     # only one media server may have is_main=True at a time
     is_main: Mapped[bool] = mapped_column(Boolean, default=False)

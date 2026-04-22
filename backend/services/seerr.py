@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 import niquests
+from niquests.exceptions import ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -33,6 +34,10 @@ def build_seerr_request_from_dict(data: dict[str, Any]) -> SeerrRequest:
 
 
 class SeerrClient:
+    """Client for interacting with Seerr API."""
+    
+    __slots__ = ("api_key", "base_url", "session")
+    
     def __init__(self, api_key: str, base_url: str) -> None:
         """Initialize Seerr client.
 
@@ -42,6 +47,7 @@ class SeerrClient:
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        
         self.session = niquests.AsyncSession()
         self.session.headers.update(
             {
@@ -54,7 +60,7 @@ class SeerrClient:
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=(
-            retry_if_exception_type((ConnectionError, TimeoutError))
+            retry_if_exception_type((ConnectionError, TimeoutError, ReadTimeout))
             | retry_if_exception(should_retry_on_status)
         ),
     )

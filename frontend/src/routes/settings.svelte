@@ -49,6 +49,7 @@
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
+    extraSettings?: Record<string, string>;
   }
 
   type ServiceState = {
@@ -62,6 +63,14 @@
     SettingsTab.Sonarr,
     SettingsTab.Seerr,
   ];
+
+  // default extra settings for services (e.g. radarr/sonarr timeout) - these will be sent
+  // to backend if the user changes them in the UI, but we need some defaults here to show
+  // something in the form fields on initial load before the user changes them
+  const DEFAULT_EXTRA_SETTINGS: Partial<Record<string, Record<string, any>>> = {
+    [SettingsTab.Radarr]: { timeout: 300 },
+    [SettingsTab.Sonarr]: { timeout: 300 },
+  };
 
   // organize tabs into groups
   const tabGroups: TabGroup[] = [
@@ -178,15 +187,20 @@
       : SettingsTab.Notifications,
   );
 
-  const emptyServiceState = (): ServiceState => ({
-    config: { enabled: false, baseUrl: "", apiKey: "" },
+  const emptyServiceState = (serviceId?: string): ServiceState => ({
+    config: {
+      enabled: false,
+      baseUrl: "",
+      apiKey: "",
+      extraSettings: serviceId ? (DEFAULT_EXTRA_SETTINGS[serviceId] ?? {}) : {},
+    },
     apiKeyIsSet: false,
   });
 
   let serviceState = $state<Record<string, ServiceState>>({
-    [SettingsTab.Radarr]: emptyServiceState(),
-    [SettingsTab.Sonarr]: emptyServiceState(),
-    [SettingsTab.Seerr]: emptyServiceState(),
+    [SettingsTab.Radarr]: emptyServiceState(SettingsTab.Radarr),
+    [SettingsTab.Sonarr]: emptyServiceState(SettingsTab.Sonarr),
+    [SettingsTab.Seerr]: emptyServiceState(SettingsTab.Seerr),
   });
 
   // handler for service config changes (radarr/sonarr/seerr only)
@@ -196,6 +210,25 @@
     else if (field === "baseUrl")
       serviceState[activeTab].config.baseUrl = value;
     else if (field === "apiKey") serviceState[activeTab].config.apiKey = value;
+    else if (field.startsWith("extraSettings.")) {
+      const key = field.slice("extraSettings.".length);
+      serviceState[activeTab].config.extraSettings = {
+        ...(serviceState[activeTab].config.extraSettings ?? {}),
+        [key]: value,
+      };
+    }
+  };
+
+  // helper to resolve extra settings with defaults (used when loading settings from backend,
+  // if backend doesn't send extra_settings or sends empty object, we want to use our defined
+  // defaults so that form fields aren't blank)
+  const resolveExtraSettings = (
+    extra_settings: Record<string, any> | undefined | null,
+    serviceId: string,
+  ): Record<string, any> => {
+    return extra_settings && Object.keys(extra_settings).length > 0
+      ? extra_settings
+      : (DEFAULT_EXTRA_SETTINGS[serviceId] ?? {});
   };
 
   // test service connection
@@ -240,11 +273,13 @@
           service_type: string;
           enabled: boolean;
           base_url: string;
+          extra_settings?: Record<string, any>;
         };
       } = await post_api("/api/settings/save/service", {
         service_type: serviceId,
-        enabled: config.enabled,
         base_url: config.baseUrl.replace(/\/+$/, ""),
+        enabled: config.enabled,
+        extra_settings: config.extraSettings,
         // only send api_key if the user typed a new one (backend resolves existing key otherwise)
         ...(config.apiKey ? { api_key: config.apiKey } : {}),
       });
@@ -252,6 +287,10 @@
       serviceState[serviceId as SettingsTab].config = {
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
+        extraSettings: resolveExtraSettings(
+          response.data.extra_settings,
+          serviceId,
+        ),
         apiKey: "",
       };
       serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
@@ -270,7 +309,15 @@
     try {
       loading = true;
       const rawServices = await get_api<
-        Record<string, { enabled: boolean; base_url: string; api_key: string }>
+        Record<
+          string,
+          {
+            enabled: boolean;
+            base_url: string;
+            api_key: string;
+            extra_settings?: Record<string, any>;
+          }
+        >
       >("/api/settings/services");
 
       for (const [serviceId, config] of Object.entries(rawServices)) {
@@ -279,6 +326,7 @@
           enabled: config.enabled,
           baseUrl: config.base_url,
           apiKey: "",
+          extraSettings: resolveExtraSettings(config.extra_settings, serviceId),
         };
         serviceState[serviceId as SettingsTab].apiKeyIsSet = !!config.api_key;
       }
@@ -401,11 +449,12 @@
               apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
               baseUrlPlaceholder={tabs.find((t) => t.id === activeTab)
                 ?.baseUrlPlaceholder || "http://localhost:8096"}
+              extraSettings={serviceState[activeTab].config.extraSettings ?? {}}
               onchange={handleServiceChange}
             />
 
             <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
-            <div class="flex gap-3 justify-end">
+            <div class="flex gap-3 justify-end mt-3">
               <Button
                 onclick={() => testServiceConnection(activeTab)}
                 disabled={testingService || savingService}
