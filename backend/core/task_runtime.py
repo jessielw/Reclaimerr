@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -54,7 +54,7 @@ async def request_task_run(task: Task) -> tuple[BackgroundJob | None, bool]:
     queued_job = await enqueue_background_job(
         job_type=BackgroundJobType.TASK_RUN,
         payload=TaskRunJobPayload(task=task).model_dump(mode="json"),
-        scheduled_at=datetime.now(timezone.utc),
+        scheduled_at=datetime.now(UTC),
         dedupe_key=f"task-run-{task}",
         skip_if_active=True,
     )

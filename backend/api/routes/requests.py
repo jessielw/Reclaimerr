@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -195,13 +195,13 @@ async def create_protection_request(
 
     requested_expires_at = None
     if request_data.duration_days is not None:
-        requested_expires_at = datetime.now(timezone.utc) + timedelta(
+        requested_expires_at = datetime.now(UTC) + timedelta(
             days=request_data.duration_days
         )
 
     # users with auto approve permission are immediately approved and protected
     auto_approve = has_permission(user, Permission.AUTO_APPROVE)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     bl_permanent: bool | None = None
     bl_expires_at: datetime | None = None
 
@@ -523,7 +523,7 @@ async def approve_request(
     # update request status
     request.status = ProtectionRequestStatus.APPROVED
     request.reviewed_by_user_id = manager.id
-    request.reviewed_at = datetime.now(timezone.utc)
+    request.reviewed_at = datetime.now(UTC)
     request.admin_notes = review_data.admin_notes
 
     if (
@@ -540,7 +540,7 @@ async def approve_request(
         approved_expires_at = None
     elif review_data.approved_duration_days is not None:
         approved_permanent = False
-        approved_expires_at = datetime.now(timezone.utc) + timedelta(
+        approved_expires_at = datetime.now(UTC) + timedelta(
             days=review_data.approved_duration_days
         )
     elif request.requested_expires_at:
@@ -688,7 +688,7 @@ async def deny_request(
     # update request status
     request.status = ProtectionRequestStatus.DENIED
     request.reviewed_by_user_id = manager.id
-    request.reviewed_at = datetime.now(timezone.utc)
+    request.reviewed_at = datetime.now(UTC)
     request.admin_notes = review_data.admin_notes
 
     await db.commit()

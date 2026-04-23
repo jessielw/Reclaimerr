@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import jwt
@@ -47,9 +47,9 @@ def create_access_token(
     """Create a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + SESSION_TTL
+        expire = datetime.now(UTC) + SESSION_TTL
 
     to_encode.update({"exp": expire, "tv": token_version})
 

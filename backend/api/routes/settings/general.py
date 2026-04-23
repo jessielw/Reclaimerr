@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -57,7 +57,7 @@ async def update_general_settings(
     settings.worker_poll_max_seconds = request.worker_poll_max_seconds
 
     # update metadata
-    settings.updated_at = datetime.now(timezone.utc)
+    settings.updated_at = datetime.now(UTC)
     settings.updated_by_user_id = admin.id
 
     db.add(settings)

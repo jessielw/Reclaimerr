@@ -1,5 +1,5 @@
 ﻿import fnmatch
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +41,9 @@ def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
     if not patterns or not file_paths:
         return False
 
-    normalized_files = [(fp or "").replace("\\", "/").lower() for fp in file_paths if fp]
+    normalized_files = [
+        (fp or "").replace("\\", "/").lower() for fp in file_paths if fp
+    ]
     if not normalized_files:
         return False
 
@@ -190,7 +192,7 @@ async def _process_media(
     LOG.info(f"Processing {len(media_items)} {media_type.value} items")
 
     # fetch all protected items for this media type to skip them
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if media_type is MediaType.MOVIE:
         protected_result = await db.execute(
             select(ProtectedMedia).where(
@@ -281,7 +283,7 @@ async def _process_media(
                 existing.matched_criteria = matched_criteria
                 existing.reason = combined_reason
                 existing.estimated_space_gb = space_gb
-                existing.updated_at = datetime.now(timezone.utc)
+                existing.updated_at = datetime.now(UTC)
                 candidates_updated += 1
             else:
                 # create new candidate
@@ -378,7 +380,7 @@ async def _process_series_seasons(
         return 0, 0, 0
 
     # whole-series protection also covers every season of that series
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     protected_series_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
@@ -461,7 +463,7 @@ async def _process_series_seasons(
                 existing.matched_criteria = matched_criteria
                 existing.reason = combined_reason
                 existing.estimated_space_gb = space_gb
-                existing.updated_at = datetime.now(timezone.utc)
+                existing.updated_at = datetime.now(UTC)
                 candidates_updated += 1
             else:
                 db.add(
@@ -629,7 +631,7 @@ def _evaluate_rule_for_season(
     # days since added (season level)
     if season.added_at:
         days_since_added = (
-            datetime.now(timezone.utc) - season.added_at.replace(tzinfo=timezone.utc)
+            datetime.now(UTC) - season.added_at.replace(tzinfo=UTC)
         ).days
         if (
             rule.min_days_since_added is not None
@@ -656,8 +658,7 @@ def _evaluate_rule_for_season(
     # days since last watched (season level)
     if season.last_viewed_at:
         days_since_last_watched = (
-            datetime.now(timezone.utc)
-            - season.last_viewed_at.replace(tzinfo=timezone.utc)
+            datetime.now(UTC) - season.last_viewed_at.replace(tzinfo=UTC)
         ).days
         if (
             rule.min_days_since_last_watched is not None
@@ -835,9 +836,7 @@ def _evaluate_rule(
 
     # check days since added
     if item.added_at:
-        days_since_added = (
-            datetime.now(timezone.utc) - item.added_at.replace(tzinfo=timezone.utc)
-        ).days
+        days_since_added = (datetime.now(UTC) - item.added_at.replace(tzinfo=UTC)).days
         if (
             rule.min_days_since_added is not None
             and days_since_added < rule.min_days_since_added
@@ -861,8 +860,7 @@ def _evaluate_rule(
     # check days since last watched
     if item.last_viewed_at:
         days_since_last_watched = (
-            datetime.now(timezone.utc)
-            - item.last_viewed_at.replace(tzinfo=timezone.utc)
+            datetime.now(UTC) - item.last_viewed_at.replace(tzinfo=UTC)
         ).days
         if (
             rule.min_days_since_last_watched is not None
@@ -1303,7 +1301,7 @@ async def _delete_movie_candidates(
                     )
                     movie = result.scalar_one_or_none()
                     if movie:
-                        movie.removed_at = datetime.now(timezone.utc)
+                        movie.removed_at = datetime.now(UTC)
 
                     # delete cleanup candidate
                     result = await db.execute(
@@ -1440,7 +1438,7 @@ async def _delete_series_candidates(
                     )
                     series = result.scalar_one_or_none()
                     if series:
-                        series.removed_at = datetime.now(timezone.utc)
+                        series.removed_at = datetime.now(UTC)
 
                     # delete cleanup candidate
                     result = await db.execute(
@@ -1704,7 +1702,7 @@ async def _delete_movies_via_media_server(
                 )
                 movie_obj = result.scalar_one_or_none()
                 if movie_obj:
-                    movie_obj.removed_at = datetime.now(timezone.utc)
+                    movie_obj.removed_at = datetime.now(UTC)
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
@@ -1805,7 +1803,7 @@ async def _delete_series_via_media_server(
                 )
                 series_db = result.scalar_one_or_none()
                 if series_db:
-                    series_db.removed_at = datetime.now(timezone.utc)
+                    series_db.removed_at = datetime.now(UTC)
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
