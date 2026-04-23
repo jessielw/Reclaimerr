@@ -206,19 +206,24 @@
   const validateRegexOnBackend = async (
     basePath: string,
     suffix: string,
-  ): Promise<{ valid: boolean; error: string | null; pattern: string | null }> => {
+  ): Promise<{
+    valid: boolean;
+    error: string | null;
+    pattern: string | null;
+  }> => {
     try {
       const response = await post_api<{
         valid: boolean;
         error: string | null;
         pattern: string | null;
-      }>(
-        "/api/rules/validate-regex",
-        { "base_path": basePath, "suffix": suffix },
-      );
+      }>("/api/rules/validate-regex", { base_path: basePath, suffix: suffix });
       return response;
     } catch (e: any) {
-      return { valid: false, error: e.message ?? "Validation failed", pattern: null };
+      return {
+        valid: false,
+        error: e.message ?? "Validation failed",
+        pattern: null,
+      };
     }
   };
 
@@ -1001,7 +1006,7 @@
                       tabindex="0"
                       onclick={() => navigateInto(node)}
                       onkeydown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
+                        if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
                           navigateInto(node);
                         }
@@ -1064,19 +1069,26 @@
                   {/if}
                 </div>
                 <div class="flex gap-2">
-                  <Label for="pattern-display" class="flex items-center">Pattern</Label>
+                  <Label for="pattern-display" class="flex items-center"
+                    >Pattern</Label
+                  >
                   <div class="flex-1 flex gap-2">
-                    <div class="flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm font-mono">
-                      {validatedPattern || joinPathAndSuffix(
-                        currentPathSelection,
-                        pathSuffixInput,
-                      )}
+                    <div
+                      class="flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm font-mono"
+                    >
+                      {validatedPattern ||
+                        joinPathAndSuffix(
+                          currentPathSelection,
+                          pathSuffixInput,
+                        )}
                     </div>
                     <Button
                       type="button"
                       variant="secondary"
                       onclick={addSelectedPath}
-                      disabled={!currentPathSelection || !!pathSuffixError || validating}
+                      disabled={!currentPathSelection ||
+                        !!pathSuffixError ||
+                        validating}
                       class="cursor-pointer shrink-0"
                     >
                       {#if validating}
