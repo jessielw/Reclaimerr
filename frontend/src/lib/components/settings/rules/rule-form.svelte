@@ -11,7 +11,7 @@
     type ReclaimRule,
     type LibraryType,
   } from "$lib/types/shared";
-  import { get_api } from "$lib/api";
+  import { get_api, post_api } from "$lib/api";
   import Save from "@lucide/svelte/icons/save";
   import X from "@lucide/svelte/icons/x";
   import Info from "@lucide/svelte/icons/info";
@@ -117,6 +117,8 @@
   let pathTreeError = $state<string | null>(null);
   let currentPathSelection = $state<string>("");
   let pathSuffixInput = $state<string>("");
+  let pathSuffixError = $state<string | null>(null);
+  let validating = $state(false);
 
   const loadPathTree = async () => {
     if (!formData.media_type) return;
@@ -201,19 +203,103 @@
     return `${trimmedBase}${sep}${trimmedSuffix}`;
   };
 
-  const addSelectedPath = () => {
+  const validateRegexOnBackend = async (
+    basePath: string,
+    suffix: string,
+  ): Promise<{
+    valid: boolean;
+    error: string | null;
+    pattern: string | null;
+  }> => {
+    try {
+      const response = await post_api<{
+        valid: boolean;
+        error: string | null;
+        pattern: string | null;
+      }>("/api/rules/validate-regex", { base_path: basePath, suffix: suffix });
+      return response;
+    } catch (e: any) {
+      return {
+        valid: false,
+        error: e.message ?? "Validation failed",
+        pattern: null,
+      };
+    }
+  };
+
+  const testPathCriteria = async () => {
+    if (!currentPathSelection) {
+      validatedPattern = null;
+      return;
+    }
+
+    validating = true;
+    const validation = await validateRegexOnBackend(
+      currentPathSelection,
+      pathSuffixInput ?? "",
+    );
+    validating = false;
+
+    if (validation.valid) {
+      pathSuffixError = null;
+      validatedPattern = validation.pattern;
+    } else {
+      pathSuffixError = validation.error;
+      validatedPattern = null;
+    }
+  };
+
+  let validatedPattern = $state<string | null>(null);
+
+  // Trigger validation when path selection changes
+  $effect(() => {
+    if (currentPathSelection) {
+      void testPathCriteria();
+    } else {
+      validatedPattern = null;
+      pathSuffixError = null;
+    }
+  });
+
+  const addSelectedPath = async () => {
     if (!currentPathSelection) {
       toast.error("Navigate into a folder first.");
       return;
     }
-    const combined = joinPathAndSuffix(currentPathSelection, pathSuffixInput);
-    const existing = formData.paths ?? [];
-    if (existing.includes(combined)) {
-      toast.error("That path is already in the list.");
+
+    // Validate and get the complete pattern from backend
+    validating = true;
+    const validation = await validateRegexOnBackend(
+      currentPathSelection,
+      pathSuffixInput,
+    );
+    validating = false;
+
+    if (!validation.valid) {
+      pathSuffixError = validation.error ?? "Invalid regex pattern";
+      toast.error(pathSuffixError);
+      validatedPattern = null;
       return;
     }
-    formData.paths = [...existing, combined];
+
+    // Use the pattern returned by backend
+    const finalPattern = validation.pattern;
+    if (!finalPattern) {
+      toast.error("Failed to construct pattern");
+      validatedPattern = null;
+      return;
+    }
+
+    const existing = formData.paths ?? [];
+    if (existing.includes(finalPattern)) {
+      toast.error("That path is already in the list.");
+      validatedPattern = null;
+      return;
+    }
+    formData.paths = [...existing, finalPattern];
     pathSuffixInput = "";
+    pathSuffixError = null;
+    validatedPattern = null;
   };
 
   const removePath = (path: string) => {
@@ -840,8 +926,8 @@
                 <Tooltip.Content>
                   <p>
                     Only media stored under one of these paths will be
-                    considered. Suffix supports <code>*</code> and
-                    <code>?</code> wildcards (fnmatch).
+                    considered. Suffix supports regex patterns (e.g.,
+                    <code>.*1080p.*</code> or <code>.*/Extras/.*</code>).
                   </p>
                 </Tooltip.Content>
               </Tooltip.Root>
@@ -915,20 +1001,25 @@
                 {:else}
                   {#each currentChildren as node}
                     <div
-                      class="flex items-center justify-between gap-2 px-3 py-2 hover:bg-muted/40"
+                      class="flex items-center justify-between gap-2 px-3 py-2 hover:bg-muted/40 cursor-pointer"
+                      role="button"
+                      tabindex="0"
+                      onclick={() => navigateInto(node)}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          navigateInto(node);
+                        }
+                      }}
                     >
-                      <button
-                        type="button"
-                        class="flex items-center gap-2 flex-1 min-w-0 cursor-pointer text-left"
-                        onclick={() => navigateInto(node)}
-                      >
+                      <div class="flex items-center gap-2 flex-1 min-w-0">
                         <FolderIcon
                           class="size-4 shrink-0 text-muted-foreground"
                         />
                         <span class="font-mono text-sm truncate">
                           {node.name}
                         </span>
-                      </button>
+                      </div>
                       {#if node.children.length > 0}
                         <ChevronRight
                           class="size-4 text-muted-foreground shrink-0"
@@ -940,40 +1031,75 @@
               </div>
 
               <!-- current selection + suffix + add -->
-              <div
-                class="grid gap-3 md:grid-cols-[minmax(0,1fr),auto] items-end"
-              >
+              <div class="space-y-3">
                 <div class="space-y-2">
                   <Label for="path-suffix">
-                    Optional Wildcard Suffix (applied to current folder)
+                    Optional Regex Suffix (applied to current folder)
                   </Label>
-                  <Input
-                    id="path-suffix"
-                    type="text"
-                    placeholder="e.g. *1080p* or **/Extras/*"
-                    bind:value={pathSuffixInput}
-                    disabled={!currentPathSelection}
-                  />
+                  <div class="flex gap-2">
+                    {#if !currentPathSelection}
+                      <Tooltip.Root>
+                        <Tooltip.Trigger class="flex-1">
+                          <Input
+                            id="path-suffix"
+                            type="text"
+                            placeholder="e.g. .*1080p.* or .*/Extras/.*"
+                            bind:value={pathSuffixInput}
+                            disabled={!currentPathSelection}
+                            class={pathSuffixError ? "border-destructive" : ""}
+                          />
+                        </Tooltip.Trigger>
+                        <Tooltip.Content>
+                          <p>Navigate into a folder first to add a suffix.</p>
+                        </Tooltip.Content>
+                      </Tooltip.Root>
+                    {:else}
+                      <Input
+                        id="path-suffix"
+                        type="text"
+                        placeholder="e.g. .*1080p.* or .*/Extras/.*"
+                        bind:value={pathSuffixInput}
+                        disabled={!currentPathSelection}
+                        class={pathSuffixError ? "border-destructive" : ""}
+                      />
+                    {/if}
+                  </div>
+                  {#if pathSuffixError}
+                    <p class="text-xs text-destructive">{pathSuffixError}</p>
+                  {/if}
                 </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onclick={addSelectedPath}
-                  disabled={!currentPathSelection}
-                  class="cursor-pointer gap-2"
-                >
-                  <Plus class="size-4" />
-                  Add Path
-                </Button>
+                <div class="flex gap-2">
+                  <Label for="pattern-display" class="flex items-center"
+                    >Pattern</Label
+                  >
+                  <div class="flex-1 flex gap-2">
+                    <div
+                      class="flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm font-mono"
+                    >
+                      {validatedPattern ||
+                        joinPathAndSuffix(
+                          currentPathSelection,
+                          pathSuffixInput,
+                        )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onclick={addSelectedPath}
+                      disabled={!currentPathSelection ||
+                        !!pathSuffixError ||
+                        validating}
+                      class="cursor-pointer shrink-0"
+                    >
+                      {#if validating}
+                        <span class="animate-spin">⏳</span>
+                      {:else}
+                        <Plus class="size-4" />
+                      {/if}
+                    </Button>
+                  </div>
+                </div>
               </div>
-              {#if currentPathSelection}
-                <p class="text-xs text-muted-foreground font-mono break-all">
-                  Will add: {joinPathAndSuffix(
-                    currentPathSelection,
-                    pathSuffixInput,
-                  )}
-                </p>
-              {/if}
             {/if}
 
             {#if formData.paths && formData.paths.length > 0}

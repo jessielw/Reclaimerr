@@ -1,4 +1,4 @@
-﻿import fnmatch
+import re
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, or_, select
@@ -33,10 +33,8 @@ __all__ = [
 def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
     """Return True if any file_path matches any pattern.
 
-    A pattern containing wildcard characters (``*``, ``?``, ``[``) is evaluated
-    with :mod:`fnmatch` (case-insensitive). A pattern without wildcards is
-    treated as a directory prefix - a file path matches if it equals the
-    pattern or lives beneath it.
+    Patterns are regex strings (case-insensitive) that should be validated
+    before being stored. All patterns are expected to be valid regex.
     """
     if not patterns or not file_paths:
         return False
@@ -47,18 +45,19 @@ def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
     if not normalized_files:
         return False
 
-    wildcard_chars = ("*", "?", "[")
-    for raw in patterns:
-        pattern = (raw or "").replace("\\", "/").lower().rstrip("/")
+    for pattern in patterns:
+        pattern = (pattern or "").strip()
         if not pattern:
             continue
-        if any(ch in pattern for ch in wildcard_chars):
-            if any(fnmatch.fnmatchcase(fp, pattern) for fp in normalized_files):
+
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+            if any(regex.search(fp) for fp in normalized_files):
                 return True
-        else:
-            prefix = pattern + "/"
-            if any(fp == pattern or fp.startswith(prefix) for fp in normalized_files):
-                return True
+        except re.error:
+            # Invalid regex - should not happen if patterns are validated, but skip to be safe
+            LOG.warning(f"Invalid regex pattern: {pattern}")
+            continue
     return False
 
 
