@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added path criteria for rules with optional regex filtering (@jeaboswell)
+- Add series status to TMDB criteria for rules (@jeaboswell)
 - Sonarr/Radarr
   - Retry on their GET routes (API lacks pagination for some reason)
   - Can now set timeout length from 30 - 3600 seconds to tune the length before it'll time out (in case of large libraries/slow systems/storage)
