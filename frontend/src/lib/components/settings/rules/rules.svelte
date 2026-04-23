@@ -290,10 +290,10 @@
   });
 </script>
 
-{#if loading}
-  <div class="p-8 text-center text-muted-foreground">
-    <Spinner size="lg" class="text-primary" />
-    <p class="mt-4">Loading rules...</p>
+{#if !loading}
+  <div class="flex items-center justify-center gap-3 text-muted-foreground p-8">
+    <Spinner class="size-5 text-primary" />
+    Loading...
   </div>
 {:else}
   <div class="space-y-6">
@@ -336,7 +336,7 @@
         <div
           class="flex p-8 items-center justify-center text-center gap-3 text-muted-foreground"
         >
-          <Spinner class="size-5" />
+          <Spinner class="size-5 text-primary" />
           Loading rules...
         </div>
       {:else if rules.length === 0}
