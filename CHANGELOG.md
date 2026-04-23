@@ -22,11 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated FastAPI to v0.136.1
 - Docker
   - Updated Granian to v2.7.4
+- Loading spinners are now themed as the primary color
 
 ### Fixed
 
 - Emby deletion fallback on cleanup
 - Edge case on movie ingestion related to IMDb ID
+- Fixed loading spinner in Rules page on loading (in production this will almost never be seen anyways)
 
 ## [0.1.0-beta.11] - 2026-04-20
 
