@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from pathlib import PurePath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -51,7 +52,7 @@ def _split_ancestors(path: str) -> list[str]:
     """
     if not path:
         return []
-    norm = path.replace("\\", "/").rstrip("/")
+    norm = PurePath(path).as_posix().rstrip("/")
     if not norm:
         return []
     if norm.startswith("/"):
@@ -78,7 +79,7 @@ async def _collect_media_paths(
     library_ids: list[str] | None,
 ) -> list[str]:
     """Return all non-null media paths for the given media type and libraries."""
-    if media_type == MediaType.MOVIE:
+    if media_type is MediaType.MOVIE:
         stmt = select(MovieVersion.path).where(MovieVersion.path.is_not(None))
         if library_ids:
             stmt = stmt.where(MovieVersion.library_id.in_(library_ids))
@@ -115,7 +116,7 @@ async def _validate_rule_paths(
             ),
         )
 
-    normalized_media = [mp.replace("\\", "/").lower() for mp in media_paths]
+    normalized_media = [PurePath(mp).as_posix().lower() for mp in media_paths if mp]
 
     cleaned: list[str] = []
     for pattern in paths:
@@ -252,17 +253,17 @@ async def validate_regex_pattern(
     The base_path is treated as a literal string (escaped), while the suffix
     can contain regex patterns. Returns the valid/complete pattern on success.
     """
-    # Normalize both paths
-    normalized_base = (body.base_path or "").replace("\\", "/").lower().rstrip("/")
-    normalized_suffix = (body.suffix or "").replace("\\", "/").lower().rstrip("/")
+    # normalize both paths
+    normalized_base = PurePath(body.base_path or "").as_posix().lower().rstrip("/")
+    normalized_suffix = PurePath(body.suffix or "").as_posix().lower().rstrip("/")
 
-    # Escape the base path to treat it as a literal string
+    # escape the base path to treat it as a literal string
     escaped_base = re.escape(normalized_base)
 
-    # Combine escaped base with suffix, anchored to start of string
+    # combine escaped base with suffix, anchored to start of string
     combined = f"""^{escaped_base if not normalized_suffix else f"{escaped_base}/{normalized_suffix}"}"""
 
-    # Validate the combined pattern
+    # validate the combined pattern
     try:
         re.compile(combined, re.IGNORECASE)
         return ValidateRegexResponse(valid=True, pattern=combined)
