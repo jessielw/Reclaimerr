@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added path criteria for rules with optional regex filtering (@jeaboswell)
 - Sonarr/Radarr
   - Retry on their GET routes (API lacks pagination for some reason)
   - Can now set timeout length from 30 - 3600 seconds to tune the length before it'll time out (in case of large libraries/slow systems/storage)
@@ -16,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Unified Emby/Jellyfin to reduce duplicate code
+- Refactor media sync for Emby/Jellyfin to use series creation date instead of earliest episode (@jeaboswell)
 - Enhance media server deletion logic for cleanup candidates
 - Updated FastAPI to v0.136.1
 - Docker
