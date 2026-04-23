@@ -290,7 +290,7 @@
   });
 </script>
 
-{#if !loading}
+{#if loading}
   <div class="flex items-center justify-center gap-3 text-muted-foreground p-8">
     <Spinner class="size-5 text-primary" />
     Loading...
