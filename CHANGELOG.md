@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unified Emby/Jellyfin to reduce duplicate code
 - Enhance media server deletion logic for cleanup candidates
+- Updated FastAPI to v0.136.1
 - Docker
   - Updated Granian to v2.7.4
 
