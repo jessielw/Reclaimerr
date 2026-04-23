@@ -1,5 +1,6 @@
 import re
 from datetime import UTC, datetime
+from pathlib import PurePath
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,9 +40,7 @@ def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
     if not patterns or not file_paths:
         return False
 
-    normalized_files = [
-        (fp or "").replace("\\", "/").lower() for fp in file_paths if fp
-    ]
+    normalized_files = [PurePath(fp).as_posix().lower() for fp in file_paths if fp]
     if not normalized_files:
         return False
 
@@ -55,7 +54,7 @@ def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
             if any(regex.search(fp) for fp in normalized_files):
                 return True
         except re.error:
-            # Invalid regex - should not happen if patterns are validated, but skip to be safe
+            # invalid regex (should not happen if patterns are validated, but skip to be safe)
             LOG.warning(f"Invalid regex pattern: {pattern}")
             continue
     return False
