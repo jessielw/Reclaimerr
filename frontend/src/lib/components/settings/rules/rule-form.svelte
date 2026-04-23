@@ -251,7 +251,7 @@
 
   let validatedPattern = $state<string | null>(null);
 
-  // Trigger validation when path selection changes
+  // trigger validation when path selection changes
   $effect(() => {
     if (currentPathSelection) {
       void testPathCriteria();
@@ -267,7 +267,7 @@
       return;
     }
 
-    // Validate and get the complete pattern from backend
+    // validate and get the complete pattern from backend
     validating = true;
     const validation = await validateRegexOnBackend(
       currentPathSelection,
@@ -282,7 +282,7 @@
       return;
     }
 
-    // Use the pattern returned by backend
+    // use the pattern returned by backend
     const finalPattern = validation.pattern;
     if (!finalPattern) {
       toast.error("Failed to construct pattern");
