@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Emby deletion fallback on cleanup
 - Edge case on movie ingestion related to IMDb ID
 - Fixed loading spinner in Rules page on loading (in production this will almost never be seen anyways)
+- Logic related to never watched causing some candidates not to load up that should have
 
 ## [0.1.0-beta.11] - 2026-04-20
 
