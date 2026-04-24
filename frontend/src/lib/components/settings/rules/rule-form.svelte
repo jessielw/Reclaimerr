@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
@@ -24,6 +25,8 @@
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import { toast } from "svelte-sonner";
+  import Notice from "$lib/components/notice.svelte";
+  import { scrollIntoView } from "$lib/utils/misc";
 
   type PathNode = {
     path: string;
@@ -58,7 +61,7 @@
     max_vote_count: null,
     min_view_count: null,
     max_view_count: null,
-    include_never_watched: false,
+    include_never_watched: true,
     min_days_since_added: null,
     max_days_since_added: null,
     min_days_since_last_watched: null,
@@ -68,6 +71,11 @@
     paths: null,
     series_status: null,
   });
+
+  // alert for include_never_watched only
+  let showNeverWatchedOnlyWarning = $state(false);
+  let confirmTimer = $state(0);
+  let confirmInterval: ReturnType<typeof setInterval> | null = null;
 
   let selectedLibraries = $state<string[]>([]);
   let validationMessage = $state<string | null>(null);
@@ -330,7 +338,7 @@
         max_vote_count: rule?.max_vote_count ?? null,
         min_view_count: rule?.min_view_count ?? null,
         max_view_count: rule?.max_view_count ?? null,
-        include_never_watched: rule?.include_never_watched ?? false,
+        include_never_watched: rule?.include_never_watched ?? true,
         min_days_since_added: rule?.min_days_since_added ?? null,
         max_days_since_added: rule?.max_days_since_added ?? null,
         min_days_since_last_watched: rule?.min_days_since_last_watched ?? null,
@@ -348,6 +356,8 @@
   });
   let saving = $state(false);
 
+  // check if at least one criterion is configured
+  // excluding: library_selection
   const hasConfiguredCriteria = (ruleData: Partial<ReclaimRule>) =>
     ruleData.min_popularity !== null ||
     ruleData.max_popularity !== null ||
@@ -357,7 +367,6 @@
     ruleData.max_vote_count !== null ||
     ruleData.min_view_count !== null ||
     ruleData.max_view_count !== null ||
-    ruleData.include_never_watched ||
     ruleData.min_days_since_added !== null ||
     ruleData.max_days_since_added !== null ||
     ruleData.min_days_since_last_watched !== null ||
@@ -370,6 +379,9 @@
     (ruleData.paths !== null &&
       ruleData.paths !== undefined &&
       ruleData.paths.length > 0);
+
+  const isNeverWatchedOnly = (ruleData: Partial<ReclaimRule>) =>
+    ruleData.include_never_watched !== null && !hasConfiguredCriteria(ruleData);
 
   const updateLibrarySelection = (libraryId: string, selected: boolean) => {
     if (selected) {
@@ -389,6 +401,25 @@
       validationMessage = "Please enter a rule name.";
       toast.error(validationMessage);
       return;
+    }
+
+    // if the rule only has "include never watched" enabled without any other criteria,
+    // show a warning and require confirmation before proceeding
+    if (isNeverWatchedOnly(formData)) {
+      if (!showNeverWatchedOnlyWarning) {
+        showNeverWatchedOnlyWarning = true;
+        const neverWatchedEl = document.getElementById("never-watched");
+        if (neverWatchedEl) scrollIntoView(neverWatchedEl);
+        confirmTimer = 20;
+        confirmInterval = setInterval(() => {
+          confirmTimer -= 1;
+          if (confirmTimer <= 0) {
+            showNeverWatchedOnlyWarning = false;
+            clearInterval(confirmInterval!);
+          }
+        }, 1000);
+        return;
+      }
     }
 
     if (!hasConfiguredCriteria(formData)) {
@@ -418,6 +449,11 @@
     if (isNaN(value)) return null;
     return Math.floor(value * 1024 * 1024 * 1024);
   };
+
+  onDestroy(() => {
+    // cleanup confirm timer if component is destroyed while it's active
+    if (confirmInterval) clearInterval(confirmInterval);
+  });
 </script>
 
 <div
@@ -790,15 +826,51 @@
               </div>
             </div>
 
-            <div class="flex items-center space-x-2">
-              <Switch
-                id="never-watched"
-                checked={formData.include_never_watched}
-                onCheckedChange={(checked) =>
-                  (formData.include_never_watched = checked)}
-                class="cursor-pointer"
-              />
-              <Label for="never-watched">Include Never Watched Items</Label>
+            <div class="flex flex-col justify-start space-y-2">
+              <div class="flex items-center space-x-2">
+                <Switch
+                  id="never-watched"
+                  checked={formData.include_never_watched}
+                  onCheckedChange={(checked) =>
+                    (formData.include_never_watched = checked)}
+                  class="cursor-pointer"
+                />
+                <Label for="never-watched">Include Never Watched Items</Label>
+              </div>
+              <p class="text-sm italic text-muted-foreground mt-1">
+                Plex is notoriously bad at identifying <strong
+                  >Never Watched Items</strong
+                >, so this filter may not be reliable on Plex libraries. It's
+                recommended to use it in combination with other criteria for
+                better results.
+              </p>
+              {#if showNeverWatchedOnlyWarning}
+                <Notice title="Warning" type="warning" class="w-full">
+                  <p>
+                    This rule only has <strong>include never watched</strong>
+                    <i
+                      >(currently {formData.include_never_watched
+                        ? "enabled"
+                        : "disabled"})</i
+                    >. This filter alone may result in in a large number of
+                    candidates and relies on the media server in correctly
+                    identifying never-watched items
+                    <i
+                      ><strong>(Plex specifically is terrible at this)</strong
+                      ></i
+                    >, which can sometimes be inaccurate. It's recommended to
+                    use this filter in combination with other criteria for more
+                    reliable results.
+                  </p>
+                  <p>
+                    If you want to proceed with just this filter, click <strong
+                      >Confirm</strong
+                    >
+                    within
+                    {confirmTimer}s.
+                  </p>
+                </Notice>
+              {/if}
             </div>
           </Card.Content>
         </Card.Root>
@@ -1167,27 +1239,37 @@
       </div>
 
       <div
-        class="p-6 border-t border-border flex flex-col md:flex-row items-center justify-end gap-3"
+        class="p-6 border-t border-border flex flex-col md:flex-col items-center justify-end gap-3"
       >
-        <p class="text-xs text-foreground mr-3 mt-1 md:text-left">
-          <strong>Note:</strong> New candidates will appear next time the Scan Cleanup
-          Candidates task is run. If you want them sooner, you can manually trigger
-          the scan.
-        </p>
-        <div class="flex justify-end items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            onclick={onCancel}
-            disabled={saving}
-            class="cursor-pointer"
-          >
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving} class="cursor-pointer gap-2">
-            <Save class="size-4" />
-            {saving ? "Saving..." : "Save Rule"}
-          </Button>
+        <div class="flex flex-col md:flex-row items-center justify-end gap-3">
+          <p class="text-xs text-foreground mr-3 mt-1 md:text-left">
+            <strong>Note:</strong> New candidates will appear next time the Scan Cleanup
+            Candidates task is run. If you want them sooner, you can manually trigger
+            the scan.
+          </p>
+          <div class="flex justify-end items-center gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onclick={onCancel}
+              disabled={saving}
+              class="cursor-pointer"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={saving}
+              class="cursor-pointer gap-2"
+            >
+              <Save class="size-4" />
+              {showNeverWatchedOnlyWarning
+                ? `Confirm (${confirmTimer})`
+                : saving
+                  ? "Saving..."
+                  : "Save Rule"}
+            </Button>
+          </div>
         </div>
       </div>
     </form>
