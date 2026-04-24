@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -23,7 +23,7 @@ async def enqueue_background_job(
     max_attempts: int = 3,
 ) -> BackgroundJob | None:
     """Enqueue a background job with optional deduplication and scheduling."""
-    run_at = scheduled_at or datetime.now(timezone.utc)
+    run_at = scheduled_at or datetime.now(UTC)
     async with async_db() as session:
         if replace_pending and dedupe_key:
             await session.execute(
@@ -85,7 +85,7 @@ async def reset_stale_jobs() -> int:
     it could complete or fail the job.  Leaving them as RUNNING would block the
     the new job from running again.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with async_db() as session:
         result = await session.execute(
             sql_update(BackgroundJob)
@@ -109,7 +109,7 @@ async def reset_stale_jobs() -> int:
 
 async def claim_next_background_job(worker_id: str) -> BackgroundJob | None:
     """Claim the next available background job for processing, marking it as RUNNING."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with async_db() as session:
         result = await session.execute(
             select(BackgroundJob.id)
@@ -168,7 +168,7 @@ async def complete_background_job(
             .where(BackgroundJob.id == job_id)
             .values(
                 status=BackgroundJobStatus.COMPLETED,
-                completed_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(UTC),
                 error_message=None,
                 payload=payload,
             )
@@ -184,7 +184,7 @@ async def fail_background_job(job_id: int, error_message: str) -> None:
             .where(BackgroundJob.id == job_id)
             .values(
                 status=BackgroundJobStatus.FAILED,
-                completed_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(UTC),
                 error_message=error_message,
             )
         )

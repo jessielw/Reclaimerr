@@ -314,7 +314,7 @@
     <div
       class="flex p-8 text-center items-center justify-center text-muted-foreground gap-3"
     >
-      <Spinner class="size-5" />
+      <Spinner class="size-5 text-primary" />
       Loading notifications...
     </div>
   {:else}

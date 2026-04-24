@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -48,7 +48,7 @@ def get_task_status(task: Task) -> tuple[str, str | None]:
 
     if task in _recent_completions:
         status, completed_time, error = _recent_completions[task]
-        elapsed = (datetime.now(timezone.utc) - completed_time).total_seconds() / 60
+        elapsed = (datetime.now(UTC) - completed_time).total_seconds() / 60
         if elapsed < COMPLETION_TTL_MINUTES:
             return (status, error)
         del _recent_completions[task]
@@ -61,7 +61,7 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
     """
     Context manager to track task execution status and persist task history.
     """
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(UTC)
     _running_tasks.add(task)
     LOG.info(f"Task {task.friendly_name()} started")
 
@@ -77,7 +77,7 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
     try:
         yield
 
-        completion_time = datetime.now(timezone.utc)
+        completion_time = datetime.now(UTC)
         _recent_completions[task] = (TaskStatus.COMPLETED, completion_time, None)
 
         async with async_db() as session:
@@ -94,7 +94,7 @@ async def track_task_execution(task: Task) -> AsyncGenerator[None, None]:
             LOG.info(f"Task {task.friendly_name()} completed successfully")
 
     except Exception as exc:
-        completion_time = datetime.now(timezone.utc)
+        completion_time = datetime.now(UTC)
         _recent_completions[task] = (TaskStatus.ERROR, completion_time, str(exc))
 
         async with async_db() as session:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -225,9 +225,7 @@ async def create_protection_entry(
     permanent = request_data.duration_days is None
     expires_at = None
     if request_data.duration_days is not None:
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            days=request_data.duration_days
-        )
+        expires_at = datetime.now(UTC) + timedelta(days=request_data.duration_days)
 
     new_entry = ProtectedMedia(
         media_type=request_data.media_type,
@@ -300,7 +298,7 @@ async def update_protection_duration(
         entry.expires_at = None
     else:
         entry.permanent = False
-        entry.expires_at = datetime.now(timezone.utc) + timedelta(
+        entry.expires_at = datetime.now(UTC) + timedelta(
             days=request_data.duration_days
         )
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,8 +55,8 @@ def _map_job_status_to_task_status(
     if job.status is BackgroundJobStatus.COMPLETED and job.completed_at is not None:
         completed_at = job.completed_at
         if completed_at.tzinfo is None:
-            completed_at = completed_at.replace(tzinfo=timezone.utc)
-        age_minutes = (datetime.now(timezone.utc) - completed_at).total_seconds() / 60
+            completed_at = completed_at.replace(tzinfo=UTC)
+        age_minutes = (datetime.now(UTC) - completed_at).total_seconds() / 60
         if age_minutes < COMPLETION_TTL_MINUTES:
             return (TaskStatus.COMPLETED, None)
     return (TaskStatus.SCHEDULED, None)

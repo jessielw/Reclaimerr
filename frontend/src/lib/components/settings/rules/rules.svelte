@@ -216,6 +216,10 @@
       conditions.push("Never watched");
     }
 
+    if (rule.paths && rule.paths.length > 0) {
+      conditions.push(`Paths: ${rule.paths.length}`);
+    }
+
     if (rule.min_view_count !== null || rule.max_view_count !== null) {
       if (rule.min_view_count !== null && rule.max_view_count !== null) {
         conditions.push(`Views: ${rule.min_view_count}-${rule.max_view_count}`);
@@ -287,9 +291,9 @@
 </script>
 
 {#if loading}
-  <div class="p-8 text-center text-muted-foreground">
-    <Spinner size="lg" class="text-primary" />
-    <p class="mt-4">Loading rules...</p>
+  <div class="flex items-center justify-center gap-3 text-muted-foreground p-8">
+    <Spinner class="size-5 text-primary" />
+    Loading...
   </div>
 {:else}
   <div class="space-y-6">
@@ -332,7 +336,7 @@
         <div
           class="flex p-8 items-center justify-center text-center gap-3 text-muted-foreground"
         >
-          <Spinner class="size-5" />
+          <Spinner class="size-5 text-primary" />
           Loading rules...
         </div>
       {:else if rules.length === 0}

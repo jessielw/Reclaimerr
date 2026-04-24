@@ -360,7 +360,7 @@
       <div
         class="flex p-8 items-center justify-center text-center gap-3 text-muted-foreground"
       >
-        <Spinner class="size-5" />
+        <Spinner class="size-5 text-primary" />
         Loading settings...
       </div>
     {:else}

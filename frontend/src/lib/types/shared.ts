@@ -118,6 +118,8 @@ export interface ReclaimRule {
   max_days_since_last_watched: number | null;
   min_size: number | null;
   max_size: number | null;
+  paths: string[] | null;
+  series_status: string[] | null;
   created_at: string;
   updated_at: string;
 }
