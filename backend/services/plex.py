@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import niquests
@@ -73,7 +73,7 @@ class PlexService:
         if not ts:
             return None
         try:
-            return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+            return datetime.fromtimestamp(int(ts), tz=UTC)
         except (OSError, OverflowError, ValueError):
             return None
 
@@ -288,9 +288,7 @@ class PlexService:
             season_view_counts[sk] = season_view_counts.get(sk, 0) + ep_view_count
             if episode.get("lastViewedAt"):
                 try:
-                    lva = datetime.fromtimestamp(
-                        int(episode["lastViewedAt"]), tz=timezone.utc
-                    )
+                    lva = datetime.fromtimestamp(int(episode["lastViewedAt"]), tz=UTC)
                     prev = season_last_viewed.get(sk)
                     if prev is None or lva > prev:
                         season_last_viewed[sk] = lva

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -48,7 +48,7 @@ async def get_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     """Role aware dashboard summary."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     seven_days_ago = now - timedelta(days=7)
     is_admin = current_user.role is UserRole.ADMIN
 

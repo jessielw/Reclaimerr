@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -122,7 +122,7 @@ async def get_movies(
     candidates = {c.movie_id: c for c in candidates_result.scalars().all()}
 
     # get protected entries
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     protected_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.movie_id.in_(movie_ids),
@@ -309,7 +309,7 @@ async def get_series(
     }
 
     # get protected entries
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     protected_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.series_id.in_(series_ids),
@@ -440,7 +440,7 @@ async def get_series_seasons(
     season_candidates = {c.season_id: c for c in cand_result.scalars().all()}
 
     # season level protection entries
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prot_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.season_id.in_(season_ids),

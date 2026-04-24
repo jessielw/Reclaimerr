@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete as sql_delete
@@ -106,12 +106,10 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
         return True
 
     # cache time now
-    time_now = datetime.now(timezone.utc)
+    time_now = datetime.now(UTC)
 
     # check for missing critical fields if not recently checked
-    if (
-        time_now - obj.last_metadata_refresh_at.replace(tzinfo=timezone.utc)
-    ).days > 7 and (
+    if (time_now - obj.last_metadata_refresh_at.replace(tzinfo=UTC)).days > 7 and (
         not obj.vote_average
         or not obj.popularity
         or not obj.backdrop_url
@@ -126,9 +124,9 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
         release_date = obj.tmdb_first_air_date  # pyright: ignore[reportAttributeAccessIssue]
 
     if release_date:
-        days_since_release = (time_now - release_date.replace(tzinfo=timezone.utc)).days
+        days_since_release = (time_now - release_date.replace(tzinfo=UTC)).days
         days_since_refresh = (
-            time_now - obj.last_metadata_refresh_at.replace(tzinfo=timezone.utc)
+            time_now - obj.last_metadata_refresh_at.replace(tzinfo=UTC)
         ).days
 
         # if released within last 6 months and not refreshed in 30 days
@@ -488,7 +486,7 @@ async def sync_movies(
         )
         return set()
     LOG.info(f"Starting movie sync ({effective_service.value})...")
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(UTC)
 
     aggregated_movies = await gather_movies(effective_service)
     if not aggregated_movies:
@@ -509,6 +507,7 @@ async def sync_movies(
 
             # convert to dictionary keyed by tmdb_id for easier lookup
             existing_movies = {m.tmdb_id: m for m in existing_movies_list if m.tmdb_id}
+            existing_by_imdb = {m.imdb_id: m for m in existing_movies_list if m.imdb_id}
 
             parsed_tmdb_ids: set[int] = set()
 
@@ -571,50 +570,82 @@ async def sync_movies(
 
                 # if movie doesn't exist, create new entry
                 else:
-                    LOG.info(f"Adding new movie: {movie.name} ({tmdb_id})")
-                    radarr_obj = (
-                        radarr_movies.get(tmdb_id) if tmdb_id in radarr_movies else None
-                    )
-                    initial_size = sum(v.size for v in movie.versions)
-                    new_movie = Movie(
-                        title=movie.name,
-                        year=movie.year,
-                        tmdb_id=tmdb_id,
-                        size=initial_size,
-                        radarr_id=radarr_obj.id if radarr_obj else None,
-                        imdb_id=movie.external_ids.imdb,
-                        last_viewed_at=movie.last_viewed_at,
-                        view_count=movie.view_count,
-                    )
-
-                    if earliest_added:
-                        new_movie.added_at = earliest_added
-
-                    # fetch TMDB metadata
-                    await _update_movie_tmdb_metadata(new_movie, tmdb_id, tmdb_service)
-                    session.add(new_movie)
-                    # flush so new_movie.id is available for version FK
-                    await session.flush()
-                    seen_new_ver_keys: set[tuple] = set()
-                    for ver in movie.versions:
-                        key = (ver.service, ver.service_media_id)
-                        if key in seen_new_ver_keys:
-                            continue
-                        seen_new_ver_keys.add(key)
-                        session.add(
-                            MovieVersion(
-                                movie_id=new_movie.id,
-                                service=ver.service,
-                                service_item_id=ver.service_item_id,
-                                service_media_id=ver.service_media_id,
-                                library_id=ver.library_id,
-                                library_name=ver.library_name,
-                                path=ver.path,
-                                size=ver.size,
-                                added_at=ver.added_at,
-                                container=ver.container,
-                            )
+                    # before inserting, check if a movie with this imdb_id already exists
+                    # (can happen when TMDB returns 404 so tmdb_id lookup fails, but the
+                    # movie is already stored under a different tmdb_id or same imdb_id)
+                    imdb_id = movie.external_ids.imdb
+                    if imdb_id and imdb_id in existing_by_imdb:
+                        existing_movie = existing_by_imdb[imdb_id]
+                        LOG.info(
+                            f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
+                            f"existing record by imdb_id ({imdb_id}) — updating instead of inserting"
                         )
+                        existing_movie.radarr_id = (
+                            radarr_obj.id if radarr_obj else existing_movie.radarr_id
+                        )
+                        if earliest_added and not existing_movie.added_at:
+                            existing_movie.added_at = earliest_added
+                        existing_movie.last_viewed_at = movie.last_viewed_at
+                        existing_movie.view_count = movie.view_count
+                        if existing_movie.removed_at:
+                            existing_movie.removed_at = None
+                            LOG.info(
+                                f"Restored soft-deleted movie: {movie.name} ({tmdb_id})"
+                            )
+                        if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
+                            await _update_movie_tmdb_metadata(
+                                existing_movie, tmdb_id, tmdb_service
+                            )
+                        await _upsert_movie_versions(
+                            session, existing_movie, movie.versions
+                        )
+                    else:
+                        LOG.info(f"Adding new movie: {movie.name} ({tmdb_id})")
+                        radarr_obj = (
+                            radarr_movies.get(tmdb_id)
+                            if tmdb_id in radarr_movies
+                            else None
+                        )
+                        initial_size = sum(v.size for v in movie.versions)
+                        new_movie = Movie(
+                            title=movie.name,
+                            year=movie.year,
+                            tmdb_id=tmdb_id,
+                            size=initial_size,
+                            radarr_id=radarr_obj.id if radarr_obj else None,
+                            imdb_id=imdb_id,
+                            last_viewed_at=movie.last_viewed_at,
+                            view_count=movie.view_count,
+                        )
+
+                        if earliest_added:
+                            new_movie.added_at = earliest_added
+
+                        await _update_movie_tmdb_metadata(
+                            new_movie, tmdb_id, tmdb_service
+                        )
+                        session.add(new_movie)
+                        await session.flush()
+                        seen_new_ver_keys: set[tuple] = set()
+                        for ver in movie.versions:
+                            key = (ver.service, ver.service_media_id)
+                            if key in seen_new_ver_keys:
+                                continue
+                            seen_new_ver_keys.add(key)
+                            session.add(
+                                MovieVersion(
+                                    movie_id=new_movie.id,
+                                    service=ver.service,
+                                    service_item_id=ver.service_item_id,
+                                    service_media_id=ver.service_media_id,
+                                    library_id=ver.library_id,
+                                    library_name=ver.library_name,
+                                    path=ver.path,
+                                    size=ver.size,
+                                    added_at=ver.added_at,
+                                    container=ver.container,
+                                )
+                            )
 
                 # commit in batches
                 if idx % COMMIT_BATCH_SIZE == 0:
@@ -640,7 +671,7 @@ async def sync_movies(
                     )
                     deleted_movie_ids = []
                     for movie in movies_to_delete:
-                        movie.removed_at = datetime.now(timezone.utc)
+                        movie.removed_at = datetime.now(UTC)
                         deleted_movie_ids.append(movie.id)
                         LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
 
@@ -667,13 +698,13 @@ async def sync_movies(
 
                     await session.commit()
 
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
                 f"Movie sync ({effective_service.value}) completed successfully in {duration:.2f}s"
             )
             return parsed_tmdb_ids
     except Exception as e:
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        duration = (datetime.now(UTC) - start_time).total_seconds()
         LOG.critical(
             f"Error during movie sync ({effective_service.value}) after {duration:.2f}s: {e}",
             exc_info=True,
@@ -720,7 +751,7 @@ async def _update_movie_tmdb_metadata(
         movie.runtime = movie_metadata.get("runtime")
         movie.status = movie_metadata.get("status")
         movie.tagline = movie_metadata.get("tagline")
-        movie.last_metadata_refresh_at = datetime.now(timezone.utc)
+        movie.last_metadata_refresh_at = datetime.now(UTC)
 
     except Exception as e:
         LOG.error(f"Error updating TMDB metadata for movie {tmdb_id}: {e}")
@@ -731,7 +762,7 @@ async def sync_series(
     allow_soft_delete: bool = True,
 ) -> set[int]:
     """Sync series from media servers to database."""
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(UTC)
     source_label = service.value if service else "all-media-services"
     LOG.info(f"Starting series sync ({source_label})...")
 
@@ -893,7 +924,7 @@ async def sync_series(
                     )
                     deleted_series_ids = []
                     for s in series_to_delete:
-                        s.removed_at = datetime.now(timezone.utc)
+                        s.removed_at = datetime.now(UTC)
                         deleted_series_ids.append(s.id)
                         LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
 
@@ -920,13 +951,13 @@ async def sync_series(
 
                     await session.commit()
 
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
                 f"Series sync ({source_label}) completed successfully in {duration:.2f}s"
             )
             return parsed_tmdb_ids
     except Exception as e:
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        duration = (datetime.now(UTC) - start_time).total_seconds()
         LOG.critical(
             f"Error during series sync ({source_label}) after {duration:.2f}s: {e}",
             exc_info=True,
@@ -1125,7 +1156,7 @@ async def _update_series_tmdb_metadata(
         series.status = series_metadata.get("status")
         series.tagline = series_metadata.get("tagline")
         series.season_count = series_metadata.get("number_of_seasons")
-        series.last_metadata_refresh_at = datetime.now(timezone.utc)
+        series.last_metadata_refresh_at = datetime.now(UTC)
 
     except Exception as e:
         LOG.error(

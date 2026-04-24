@@ -5,10 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-0?-?
+## [0.1.0-beta.12] - 2026-04-24
 
 ### Added
 
+- Rule Form
+  - Path criteria for rules with optional regex filtering (@jeaboswell)
+  - Series status to TMDB criteria for rules (@jeaboswell)
+  - Notation about rule **Include Never Watched** stating how it can be unreliable when utilize Plex as a data point
+  - Warning when a user sets up a rule that is only utilizing **Include Never Watched** that requires confirmation to continue
 - Sonarr/Radarr
   - Retry on their GET routes (API lacks pagination for some reason)
   - Can now set timeout length from 30 - 3600 seconds to tune the length before it'll time out (in case of large libraries/slow systems/storage)
@@ -16,11 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Unified Emby/Jellyfin to reduce duplicate code
+- Refactor media sync for Emby/Jellyfin to use series creation date instead of earliest episode (@jeaboswell)
 - Enhance media server deletion logic for cleanup candidates
+- Updated FastAPI to v0.136.1
+- Docker
+  - Updated Granian to v2.7.4
+- Loading spinners are now themed as the primary color
 
 ### Fixed
 
 - Emby deletion fallback on cleanup
+- Edge case on movie ingestion related to IMDb ID
+- Fixed loading spinner in Rules page on loading (in production this will almost never be seen anyways)
+- Logic related to never watched causing some candidates not to load up that should have
 
 ## [0.1.0-beta.11] - 2026-04-20
 

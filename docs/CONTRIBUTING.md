@@ -41,6 +41,10 @@ Reclaimerr was built by hand and I intend to keep it that way. Using AI as a too
 
 Backend runs at `http://localhost:8000`, frontend at `http://localhost:3000`.
 
+## Branch
+
+Always pull the latest **dev** branch before starting your work. When opening a pull request, make sure your feature or fix branch is based on **dev** and set the PR’s target branch to **dev** as well.
+
 ## Code Style
 
 - **Backend:** [Ruff](https://docs.astral.sh/ruff/) for linting and formatting - `ruff check .` and `ruff format .`
@@ -73,7 +77,7 @@ Tags drive all release automation (Docker image push, desktop builds). Tags must
 | File                          |
 | ----------------------------- |
 | `pyproject.toml`              |
-| `__version__.py`              |
+| `backend/core/__version__.py` |
 | `frontend/package.json`       |
 | `frontend/src/lib/version.ts` |
 
