@@ -43,12 +43,14 @@
   interface Props {
     title?: string;
     type?: "info" | "warning" | "error";
+    id?: string;
     class?: string;
     children?: any;
   }
   let {
     title = "Info",
     type = "info",
+    id = undefined,
     class: className = "",
     children = undefined,
   }: Props = $props();
@@ -59,6 +61,7 @@
 </script>
 
 <div
+  {id}
   class={`flex flex-col border ${types[type].main} text-foreground/75 overflow-hidden
     rounded-sm shadow ${className}`}
 >
