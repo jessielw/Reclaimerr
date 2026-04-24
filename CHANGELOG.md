@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added path criteria for rules with optional regex filtering (@jeaboswell)
-- Add series status to TMDB criteria for rules (@jeaboswell)
+- Rule Form
+  - Path criteria for rules with optional regex filtering (@jeaboswell)
+  - Series status to TMDB criteria for rules (@jeaboswell)
+  - Notation about rule **Include Never Watched** stating how it can be unreliable when utilize Plex as a data point
+  - Warning when a user sets up a rule that is only utilizing **Include Never Watched** that requires confirmation to continue
 - Sonarr/Radarr
   - Retry on their GET routes (API lacks pagination for some reason)
   - Can now set timeout length from 30 - 3600 seconds to tune the length before it'll time out (in case of large libraries/slow systems/storage)
