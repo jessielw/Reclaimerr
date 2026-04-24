@@ -261,7 +261,7 @@ async def _process_media(
         reasons = []
 
         for rule in rules:
-            if _evaluate_rule(item, rule, matched_criteria, reasons):
+            if _evaluate_movie_rule(item, rule, matched_criteria, reasons):
                 matched_rules.append(rule.id)
 
         # if item matches at least one rule, create/update candidate
@@ -491,19 +491,14 @@ async def _process_series_seasons(
     return candidates_created, candidates_updated, candidates_removed
 
 
-def _evaluate_rule_for_season(
-    series: Series,
-    season: Season,
-    rule: ReclaimRule,
-    matched_criteria: dict,
-    reasons: list[str],
-) -> bool:
-    """Evaluate a cleanup rule against a single season.
-
-    TMDB metadata criteria (popularity, vote_average, vote_count, library_ids) are
-    sourced from the parent series; per-season watch/size data comes from the Season row.
+def _check_has_criteria(rule: ReclaimRule) -> bool:
     """
-    has_criteria = any(
+    Check if the rule has at least one criterion set (beyond just being enabled). If not,
+    it would match everything and cause mass deletions, so we skip it and log a warning.
+
+    Any new rules should be added below (if applicable) to ensure they are considered.
+    """
+    return any(
         (
             rule.library_ids is not None,
             rule.min_popularity is not None,
@@ -525,92 +520,74 @@ def _evaluate_rule_for_season(
             rule.series_status is not None and len(rule.series_status) > 0,
         )
     )
-    if not has_criteria:
-        return False
 
-    rule_reasons: list[str] = []
 
-    # skip seasons with no files
-    if not season.size or season.size == 0:
-        return False
-
-    # library filtering via parent series' service refs
-    if rule.library_ids is not None and len(rule.library_ids) > 0:
-        item_libraries = [ref.library_id for ref in series.service_refs]
-        if not any(lib in rule.library_ids for lib in item_libraries):
-            return False
-
-    # path filtering via parent series' service refs (season has no path itself)
-    if rule.paths:
-        series_paths = [ref.path for ref in series.service_refs if ref.path]
-        if not _path_matches_any(series_paths, rule.paths):
-            return False
-        matched_criteria["paths"] = rule.paths
-        rule_reasons.append("path match")
-
-    # check series status from parent series
-    if rule.series_status:
-        if series.status is None or series.status not in rule.series_status:
-            return False
-        matched_criteria["series_status"] = series.status
-        rule_reasons.append(f"Status: {series.status}")
-
-    # TMDB popularity from parent series
+def _evaluate_tmdb_criteria(
+    rule: ReclaimRule,
+    popularity: float | None,
+    vote_average: float | None,
+    vote_count: int | None,
+    matched_criteria: dict,
+    rule_reasons: list[str],
+) -> bool:
+    """Evaluate TMDB metadata criteria. Returns False if any criterion fails."""
     if rule.min_popularity is not None and (
-        series.popularity is None or series.popularity < rule.min_popularity
+        popularity is None or popularity < rule.min_popularity
     ):
         return False
     if rule.max_popularity is not None and (
-        series.popularity is None or series.popularity > rule.max_popularity
+        popularity is None or popularity > rule.max_popularity
     ):
         return False
     if rule.min_popularity is not None or rule.max_popularity is not None:
-        matched_criteria["popularity"] = series.popularity
-        rule_reasons.append(f"Popularity {series.popularity}")
+        matched_criteria["popularity"] = popularity
+        rule_reasons.append(f"Popularity {popularity}")
 
-    # TMDB vote average from parent series
     if rule.min_vote_average is not None and (
-        series.vote_average is None or series.vote_average < rule.min_vote_average
+        vote_average is None or vote_average < rule.min_vote_average
     ):
         return False
     if rule.max_vote_average is not None and (
-        series.vote_average is None or series.vote_average > rule.max_vote_average
+        vote_average is None or vote_average > rule.max_vote_average
     ):
         return False
     if rule.min_vote_average is not None or rule.max_vote_average is not None:
-        matched_criteria["vote_average"] = series.vote_average
-        rule_reasons.append(f"Rating {series.vote_average}/10")
+        matched_criteria["vote_average"] = vote_average
+        rule_reasons.append(f"Rating {vote_average}/10")
 
-    # TMDB vote count from parent series
     if rule.min_vote_count is not None and (
-        series.vote_count is None or series.vote_count < rule.min_vote_count
+        vote_count is None or vote_count < rule.min_vote_count
     ):
         return False
     if rule.max_vote_count is not None and (
-        series.vote_count is None or series.vote_count > rule.max_vote_count
+        vote_count is None or vote_count > rule.max_vote_count
     ):
         return False
     if rule.min_vote_count is not None or rule.max_vote_count is not None:
-        matched_criteria["vote_count"] = series.vote_count
-        rule_reasons.append(f"{series.vote_count} votes")
+        matched_criteria["vote_count"] = vote_count
+        rule_reasons.append(f"{vote_count} votes")
 
-    # season view count
-    if (
-        rule.min_view_count is not None
-        and season.view_count is not None
-        and season.view_count < rule.min_view_count
+    return True
+
+
+def _evaluate_watch_criteria(
+    rule: ReclaimRule,
+    view_count: int | None,
+    last_viewed_at: datetime | None,
+    label: str,  # e.g. "" for movies, "S01" for seasons
+    matched_criteria: dict,
+    rule_reasons: list[str],
+) -> bool:
+    """Evaluate watch/view criteria. Returns False if any criterion fails."""
+    if rule.min_view_count is not None and (
+        view_count is None or view_count < rule.min_view_count
     ):
         return False
-    if (
-        rule.max_view_count is not None
-        and season.view_count is not None
-        and season.view_count > rule.max_view_count
+    if rule.max_view_count is not None and (
+        view_count is None or view_count > rule.max_view_count
     ):
         return False
-
-    # include_never_watched=True but no watch date recorded means we can't be
-    # sure if it's truly never watched or just missing data, so exclude to be safe
-    if rule.include_never_watched is False and season.last_viewed_at is None:
+    if rule.include_never_watched is False and last_viewed_at is None:
         return False
 
     if (
@@ -618,20 +595,28 @@ def _evaluate_rule_for_season(
         or rule.max_view_count is not None
         or rule.include_never_watched is True
     ):
-        matched_criteria["view_count"] = season.view_count
-        matched_criteria["never_watched"] = season.last_viewed_at is None
-        if season.last_viewed_at is None:
-            rule_reasons.append(f"S{season.season_number:02d} never watched")
+        matched_criteria["view_count"] = view_count
+        matched_criteria["never_watched"] = last_viewed_at is None
+        prefix = f"{label} " if label else ""
+        if last_viewed_at is None:
+            rule_reasons.append(f"{prefix}never watched")
         else:
-            rule_reasons.append(
-                f"S{season.season_number:02d} watched {season.view_count} time(s)"
-            )
+            rule_reasons.append(f"{prefix}watched {view_count} time(s)")
 
-    # days since added (season level)
-    if season.added_at:
-        days_since_added = (
-            datetime.now(UTC) - season.added_at.replace(tzinfo=UTC)
-        ).days
+    return True
+
+
+def _evaluate_temporal_criteria(
+    rule: ReclaimRule,
+    added_at: datetime | None,
+    last_viewed_at: datetime | None,
+    label: str,
+    matched_criteria: dict,
+    rule_reasons: list[str],
+) -> bool:
+    """Evaluate days since added and days since last watched criteria."""
+    if added_at:
+        days_since_added = (datetime.now(UTC) - added_at.replace(tzinfo=UTC)).days
         if (
             rule.min_days_since_added is not None
             and days_since_added < rule.min_days_since_added
@@ -647,17 +632,14 @@ def _evaluate_rule_for_season(
             or rule.max_days_since_added is not None
         ):
             matched_criteria["days_since_added"] = days_since_added
-            rule_reasons.append(
-                f"S{season.season_number:02d} added {days_since_added} days ago"
-            )
+            prefix = f"{label} " if label else ""
+            rule_reasons.append(f"{prefix}added {days_since_added} days ago")
     elif rule.min_days_since_added is not None or rule.max_days_since_added is not None:
-        # added_at is unknown (exclude to avoid false positives on age rules)
         return False
 
-    # days since last watched (season level)
-    if season.last_viewed_at:
+    if last_viewed_at:
         days_since_last_watched = (
-            datetime.now(UTC) - season.last_viewed_at.replace(tzinfo=UTC)
+            datetime.now(UTC) - last_viewed_at.replace(tzinfo=UTC)
         ).days
         if (
             rule.min_days_since_last_watched is not None
@@ -674,8 +656,9 @@ def _evaluate_rule_for_season(
             or rule.max_days_since_last_watched is not None
         ):
             matched_criteria["days_since_last_watched"] = days_since_last_watched
+            prefix = f"{label} " if label else ""
             rule_reasons.append(
-                f"S{season.season_number:02d} last watched {days_since_last_watched} days ago"
+                f"{prefix}last watched {days_since_last_watched} days ago"
             )
     elif (
         rule.min_days_since_last_watched is not None
@@ -683,217 +666,153 @@ def _evaluate_rule_for_season(
     ):
         return False
 
-    # season size
-    if rule.min_size is not None and (
-        season.size is None or season.size < rule.min_size
-    ):
-        return False
-    if rule.max_size is not None and (
-        season.size is None or season.size > rule.max_size
-    ):
-        return False
-    if rule.min_size is not None or rule.max_size is not None:
-        matched_criteria["size"] = season.size
-        size_gb = season.size / (1024**3) if season.size else 0
-        rule_reasons.append(f"S{season.season_number:02d} size {size_gb:.2f} GB")
-
-    if rule_reasons:
-        reasons.append(
-            f"{rule.name} (S{season.season_number:02d}): {', '.join(rule_reasons)}"
-        )
     return True
 
 
-def _evaluate_rule(
+def _evaluate_size_criteria(
+    rule: ReclaimRule,
+    size: int | None,
+    label: str,
+    matched_criteria: dict,
+    rule_reasons: list[str],
+) -> bool:
+    """Evaluate size criteria. Returns False if any criterion fails."""
+    if rule.min_size is not None and (size is None or size < rule.min_size):
+        return False
+    if rule.max_size is not None and (size is None or size > rule.max_size):
+        return False
+    if rule.min_size is not None or rule.max_size is not None:
+        matched_criteria["size"] = size
+        size_gb = size / (1024**3) if size else 0
+        prefix = f"{label} " if label else ""
+        rule_reasons.append(f"{prefix}size {size_gb:.2f} GB")
+    return True
+
+
+def _evaluate_movie_rule(
     item: Movie | Series, rule: ReclaimRule, matched_criteria: dict, reasons: list[str]
 ) -> bool:
-    """
-    Evaluate if an item matches a cleanup rule.
-
-    All non-null criteria must match (AND logic).
-    Updates matched_criteria dict and reasons list if matched.
-
-    Returns True if item matches rule.
-    """
-    # validate rule has at least one criterion set
-    has_criteria = any(
-        (
-            rule.library_ids is not None,
-            rule.min_popularity is not None,
-            rule.max_popularity is not None,
-            rule.min_vote_average is not None,
-            rule.max_vote_average is not None,
-            rule.min_vote_count is not None,
-            rule.max_vote_count is not None,
-            rule.min_view_count is not None,
-            rule.max_view_count is not None,
-            rule.include_never_watched is not None,
-            rule.min_days_since_added is not None,
-            rule.max_days_since_added is not None,
-            rule.min_days_since_last_watched is not None,
-            rule.max_days_since_last_watched is not None,
-            rule.min_size is not None,
-            rule.max_size is not None,
-            rule.paths is not None and len(rule.paths) > 0,
-            rule.series_status is not None and len(rule.series_status) > 0,
-        )
-    )
-
-    if not has_criteria:
+    """Evaluate a movie rule."""
+    if not _check_has_criteria(rule):
         LOG.warning(f"Rule '{rule.name}' has no criteria set, skipping")
         return False
 
-    rule_reasons = []
-
-    # always exclude items with no media (size = 0 or None)
     if not item.size or item.size == 0:
         return False
 
-    # check library filtering (check across all stored versions/refs)
+    rule_reasons: list[str] = []
     refs = item.versions if isinstance(item, Movie) else item.service_refs
-    if rule.library_ids is not None and len(rule.library_ids) > 0:
-        item_libraries = [v.library_id for v in refs]
-        if not any(lib in rule.library_ids for lib in item_libraries):
-            return False
 
-    # check path filtering across all stored versions/refs
+    if rule.library_ids and not any(v.library_id in rule.library_ids for v in refs):
+        return False
+
     if rule.paths:
-        item_paths = [v.path for v in refs if v.path]
-        if not _path_matches_any(item_paths, rule.paths):
+        if not _path_matches_any([v.path for v in refs if v.path], rule.paths):
             return False
         matched_criteria["paths"] = rule.paths
         rule_reasons.append("path match")
 
-    # check series status (only applies to Series)
     if isinstance(item, Series) and rule.series_status:
         if item.status is None or item.status not in rule.series_status:
             return False
         matched_criteria["series_status"] = item.status
         rule_reasons.append(f"Status: {item.status}")
 
-    # check popularity
-    if rule.min_popularity is not None and (
-        item.popularity is None or item.popularity < rule.min_popularity
+    if not _evaluate_tmdb_criteria(
+        rule,
+        item.popularity,
+        item.vote_average,
+        item.vote_count,
+        matched_criteria,
+        rule_reasons,
     ):
         return False
-    if rule.max_popularity is not None and (
-        item.popularity is None or item.popularity > rule.max_popularity
+    if not _evaluate_watch_criteria(
+        rule, item.view_count, item.last_viewed_at, "", matched_criteria, rule_reasons
     ):
         return False
-    if rule.min_popularity is not None or rule.max_popularity is not None:
-        matched_criteria["popularity"] = item.popularity
-        rule_reasons.append(f"Popularity {item.popularity}")
-
-    # check vote average
-    if rule.min_vote_average is not None and (
-        item.vote_average is None or item.vote_average < rule.min_vote_average
+    if not _evaluate_temporal_criteria(
+        rule, item.added_at, item.last_viewed_at, "", matched_criteria, rule_reasons
     ):
         return False
-    if rule.max_vote_average is not None and (
-        item.vote_average is None or item.vote_average > rule.max_vote_average
-    ):
-        return False
-    if rule.min_vote_average is not None or rule.max_vote_average is not None:
-        matched_criteria["vote_average"] = item.vote_average
-        rule_reasons.append(f"Rating {item.vote_average}/10")
-
-    # check vote count
-    if rule.min_vote_count is not None and (
-        item.vote_count is None or item.vote_count < rule.min_vote_count
-    ):
-        return False
-    if rule.max_vote_count is not None and (
-        item.vote_count is None or item.vote_count > rule.max_vote_count
-    ):
-        return False
-    if rule.min_vote_count is not None or rule.max_vote_count is not None:
-        matched_criteria["vote_count"] = item.vote_count
-        rule_reasons.append(f"{item.vote_count} votes")
-
-    # check view count
-    if rule.min_view_count is not None and item.view_count < rule.min_view_count:
-        return False
-    if rule.max_view_count is not None and item.view_count > rule.max_view_count:
+    if not _evaluate_size_criteria(rule, item.size, "", matched_criteria, rule_reasons):
         return False
 
-    # include_never_watched=True but no watch date recorded means we can't be
-    # sure if it's truly never watched or just missing data, so exclude to be safe
-    if rule.include_never_watched is False and item.last_viewed_at is None:
-        return False
-
-    # log view/watch status if we're filtering by it
-    if rule.min_view_count is not None or rule.max_view_count is not None:
-        matched_criteria["view_count"] = item.view_count
-        matched_criteria["never_watched"] = item.last_viewed_at is None
-        if item.last_viewed_at is None:
-            rule_reasons.append("Never watched")
-        else:
-            rule_reasons.append(f"Watched {item.view_count} time(s)")
-
-    # check days since added
-    if item.added_at:
-        days_since_added = (datetime.now(UTC) - item.added_at.replace(tzinfo=UTC)).days
-        if (
-            rule.min_days_since_added is not None
-            and days_since_added < rule.min_days_since_added
-        ):
-            return False
-        if (
-            rule.max_days_since_added is not None
-            and days_since_added > rule.max_days_since_added
-        ):
-            return False
-        if (
-            rule.min_days_since_added is not None
-            or rule.max_days_since_added is not None
-        ):
-            matched_criteria["days_since_added"] = days_since_added
-            rule_reasons.append(f"Added {days_since_added} days ago")
-    elif rule.min_days_since_added is not None or rule.max_days_since_added is not None:
-        # added_at is unknown (exclude to avoid false positives on age rules)
-        return False
-
-    # check days since last watched
-    if item.last_viewed_at:
-        days_since_last_watched = (
-            datetime.now(UTC) - item.last_viewed_at.replace(tzinfo=UTC)
-        ).days
-        if (
-            rule.min_days_since_last_watched is not None
-            and days_since_last_watched < rule.min_days_since_last_watched
-        ):
-            return False
-        if (
-            rule.max_days_since_last_watched is not None
-            and days_since_last_watched > rule.max_days_since_last_watched
-        ):
-            return False
-        if (
-            rule.min_days_since_last_watched is not None
-            or rule.max_days_since_last_watched is not None
-        ):
-            matched_criteria["days_since_last_watched"] = days_since_last_watched
-            rule_reasons.append(f"Last watched {days_since_last_watched} days ago")
-    elif (
-        rule.min_days_since_last_watched is not None
-        or rule.max_days_since_last_watched is not None
-    ):
-        # if filtering by days since last watched but item was never watched, exclude it
-        return False
-
-    # check size (bytes)
-    if rule.min_size is not None and (item.size is None or item.size < rule.min_size):
-        return False
-    if rule.max_size is not None and (item.size is None or item.size > rule.max_size):
-        return False
-    if rule.min_size is not None or rule.max_size is not None:
-        matched_criteria["size"] = item.size
-        size_gb = item.size / (1024**3) if item.size else 0
-        rule_reasons.append(f"Size {size_gb:.2f} GB")
-
-    # all criteria matched!
     if rule_reasons:
         reasons.append(f"{rule.name}: {', '.join(rule_reasons)}")
+    return True
+
+
+def _evaluate_rule_for_season(
+    series: Series,
+    season: Season,
+    rule: ReclaimRule,
+    matched_criteria: dict,
+    reasons: list[str],
+) -> bool:
+    """Evaluate a rule against a specific season of a series."""
+    if not _check_has_criteria(rule):
+        return False
+
+    if not season.size or season.size == 0:
+        return False
+
+    rule_reasons: list[str] = []
+    label = f"S{season.season_number:02d}"
+
+    if rule.library_ids and not any(
+        ref.library_id in rule.library_ids for ref in series.service_refs
+    ):
+        return False
+
+    if rule.paths:
+        if not _path_matches_any(
+            [ref.path for ref in series.service_refs if ref.path], rule.paths
+        ):
+            return False
+        matched_criteria["paths"] = rule.paths
+        rule_reasons.append("path match")
+
+    if rule.series_status:
+        if series.status is None or series.status not in rule.series_status:
+            return False
+        matched_criteria["series_status"] = series.status
+        rule_reasons.append(f"Status: {series.status}")
+
+    if not _evaluate_tmdb_criteria(
+        rule,
+        series.popularity,
+        series.vote_average,
+        series.vote_count,
+        matched_criteria,
+        rule_reasons,
+    ):
+        return False
+    if not _evaluate_watch_criteria(
+        rule,
+        season.view_count,
+        season.last_viewed_at,
+        label,
+        matched_criteria,
+        rule_reasons,
+    ):
+        return False
+    if not _evaluate_temporal_criteria(
+        rule,
+        season.added_at,
+        season.last_viewed_at,
+        label,
+        matched_criteria,
+        rule_reasons,
+    ):
+        return False
+    if not _evaluate_size_criteria(
+        rule, season.size, label, matched_criteria, rule_reasons
+    ):
+        return False
+
+    if rule_reasons:
+        reasons.append(f"{rule.name} ({label}): {', '.join(rule_reasons)}")
     return True
 
 
