@@ -4,7 +4,6 @@ from pathlib import PurePath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,18 +25,7 @@ from backend.models.cleanup import (
     CleanupRuleResponse,
     CleanupRuleUpdate,
 )
-
-
-class ValidateRegexRequest(BaseModel):
-    base_path: str = ""
-    suffix: str = ""
-
-
-class ValidateRegexResponse(BaseModel):
-    valid: bool
-    error: str | None = None
-    pattern: str | None = None
-
+from backend.models.rules import ValidateRegexRequest, ValidateRegexResponse
 
 router = APIRouter(prefix="/api", tags=["rules"])
 
