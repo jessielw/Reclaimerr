@@ -3,7 +3,7 @@ from pathlib import Path
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
@@ -28,7 +28,7 @@ def set_sqlite_pragma(dbapi_conn, _connection_record):
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
+    # cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
@@ -54,6 +54,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     async with async_db() as session:
         try:
+            await session.execute(text("PRAGMA foreign_keys=ON"))
             yield session
             await session.commit()
         except Exception:
