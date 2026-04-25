@@ -10,6 +10,11 @@ on:
         description: "Image tag to push (e.g. 0.1.0-beta1)"
         required: true
         type: string
+      ref:
+        description: "Branch or commit to build from (e.g. dev)"
+        required: false
+        default: dev
+        type: string
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -30,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

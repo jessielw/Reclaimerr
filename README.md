@@ -24,10 +24,19 @@ I needed a solution to manage a single physical media library while utilizing bo
 
 Driven by the increasing cost of storage and the need to reclaim used disk space, inspired by Maintainerr, **Reclaimerr** was born.
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=jessielw%2FReclaimerr&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jessielw/Reclaimerr&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jessielw/Reclaimerr&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jessielw/Reclaimerr&type=date&legend=top-left" />
+ </picture>
+</a>
+
 # Discussions
 
 While I prefer we utilize github's [discussions](https://github.com/jessielw/Reclaimerr/discussions) for historical purposes, I've had quite a few users ask for _Discord_. I personally am getting away from Discord ASAP, but I did create a public matrix server for discussions and some _support_. Feel free to join https://matrix.to/#/#reclaimerr:matrix.org!
-
 
 # AI Disclosures
 
