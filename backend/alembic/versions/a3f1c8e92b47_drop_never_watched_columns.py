@@ -19,35 +19,37 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("PRAGMA foreign_keys=OFF")
+    conn = op.get_bind()
 
     # clean up any leftover temp tables from a previous failed run
-    op.execute("DROP TABLE IF EXISTS _alembic_tmp_movies")
-    op.execute("DROP TABLE IF EXISTS _alembic_tmp_series")
-    op.execute("DROP TABLE IF EXISTS _alembic_tmp_seasons")
+    for tbl in ('_alembic_tmp_movies', '_alembic_tmp_series', '_alembic_tmp_seasons'):
+        conn.execute(sa.text(f'DROP TABLE IF EXISTS "{tbl}"'))
 
-    with op.batch_alter_table('movies', schema=None) as batch_op:
-        batch_op.drop_column('never_watched')
+    conn.execute(sa.text('PRAGMA foreign_keys=OFF'))
+    try:
+        with op.batch_alter_table('movies', schema=None) as batch_op:
+            batch_op.drop_column('never_watched')
 
-    with op.batch_alter_table('series', schema=None) as batch_op:
-        batch_op.drop_column('never_watched')
+        with op.batch_alter_table('series', schema=None) as batch_op:
+            batch_op.drop_column('never_watched')
 
-    with op.batch_alter_table('seasons', schema=None) as batch_op:
-        batch_op.drop_column('never_watched')
-
-    op.execute("PRAGMA foreign_keys=ON")
+        with op.batch_alter_table('seasons', schema=None) as batch_op:
+            batch_op.drop_column('never_watched')
+    finally:
+        conn.execute(sa.text('PRAGMA foreign_keys=ON'))
 
 
 def downgrade() -> None:
-    op.execute("PRAGMA foreign_keys=OFF")
+    conn = op.get_bind()
+    conn.execute(sa.text('PRAGMA foreign_keys=OFF'))
+    try:
+        with op.batch_alter_table('seasons', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=True))
 
-    with op.batch_alter_table('seasons', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=True))
+        with op.batch_alter_table('series', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=False, server_default='1'))
 
-    with op.batch_alter_table('series', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=False, server_default='1'))
-
-    with op.batch_alter_table('movies', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=False, server_default='1'))
-
-    op.execute("PRAGMA foreign_keys=ON")
+        with op.batch_alter_table('movies', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('never_watched', sa.Boolean(), nullable=False, server_default='1'))
+    finally:
+        conn.execute(sa.text('PRAGMA foreign_keys=ON'))
