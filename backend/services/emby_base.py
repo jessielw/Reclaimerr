@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePath
 from typing import Any, Literal
 
 import niquests
@@ -13,7 +14,12 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.codecs import (
+    normalize_audio_codec_family,
+    normalize_video_codec_family,
+)
 from backend.core.logger import LOG
+from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
 from backend.models.media import (
@@ -175,8 +181,8 @@ class EmbyServiceBase:
             "recursive": "true",
             "enableTotalRecordCount": "true",
             "Fields": (
-                "ProviderIds,MediaSources,DateCreated,Path,UserData,UserDataLastPlayedDate,"
-                "UserDataPlayCount,ProductionYear,PremiereDate"
+                "ProviderIds,MediaSources,MediaStreams,Chapters,DateCreated,Path,UserData,"
+                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate"
             ),
             "ParentId": library_id,
         }
@@ -222,21 +228,104 @@ class EmbyServiceBase:
                 if item.get("DateCreated")
                 else None
             )
-            versions = [
-                MovieVersionData(
-                    service=self.service_type,  # type: ignore[reportArgumentType]
-                    service_item_id=item["Id"],
-                    service_media_id=source["Id"],
-                    library_id=library_id,
-                    library_name=library_name,
-                    path=source.get("Path"),
-                    size=source.get("Size", 0),
-                    added_at=added_at,
-                    container=source.get("Container"),
+            versions: list[MovieVersionData] = []
+            for source in item.get("MediaSources", []):
+                if not source.get("Id"):
+                    continue
+                video_streams, audio_streams, subtitle_streams = (
+                    self._media_streams_by_type(source)
                 )
-                for source in item.get("MediaSources", [])
-                if source.get("Id")
-            ]
+                first_video = video_streams[0] if video_streams else {}
+                first_audio = audio_streams[0] if audio_streams else {}
+                video_codec_raw = first_video.get("Codec")
+                audio_codec_raw = first_audio.get("Codec")
+                dv_profile = (
+                    first_video.get("DvProfile")
+                    or first_video.get("DolbyVisionProfile")
+                    or first_video.get("dv_profile")
+                )
+                dv_profile = (
+                    f"{dv_profile}.{first_video['DvBlSignalCompatibilityId']}"
+                    if dv_profile and first_video.get("DvBlSignalCompatibilityId")
+                    else str(dv_profile)
+                    if dv_profile
+                    else None
+                )
+
+                run_time_ticks = as_float(source.get("RunTimeTicks"))
+                versions.append(
+                    MovieVersionData(
+                        service=self.service_type,  # type: ignore[reportArgumentType]
+                        service_item_id=item["Id"],
+                        service_media_id=source["Id"],
+                        library_id=library_id,
+                        library_name=library_name,
+                        path=source.get("Path"),
+                        size=source.get("Size", 0),
+                        added_at=added_at,
+                        file_name=PurePath(source["Path"]).name
+                        if source.get("Path")
+                        else source.get("Name"),
+                        container=source.get("Container"),
+                        duration=(run_time_ticks / 10000.0)
+                        if run_time_ticks is not None
+                        else None,
+                        video_track_count=len(video_streams) or None,
+                        video_codec=video_codec_raw,
+                        video_codec_family=normalize_video_codec_family(
+                            video_codec_raw
+                        ),
+                        video_hdr=self._is_hdr(first_video),
+                        video_dolby_vision=first_video.get("DvProfile") is not None,
+                        video_dolby_vision_profile=str(dv_profile)
+                        if dv_profile is not None
+                        else None,
+                        video_bitrate=as_int(first_video.get("BitRate")),
+                        video_bit_depth=as_int(first_video.get("BitDepth")),
+                        video_width=as_int(first_video.get("Width")),
+                        video_height=as_int(first_video.get("Height")),
+                        video_resolution=first_video.get("DisplayTitle"),
+                        video_color_primaries=first_video.get("ColorPrimaries"),
+                        video_color_space=first_video.get("ColorSpace"),
+                        video_color_transfer=first_video.get("ColorTransfer"),
+                        video_fps=as_float(
+                            first_video.get("RealFrameRate")
+                            or first_video.get("AverageFrameRate")
+                        ),
+                        audio_count=len(audio_streams) or None,
+                        audio_languages=self._unique_languages(audio_streams),
+                        audio_codec=audio_codec_raw,
+                        audio_codec_family=normalize_audio_codec_family(
+                            audio_codec_raw
+                        ),
+                        audio_title=first_audio.get("DisplayTitle"),
+                        audio_language=(
+                            str(first_audio.get("Language")).lower()
+                            if first_audio.get("Language")
+                            else None
+                        ),
+                        audio_channels=as_int(first_audio.get("Channels")),
+                        audio_channel_layout=first_audio.get("ChannelLayout"),
+                        audio_bitrate=as_int(first_audio.get("BitRate")),
+                        audio_sample_rate=as_int(first_audio.get("SampleRate")),
+                        subtitle_count=len(subtitle_streams) or None,
+                        subtitle_has_forced=(
+                            any(bool(s.get("IsForced")) for s in subtitle_streams)
+                            if subtitle_streams
+                            else None
+                        ),
+                        subtitle_languages=self._unique_languages(subtitle_streams),
+                        has_chapters=(
+                            bool(item.get("Chapters"))
+                            if item.get("Chapters") is not None
+                            else (
+                                bool(source.get("Chapters"))
+                                if source.get("Chapters") is not None
+                                else None
+                            )
+                        ),
+                    )
+                )
             movie = EmbyMovieBase(
                 id=item["Id"],
                 name=item["Name"],
@@ -690,6 +779,60 @@ class EmbyServiceBase:
             )
             for data in series_data.values()
         ]
+
+    @staticmethod
+    def _media_streams_by_type(
+        media_source: dict[str, Any],
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        streams = media_source.get("MediaStreams", []) or []
+        video = [s for s in streams if str(s.get("Type", "")).lower() == "video"]
+        audio = [s for s in streams if str(s.get("Type", "")).lower() == "audio"]
+        subtitle = [s for s in streams if str(s.get("Type", "")).lower() == "subtitle"]
+        return video, audio, subtitle
+
+    @staticmethod
+    def _unique_languages(streams: list[dict]) -> list[str] | None:
+        langs: list[str] = []
+        seen: set[str] = set()
+        for stream in streams:
+            raw = stream.get("Language")
+            if not raw:
+                continue
+            value = str(raw).strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            langs.append(value)
+        return langs or None
+
+    @staticmethod
+    def _is_hdr(stream: dict) -> bool:
+        # bit depth (if less than 10 bits it's not hdr)
+        try:
+            if int(stream["BitDepth"]) < 10:
+                return False
+        except Exception:
+            pass
+        # dolby Vision
+        if stream.get("DvProfile") or stream.get("DvLevel"):
+            return True
+        # HDR10/HLG transfer functions
+        if str(stream.get("ColorTransfer", "")).lower() in (
+            "smpte2084",
+            "arib-std-b67",
+        ):
+            return True
+        # BT.2020 color primaries (common for HDR)
+        if str(stream.get("ColorSpace", "")).lower() in (
+            "bt2020",
+            "bt.2020",
+            "bt2020nc",
+        ):
+            return True
+        # title contains "hdr"
+        if "hdr" in str(stream.get("DisplayTitle", "")).lower():
+            return True
+        return False
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:

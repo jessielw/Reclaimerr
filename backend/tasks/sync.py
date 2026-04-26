@@ -273,7 +273,38 @@ async def _upsert_movie_versions(
             ev.library_name = ver.library_name
             ev.path = ver.path
             ev.size = ver.size
+            ev.file_name = ver.file_name
             ev.container = ver.container
+            ev.duration = ver.duration
+            ev.video_track_count = ver.video_track_count
+            ev.video_codec = ver.video_codec
+            ev.video_codec_family = ver.video_codec_family
+            ev.video_hdr = ver.video_hdr
+            ev.video_dolby_vision = ver.video_dolby_vision
+            ev.video_dolby_vision_profile = ver.video_dolby_vision_profile
+            ev.video_bitrate = ver.video_bitrate
+            ev.video_bit_depth = ver.video_bit_depth
+            ev.video_width = ver.video_width
+            ev.video_height = ver.video_height
+            ev.video_resolution = ver.video_resolution
+            ev.video_color_primaries = ver.video_color_primaries
+            ev.video_color_space = ver.video_color_space
+            ev.video_color_transfer = ver.video_color_transfer
+            ev.video_fps = ver.video_fps
+            ev.audio_count = ver.audio_count
+            ev.audio_languages = ver.audio_languages
+            ev.audio_codec = ver.audio_codec
+            ev.audio_codec_family = ver.audio_codec_family
+            ev.audio_title = ver.audio_title
+            ev.audio_language = ver.audio_language
+            ev.audio_channels = ver.audio_channels
+            ev.audio_channel_layout = ver.audio_channel_layout
+            ev.audio_bitrate = ver.audio_bitrate
+            ev.audio_sample_rate = ver.audio_sample_rate
+            ev.subtitle_count = ver.subtitle_count
+            ev.subtitle_has_forced = ver.subtitle_has_forced
+            ev.subtitle_languages = ver.subtitle_languages
+            ev.has_chapters = ver.has_chapters
             if ver.added_at and not ev.added_at:
                 ev.added_at = ver.added_at
         else:
@@ -288,7 +319,38 @@ async def _upsert_movie_versions(
                     path=ver.path,
                     size=ver.size,
                     added_at=ver.added_at,
+                    file_name=ver.file_name,
                     container=ver.container,
+                    duration=ver.duration,
+                    video_track_count=ver.video_track_count,
+                    video_codec=ver.video_codec,
+                    video_codec_family=ver.video_codec_family,
+                    video_hdr=ver.video_hdr,
+                    video_dolby_vision=ver.video_dolby_vision,
+                    video_dolby_vision_profile=ver.video_dolby_vision_profile,
+                    video_bitrate=ver.video_bitrate,
+                    video_bit_depth=ver.video_bit_depth,
+                    video_width=ver.video_width,
+                    video_height=ver.video_height,
+                    video_resolution=ver.video_resolution,
+                    video_color_primaries=ver.video_color_primaries,
+                    video_color_space=ver.video_color_space,
+                    video_color_transfer=ver.video_color_transfer,
+                    video_fps=ver.video_fps,
+                    audio_count=ver.audio_count,
+                    audio_languages=ver.audio_languages,
+                    audio_codec=ver.audio_codec,
+                    audio_codec_family=ver.audio_codec_family,
+                    audio_title=ver.audio_title,
+                    audio_language=ver.audio_language,
+                    audio_channels=ver.audio_channels,
+                    audio_channel_layout=ver.audio_channel_layout,
+                    audio_bitrate=ver.audio_bitrate,
+                    audio_sample_rate=ver.audio_sample_rate,
+                    subtitle_count=ver.subtitle_count,
+                    subtitle_has_forced=ver.subtitle_has_forced,
+                    subtitle_languages=ver.subtitle_languages,
+                    has_chapters=ver.has_chapters,
                 )
             )
 
@@ -643,7 +705,38 @@ async def sync_movies(
                                     path=ver.path,
                                     size=ver.size,
                                     added_at=ver.added_at,
+                                    file_name=ver.file_name,
                                     container=ver.container,
+                                    duration=ver.duration,
+                                    video_track_count=ver.video_track_count,
+                                    video_codec=ver.video_codec,
+                                    video_codec_family=ver.video_codec_family,
+                                    video_hdr=ver.video_hdr,
+                                    video_dolby_vision=ver.video_dolby_vision,
+                                    video_dolby_vision_profile=ver.video_dolby_vision_profile,
+                                    video_bitrate=ver.video_bitrate,
+                                    video_bit_depth=ver.video_bit_depth,
+                                    video_width=ver.video_width,
+                                    video_height=ver.video_height,
+                                    video_resolution=ver.video_resolution,
+                                    video_color_primaries=ver.video_color_primaries,
+                                    video_color_space=ver.video_color_space,
+                                    video_color_transfer=ver.video_color_transfer,
+                                    video_fps=ver.video_fps,
+                                    audio_count=ver.audio_count,
+                                    audio_languages=ver.audio_languages,
+                                    audio_codec=ver.audio_codec,
+                                    audio_codec_family=ver.audio_codec_family,
+                                    audio_title=ver.audio_title,
+                                    audio_language=ver.audio_language,
+                                    audio_channels=ver.audio_channels,
+                                    audio_channel_layout=ver.audio_channel_layout,
+                                    audio_bitrate=ver.audio_bitrate,
+                                    audio_sample_rate=ver.audio_sample_rate,
+                                    subtitle_count=ver.subtitle_count,
+                                    subtitle_has_forced=ver.subtitle_has_forced,
+                                    subtitle_languages=ver.subtitle_languages,
+                                    has_chapters=ver.has_chapters,
                                 )
                             )
 
