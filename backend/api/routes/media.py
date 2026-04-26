@@ -33,6 +33,7 @@ from backend.models.media import (
     SeriesWithStatus,
 )
 from backend.tasks.cleanup import delete_specific_candidates
+from backend.types.media import AudioCodecFamily, VideoCodecFamily
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -184,7 +185,38 @@ async def get_movies(
                     path=v.path,
                     size=v.size,
                     added_at=to_utc_isoformat(v.added_at),
+                    file_name=v.file_name,
                     container=v.container,
+                    duration=v.duration,
+                    video_track_count=v.video_track_count,
+                    video_codec=v.video_codec,
+                    video_codec_family=v.video_codec_family,
+                    video_hdr=v.video_hdr,
+                    video_dolby_vision=v.video_dolby_vision,
+                    video_dolby_vision_profile=v.video_dolby_vision_profile,
+                    video_bitrate=v.video_bitrate,
+                    video_bit_depth=v.video_bit_depth,
+                    video_width=v.video_width,
+                    video_height=v.video_height,
+                    video_resolution=v.video_resolution,
+                    video_color_primaries=v.video_color_primaries,
+                    video_color_space=v.video_color_space,
+                    video_color_transfer=v.video_color_transfer,
+                    video_fps=v.video_fps,
+                    audio_count=v.audio_count,
+                    audio_languages=v.audio_languages,
+                    audio_codec=v.audio_codec,
+                    audio_codec_family=v.audio_codec_family,
+                    audio_title=v.audio_title,
+                    audio_language=v.audio_language,
+                    audio_channels=v.audio_channels,
+                    audio_channel_layout=v.audio_channel_layout,
+                    audio_bitrate=v.audio_bitrate,
+                    audio_sample_rate=v.audio_sample_rate,
+                    subtitle_count=v.subtitle_count,
+                    subtitle_has_forced=v.subtitle_has_forced,
+                    subtitle_languages=v.subtitle_languages,
+                    has_chapters=v.has_chapters,
                 )
                 for v in movie.versions
             ],

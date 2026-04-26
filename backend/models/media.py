@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from backend.types import MediaServerType
+from backend.types.media import AudioCodecFamily, VideoCodecFamily
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,7 +33,53 @@ class MovieVersionData:
     path: str | None
     size: int
     added_at: datetime | None
-    container: str | None
+
+    # metadata
+    file_name: str | None = None
+    container: str | None = None
+    # ms (plex is milliseconds, jellyfin/emby is .net ticks so 'milliseconds = RunTimeTicks / 10,000')
+    duration: float | None = None
+    
+    # video
+    video_track_count: int | None = None
+    # preserve raw value from provider
+    video_codec: str | None = None
+    # stable normalized grouping for filtering/UI logic
+    video_codec_family: VideoCodecFamily | None = None
+    video_hdr: bool | None = None
+    video_dolby_vision: bool | None = None
+    video_dolby_vision_profile: str | None = None
+    video_bitrate: int | None = None
+    video_bit_depth: int | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+    video_resolution: str | None = None
+    video_color_primaries: str | None = None
+    video_color_space: str | None = None
+    video_color_transfer: str | None = None
+    video_fps: float | None = None
+
+    # audio
+    audio_count: int | None = None
+    audio_languages: list[str] | None = None
+    # preserve raw value from provider
+    audio_codec: str | None = None
+    # stable normalized grouping for filtering/UI logic
+    audio_codec_family: AudioCodecFamily | None = None
+    audio_title: str | None = None
+    audio_language: str | None = None
+    audio_channels: int | None = None
+    audio_channel_layout: str | None = None
+    audio_bitrate: int | None = None
+    audio_sample_rate: int | None = None
+
+    # subtitles
+    subtitle_count: int | None = None
+    subtitle_has_forced: bool | None = None
+    subtitle_languages: list[str] | None = None
+
+    # chapters
+    has_chapters: bool | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,7 +154,44 @@ class MovieVersionResponse(BaseModel):
     path: str | None
     size: int
     added_at: str | None
+    file_name: str | None
     container: str | None
+    duration: float | None
+
+    # video
+    video_track_count: int | None
+    video_codec: str | None
+    video_codec_family: VideoCodecFamily | None
+    video_hdr: bool | None
+    video_dolby_vision: bool | None
+    video_dolby_vision_profile: str | None
+    video_bitrate: int | None
+    video_bit_depth: int | None
+    video_width: int | None
+    video_height: int | None
+    video_resolution: str | None
+    video_color_primaries: str | None
+    video_color_space: str | None
+    video_color_transfer: str | None
+    video_fps: float | None
+
+    # audio
+    audio_count: int | None
+    audio_languages: list[str] | None
+    audio_codec: str | None
+    audio_codec_family: AudioCodecFamily | None
+    audio_title: str | None
+    audio_language: str | None
+    audio_channels: int | None
+    audio_channel_layout: str | None
+    audio_bitrate: int | None
+    audio_sample_rate: int | None
+
+    # subtitles/chapters
+    subtitle_count: int | None
+    subtitle_has_forced: bool | None
+    subtitle_languages: list[str] | None
+    has_chapters: bool | None
 
 
 class MediaStatusInfo(BaseModel):
