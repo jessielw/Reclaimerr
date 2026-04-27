@@ -136,6 +136,71 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     return False
 
 
+def _rollup_series_media_from_seasons(season_data: list[AggregatedSeasonData]) -> dict:
+    """Roll up minimal media aggregate signals from seasons to series-level values."""
+    if not season_data:
+        return {
+            "has_hdr": None,
+            "has_dolby_vision": None,
+            "max_video_width": None,
+            "max_video_height": None,
+            "video_codec_families": None,
+            "audio_codec_families": None,
+            "max_audio_channels": None,
+            "subtitle_languages": None,
+        }
+
+    video_families: set[str] = set()
+    audio_families: set[str] = set()
+    subtitle_langs: set[str] = set()
+    max_width: int | None = None
+    max_height: int | None = None
+    max_audio_channels: int | None = None
+    has_hdr = False
+    has_dolby_vision = False
+
+    for sd in season_data:
+        if sd.has_hdr:
+            has_hdr = True
+        if sd.has_dolby_vision:
+            has_dolby_vision = True
+        if sd.max_video_width is not None:
+            max_width = (
+                sd.max_video_width
+                if max_width is None
+                else max(max_width, sd.max_video_width)
+            )
+        if sd.max_video_height is not None:
+            max_height = (
+                sd.max_video_height
+                if max_height is None
+                else max(max_height, sd.max_video_height)
+            )
+        if sd.max_audio_channels is not None:
+            max_audio_channels = (
+                sd.max_audio_channels
+                if max_audio_channels is None
+                else max(max_audio_channels, sd.max_audio_channels)
+            )
+        if sd.video_codec_families:
+            video_families.update(sd.video_codec_families)
+        if sd.audio_codec_families:
+            audio_families.update(sd.audio_codec_families)
+        if sd.subtitle_languages:
+            subtitle_langs.update(sd.subtitle_languages)
+
+    return {
+        "has_hdr": True if has_hdr else None,
+        "has_dolby_vision": True if has_dolby_vision else None,
+        "max_video_width": max_width,
+        "max_video_height": max_height,
+        "video_codec_families": sorted(video_families) or None,
+        "audio_codec_families": sorted(audio_families) or None,
+        "max_audio_channels": max_audio_channels,
+        "subtitle_languages": sorted(subtitle_langs) or None,
+    }
+
+
 async def _sync_seasons(
     session: AsyncSession,
     series_id: int,
@@ -158,6 +223,16 @@ async def _sync_seasons(
             s.episode_count = sd.episode_count
             s.view_count = sd.view_count
             s.last_viewed_at = sd.last_viewed_at
+            s.air_date = sd.air_date
+            s.added_at = sd.added_at
+            s.has_hdr = sd.has_hdr
+            s.has_dolby_vision = sd.has_dolby_vision
+            s.max_video_width = sd.max_video_width
+            s.max_video_height = sd.max_video_height
+            s.video_codec_families = sd.video_codec_families
+            s.audio_codec_families = sd.audio_codec_families
+            s.max_audio_channels = sd.max_audio_channels
+            s.subtitle_languages = sd.subtitle_languages
             if sd.service_season_id:
                 if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
@@ -176,19 +251,28 @@ async def _sync_seasons(
                     emby_id = sd.service_season_id
                 else:
                     plex_key = sd.service_season_id
-            session.add(
-                Season(
-                    series_id=series_id,
-                    season_number=sd.season_number,
-                    size=sd.size,
-                    episode_count=sd.episode_count,
-                    view_count=sd.view_count,
-                    last_viewed_at=sd.last_viewed_at,
-                    jellyfin_season_id=jellyfin_id,
-                    emby_season_id=emby_id,
-                    plex_season_rating_key=plex_key,
-                )
+            new_season = Season(
+                series_id=series_id,
+                season_number=sd.season_number,
+                size=sd.size,
+                episode_count=sd.episode_count,
+                view_count=sd.view_count,
+                last_viewed_at=sd.last_viewed_at,
+                air_date=sd.air_date,
+                has_hdr=sd.has_hdr,
+                has_dolby_vision=sd.has_dolby_vision,
+                max_video_width=sd.max_video_width,
+                max_video_height=sd.max_video_height,
+                video_codec_families=sd.video_codec_families,
+                audio_codec_families=sd.audio_codec_families,
+                max_audio_channels=sd.max_audio_channels,
+                subtitle_languages=sd.subtitle_languages,
+                jellyfin_season_id=jellyfin_id,
+                emby_season_id=emby_id,
+                plex_season_rating_key=plex_key,
             )
+            new_season.added_at = sd.added_at
+            session.add(new_season)
 
     # remove seasons no longer in the media server
     removed_season_ids = [
@@ -915,6 +999,29 @@ async def sync_series(
                 if existing_series_obj is not None:
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
+                    media_rollup = _rollup_series_media_from_seasons(series.season_data)
+                    existing_series_obj.has_hdr = media_rollup["has_hdr"]
+                    existing_series_obj.has_dolby_vision = media_rollup[
+                        "has_dolby_vision"
+                    ]
+                    existing_series_obj.max_video_width = media_rollup[
+                        "max_video_width"
+                    ]
+                    existing_series_obj.max_video_height = media_rollup[
+                        "max_video_height"
+                    ]
+                    existing_series_obj.video_codec_families = media_rollup[
+                        "video_codec_families"
+                    ]
+                    existing_series_obj.audio_codec_families = media_rollup[
+                        "audio_codec_families"
+                    ]
+                    existing_series_obj.max_audio_channels = media_rollup[
+                        "max_audio_channels"
+                    ]
+                    existing_series_obj.subtitle_languages = media_rollup[
+                        "subtitle_languages"
+                    ]
 
                     # update service-specific fields based on source
                     await _upsert_series_service_ref(
@@ -957,6 +1064,7 @@ async def sync_series(
                 # if series doesn't exist, create new entry
                 else:
                     LOG.info(f"Adding new series: {series.name} ({tmdb_id})")
+                    media_rollup = _rollup_series_media_from_seasons(series.season_data)
                     new_series = Series(
                         title=series.name,
                         year=series.year,
@@ -967,6 +1075,14 @@ async def sync_series(
                         tvdb_id=series.external_ids.tvdb,
                         last_viewed_at=series.last_viewed_at,
                         view_count=series.view_count,
+                        has_hdr=media_rollup["has_hdr"],
+                        has_dolby_vision=media_rollup["has_dolby_vision"],
+                        max_video_width=media_rollup["max_video_width"],
+                        max_video_height=media_rollup["max_video_height"],
+                        video_codec_families=media_rollup["video_codec_families"],
+                        audio_codec_families=media_rollup["audio_codec_families"],
+                        max_audio_channels=media_rollup["max_audio_channels"],
+                        subtitle_languages=media_rollup["subtitle_languages"],
                     )
 
                     # set service-specific fields based on source
