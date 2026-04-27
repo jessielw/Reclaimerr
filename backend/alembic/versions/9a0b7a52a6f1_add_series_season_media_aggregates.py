@@ -19,6 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # cleanup from interrupted SQLite batch migrations so retries are safe
+    op.execute(sa.text("DROP TABLE IF EXISTS _alembic_tmp_series"))
+    op.execute(sa.text("DROP TABLE IF EXISTS _alembic_tmp_seasons"))
+
     with op.batch_alter_table("series", schema=None) as batch_op:
         batch_op.add_column(sa.Column("has_hdr", sa.Boolean(), nullable=True))
         batch_op.add_column(sa.Column("has_dolby_vision", sa.Boolean(), nullable=True))

@@ -19,6 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # cleanup from interrupted SQLite batch migrations so retries are safe
+    op.execute(sa.text("DROP TABLE IF EXISTS _alembic_tmp_movie_versions"))
+
     with op.batch_alter_table("movie_versions", schema=None) as batch_op:
         batch_op.add_column(sa.Column("file_name", sa.String(length=255), nullable=True))
         batch_op.add_column(sa.Column("duration", sa.Float(), nullable=True))
