@@ -36,6 +36,7 @@ from backend.models.services.plex import PlexMovie, PlexSeries
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
 _METADATA_BATCH_SIZE = 50
+_EPISODE_METADATA_BATCH_SIZE = 100
 
 
 class PlexService:
@@ -251,8 +252,39 @@ class PlexService:
         season_keys: dict[tuple[str, int], str] = {}  # season ratingKey
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
         season_view_counts: dict[tuple[str, int], int] = {}
+        season_air_date: dict[tuple[str, int], datetime | None] = {}
+        season_added_at: dict[tuple[str, int], datetime | None] = {}
+        season_has_hdr: dict[tuple[str, int], bool] = {}
+        season_has_dv: dict[tuple[str, int], bool] = {}
+        season_max_width: dict[tuple[str, int], int] = {}
+        season_max_height: dict[tuple[str, int], int] = {}
+        season_video_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_max_audio_channels: dict[tuple[str, int], int] = {}
+        season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
+
+        # section-level episode list responses can omit per-stream details.
+        # collect only episodes that need enrichment and fetch them in batches.
+        needs_detail_keys: list[str] = []
+        for episode in episodes:
+            ep_key = str(episode.get("ratingKey", ""))
+            if not ep_key:
+                continue
+            medias = episode.get("Media", [])
+            if any(
+                not (m.get("Part") and m["Part"] and m["Part"][0].get("Stream"))
+                for m in medias
+            ):
+                needs_detail_keys.append(ep_key)
+        detailed_episodes = await self._get_episodes_metadata_batch(needs_detail_keys)
 
         for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+
+            source_episode = detailed_episodes.get(str(episode.get("ratingKey", "")))
+            if not isinstance(source_episode, dict):
+                source_episode = episode
             series_key = episode.get("grandparentRatingKey")
             season_key = episode.get("parentRatingKey")
             season_num_raw = episode.get("parentIndex")
@@ -265,7 +297,7 @@ class PlexService:
 
             # compute episode file size
             episode_size = 0
-            for media in episode.get("Media", []):
+            for media in source_episode.get("Media", []) or episode.get("Media", []):
                 for part in media.get("Part", []):
                     episode_size += part.get("size", 0)
 
@@ -274,7 +306,7 @@ class PlexService:
 
             # series path (first episode of each series)
             if series_key not in series_paths:
-                media_list = episode.get("Media", [])
+                media_list = source_episode.get("Media", []) or episode.get("Media", [])
                 if media_list and media_list[0].get("Part"):
                     ep_file = media_list[0]["Part"][0].get("file")
                     if ep_file:
@@ -286,6 +318,125 @@ class PlexService:
             season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
             if season_key and sk not in season_keys:
                 season_keys[sk] = season_key
+
+            # season air date = earliest episode air date
+            ep_air_date_raw = source_episode.get(
+                "originallyAvailableAt"
+            ) or episode.get("originallyAvailableAt")
+            if ep_air_date_raw:
+                try:
+                    ep_air_date = datetime.strptime(ep_air_date_raw, "%Y-%m-%d")
+                    prev_air = season_air_date.get(sk)
+                    if prev_air is None or ep_air_date < prev_air:
+                        season_air_date[sk] = ep_air_date
+                except (TypeError, ValueError):
+                    pass
+
+            # season added_at = earliest episode addedAt
+            ep_added_at = self._fromtimestamp(
+                source_episode.get("addedAt") or episode.get("addedAt")
+            )
+            if ep_added_at:
+                prev_added = season_added_at.get(sk)
+                if prev_added is None or ep_added_at < prev_added:
+                    season_added_at[sk] = ep_added_at
+
+            # media aggregate signals per season
+            for media in source_episode.get("Media", []) or episode.get("Media", []):
+                video_codec_raw = media.get("videoCodec")
+                audio_codec_raw = media.get("audioCodec")
+                if video_codec_raw:
+                    vf = normalize_video_codec_family(str(video_codec_raw))
+                    if vf:
+                        season_video_families.setdefault(sk, set()).add(vf)
+                if audio_codec_raw:
+                    af = normalize_audio_codec_family(str(audio_codec_raw))
+                    if af:
+                        season_audio_families.setdefault(sk, set()).add(af)
+                media_audio_channels = as_int(media.get("audioChannels"))
+                if media_audio_channels is not None:
+                    season_max_audio_channels[sk] = max(
+                        season_max_audio_channels.get(sk, 0), media_audio_channels
+                    )
+                media_width = as_int(media.get("width"))
+                if media_width is not None:
+                    season_max_width[sk] = max(season_max_width.get(sk, 0), media_width)
+                media_height = as_int(media.get("height"))
+                if media_height is not None:
+                    season_max_height[sk] = max(
+                        season_max_height.get(sk, 0), media_height
+                    )
+                resolution = str(media.get("videoResolution", "")).lower()
+                if resolution:
+                    if resolution in {"4k", "uhd"}:
+                        season_max_width[sk] = max(season_max_width.get(sk, 0), 3840)
+                        season_max_height[sk] = max(season_max_height.get(sk, 0), 2160)
+                    elif resolution in {"1080", "1080p"}:
+                        season_max_width[sk] = max(season_max_width.get(sk, 0), 1920)
+                        season_max_height[sk] = max(season_max_height.get(sk, 0), 1080)
+                    elif resolution in {"720", "720p"}:
+                        season_max_width[sk] = max(season_max_width.get(sk, 0), 1280)
+                        season_max_height[sk] = max(season_max_height.get(sk, 0), 720)
+                    elif resolution in {"576", "576p"}:
+                        season_max_width[sk] = max(season_max_width.get(sk, 0), 1024)
+                        season_max_height[sk] = max(season_max_height.get(sk, 0), 576)
+                    elif resolution in {"480", "480p"}:
+                        season_max_width[sk] = max(season_max_width.get(sk, 0), 720)
+                        season_max_height[sk] = max(season_max_height.get(sk, 0), 480)
+
+                for part in media.get("Part", []):
+                    for stream in part.get("Stream", []):
+                        stream_type = str(stream.get("streamType", ""))
+                        if stream_type == "1":
+                            vcodec = stream.get("codec") or stream.get("codecID")
+                            if vcodec:
+                                vf = normalize_video_codec_family(str(vcodec))
+                                if vf:
+                                    season_video_families.setdefault(sk, set()).add(vf)
+                            width = as_int(stream.get("width"))
+                            if width is not None:
+                                season_max_width[sk] = max(
+                                    season_max_width.get(sk, 0), width
+                                )
+                            height = as_int(stream.get("height"))
+                            if height is not None:
+                                season_max_height[sk] = max(
+                                    season_max_height.get(sk, 0), height
+                                )
+                            color_trc = str(stream.get("colorTrc", "")).lower()
+                            extended_title = str(
+                                stream.get("extendedDisplayTitle", "")
+                            ).lower()
+                            has_dv = bool(stream.get("DOVIPresent"))
+                            has_hdr = has_dv or (
+                                "hdr" in extended_title
+                                or color_trc in {"smpte2084", "arib-std-b67"}
+                            )
+                            if has_dv:
+                                season_has_dv[sk] = True
+                            if has_hdr:
+                                season_has_hdr[sk] = True
+                        elif stream_type == "2":
+                            acodec = stream.get("codec") or stream.get("codecID")
+                            if acodec:
+                                af = normalize_audio_codec_family(str(acodec))
+                                if af:
+                                    season_audio_families.setdefault(sk, set()).add(af)
+                            channels = as_int(stream.get("channels"))
+                            if channels is not None:
+                                season_max_audio_channels[sk] = max(
+                                    season_max_audio_channels.get(sk, 0), channels
+                                )
+                        elif stream_type == "3":
+                            lang = (
+                                stream.get("languageCode")
+                                or stream.get("languageTag")
+                                or stream.get("language")
+                            )
+                            if lang:
+                                season_subtitle_languages.setdefault(sk, set()).add(
+                                    str(lang).lower()
+                                )
 
             # watch data per season
             ep_view_count = episode.get("viewCount", 0) or 0
@@ -315,7 +466,20 @@ class PlexService:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
+                added_at=season_added_at.get(sk),
+                air_date=season_air_date.get(sk),
                 service_season_id=season_keys.get(sk),
+                has_hdr=True if season_has_hdr.get(sk) else None,
+                has_dolby_vision=True if season_has_dv.get(sk) else None,
+                max_video_width=season_max_width.get(sk),
+                max_video_height=season_max_height.get(sk),
+                video_codec_families=sorted(season_video_families.get(sk, set()))
+                or None,
+                audio_codec_families=sorted(season_audio_families.get(sk, set()))
+                or None,
+                max_audio_channels=season_max_audio_channels.get(sk),
+                subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
+                or None,
             )
 
         return series_sizes, series_paths, season_data
@@ -569,6 +733,39 @@ class PlexService:
                         detailed[key] = item
             except Exception:
                 LOG.debug(f"Failed to fetch batched Plex movie metadata for ids={ids}")
+        return detailed
+
+    async def _get_episodes_metadata_batch(
+        self, rating_keys: list[str]
+    ) -> dict[str, dict]:
+        """Fetch full episode metadata in batches via /library/metadata/{id1,id2,...}."""
+        if not rating_keys:
+            return {}
+
+        detailed: dict[str, dict] = {}
+        for i in range(0, len(rating_keys), _EPISODE_METADATA_BATCH_SIZE):
+            batch = rating_keys[i : i + _EPISODE_METADATA_BATCH_SIZE]
+            if not batch:
+                continue
+            ids = ",".join(batch)
+            try:
+                data, _ = await self._make_request(
+                    f"library/metadata/{ids}",
+                    timeout=120,
+                )
+                if not isinstance(data, dict):
+                    continue
+                metadata = data.get("MediaContainer", {}).get("Metadata", [])
+                if not isinstance(metadata, list):
+                    continue
+                for item in metadata:
+                    key = str(item.get("ratingKey", ""))
+                    if key:
+                        detailed[key] = item
+            except Exception:
+                LOG.debug(
+                    f"Failed to fetch batched Plex episode metadata for ids={ids}"
+                )
         return detailed
 
     async def get_series(
@@ -847,8 +1044,17 @@ class PlexService:
                         episode_count=sd.episode_count,
                         view_count=self._merge_view_count(sd.view_count, hist),
                         last_viewed_at=self._merge_last_viewed(sd.last_viewed_at, hist),
+                        added_at=sd.added_at,
                         air_date=sd.air_date,
                         service_season_id=sd.service_season_id,
+                        has_hdr=sd.has_hdr,
+                        has_dolby_vision=sd.has_dolby_vision,
+                        max_video_width=sd.max_video_width,
+                        max_video_height=sd.max_video_height,
+                        video_codec_families=sd.video_codec_families,
+                        audio_codec_families=sd.audio_codec_families,
+                        max_audio_channels=sd.max_audio_channels,
+                        subtitle_languages=sd.subtitle_languages,
                     )
                 )
 

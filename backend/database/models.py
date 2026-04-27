@@ -434,6 +434,15 @@ class Series(Base):
     # watch tracking (from plex/jellyfin/emby)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    # aggregate media signals
+    has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    max_video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    max_audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
@@ -489,6 +498,15 @@ class Season(Base):
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # aggregate media signals
+    has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    max_video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    max_audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # service-specific IDs for direct ops
     jellyfin_season_id: Mapped[str | None] = mapped_column(String(100), default=None)

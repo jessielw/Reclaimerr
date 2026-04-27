@@ -445,6 +445,16 @@ class EmbyServiceBase:
         season_view_counts: dict[tuple[str, int], int] = {}
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
         season_ids: dict[tuple[str, int], str] = {}  # Emby/Jellyfin SeasonId
+        season_air_date: dict[tuple[str, int], datetime | None] = {}
+        season_added_at: dict[tuple[str, int], datetime | None] = {}
+        season_has_hdr: dict[tuple[str, int], bool] = {}
+        season_has_dv: dict[tuple[str, int], bool] = {}
+        season_max_width: dict[tuple[str, int], int] = {}
+        season_max_height: dict[tuple[str, int], int] = {}
+        season_video_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_max_audio_channels: dict[tuple[str, int], int] = {}
+        season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
 
         start_index = 0
         limit = 500
@@ -455,7 +465,7 @@ class EmbyServiceBase:
                 "includeItemTypes": "Episode",
                 "recursive": "true",
                 "Fields": (
-                    "MediaSources,SeriesId,DateCreated,ParentIndexNumber,SeasonId,UserData,"
+                    "MediaSources,MediaStreams,SeriesId,DateCreated,PremiereDate,ParentIndexNumber,SeasonId,UserData,"
                     "UserDataLastPlayedDate,UserDataPlayCount"
                 ),
                 "ParentId": library_id,
@@ -500,6 +510,30 @@ class EmbyServiceBase:
                 season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
                 season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
 
+                # season air date = earliest episode premiere date
+                premiere_date = episode.get("PremiereDate")
+                if premiere_date:
+                    try:
+                        dt = datetime.fromisoformat(
+                            premiere_date.replace("Z", "+00:00")
+                        )
+                        prev = season_air_date.get(sk)
+                        if prev is None or dt < prev:
+                            season_air_date[sk] = dt
+                    except (TypeError, ValueError):
+                        pass
+
+                # season added_at = earliest episode date created
+                created_date = episode.get("DateCreated")
+                if created_date:
+                    try:
+                        dt = datetime.fromisoformat(created_date.replace("Z", "+00:00"))
+                        prev = season_added_at.get(sk)
+                        if prev is None or dt < prev:
+                            season_added_at[sk] = dt
+                    except (TypeError, ValueError):
+                        pass
+
                 # store Emby/Jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
                     season_ids[sk] = episode["SeasonId"]
@@ -519,6 +553,71 @@ class EmbyServiceBase:
                 elif sk not in season_last_viewed:
                     season_last_viewed[sk] = None
 
+                # media aggregate signals per season
+                for source in episode.get("MediaSources", []):
+                    media_width = as_int(source.get("Width"))
+                    if media_width is not None:
+                        season_max_width[sk] = max(
+                            season_max_width.get(sk, 0), media_width
+                        )
+                    media_height = as_int(source.get("Height"))
+                    if media_height is not None:
+                        season_max_height[sk] = max(
+                            season_max_height.get(sk, 0), media_height
+                        )
+                    streams = source.get("MediaStreams", []) or []
+                    for stream in streams:
+                        stream_type = str(stream.get("Type", "")).lower()
+                        if stream_type == "video":
+                            vcodec = stream.get("Codec")
+                            if vcodec:
+                                vf = normalize_video_codec_family(str(vcodec))
+                                if vf:
+                                    season_video_families.setdefault(sk, set()).add(vf)
+                            width = as_int(stream.get("Width"))
+                            if width is not None:
+                                season_max_width[sk] = max(
+                                    season_max_width.get(sk, 0), width
+                                )
+                            height = as_int(stream.get("Height"))
+                            if height is not None:
+                                season_max_height[sk] = max(
+                                    season_max_height.get(sk, 0), height
+                                )
+                            dv_profile = stream.get("DvProfile")
+                            video_range_type = str(
+                                stream.get("VideoRangeType", "")
+                            ).lower()
+                            has_dv = (
+                                dv_profile is not None or "dovi" in video_range_type
+                            )
+                            has_hdr = (
+                                has_dv
+                                or bool(stream.get("IsHdr"))
+                                or bool(video_range_type)
+                            )
+                            if has_dv:
+                                season_has_dv[sk] = True
+                            if has_hdr:
+                                season_has_hdr[sk] = True
+                        elif stream_type == "audio":
+                            acodec = stream.get("Codec")
+                            if acodec:
+                                af = normalize_audio_codec_family(str(acodec))
+                                if af:
+                                    season_audio_families.setdefault(sk, set()).add(af)
+                            channels = as_int(stream.get("Channels"))
+                            if channels is not None:
+                                season_max_audio_channels[sk] = max(
+                                    season_max_audio_channels.get(sk, 0), channels
+                                )
+                        elif stream_type == "subtitle":
+                            lang = stream.get("Language")
+                            if lang:
+                                season_subtitle_languages.setdefault(sk, set()).add(
+                                    str(lang).lower()
+                                )
+
             total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
             start_index += len(episodes)
             if start_index >= total_record_count:
@@ -537,7 +636,20 @@ class EmbyServiceBase:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
+                added_at=season_added_at.get(sk),
+                air_date=season_air_date.get(sk),
                 service_season_id=season_ids.get(sk),
+                has_hdr=True if season_has_hdr.get(sk) else None,
+                has_dolby_vision=True if season_has_dv.get(sk) else None,
+                max_video_width=season_max_width.get(sk),
+                max_video_height=season_max_height.get(sk),
+                video_codec_families=sorted(season_video_families.get(sk, set()))
+                or None,
+                audio_codec_families=sorted(season_audio_families.get(sk, set()))
+                or None,
+                max_audio_channels=season_max_audio_channels.get(sk),
+                subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
+                or None,
             )
 
         return series_sizes, season_data
