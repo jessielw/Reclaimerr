@@ -39,7 +39,7 @@ class MovieVersionData:
     container: str | None = None
     # ms (plex is milliseconds, jellyfin/emby is .net ticks so 'milliseconds = RunTimeTicks / 10,000')
     duration: float | None = None
-    
+
     # video
     video_track_count: int | None = None
     # preserve raw value from provider
@@ -108,9 +108,19 @@ class AggregatedSeasonData:
     episode_count: int
     view_count: int
     last_viewed_at: datetime | None
+    added_at: datetime | None = None
     air_date: datetime | None = None
     # plex parentRatingKey or jellyfin/emby season item ID for direct ops
     service_season_id: str | None = None
+    # aggregate media signals
+    has_hdr: bool | None = None
+    has_dolby_vision: bool | None = None
+    max_video_width: int | None = None
+    max_video_height: int | None = None
+    video_codec_families: list[str] | None = None
+    audio_codec_families: list[str] | None = None
+    max_audio_channels: int | None = None
+    subtitle_languages: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -302,6 +312,15 @@ class SeriesWithStatus(BaseModel):
     # watch tracking
     last_viewed_at: str | None
     view_count: int
+    # aggregate media signals
+    has_hdr: bool | None = None
+    has_dolby_vision: bool | None = None
+    max_video_width: int | None = None
+    max_video_height: int | None = None
+    video_codec_families: list[str] | None = None
+    audio_codec_families: list[str] | None = None
+    max_audio_channels: int | None = None
+    subtitle_languages: list[str] | None = None
 
     # status
     status: MediaStatusInfo
@@ -320,8 +339,18 @@ class SeasonWithStatus(BaseModel):
     episode_count: int | None
     size: int | None
     view_count: int
+    added_at: str | None
     last_viewed_at: str | None
     air_date: str | None
+    # aggregate media signals
+    has_hdr: bool | None = None
+    has_dolby_vision: bool | None = None
+    max_video_width: int | None = None
+    max_video_height: int | None = None
+    video_codec_families: list[str] | None = None
+    audio_codec_families: list[str] | None = None
+    max_audio_channels: int | None = None
+    subtitle_languages: list[str] | None = None
     status: MediaStatusInfo
 
 
