@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import PurePath
 from typing import Any
 
 import niquests
@@ -15,8 +15,13 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.codecs import (
+    normalize_audio_codec_family,
+    normalize_video_codec_family,
+)
 from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
+from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.enums import Service
 from backend.models.media import (
@@ -30,6 +35,7 @@ from backend.models.services.plex import PlexMovie, PlexSeries
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
+_METADATA_BATCH_SIZE = 50
 
 
 class PlexService:
@@ -272,9 +278,7 @@ class PlexService:
                 if media_list and media_list[0].get("Part"):
                     ep_file = media_list[0]["Part"][0].get("file")
                     if ep_file:
-                        series_paths[series_key] = os.path.dirname(
-                            os.path.dirname(ep_file)
-                        )
+                        series_paths[series_key] = str(PurePath(ep_file).parent.parent)
 
             # accumulate season totals
             sk = (series_key, season_num)
@@ -351,7 +355,23 @@ class PlexService:
             )
             if not items_data:
                 continue
+
             items = items_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
+
+            needs_detail_keys: list[str] = []
+            for item in items:
+                if item.get("type") != "movie":
+                    continue
+                media_entries = item.get("Media", [])
+                if any(
+                    not (m.get("Part") and m["Part"] and m["Part"][0].get("Stream"))
+                    for m in media_entries
+                ):
+                    rk = str(item.get("ratingKey", ""))
+                    if rk:
+                        needs_detail_keys.append(rk)
+
+            details_by_key = await self._get_movies_metadata_batch(needs_detail_keys)
 
             for item in items:
                 # only include actual movies, not collections or other types
@@ -362,14 +382,58 @@ class PlexService:
                 if not ext_ids:
                     continue
 
+                # library section list responses can omit detailed stream metadata.
+                # when Part/Stream is missing in section list responses, use pre-fetched
+                # batched details from /library/metadata/{id1,id2,...}.
+                source_item = details_by_key.get(str(item["ratingKey"]), item)
+                media_entries = (
+                    source_item.get("Media", [])
+                    if source_item
+                    else item.get("Media", [])
+                )
+
                 # build one MovieVersionData per Media entry (each = one physical file/version)
                 added_at = self._fromtimestamp(item.get("addedAt"))
                 versions = []
-                for media in item.get("Media", []):
+                for media in media_entries:
                     media_id = str(media.get("id", ""))
                     if not media_id:
                         continue
                     part = media.get("Part", [{}])[0] if media.get("Part") else {}
+                    streams = part.get("Stream", []) if isinstance(part, dict) else []
+                    video_streams = [
+                        s for s in streams if str(s.get("streamType")) == "1"
+                    ]
+                    audio_streams = [
+                        s for s in streams if str(s.get("streamType")) == "2"
+                    ]
+                    subtitle_streams = [
+                        s for s in streams if str(s.get("streamType")) == "3"
+                    ]
+                    first_video = video_streams[0] if video_streams else {}
+                    first_audio = audio_streams[0] if audio_streams else {}
+                    video_codec_raw = (
+                        first_video.get("codec")
+                        or media.get("videoCodec")
+                        or first_video.get("codecID")
+                    )
+                    audio_codec_raw = (
+                        first_audio.get("codec")
+                        or media.get("audioCodec")
+                        or first_audio.get("codecID")
+                    )
+                    dolby_vision_profile = (
+                        first_video.get("DOVIProfile")
+                        or first_video.get("doviProfile")
+                        or first_video.get("dolbyVisionProfile")
+                    )
+                    dolby_vision_profile = (
+                        f"{dolby_vision_profile}.{first_video['DOVIBLCompatID']}"
+                        if dolby_vision_profile and first_video.get("DOVIBLCompatID")
+                        else str(dolby_vision_profile)
+                        if dolby_vision_profile
+                        else None
+                    )
                     version_size = sum(p.get("size", 0) for p in media.get("Part", []))
                     versions.append(
                         MovieVersionData(
@@ -381,7 +445,80 @@ class PlexService:
                             path=part.get("file"),
                             size=version_size,
                             added_at=added_at,
+                            file_name=PurePath(str(part.get("file"))).name
+                            if part.get("file")
+                            else None,
                             container=media.get("container"),
+                            duration=as_float(media.get("duration")),
+                            video_track_count=len(video_streams) or None,
+                            video_codec=video_codec_raw,
+                            video_codec_family=normalize_video_codec_family(
+                                video_codec_raw
+                            ),
+                            video_hdr=self._is_hdr(first_video),
+                            video_dolby_vision=(
+                                bool(first_video.get("DOVIPresent"))
+                                if first_video.get("DOVIPresent") is not None
+                                else None
+                            ),
+                            video_dolby_vision_profile=str(dolby_vision_profile)
+                            if dolby_vision_profile is not None
+                            else None,
+                            video_bitrate=as_int(
+                                first_video.get("bitrate") or media.get("bitrate")
+                            ),
+                            video_bit_depth=as_int(first_video.get("bitDepth")),
+                            video_width=as_int(first_video.get("width")),
+                            video_height=as_int(first_video.get("height")),
+                            video_resolution=media.get("videoResolution"),
+                            video_color_primaries=first_video.get("colorPrimaries"),
+                            video_color_space=first_video.get("colorSpace"),
+                            video_color_transfer=first_video.get("colorTrc"),
+                            video_fps=as_float(
+                                first_video.get("frameRate")
+                                or first_video.get("frameRateMode")
+                            ),
+                            audio_count=len(audio_streams) or None,
+                            audio_languages=self._unique_languages(audio_streams),
+                            audio_codec=audio_codec_raw,
+                            audio_codec_family=normalize_audio_codec_family(
+                                audio_codec_raw
+                            ),
+                            audio_title=first_audio.get("displayTitle"),
+                            audio_language=(
+                                str(
+                                    first_audio.get("languageCode")
+                                    or first_audio.get("languageTag")
+                                    or first_audio.get("language")
+                                ).lower()
+                                if (
+                                    first_audio.get("languageCode")
+                                    or first_audio.get("languageTag")
+                                    or first_audio.get("language")
+                                )
+                                else None
+                            ),
+                            audio_channels=as_int(
+                                first_audio.get("channels")
+                                or media.get("audioChannels")
+                            ),
+                            audio_channel_layout=first_audio.get("audioChannelLayout"),
+                            audio_bitrate=as_int(first_audio.get("bitrate")),
+                            audio_sample_rate=as_int(first_audio.get("samplingRate")),
+                            subtitle_count=len(subtitle_streams) or None,
+                            subtitle_has_forced=(
+                                any(bool(s.get("forced")) for s in subtitle_streams)
+                                if subtitle_streams
+                                else None
+                            ),
+                            subtitle_languages=self._unique_languages(subtitle_streams),
+                            has_chapters=(
+                                True
+                                if source_item
+                                and isinstance(source_item.get("Chapter"), list)
+                                and len(source_item.get("Chapter", [])) > 0
+                                else None
+                            ),
                         )
                     )
 
@@ -401,6 +538,38 @@ class PlexService:
                 all_movies.append(movie)
 
         return all_movies
+
+    async def _get_movies_metadata_batch(
+        self, rating_keys: list[str]
+    ) -> dict[str, dict]:
+        """Fetch full movie metadata in batches via /library/metadata/{id1,id2,...}."""
+        if not rating_keys:
+            return {}
+
+        detailed: dict[str, dict] = {}
+        for i in range(0, len(rating_keys), _METADATA_BATCH_SIZE):
+            batch = rating_keys[i : i + _METADATA_BATCH_SIZE]
+            if not batch:
+                continue
+            ids = ",".join(batch)
+            try:
+                data, _ = await self._make_request(
+                    f"library/metadata/{ids}",
+                    params={"includeGuids": 1, "includeChapters": 1},
+                    timeout=120,
+                )
+                if not isinstance(data, dict):
+                    continue
+                metadata = data.get("MediaContainer", {}).get("Metadata", [])
+                if not isinstance(metadata, list):
+                    continue
+                for item in metadata:
+                    key = str(item.get("ratingKey", ""))
+                    if key:
+                        detailed[key] = item
+            except Exception:
+                LOG.debug(f"Failed to fetch batched Plex movie metadata for ids={ids}")
+        return detailed
 
     async def get_series(
         self, included_libraries: list[str] | None = None
@@ -764,6 +933,55 @@ class PlexService:
                 tvdb=tvdb_id,
             )
         return None
+
+    @staticmethod
+    def _is_hdr(stream: dict) -> bool:
+        # bit depth (if less than 10 bits it's not hdr)
+        try:
+            if int(stream["bitDepth"]) < 10:
+                return False
+        except Exception:
+            pass
+        # dolby Vision
+        if stream.get("DOVIPresent") or stream.get("DOVIProfile"):
+            return True
+        # HDR10/HLG transfer functions
+        if str(stream.get("colorTrc", "")).lower() in ("smpte2084", "arib-std-b67"):
+            return True
+        # BT.2020 color primaries (common for HDR)
+        if str(stream.get("colorPrimaries", "")).lower() in (
+            "bt2020",
+            "bt.2020",
+            "bt2020nc",
+        ):
+            return True
+        # title contains "hdr"
+        if "hdr" in str(stream.get("extendedDisplayTitle", "")).lower():
+            return True
+        return False
+
+    @staticmethod
+    def _unique_languages(streams: list[dict]) -> list[str] | None:
+        """Extract unique language codes from Plex stream data.
+
+        We maintain the order and only keep the unique values.
+        """
+        langs: list[str] = []
+        seen: set[str] = set()
+        for stream in streams:
+            raw = (
+                stream.get("languageCode")
+                or stream.get("languageTag")
+                or stream.get("language")
+            )
+            if not raw:
+                continue
+            value = str(raw).strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            langs.append(value)
+        return langs or None
 
     @staticmethod
     def _extract_legacy_tvdb_id(media: dict) -> str | None:

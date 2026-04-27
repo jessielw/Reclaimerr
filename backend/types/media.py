@@ -1,0 +1,42 @@
+from typing import Literal, TypeAlias
+
+VideoCodecFamily: TypeAlias = Literal[
+    "h263",
+    "h264",
+    "h265",
+    "h266",
+    "avc",
+    "av1",
+    "vc1",
+    "vvc",
+    "vp8",
+    "vp9",
+    "xvid",
+    "mpeg1",
+    "mpeg2",
+    "mpeg4",
+    "prores",
+    "theora",
+    "wmv",
+    "other",
+]
+
+AudioCodecFamily: TypeAlias = Literal[
+    "aac",
+    "ac3",
+    "ac4",
+    "eac3",
+    "truehd",
+    "dts",
+    "dtshd",
+    "vorbis",
+    "opus",
+    "flac",
+    "alac",
+    "mp3",
+    "mp2",
+    "pcm",
+    "wma",
+    "amr",
+    "other",
+]

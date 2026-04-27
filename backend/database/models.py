@@ -31,6 +31,7 @@ from backend.enums import (
     TaskStatus,
     UserRole,
 )
+from backend.types.media import AudioCodecFamily, VideoCodecFamily
 
 
 class User(Base):
@@ -287,7 +288,52 @@ class MovieVersion(Base):
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     size: Mapped[int] = mapped_column(Integer, default=0)
     added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    file_name: Mapped[str | None] = mapped_column(String(255), default=None)
     container: Mapped[str | None] = mapped_column(String(20), default=None)
+    duration: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # video stream metadata
+    video_track_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec: Mapped[str | None] = mapped_column(String(80), default=None)
+    video_codec_family: Mapped[VideoCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    video_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_dolby_vision_profile: Mapped[str | None] = mapped_column(
+        String(50), default=None
+    )
+    video_bitrate: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_bit_depth: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_resolution: Mapped[str | None] = mapped_column(String(20), default=None)
+    video_color_primaries: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_color_space: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_color_transfer: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_fps: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # audio stream metadata
+    audio_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    audio_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec: Mapped[str | None] = mapped_column(String(80), default=None)
+    audio_codec_family: Mapped[AudioCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    audio_title: Mapped[str | None] = mapped_column(String(255), default=None)
+    audio_language: Mapped[str | None] = mapped_column(String(20), default=None)
+    audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    audio_channel_layout: Mapped[str | None] = mapped_column(String(100), default=None)
+    audio_bitrate: Mapped[int | None] = mapped_column(Integer, default=None)
+    audio_sample_rate: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # subtitle stream metadata
+    subtitle_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    subtitle_has_forced: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+
+    # chapter metadata
+    has_chapters: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
