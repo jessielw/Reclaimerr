@@ -33,11 +33,17 @@
     return unknownValue;
   };
 
-  const fileNameFromPath = (path: string | null): string => {
+  const fileNameFromPath = (
+    path: string | null,
+    fallbackFileName: string | null = null,
+  ): string => {
+    if (fallbackFileName && fallbackFileName.trim()) {
+      return fallbackFileName.trim();
+    }
     if (!path) return unknownValue;
     const parts = path.split(/[/\\]/);
-    const fileName = parts[parts.length - 1];
-    return fileName?.trim() ? fileName : unknownValue;
+    const extractedFileName = parts[parts.length - 1];
+    return extractedFileName?.trim() ? extractedFileName : unknownValue;
   };
 
   const parseRuleTokens = (reason: string | null | undefined): string[] => {
@@ -73,7 +79,10 @@
   ];
 
   const fileFields = (item: ReclaimCandidateEntry): DetailField[] => [
-    { label: "Name", value: fileNameFromPath(item.version_path) },
+    {
+      label: "Name",
+      value: fileNameFromPath(item.version_path, item.version_file_name),
+    },
     { label: "Size", value: bytesLabel(item.version_size) },
     { label: "Path", value: textValue(item.version_path) },
   ];
