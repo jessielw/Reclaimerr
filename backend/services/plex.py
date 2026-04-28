@@ -600,8 +600,8 @@ class PlexService:
                         else None
                     )
                     version_size = sum(p.get("size", 0) for p in media.get("Part", []))
-                    width = as_int(first_video.get("Width"))
-                    height = as_int(first_video.get("Height"))
+                    width = as_int(first_video.get("width"))
+                    height = as_int(first_video.get("height"))
                     versions.append(
                         MovieVersionData(
                             service=Service.PLEX,
