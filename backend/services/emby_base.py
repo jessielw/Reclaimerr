@@ -593,13 +593,17 @@ class EmbyServiceBase:
                             video_range_type = str(
                                 stream.get("VideoRangeType", "")
                             ).lower()
+                            is_hdr_range = (
+                                video_range_type.startswith("hdr")
+                                or "hlg" in video_range_type
+                                or "dovi" in video_range_type
+                                or "dolby" in video_range_type
+                            )
                             has_dv = (
                                 dv_profile is not None or "dovi" in video_range_type
                             )
                             has_hdr = (
-                                has_dv
-                                or bool(stream.get("IsHdr"))
-                                or bool(video_range_type)
+                                has_dv or bool(stream.get("IsHdr")) or is_hdr_range
                             )
                             if has_dv:
                                 season_has_dv[sk] = True
