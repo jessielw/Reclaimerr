@@ -21,6 +21,7 @@ from backend.core.codecs import (
 from backend.core.logger import LOG
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
@@ -253,6 +254,8 @@ class EmbyServiceBase:
                 )
 
                 run_time_ticks = as_float(source.get("RunTimeTicks"))
+                width = as_int(first_video.get("Width"))
+                height = as_int(first_video.get("Height"))
                 versions.append(
                     MovieVersionData(
                         service=self.service_type,  # type: ignore[reportArgumentType]
@@ -282,9 +285,11 @@ class EmbyServiceBase:
                         else None,
                         video_bitrate=as_int(first_video.get("BitRate")),
                         video_bit_depth=as_int(first_video.get("BitDepth")),
-                        video_width=as_int(first_video.get("Width")),
-                        video_height=as_int(first_video.get("Height")),
-                        video_resolution=first_video.get("DisplayTitle"),
+                        video_width=width,
+                        video_height=height,
+                        video_resolution=guesstimate_resolution(width, height)
+                        if width and height
+                        else None,
                         video_color_primaries=first_video.get("ColorPrimaries"),
                         video_color_space=first_video.get("ColorSpace"),
                         video_color_transfer=first_video.get("ColorTransfer"),

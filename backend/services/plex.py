@@ -23,6 +23,7 @@ from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
@@ -599,6 +600,8 @@ class PlexService:
                         else None
                     )
                     version_size = sum(p.get("size", 0) for p in media.get("Part", []))
+                    width = as_int(first_video.get("Width"))
+                    height = as_int(first_video.get("Height"))
                     versions.append(
                         MovieVersionData(
                             service=Service.PLEX,
@@ -632,9 +635,12 @@ class PlexService:
                                 first_video.get("bitrate") or media.get("bitrate")
                             ),
                             video_bit_depth=as_int(first_video.get("bitDepth")),
-                            video_width=as_int(first_video.get("width")),
-                            video_height=as_int(first_video.get("height")),
-                            video_resolution=media.get("videoResolution"),
+                            video_width=width,
+                            video_height=height,
+                            video_resolution=media.get("videoResolution")
+                            or guesstimate_resolution(width, height)
+                            if width and height
+                            else None,
                             video_color_primaries=first_video.get("colorPrimaries"),
                             video_color_space=first_video.get("colorSpace"),
                             video_color_transfer=first_video.get("colorTrc"),
