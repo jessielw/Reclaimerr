@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
--
+- Now parses detailed mediainfo from media servers for movies and lightly gets what makes sense for series
 
 ### Changed
 
