@@ -88,11 +88,6 @@
   const unknownValue = "Unknown";
 
   const resolutionLabel = (entry: ReclaimCandidateEntry): string => {
-    console.log(
-      entry.version_video_resolution,
-      entry.version_video_width,
-      entry.version_video_height,
-    );
     if (entry.version_video_resolution) {
       return entry.version_video_resolution;
     } else if (entry.version_video_height && entry.version_video_height > 0) {
@@ -101,11 +96,17 @@
     return unknownValue;
   };
 
-  const fileNameFromPath = (path: string | null): string => {
+  const fileNameFromPath = (
+    path: string | null,
+    fallbackFileName: string | null = null,
+  ): string => {
+    if (fallbackFileName && fallbackFileName.trim()) {
+      return fallbackFileName.trim();
+    }
     if (!path) return unknownValue;
     const parts = path.split(/[/\\]/);
-    const fileName = parts[parts.length - 1];
-    return fileName?.trim() ? fileName : unknownValue;
+    const extractedFileName = parts[parts.length - 1];
+    return extractedFileName?.trim() ? extractedFileName : unknownValue;
   };
 
   const parseRuleTokens = (reason: string | null | undefined): string[] => {
@@ -268,10 +269,18 @@
                 class="rounded-md border border-border bg-muted/30 p-3 space-y-2"
               >
                 <div class="flex items-start justify-between gap-2">
-                  <div class="text-sm font-medium text-foreground">
-                    {version.version_library_name ?? "Version"} - {resolutionLabel(
-                      version,
-                    )}
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium text-foreground">
+                      {version.version_library_name ?? "Version"} - {resolutionLabel(
+                        version,
+                      )}
+                    </div>
+                    <div class="text-xs text-muted-foreground truncate">
+                      {fileNameFromPath(
+                        version.version_path,
+                        version.version_file_name,
+                      )}
+                    </div>
                   </div>
                   <div class="text-xs text-muted-foreground">
                     {formatDate(version.created_at)}
@@ -568,11 +577,21 @@
                   </td>
                 {/if}
                 <td class="px-6 py-3 pl-14">
-                  <span class="text-sm font-medium text-foreground">
-                    {version.version_library_name ?? "Version"} - {resolutionLabel(
-                      version,
-                    )}
-                  </span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium text-foreground">
+                      {version.version_library_name ?? "Version"} - {resolutionLabel(
+                        version,
+                      )}
+                    </div>
+                    <div
+                      class="text-xs text-muted-foreground truncate max-w-72"
+                    >
+                      {fileNameFromPath(
+                        version.version_path,
+                        version.version_file_name,
+                      )}
+                    </div>
+                  </div>
                 </td>
                 <td
                   class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
@@ -679,7 +698,10 @@
             )}
           </div>
           <div class="text-xs text-muted-foreground truncate">
-            {fileNameFromPath(infoTarget.version_path)}
+            {fileNameFromPath(
+              infoTarget.version_path,
+              infoTarget.version_file_name,
+            )}
           </div>
         </div>
         <Button
