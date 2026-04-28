@@ -9,7 +9,7 @@
   import Shield from "@lucide/svelte/icons/shield";
   import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
-  import VersionMediaInfoWidget from "$lib/components/candidates/version-mediainfo-widget.svelte";
+  import VersionMediaInfoWidget from "$lib/components/candidates/version-mediainfo.svelte";
 
   type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
   type MovieGroupRow = {

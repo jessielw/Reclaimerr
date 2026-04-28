@@ -3,7 +3,7 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
-  import SeasonMediaInfoWidget from "$lib/components/candidates/season-mediainfo-widget.svelte";
+  import SeasonMediaInfoWidget from "$lib/components/candidates/season-mediainfo.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Info from "@lucide/svelte/icons/info";
