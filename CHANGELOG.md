@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Greatly improved resolution detection for ingested movies
+- Upgraded niquests to 3.18.7
 
 ### Fixed
 
