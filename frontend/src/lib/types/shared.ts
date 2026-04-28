@@ -120,6 +120,32 @@ export interface ReclaimRule {
   max_size: number | null;
   paths: string[] | null;
   series_status: string[] | null;
+  video_codec_families_in: string[] | null;
+  video_codec_families_not_in: string[] | null;
+  audio_codec_families_in: string[] | null;
+  audio_codec_families_not_in: string[] | null;
+  has_hdr: boolean | null;
+  has_dolby_vision: boolean | null;
+  min_video_width: number | null;
+  max_video_width: number | null;
+  min_video_height: number | null;
+  max_video_height: number | null;
+  min_audio_channels: number | null;
+  max_audio_channels: number | null;
+  min_duration: number | null;
+  max_duration: number | null;
+  min_audio_track_count: number | null;
+  max_audio_track_count: number | null;
+  audio_languages_in: string[] | null;
+  audio_languages_not_in: string[] | null;
+  subtitle_languages_in: string[] | null;
+  subtitle_languages_not_in: string[] | null;
+  video_color_spaces_in: string[] | null;
+  video_color_spaces_not_in: string[] | null;
+  video_color_transfers_in: string[] | null;
+  video_color_transfers_not_in: string[] | null;
+  video_color_primaries_in: string[] | null;
+  video_color_primaries_not_in: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -298,6 +324,7 @@ export interface ProtectionRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   candidate_id: number | null;
@@ -322,6 +349,7 @@ export interface ProtectedEntry {
   id: number;
   media_type: MediaType;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
@@ -338,9 +366,22 @@ export interface ReclaimCandidateEntry {
   id: number;
   media_type: MediaType;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
+  version_service: string | null;
+  version_library_name: string | null;
+  version_video_codec_family: string | null;
+  version_audio_codec_family: string | null;
+  version_video_width: number | null;
+  version_video_height: number | null;
+  version_video_resolution: string | null;
+  version_video_hdr: boolean | null;
+  version_video_dolby_vision: boolean | null;
+  version_audio_channels: number | null;
+  version_size: number | null;
+  version_path: string | null;
   reason: string;
   estimated_space_gb: number | null;
   has_pending_request: boolean;
@@ -349,6 +390,12 @@ export interface ReclaimCandidateEntry {
   season_id: number | null;
   season_number: number | null;
   series_title: string | null;
+  season_has_hdr: boolean | null;
+  season_has_dolby_vision: boolean | null;
+  season_max_video_width: number | null;
+  season_max_video_height: number | null;
+  season_video_codec_families: string[] | null;
+  season_audio_codec_families: string[] | null;
 }
 
 export interface DashboardKpis {

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now parses detailed mediainfo from media servers for movies and lightly gets what makes sense for series
 - Candidates
   - Movie/Series & Season level media info (movies are more detailed)
+  - Movie version control of deletions
 
 ### Changed
 
