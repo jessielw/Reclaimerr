@@ -380,8 +380,11 @@ export interface ReclaimCandidateEntry {
   version_video_hdr: boolean | null;
   version_video_dolby_vision: boolean | null;
   version_audio_channels: number | null;
+  version_audio_languages: string[] | null;
   version_size: number | null;
   version_path: string | null;
+  version_file_name: string | null;
+  version_subtitle_languages: string[] | null;
   reason: string;
   estimated_space_gb: number | null;
   has_pending_request: boolean;
@@ -396,6 +399,8 @@ export interface ReclaimCandidateEntry {
   season_max_video_height: number | null;
   season_video_codec_families: string[] | null;
   season_audio_codec_families: string[] | null;
+  season_audio_languages: string[] | null;
+  season_subtitle_languages: string[] | null;
 }
 
 export interface DashboardKpis {
