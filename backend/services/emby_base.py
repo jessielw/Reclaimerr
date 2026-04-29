@@ -466,6 +466,7 @@ class EmbyServiceBase:
         season_max_height: dict[tuple[str, int], int] = {}
         season_video_families: dict[tuple[str, int], set[str]] = {}
         season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_languages: dict[tuple[str, int], set[str]] = {}
         season_max_audio_channels: dict[tuple[str, int], int] = {}
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
 
@@ -623,6 +624,11 @@ class EmbyServiceBase:
                                 af = normalize_audio_codec_family(str(acodec))
                                 if af:
                                     season_audio_families.setdefault(sk, set()).add(af)
+                            alang = stream.get("Language")
+                            if alang:
+                                season_audio_languages.setdefault(sk, set()).add(
+                                    str(alang).lower()
+                                )
                             channels = as_int(stream.get("Channels"))
                             if channels is not None:
                                 season_max_audio_channels[sk] = max(
@@ -664,6 +670,7 @@ class EmbyServiceBase:
                 or None,
                 audio_codec_families=sorted(season_audio_families.get(sk, set()))
                 or None,
+                audio_languages=sorted(season_audio_languages.get(sk, set())) or None,
                 max_audio_channels=season_max_audio_channels.get(sk),
                 subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
                 or None,
