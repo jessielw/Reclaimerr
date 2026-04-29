@@ -57,6 +57,15 @@
     return tokens.length > 0 ? tokens : [cleaned];
   };
 
+  const fileFields = (item: ReclaimCandidateEntry): DetailField[] => [
+    {
+      label: "Name",
+      value: fileNameFromPath(item.version_path, item.version_file_name),
+    },
+    { label: "Size", value: bytesLabel(item.version_size) },
+    { label: "Path", value: textValue(item.version_path) },
+  ];
+
   const videoFields = (item: ReclaimCandidateEntry): DetailField[] => [
     { label: "Resolution", value: resolutionValue(item) },
     {
@@ -78,13 +87,19 @@
     { label: "Channels", value: textValue(item.version_audio_channels) },
   ];
 
-  const fileFields = (item: ReclaimCandidateEntry): DetailField[] => [
+  const languageFields = (item: ReclaimCandidateEntry): DetailField[] => [
     {
-      label: "Name",
-      value: fileNameFromPath(item.version_path, item.version_file_name),
+      label: "Audio Languages",
+      value: item.version_audio_languages?.length
+        ? item.version_audio_languages.join(", ")
+        : unknownValue,
     },
-    { label: "Size", value: bytesLabel(item.version_size) },
-    { label: "Path", value: textValue(item.version_path) },
+    {
+      label: "Subtitle Languages",
+      value: item.version_subtitle_languages?.length
+        ? item.version_subtitle_languages.join(", ")
+        : unknownValue,
+    },
   ];
 
   const sourceFields = (item: ReclaimCandidateEntry): DetailField[] => [
@@ -97,6 +112,22 @@
 </script>
 
 <div class="space-y-3">
+  <section class="rounded border border-border/70 bg-muted/20 p-3">
+    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
+      File
+    </h4>
+    <div class="space-y-1.5">
+      {#each fileFields(entry) as field}
+        <div class="min-w-0">
+          <div class="text-xs text-muted-foreground">{field.label}</div>
+          <div class="text-sm leading-6 text-foreground break-all">
+            {field.value}
+          </div>
+        </div>
+      {/each}
+    </div>
+  </section>
+
   <section class="rounded border border-border/70 bg-muted/20 p-3">
     <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
       Video
@@ -131,10 +162,10 @@
 
   <section class="rounded border border-border/70 bg-muted/20 p-3">
     <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      File
+      Languages
     </h4>
     <div class="space-y-1.5">
-      {#each fileFields(entry) as field}
+      {#each languageFields(entry) as field}
         <div class="min-w-0">
           <div class="text-xs text-muted-foreground">{field.label}</div>
           <div class="text-sm leading-6 text-foreground break-all">
