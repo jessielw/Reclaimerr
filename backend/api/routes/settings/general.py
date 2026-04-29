@@ -51,8 +51,6 @@ async def update_general_settings(
         raise HTTPException(status_code=404, detail="General settings not found")
 
     # update fields
-    settings.auto_tag_enabled = request.auto_tag_enabled
-    settings.cleanup_tag_suffix = request.cleanup_tag_suffix
     settings.worker_poll_min_seconds = request.worker_poll_min_seconds
     settings.worker_poll_max_seconds = request.worker_poll_max_seconds
 
