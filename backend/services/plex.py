@@ -110,6 +110,19 @@ class PlexService:
         except Exception as e:
             raise ValueError(f"Failed to delete Plex item {rating_key}: {e}")
 
+    async def delete_movie_version(self, rating_key: str, media_item_id: str) -> None:
+        """Deletes one media version from a Plex metadata item."""
+        try:
+            response = await self.session.delete(
+                f"{self.plex_url}/library/metadata/{rating_key}/media/{media_item_id}"
+            )
+            response.raise_for_status()
+            LOG.debug(f"Deleted Plex media item {media_item_id} from {rating_key}")
+        except Exception as e:
+            raise ValueError(
+                f"Failed to delete Plex media item {media_item_id} from {rating_key}: {e}"
+            )
+
     async def scan_item_path(self, item_path: str) -> bool:
         """Scan a specific item path in Plex library.
 

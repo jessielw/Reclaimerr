@@ -107,6 +107,14 @@ class EmbyServiceBase:
                 f"Failed to delete {self.service_type} item {item_id}: {e}"
             )
 
+    async def delete_movie_version(self, item_id: str, _media_source_id: str) -> None:
+        """Deletes one movie version for Emby/Jellyfin.
+
+        Emby/Jellyfin libraries represented as separate items per version can delete
+        a single version by deleting that specific item id.
+        """
+        await self.delete_item(item_id)
+
     async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.
 
