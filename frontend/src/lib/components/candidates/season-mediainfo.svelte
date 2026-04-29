@@ -69,6 +69,21 @@
     },
   ];
 
+  const languageFields = (item: ReclaimCandidateEntry): DetailField[] => [
+    {
+      label: "Audio Languages",
+      value: item.season_audio_languages?.length
+        ? item.season_audio_languages.join(", ")
+        : unknownValue,
+    },
+    {
+      label: "Subtitle Languages",
+      value: item.season_subtitle_languages?.length
+        ? item.season_subtitle_languages.join(", ")
+        : unknownValue,
+    },
+  ];
+
   const sourceFields = (item: ReclaimCandidateEntry): DetailField[] => [
     { label: "Estimated Size", value: gbValue(item.estimated_space_gb) },
     { label: "Flagged", value: formatDate(item.created_at) },
@@ -101,6 +116,22 @@
     </h4>
     <div class="space-y-1.5">
       {#each audioFields(entry) as field}
+        <div class="min-w-0">
+          <div class="text-xs text-muted-foreground">{field.label}</div>
+          <div class="text-sm leading-6 text-foreground break-all">
+            {field.value}
+          </div>
+        </div>
+      {/each}
+    </div>
+  </section>
+
+  <section class="rounded border border-border/70 bg-muted/20 p-3">
+    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
+      Languages
+    </h4>
+    <div class="space-y-1.5">
+      {#each languageFields(entry) as field}
         <div class="min-w-0">
           <div class="text-xs text-muted-foreground">{field.label}</div>
           <div class="text-sm leading-6 text-foreground break-all">
