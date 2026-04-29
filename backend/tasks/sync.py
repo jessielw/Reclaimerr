@@ -231,6 +231,7 @@ async def _sync_seasons(
             s.max_video_height = sd.max_video_height
             s.video_codec_families = sd.video_codec_families
             s.audio_codec_families = sd.audio_codec_families
+            s.audio_languages = sd.audio_languages
             s.max_audio_channels = sd.max_audio_channels
             s.subtitle_languages = sd.subtitle_languages
             if sd.service_season_id:
@@ -265,6 +266,7 @@ async def _sync_seasons(
                 max_video_height=sd.max_video_height,
                 video_codec_families=sd.video_codec_families,
                 audio_codec_families=sd.audio_codec_families,
+                audio_languages=sd.audio_languages,
                 max_audio_channels=sd.max_audio_channels,
                 subtitle_languages=sd.subtitle_languages,
                 jellyfin_season_id=jellyfin_id,
@@ -1305,6 +1307,23 @@ async def resync_media() -> None:
     async with track_task_execution(Task.RESYNC_MEDIA):
         try:
             async with async_db() as session:
+                # movie_version scoped rows must be detached before deleting versions
+                # when switching main media server, old version IDs are invalid anyway
+                await session.execute(
+                    sql_update(ReclaimCandidate)
+                    .where(ReclaimCandidate.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
+                await session.execute(
+                    sql_update(ProtectedMedia)
+                    .where(ProtectedMedia.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
+                await session.execute(
+                    sql_update(ProtectionRequest)
+                    .where(ProtectionRequest.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
                 await session.execute(sql_delete(MovieVersion))
                 await session.execute(sql_delete(SeriesServiceRef))
                 await session.execute(sql_update(Movie).values(size=0))
