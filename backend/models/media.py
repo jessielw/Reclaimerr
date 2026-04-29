@@ -119,6 +119,7 @@ class AggregatedSeasonData:
     max_video_height: int | None = None
     video_codec_families: list[str] | None = None
     audio_codec_families: list[str] | None = None
+    audio_languages: list[str] | None = None
     max_audio_channels: int | None = None
     subtitle_languages: list[str] | None = None
 
@@ -349,6 +350,7 @@ class SeasonWithStatus(BaseModel):
     max_video_height: int | None = None
     video_codec_families: list[str] | None = None
     audio_codec_families: list[str] | None = None
+    audio_languages: list[str] | None = None
     max_audio_channels: int | None = None
     subtitle_languages: list[str] | None = None
     status: MediaStatusInfo
@@ -373,6 +375,22 @@ class CandidateEntry(BaseModel):
     media_title: str
     media_year: int | None
     poster_url: str | None
+    movie_version_id: int | None = None
+    version_service: str | None = None
+    version_library_name: str | None = None
+    version_video_codec_family: str | None = None
+    version_audio_codec_family: str | None = None
+    version_video_width: int | None = None
+    version_video_height: int | None = None
+    version_video_resolution: str | None = None
+    version_video_hdr: bool | None = None
+    version_video_dolby_vision: bool | None = None
+    version_audio_channels: int | None = None
+    version_audio_languages: list[str] | None = None
+    version_size: int | None = None
+    version_path: str | None = None
+    version_file_name: str | None = None
+    version_subtitle_languages: list[str] | None = None
     reason: str
     estimated_space_gb: float | None
     has_pending_request: bool
@@ -382,6 +400,14 @@ class CandidateEntry(BaseModel):
     season_number: int | None = None
     # parent series title when candidate is season level
     series_title: str | None = None
+    season_has_hdr: bool | None = None
+    season_has_dolby_vision: bool | None = None
+    season_max_video_width: int | None = None
+    season_max_video_height: int | None = None
+    season_video_codec_families: list[str] | None = None
+    season_audio_codec_families: list[str] | None = None
+    season_audio_languages: list[str] | None = None
+    season_subtitle_languages: list[str] | None = None
 
 
 class PaginatedCandidatesResponse(BaseModel):
