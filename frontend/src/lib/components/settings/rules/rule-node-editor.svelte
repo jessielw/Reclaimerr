@@ -93,6 +93,15 @@
     "not_exists",
   ];
 
+  const libraryOperators: RuleConditionOperator[] = [
+    "in",
+    "not_in",
+    "contains_any",
+    "not_contains_any",
+    "exists",
+    "not_exists",
+  ];
+
   const pathOperators: RuleConditionOperator[] = [
     ...textOperators,
     "matches_any_regex",
@@ -112,7 +121,7 @@
       value: "library.id",
       label: "Library",
       kind: "text",
-      operators: textOperators,
+      operators: libraryOperators,
       defaultOperator: "contains_any",
     },
     {

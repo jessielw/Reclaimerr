@@ -6,14 +6,20 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import Notice from "$lib/components/notice.svelte";
+  import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
+  import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
   import {
     MediaType,
+    SettingsTab,
     type LibraryType,
     type ReclaimRule,
+    type RuleCondition,
     type RuleDefinition,
+    type RuleNode,
   } from "$lib/types/shared";
 
   interface Props {
@@ -95,8 +101,11 @@
     targetScope === "movie_version" ? MediaType.Movie : MediaType.Series,
   );
 
-  const selectedLibraries = $derived(
+  const scopeLibraries = $derived(
     libraries.filter((library) => library.mediaType === selectedMediaType),
+  );
+  const scopeLibraryIds = $derived(
+    new Set(scopeLibraries.map((library) => library.libraryId)),
   );
   const selectedArrInstances = $derived(
     targetScope === "movie_version" ? radarrInstances : sonarrInstances,
@@ -117,6 +126,149 @@
   });
 
   const normalizedTag = $derived(sanitizeTagInput(arrTag || name));
+
+  const DEFAULT_LIBRARY_CONDITION: RuleCondition = {
+    type: "condition",
+    field: "media.size",
+    operator: "greater_than",
+    value: 0,
+  };
+
+  // normalize library ids from a condition value, ensuring it's always an array of non empty strings
+  const normalizeLibraryIds = (value: RuleCondition["value"]) =>
+    (Array.isArray(value) ? value : [value])
+      .filter((id): id is string | number => id !== null && id !== undefined)
+      .map((id) => String(id).trim())
+      .filter(Boolean);
+
+  // recursively collect all library.id conditions in the rule tree
+  const collectLibraryConditions = (node: RuleNode): RuleCondition[] => {
+    if (node.type === "condition") {
+      return node.field === "library.id" ? [node] : [];
+    }
+    return node.children.flatMap(collectLibraryConditions);
+  };
+
+  // find a single canonical library.id condition at the root level with the expected structure
+  const getCanonicalLibraryCondition = (
+    root: RuleDefinition["root"],
+  ): RuleCondition | null => {
+    const match = root.children.find(
+      (child) =>
+        child.type === "condition" &&
+        child.field === "library.id" &&
+        child.operator === "contains_any" &&
+        Array.isArray(child.value),
+    );
+    return match?.type === "condition" ? match : null;
+  };
+
+  // read the current library scope state from the rule definition, determining selected library ids
+  // and whether custom conditions are present
+  const readLibraryScopeState = (
+    root: RuleDefinition["root"],
+  ): {
+    selectedIds: string[];
+    hasCustomCondition: boolean;
+  } => {
+    const allLibraryConditions = collectLibraryConditions(root);
+    const canonical = getCanonicalLibraryCondition(root);
+    const hasOnlyCanonical =
+      canonical !== null &&
+      allLibraryConditions.length === 1 &&
+      allLibraryConditions[0] === canonical;
+
+    return {
+      selectedIds: canonical ? normalizeLibraryIds(canonical.value) : [],
+      hasCustomCondition: allLibraryConditions.length > 0 && !hasOnlyCanonical,
+    };
+  };
+
+  // initialize library scope state from the initial rule definition
+  const initialLibraryScope = readLibraryScopeState(initial.definition.root);
+  let selectedScopeLibraryIds = $state<string[]>(
+    initialLibraryScope.selectedIds,
+  );
+  let hasCustomLibraryCondition = $state(
+    initialLibraryScope.hasCustomCondition,
+  );
+
+  // recursively rebuild the rule definition, removing any library.id conditions
+  const rebuildDefinitionWithoutLibraryConditions = (
+    node: RuleNode,
+  ): RuleNode | null => {
+    if (node.type === "condition") {
+      return node.field === "library.id" ? null : node;
+    }
+
+    const children = node.children
+      .map(rebuildDefinitionWithoutLibraryConditions)
+      .filter((child): child is RuleNode => child !== null);
+
+    if (children.length === 0) return null;
+    return {
+      ...node,
+      children,
+    };
+  };
+
+  // apply a canonical library.id condition at the root level with the given library ids
+  const applyCanonicalLibraryScope = (libraryIds: string[]) => {
+    const uniqueIds = Array.from(new Set(libraryIds));
+
+    // Remove previous canonical root library condition before re-applying.
+    definition.root.children = definition.root.children.filter(
+      (child) =>
+        !(
+          child.type === "condition" &&
+          child.field === "library.id" &&
+          child.operator === "contains_any"
+        ),
+    );
+
+    if (uniqueIds.length > 0) {
+      definition.root.children = [
+        {
+          type: "condition",
+          field: "library.id",
+          operator: "contains_any",
+          value: uniqueIds,
+        },
+        ...definition.root.children,
+      ];
+    }
+
+    definition = { ...definition };
+  };
+
+  const updateScopeLibrarySelection = (
+    libraryId: string,
+    selected: boolean,
+  ) => {
+    if (hasCustomLibraryCondition) return;
+    const next = selected
+      ? [...selectedScopeLibraryIds, libraryId]
+      : selectedScopeLibraryIds.filter((id) => id !== libraryId);
+    const filtered = next.filter((id) => scopeLibraryIds.has(id));
+    selectedScopeLibraryIds = Array.from(new Set(filtered));
+    applyCanonicalLibraryScope(selectedScopeLibraryIds);
+  };
+
+  const clearCustomLibraryConditions = () => {
+    const cleanedRoot = rebuildDefinitionWithoutLibraryConditions(
+      definition.root,
+    );
+    definition.root =
+      cleanedRoot?.type === "group"
+        ? cleanedRoot
+        : {
+            ...definition.root,
+            children: [DEFAULT_LIBRARY_CONDITION],
+          };
+    selectedScopeLibraryIds = [];
+    hasCustomLibraryCondition = false;
+    definition = { ...definition };
+  };
 
   // allowed (lowercase letters, numbers, dashes, underscores)
   function sanitizeTagInput(value: string): string {
@@ -152,6 +304,7 @@
         enabled,
         media_type: selectedMediaType,
         target_scope: targetScope,
+        library_ids: null,
         definition,
         action: {
           candidate: true,
@@ -169,28 +322,34 @@
     }
   };
 
-  const addLibraryCondition = (libraryId: string) => {
-    const existing = definition.root.children.find(
-      (child) => child.type === "condition" && child.field === "library.id",
+  // synchronize library scope state with rule definition, ensuring the canonical library
+  // condition is the single source of truth
+  $effect(() => {
+    const state = readLibraryScopeState(definition.root);
+    const filteredIds = state.selectedIds.filter((id) =>
+      scopeLibraryIds.has(id),
     );
-    if (existing && existing.type === "condition") {
-      const values = Array.isArray(existing.value)
-        ? existing.value.map((value) => String(value))
-        : [];
-      existing.value = Array.from(new Set([...values, libraryId]));
-    } else {
-      definition.root.children = [
-        {
-          type: "condition",
-          field: "library.id",
-          operator: "contains_any",
-          value: [libraryId],
-        },
-        ...definition.root.children,
-      ];
+    selectedScopeLibraryIds = filteredIds;
+    hasCustomLibraryCondition = state.hasCustomCondition;
+
+    if (
+      !state.hasCustomCondition &&
+      filteredIds.length !== state.selectedIds.length
+    ) {
+      applyCanonicalLibraryScope(filteredIds);
     }
-    definition = { ...definition };
-  };
+  });
+
+  $effect(() => {
+    if (hasCustomLibraryCondition) return;
+    const filtered = selectedScopeLibraryIds.filter((id) =>
+      scopeLibraryIds.has(id),
+    );
+    if (filtered.length !== selectedScopeLibraryIds.length) {
+      selectedScopeLibraryIds = filtered;
+      applyCanonicalLibraryScope(filtered);
+    }
+  });
 
   onMount(() => {
     loadArrInstances();
@@ -278,20 +437,52 @@
     <div>
       <h3 class="font-semibold text-foreground">Library Scope</h3>
       <p class="text-sm text-muted-foreground">
-        Add library conditions when a rule should only run against specific
-        libraries.
+        Select libraries this rule should target. Leave all unselected to apply
+        the rule to every library in this target.
       </p>
     </div>
-    {#if selectedLibraries.length > 0}
-      <div class="flex flex-wrap gap-2">
-        {#each selectedLibraries as library}
-          <Button
-            size="sm"
-            variant="secondary"
-            onclick={() => addLibraryCondition(library.libraryId)}
-          >
-            {library.libraryName}
-          </Button>
+
+    {#if hasCustomLibraryCondition}
+      <Notice type="warning" title="Custom Library Condition Detected">
+        Library conditions are currently customized in the rule tree. Use
+        <strong>Clear Custom Library Conditions</strong> to return to the dedicated
+        scope selector.
+      </Notice>
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        class="cursor-pointer"
+        onclick={clearCustomLibraryConditions}
+      >
+        Clear Custom Library Conditions
+      </Button>
+    {/if}
+
+    {#if scopeLibraries.length > 0}
+      <div class="space-y-2">
+        {#each scopeLibraries as library}
+          <div class="flex items-center gap-2">
+            <Switch
+              id={`scope-library-${library.libraryId}`}
+              checked={selectedScopeLibraryIds.includes(library.libraryId)}
+              disabled={hasCustomLibraryCondition}
+              onCheckedChange={(checked) =>
+                updateScopeLibrarySelection(library.libraryId, checked)}
+            />
+            <div class="flex items-center gap-1.5">
+              <div class="w-4 h-4 shrink-0">
+                {#if library.serviceType === SettingsTab.Jellyfin}
+                  <JellyfinSVG />
+                {:else if library.serviceType === SettingsTab.Plex}
+                  <PlexSVG />
+                {/if}
+              </div>
+              <Label for={`scope-library-${library.libraryId}`}>
+                {library.libraryName}
+              </Label>
+            </div>
+          </div>
         {/each}
       </div>
     {:else}

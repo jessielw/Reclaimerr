@@ -33,16 +33,8 @@
     return unknownValue;
   };
 
-  const parseRuleTokens = (reason: string | null | undefined): string[] => {
-    if (!reason) return [];
-    const cleaned = reason.replace(/\s+/g, " ").trim();
-    if (!cleaned) return [];
-    const tokens = cleaned
-      .split(/[\n;|]+/)
-      .map((token) => token.trim())
-      .filter(Boolean);
-    return tokens.length > 0 ? tokens : [cleaned];
-  };
+  const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
+    (tokens ?? []).map((token) => token.trim()).filter(Boolean);
 
   const videoFields = (item: ReclaimCandidateEntry): DetailField[] => [
     { label: "Max Resolution", value: resolutionValue(item) },
@@ -90,7 +82,7 @@
     { label: "Season", value: textValue(item.season_number) },
   ];
 
-  const rules = $derived(parseRuleTokens(entry.reason));
+  const rules = $derived(parseRuleTokens(entry.reason_tokens));
 </script>
 
 <div class="space-y-3">

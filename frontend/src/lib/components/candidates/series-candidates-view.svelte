@@ -73,16 +73,8 @@
   const groupSummary = (row: SeriesGroupRow): string =>
     `Total: ${groupTotalGb(row).toFixed(2)} GB - Flagged: ${formatDate(row.seasons[0].created_at)}`;
 
-  const parseRuleTokens = (reason: string | null | undefined): string[] => {
-    if (!reason) return [];
-    const cleaned = reason.replace(/\s+/g, " ").trim();
-    if (!cleaned) return [];
-    const tokens = cleaned
-      .split(/[\n;|]+/)
-      .map((token) => token.trim())
-      .filter(Boolean);
-    return tokens.length > 0 ? tokens : [cleaned];
-  };
+  const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
+    (tokens ?? []).map((token) => token.trim()).filter(Boolean);
 
   const seasonResolutionLabel = (entry: ReclaimCandidateEntry): string =>
     entry.season_max_video_height && entry.season_max_video_height > 0
@@ -97,10 +89,10 @@
   };
 
   const rulePreview = (entry: ReclaimCandidateEntry): string[] =>
-    parseRuleTokens(entry.reason).slice(0, 2);
+    parseRuleTokens(entry.reason_tokens).slice(0, 2);
 
   const extraRuleCount = (entry: ReclaimCandidateEntry): number =>
-    Math.max(0, parseRuleTokens(entry.reason).length - 2);
+    Math.max(0, parseRuleTokens(entry.reason_tokens).length - 2);
 
   const openInfo = (entry: ReclaimCandidateEntry) => {
     infoTarget = entry;

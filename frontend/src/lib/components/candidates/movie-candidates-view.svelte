@@ -109,16 +109,8 @@
     return extractedFileName?.trim() ? extractedFileName : unknownValue;
   };
 
-  const parseRuleTokens = (reason: string | null | undefined): string[] => {
-    if (!reason) return [];
-    const cleaned = reason.replace(/\s+/g, " ").trim();
-    if (!cleaned) return [];
-    const tokens = cleaned
-      .split(/[\n;|]+/)
-      .map((token) => token.trim())
-      .filter(Boolean);
-    return tokens.length > 0 ? tokens : [cleaned];
-  };
+  const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
+    (tokens ?? []).map((token) => token.trim()).filter(Boolean);
 
   const openInfo = (entry: ReclaimCandidateEntry) => {
     infoTarget = entry;
@@ -264,7 +256,7 @@
         {#if expanded}
           <div class="pl-7 space-y-2">
             {#each row.versions as version (version.id)}
-              {@const parsedRules = parseRuleTokens(version.reason)}
+              {@const parsedRules = parseRuleTokens(version.reason_tokens)}
               <div
                 class="rounded-md border border-border bg-muted/30 p-3 space-y-2"
               >
@@ -558,7 +550,7 @@
           </tr>
           {#if expanded}
             {#each row.versions as version (version.id)}
-              {@const parsedRules = parseRuleTokens(version.reason)}
+              {@const parsedRules = parseRuleTokens(version.reason_tokens)}
               <tr
                 class="bg-muted/20 border-l-2 border-l-cyan-500/40 hover:bg-muted/40 transition-colors {selectedIds.has(
                   version.id,
