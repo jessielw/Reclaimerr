@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Greatly improved resolution detection for ingested movies
 - Upgraded niquests to 3.18.7
+- Auto tagging configuration/tag suffix in general settings is now moved to per rule
+
+### Removed
+
+- *Arr tagging in general settings (this is handled per rule now)
 
 ### Fixed
 
