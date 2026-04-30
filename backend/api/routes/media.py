@@ -11,16 +11,19 @@ from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     Movie,
+    MovieArrRef,
     MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
     Season,
     Series,
+    SeriesArrRef,
     User,
 )
 from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
 from backend.models.media import (
+    ArrRefResponse,
     CandidateEntry,
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
@@ -169,6 +172,11 @@ async def get_movies(
             request_reason=request.reason if request else None,
         )
 
+        movie_arr_refs_result = await db.execute(
+            select(MovieArrRef).where(MovieArrRef.movie_id == movie.id)
+        )
+        movie_arr_refs = movie_arr_refs_result.scalars().all()
+
         movie_dict = {
             "id": movie.id,
             "title": movie.title,
@@ -221,7 +229,14 @@ async def get_movies(
                 )
                 for v in movie.versions
             ],
-            "radarr_id": movie.radarr_id,
+            "arr_refs": [
+                ArrRefResponse(
+                    service_type="radarr",
+                    service_config_id=ref.service_config_id,
+                    arr_id=ref.arr_movie_id,
+                )
+                for ref in movie_arr_refs
+            ],
             "imdb_id": movie.imdb_id,
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
@@ -387,6 +402,11 @@ async def get_series(
             request_reason=request.reason if request else None,
         )
 
+        series_arr_refs_result = await db.execute(
+            select(SeriesArrRef).where(SeriesArrRef.series_id == series.id)
+        )
+        series_arr_refs = series_arr_refs_result.scalars().all()
+
         series_dict = {
             "id": series.id,
             "title": series.title,
@@ -403,7 +423,14 @@ async def get_series(
                 )
                 for ref in series.service_refs
             ],
-            "sonarr_id": series.sonarr_id,
+            "arr_refs": [
+                ArrRefResponse(
+                    service_type="sonarr",
+                    service_config_id=ref.service_config_id,
+                    arr_id=ref.arr_series_id,
+                )
+                for ref in series_arr_refs
+            ],
             "imdb_id": series.imdb_id,
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
