@@ -304,7 +304,6 @@
         `/api/media/candidates?${params.toString()}`,
         signal,
       );
-      console.log(data);
     } catch (e: any) {
       if (e instanceof DOMException && e.name === "AbortError") return;
       error = e.message ?? "Failed to load candidates.";
