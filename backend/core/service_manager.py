@@ -30,6 +30,8 @@ class ServiceManager:
         self._plex: PlexService | None = None
         self._radarr: RadarrClient | None = None
         self._sonarr: SonarrClient | None = None
+        self._radarr_clients: dict[int, RadarrClient] = {}
+        self._sonarr_clients: dict[int, SonarrClient] = {}
         self._seerr: SeerrClient | None = None
 
         LOG.info("ServiceManager initialized")
@@ -64,12 +66,34 @@ class ServiceManager:
     @property
     def radarr(self) -> RadarrClient | None:
         """Get Radarr service (must be initialized first)."""
-        return self._radarr
+        return self._radarr or next(iter(self._radarr_clients.values()), None)
 
     @property
     def sonarr(self) -> SonarrClient | None:
         """Get Sonarr service (must be initialized first)."""
-        return self._sonarr
+        return self._sonarr or next(iter(self._sonarr_clients.values()), None)
+
+    def get_radarr(self, config_id: int | None = None) -> RadarrClient | None:
+        """Get Radarr service by config ID (must be initialized first). If config_id is None,
+        return the main Radarr client."""
+        if config_id is None:
+            return self.radarr
+        return self._radarr_clients.get(config_id)
+
+    def get_sonarr(self, config_id: int | None = None) -> SonarrClient | None:
+        """Get Sonarr service by config ID (must be initialized first). If config_id is None,
+        return the main Sonarr client."""
+        if config_id is None:
+            return self.sonarr
+        return self._sonarr_clients.get(config_id)
+
+    def radarr_clients(self) -> dict[int, RadarrClient]:
+        """Get all Radarr clients as a dict of config_id to client."""
+        return dict(self._radarr_clients)
+
+    def sonarr_clients(self) -> dict[int, SonarrClient]:
+        """Get all Sonarr clients as a dict of config_id to client."""
+        return dict(self._sonarr_clients)
 
     @property
     def seerr(self) -> SeerrClient | None:
@@ -82,8 +106,8 @@ class ServiceManager:
             "jellyfin": self._jellyfin is not None,
             "emby": self._emby is not None,
             "plex": self._plex is not None,
-            "radarr": self._radarr is not None,
-            "sonarr": self._sonarr is not None,
+            "radarr": self.radarr is not None,
+            "sonarr": self.sonarr is not None,
             "seerr": self._seerr is not None,
         }
 
@@ -209,39 +233,53 @@ class ServiceManager:
             return None
 
     async def initialize_radarr(
-        self, base_url: str, api_key: str, timeout: int = 300
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: int = 300,
+        config_id: int | None = None,
     ) -> RadarrClient | None:
         """Initialize Radarr service with provided config."""
         try:
-            self._radarr = RadarrClient(
+            client = RadarrClient(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await self._radarr.health():
+            if not await client.health():
                 LOG.error(f"Radarr service health check failed: {base_url}")
                 raise ValueError(f"Radarr service health check failed: {base_url}")
+            if config_id is not None:
+                self._radarr_clients[config_id] = client
+            self._radarr = client
             LOG.info(f"Radarr service initialized: {base_url}")
-            return self._radarr
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Radarr service: {e}")
             return None
 
     async def initialize_sonarr(
-        self, base_url: str, api_key: str, timeout: int = 300
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: int = 300,
+        config_id: int | None = None,
     ) -> SonarrClient | None:
         """Initialize Sonarr service with provided config."""
         try:
-            self._sonarr = SonarrClient(
+            client = SonarrClient(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await self._sonarr.health():
+            if not await client.health():
                 LOG.error(f"Sonarr service health check failed: {base_url}")
                 raise ValueError(f"Sonarr service health check failed: {base_url}")
+            if config_id is not None:
+                self._sonarr_clients[config_id] = client
+            self._sonarr = client
             LOG.info(f"Sonarr service initialized: {base_url}")
-            return self._sonarr
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Sonarr service: {e}")
             return None
@@ -289,18 +327,42 @@ class ServiceManager:
             LOG.info("Plex service cleared")
         self._plex = None
 
-    async def clear_radarr(self) -> None:
-        """Clear Radarr service (call before reinitializing)."""
+    async def clear_radarr(self, config_id: int | None = None) -> None:
+        """Clear Radarr services (call before reinitializing)."""
+        if config_id is not None:
+            client = self._radarr_clients.pop(config_id, None)
+            if client and client.session:
+                await client.session.close()
+            if self._radarr is client:
+                self._radarr = next(iter(self._radarr_clients.values()), None)
+            return
+
         if self._radarr and self._radarr.session:
             await self._radarr.session.close()
             LOG.info("Radarr service cleared")
+        for client in self._radarr_clients.values():
+            if client is not self._radarr and client.session:
+                await client.session.close()
+        self._radarr_clients = {}
         self._radarr = None
 
-    async def clear_sonarr(self) -> None:
-        """Clear Sonarr service (call before reinitializing)."""
+    async def clear_sonarr(self, config_id: int | None = None) -> None:
+        """Clear Sonarr services (call before reinitializing)."""
+        if config_id is not None:
+            client = self._sonarr_clients.pop(config_id, None)
+            if client and client.session:
+                await client.session.close()
+            if self._sonarr is client:
+                self._sonarr = next(iter(self._sonarr_clients.values()), None)
+            return
+
         if self._sonarr and self._sonarr.session:
             await self._sonarr.session.close()
             LOG.info("Sonarr service cleared")
+        for client in self._sonarr_clients.values():
+            if client is not self._sonarr and client.session:
+                await client.session.close()
+        self._sonarr_clients = {}
         self._sonarr = None
 
     async def clear_seerr(self) -> None:
