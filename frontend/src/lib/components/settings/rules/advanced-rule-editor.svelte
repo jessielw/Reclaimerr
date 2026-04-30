@@ -125,9 +125,9 @@
     // return empty if nothing left after removing disallowed chars
     if (!v) return "";
     // remove disallowed characters
-    v = v.replace(/[^a-z-_]/g, "");
-    // truncate to fit within 25 chars including 'rec-'
-    v = v.slice(0, 25 - 4);
+    v = v.replace(/[^a-zA-Z0-9-]/g, "");
+    // truncate to fit within 50 chars
+    v = v.slice(0, 50);
     return `rec-${v}`;
   }
 
