@@ -26,6 +26,7 @@
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
   import { toast } from "svelte-sonner";
   import Notice from "$lib/components/notice.svelte";
+  import ChipListInput from "$lib/components/settings/rules/chip-list-input.svelte";
   import { scrollIntoView } from "$lib/utils/misc";
 
   type PathNode = {
@@ -70,6 +71,32 @@
     max_size: null,
     paths: null,
     series_status: null,
+    video_codec_families_in: null,
+    video_codec_families_not_in: null,
+    audio_codec_families_in: null,
+    audio_codec_families_not_in: null,
+    has_hdr: null,
+    has_dolby_vision: null,
+    min_video_width: null,
+    max_video_width: null,
+    min_video_height: null,
+    max_video_height: null,
+    min_audio_channels: null,
+    max_audio_channels: null,
+    min_duration: null,
+    max_duration: null,
+    min_audio_track_count: null,
+    max_audio_track_count: null,
+    audio_languages_in: null,
+    audio_languages_not_in: null,
+    subtitle_languages_in: null,
+    subtitle_languages_not_in: null,
+    video_color_spaces_in: null,
+    video_color_spaces_not_in: null,
+    video_color_transfers_in: null,
+    video_color_transfers_not_in: null,
+    video_color_primaries_in: null,
+    video_color_primaries_not_in: null,
   });
 
   // alert for include_never_watched only
@@ -103,6 +130,8 @@
 
   // Derived state for multi-select binding - handles null/undefined conversion
   let seriesStatusSelectValue = $state<string[]>([]);
+  let hasHdrSelectValue = $state<string>("any");
+  let hasDolbyVisionSelectValue = $state<string>("any");
 
   // Sync select value with form data
   $effect(() => {
@@ -112,6 +141,42 @@
   $effect(() => {
     formData.series_status =
       seriesStatusSelectValue.length > 0 ? seriesStatusSelectValue : null;
+  });
+
+  $effect(() => {
+    hasHdrSelectValue =
+      formData.has_hdr === true
+        ? "yes"
+        : formData.has_hdr === false
+          ? "no"
+          : "any";
+  });
+
+  $effect(() => {
+    formData.has_hdr =
+      hasHdrSelectValue === "yes"
+        ? true
+        : hasHdrSelectValue === "no"
+          ? false
+          : null;
+  });
+
+  $effect(() => {
+    hasDolbyVisionSelectValue =
+      formData.has_dolby_vision === true
+        ? "yes"
+        : formData.has_dolby_vision === false
+          ? "no"
+          : "any";
+  });
+
+  $effect(() => {
+    formData.has_dolby_vision =
+      hasDolbyVisionSelectValue === "yes"
+        ? true
+        : hasDolbyVisionSelectValue === "no"
+          ? false
+          : null;
   });
 
   // filter libraries based on selected media type
@@ -347,6 +412,60 @@
         max_size: rule?.max_size ?? null,
         paths: rule?.paths ? [...rule.paths] : null,
         series_status: rule?.series_status ? [...rule.series_status] : null,
+        video_codec_families_in: rule?.video_codec_families_in
+          ? [...rule.video_codec_families_in]
+          : null,
+        video_codec_families_not_in: rule?.video_codec_families_not_in
+          ? [...rule.video_codec_families_not_in]
+          : null,
+        audio_codec_families_in: rule?.audio_codec_families_in
+          ? [...rule.audio_codec_families_in]
+          : null,
+        audio_codec_families_not_in: rule?.audio_codec_families_not_in
+          ? [...rule.audio_codec_families_not_in]
+          : null,
+        has_hdr: rule?.has_hdr ?? null,
+        has_dolby_vision: rule?.has_dolby_vision ?? null,
+        min_video_width: rule?.min_video_width ?? null,
+        max_video_width: rule?.max_video_width ?? null,
+        min_video_height: rule?.min_video_height ?? null,
+        max_video_height: rule?.max_video_height ?? null,
+        min_audio_channels: rule?.min_audio_channels ?? null,
+        max_audio_channels: rule?.max_audio_channels ?? null,
+        min_duration: rule?.min_duration ?? null,
+        max_duration: rule?.max_duration ?? null,
+        min_audio_track_count: rule?.min_audio_track_count ?? null,
+        max_audio_track_count: rule?.max_audio_track_count ?? null,
+        audio_languages_in: rule?.audio_languages_in
+          ? [...rule.audio_languages_in]
+          : null,
+        audio_languages_not_in: rule?.audio_languages_not_in
+          ? [...rule.audio_languages_not_in]
+          : null,
+        subtitle_languages_in: rule?.subtitle_languages_in
+          ? [...rule.subtitle_languages_in]
+          : null,
+        subtitle_languages_not_in: rule?.subtitle_languages_not_in
+          ? [...rule.subtitle_languages_not_in]
+          : null,
+        video_color_spaces_in: rule?.video_color_spaces_in
+          ? [...rule.video_color_spaces_in]
+          : null,
+        video_color_spaces_not_in: rule?.video_color_spaces_not_in
+          ? [...rule.video_color_spaces_not_in]
+          : null,
+        video_color_transfers_in: rule?.video_color_transfers_in
+          ? [...rule.video_color_transfers_in]
+          : null,
+        video_color_transfers_not_in: rule?.video_color_transfers_not_in
+          ? [...rule.video_color_transfers_not_in]
+          : null,
+        video_color_primaries_in: rule?.video_color_primaries_in
+          ? [...rule.video_color_primaries_in]
+          : null,
+        video_color_primaries_not_in: rule?.video_color_primaries_not_in
+          ? [...rule.video_color_primaries_not_in]
+          : null,
       };
       selectedLibraries = rule?.library_ids ? [...rule.library_ids] : [];
       validationMessage = null;
@@ -354,6 +473,27 @@
       pathSuffixInput = "";
     }
   });
+
+  // series matching uses aggregate fields only; clear unsupported movie-only fields
+  $effect(() => {
+    if (formData.media_type !== MediaType.Series) return;
+    formData.min_duration = null;
+    formData.max_duration = null;
+    formData.min_audio_track_count = null;
+    formData.max_audio_track_count = null;
+    formData.audio_languages_in = null;
+    formData.audio_languages_not_in = null;
+    formData.video_color_spaces_in = null;
+    formData.video_color_spaces_not_in = null;
+    formData.video_color_transfers_in = null;
+    formData.video_color_transfers_not_in = null;
+    formData.video_color_primaries_in = null;
+    formData.video_color_primaries_not_in = null;
+  });
+
+  const hasListValues = (values: string[] | null | undefined) =>
+    values !== null && values !== undefined && values.length > 0;
+
   let saving = $state(false);
 
   // check if at least one criterion is configured
@@ -373,6 +513,32 @@
     ruleData.max_days_since_last_watched !== null ||
     ruleData.min_size !== null ||
     ruleData.max_size !== null ||
+    hasListValues(ruleData.video_codec_families_in) ||
+    hasListValues(ruleData.video_codec_families_not_in) ||
+    hasListValues(ruleData.audio_codec_families_in) ||
+    hasListValues(ruleData.audio_codec_families_not_in) ||
+    ruleData.has_hdr !== null ||
+    ruleData.has_dolby_vision !== null ||
+    ruleData.min_video_width !== null ||
+    ruleData.max_video_width !== null ||
+    ruleData.min_video_height !== null ||
+    ruleData.max_video_height !== null ||
+    ruleData.min_audio_channels !== null ||
+    ruleData.max_audio_channels !== null ||
+    ruleData.min_duration !== null ||
+    ruleData.max_duration !== null ||
+    ruleData.min_audio_track_count !== null ||
+    ruleData.max_audio_track_count !== null ||
+    hasListValues(ruleData.audio_languages_in) ||
+    hasListValues(ruleData.audio_languages_not_in) ||
+    hasListValues(ruleData.subtitle_languages_in) ||
+    hasListValues(ruleData.subtitle_languages_not_in) ||
+    hasListValues(ruleData.video_color_spaces_in) ||
+    hasListValues(ruleData.video_color_spaces_not_in) ||
+    hasListValues(ruleData.video_color_transfers_in) ||
+    hasListValues(ruleData.video_color_transfers_not_in) ||
+    hasListValues(ruleData.video_color_primaries_in) ||
+    hasListValues(ruleData.video_color_primaries_not_in) ||
     (ruleData.series_status !== undefined &&
       ruleData.series_status !== null &&
       ruleData.series_status.length > 0) ||
@@ -1195,6 +1361,350 @@
                     </li>
                   {/each}
                 </ul>
+              </div>
+            {/if}
+          </Card.Content>
+        </Card.Root>
+
+        <!-- media info criteria -->
+        <Card.Root>
+          <Card.Header>
+            <Card.Title>Media Info Criteria</Card.Title>
+            <Card.Description>
+              Filter by codecs, HDR/Dolby Vision, resolution, and audio metadata
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <ChipListInput
+                id="video-codec-families-in"
+                label="Video Codec Families (Include)"
+                placeholder="e.g., h265"
+                values={formData.video_codec_families_in ?? null}
+                onChange={(next) => (formData.video_codec_families_in = next)}
+              />
+              <ChipListInput
+                id="video-codec-families-not-in"
+                label="Video Codec Families (Exclude)"
+                placeholder="e.g., h264"
+                values={formData.video_codec_families_not_in ?? null}
+                onChange={(next) =>
+                  (formData.video_codec_families_not_in = next)}
+              />
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <ChipListInput
+                id="audio-codec-families-in"
+                label="Audio Codec Families (Include)"
+                placeholder="e.g., eac3"
+                values={formData.audio_codec_families_in ?? null}
+                onChange={(next) => (formData.audio_codec_families_in = next)}
+              />
+              <ChipListInput
+                id="audio-codec-families-not-in"
+                label="Audio Codec Families (Exclude)"
+                placeholder="e.g., aac"
+                values={formData.audio_codec_families_not_in ?? null}
+                onChange={(next) =>
+                  (formData.audio_codec_families_not_in = next)}
+              />
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <Label for="has-hdr">HDR</Label>
+                <Select.Root
+                  type="single"
+                  name="has-hdr"
+                  bind:value={hasHdrSelectValue}
+                >
+                  <Select.Trigger class="w-full">
+                    {hasHdrSelectValue === "yes"
+                      ? "Yes"
+                      : hasHdrSelectValue === "no"
+                        ? "No"
+                        : "Any"}
+                  </Select.Trigger>
+                  <Select.Content>
+                    <Select.Item value="any" label="Any">Any</Select.Item>
+                    <Select.Item value="yes" label="Yes">Yes</Select.Item>
+                    <Select.Item value="no" label="No">No</Select.Item>
+                  </Select.Content>
+                </Select.Root>
+              </div>
+
+              <div class="space-y-2">
+                <Label for="has-dolby-vision">Dolby Vision</Label>
+                <Select.Root
+                  type="single"
+                  name="has-dolby-vision"
+                  bind:value={hasDolbyVisionSelectValue}
+                >
+                  <Select.Trigger class="w-full">
+                    {hasDolbyVisionSelectValue === "yes"
+                      ? "Yes"
+                      : hasDolbyVisionSelectValue === "no"
+                        ? "No"
+                        : "Any"}
+                  </Select.Trigger>
+                  <Select.Content>
+                    <Select.Item value="any" label="Any">Any</Select.Item>
+                    <Select.Item value="yes" label="Yes">Yes</Select.Item>
+                    <Select.Item value="no" label="No">No</Select.Item>
+                  </Select.Content>
+                </Select.Root>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <Label for="min-video-width">Min Video Width</Label>
+                <Input
+                  id="min-video-width"
+                  type="number"
+                  placeholder="e.g., 1920"
+                  value={formData.min_video_width ?? ""}
+                  oninput={(e) =>
+                    (formData.min_video_width =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+              <div class="space-y-2">
+                <Label for="max-video-width">Max Video Width</Label>
+                <Input
+                  id="max-video-width"
+                  type="number"
+                  placeholder="e.g., 3840"
+                  value={formData.max_video_width ?? ""}
+                  oninput={(e) =>
+                    (formData.max_video_width =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <Label for="min-video-height">Min Video Height</Label>
+                <Input
+                  id="min-video-height"
+                  type="number"
+                  placeholder="e.g., 1080"
+                  value={formData.min_video_height ?? ""}
+                  oninput={(e) =>
+                    (formData.min_video_height =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+              <div class="space-y-2">
+                <Label for="max-video-height">Max Video Height</Label>
+                <Input
+                  id="max-video-height"
+                  type="number"
+                  placeholder="e.g., 2160"
+                  value={formData.max_video_height ?? ""}
+                  oninput={(e) =>
+                    (formData.max_video_height =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <Label for="min-audio-channels">Min Audio Channels</Label>
+                <Input
+                  id="min-audio-channels"
+                  type="number"
+                  placeholder="e.g., 2"
+                  value={formData.min_audio_channels ?? ""}
+                  oninput={(e) =>
+                    (formData.min_audio_channels =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+              <div class="space-y-2">
+                <Label for="max-audio-channels">Max Audio Channels</Label>
+                <Input
+                  id="max-audio-channels"
+                  type="number"
+                  placeholder="e.g., 8"
+                  value={formData.max_audio_channels ?? ""}
+                  oninput={(e) =>
+                    (formData.max_audio_channels =
+                      e.currentTarget.value === ""
+                        ? null
+                        : parseInt(e.currentTarget.value))}
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <ChipListInput
+                id="subtitle-languages-in"
+                label="Subtitle Languages (Include)"
+                placeholder="e.g., eng"
+                values={formData.subtitle_languages_in ?? null}
+                onChange={(next) => (formData.subtitle_languages_in = next)}
+              />
+              <ChipListInput
+                id="subtitle-languages-not-in"
+                label="Subtitle Languages (Exclude)"
+                placeholder="e.g., jpn"
+                values={formData.subtitle_languages_not_in ?? null}
+                onChange={(next) => (formData.subtitle_languages_not_in = next)}
+              />
+            </div>
+
+            {#if formData.media_type === MediaType.Movie}
+              <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-2">
+                  <Label for="min-duration">Min Duration (ms)</Label>
+                  <Input
+                    id="min-duration"
+                    type="number"
+                    placeholder="e.g., 5400000"
+                    value={formData.min_duration ?? ""}
+                    oninput={(e) =>
+                      (formData.min_duration =
+                        e.currentTarget.value === ""
+                          ? null
+                          : parseFloat(e.currentTarget.value))}
+                  />
+                </div>
+                <div class="space-y-2">
+                  <Label for="max-duration">Max Duration (ms)</Label>
+                  <Input
+                    id="max-duration"
+                    type="number"
+                    placeholder="e.g., 9000000"
+                    value={formData.max_duration ?? ""}
+                    oninput={(e) =>
+                      (formData.max_duration =
+                        e.currentTarget.value === ""
+                          ? null
+                          : parseFloat(e.currentTarget.value))}
+                  />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-2">
+                  <Label for="min-audio-track-count"
+                    >Min Audio Track Count</Label
+                  >
+                  <Input
+                    id="min-audio-track-count"
+                    type="number"
+                    placeholder="e.g., 1"
+                    value={formData.min_audio_track_count ?? ""}
+                    oninput={(e) =>
+                      (formData.min_audio_track_count =
+                        e.currentTarget.value === ""
+                          ? null
+                          : parseInt(e.currentTarget.value))}
+                  />
+                </div>
+                <div class="space-y-2">
+                  <Label for="max-audio-track-count"
+                    >Max Audio Track Count</Label
+                  >
+                  <Input
+                    id="max-audio-track-count"
+                    type="number"
+                    placeholder="e.g., 3"
+                    value={formData.max_audio_track_count ?? ""}
+                    oninput={(e) =>
+                      (formData.max_audio_track_count =
+                        e.currentTarget.value === ""
+                          ? null
+                          : parseInt(e.currentTarget.value))}
+                  />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <ChipListInput
+                  id="audio-languages-in"
+                  label="Audio Languages (Include)"
+                  placeholder="e.g., eng"
+                  values={formData.audio_languages_in ?? null}
+                  onChange={(next) => (formData.audio_languages_in = next)}
+                />
+                <ChipListInput
+                  id="audio-languages-not-in"
+                  label="Audio Languages (Exclude)"
+                  placeholder="e.g., spa"
+                  values={formData.audio_languages_not_in ?? null}
+                  onChange={(next) => (formData.audio_languages_not_in = next)}
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <ChipListInput
+                  id="video-color-spaces-in"
+                  label="Video Color Spaces (Include)"
+                  placeholder="e.g., bt2020nc"
+                  values={formData.video_color_spaces_in ?? null}
+                  onChange={(next) => (formData.video_color_spaces_in = next)}
+                />
+                <ChipListInput
+                  id="video-color-spaces-not-in"
+                  label="Video Color Spaces (Exclude)"
+                  placeholder="e.g., bt709"
+                  values={formData.video_color_spaces_not_in ?? null}
+                  onChange={(next) =>
+                    (formData.video_color_spaces_not_in = next)}
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <ChipListInput
+                  id="video-color-transfers-in"
+                  label="Video Color Transfers (Include)"
+                  placeholder="e.g., smpte2084"
+                  values={formData.video_color_transfers_in ?? null}
+                  onChange={(next) =>
+                    (formData.video_color_transfers_in = next)}
+                />
+                <ChipListInput
+                  id="video-color-transfers-not-in"
+                  label="Video Color Transfers (Exclude)"
+                  placeholder="e.g., bt709"
+                  values={formData.video_color_transfers_not_in ?? null}
+                  onChange={(next) =>
+                    (formData.video_color_transfers_not_in = next)}
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <ChipListInput
+                  id="video-color-primaries-in"
+                  label="Video Color Primaries (Include)"
+                  placeholder="e.g., bt2020"
+                  values={formData.video_color_primaries_in ?? null}
+                  onChange={(next) =>
+                    (formData.video_color_primaries_in = next)}
+                />
+                <ChipListInput
+                  id="video-color-primaries-not-in"
+                  label="Video Color Primaries (Exclude)"
+                  placeholder="e.g., bt709"
+                  values={formData.video_color_primaries_not_in ?? null}
+                  onChange={(next) =>
+                    (formData.video_color_primaries_not_in = next)}
+                />
               </div>
             {/if}
           </Card.Content>
