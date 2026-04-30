@@ -223,6 +223,14 @@ class MediaStatusInfo(BaseModel):
     request_reason: str | None = None
 
 
+class ArrRefResponse(BaseModel):
+    """API representation of an Arr instance reference."""
+
+    service_type: str
+    service_config_id: int
+    arr_id: int
+
+
 class MovieWithStatus(BaseModel):
     """Movie with all metadata and status information."""
 
@@ -236,8 +244,8 @@ class MovieWithStatus(BaseModel):
     size: int | None
     versions: list[MovieVersionResponse]
 
-    # external IDs
-    radarr_id: int | None
+    # arr instance refs
+    arr_refs: list[ArrRefResponse]
     imdb_id: str | None
 
     # TMDB metadata
@@ -289,8 +297,8 @@ class SeriesWithStatus(BaseModel):
     size: int | None
     service_refs: list[SeriesServiceRefResponse]
 
-    # external IDs
-    sonarr_id: int | None
+    # arr instance refs
+    arr_refs: list[ArrRefResponse]
     imdb_id: str | None
     tvdb_id: str | None
 
