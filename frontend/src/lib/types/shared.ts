@@ -91,8 +91,6 @@ export enum NotificationType {
 }
 
 export interface GeneralSettings {
-  auto_tag_enabled: boolean;
-  cleanup_tag_suffix: string;
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
 }
@@ -102,6 +100,9 @@ export interface ReclaimRule {
   name: string;
   media_type: MediaType;
   enabled: boolean;
+  target_scope: "movie_version" | "series" | "season" | null;
+  definition: RuleDefinition | null;
+  action: RuleAction | null;
   library_ids: string[] | null;
   min_popularity: number | null;
   max_popularity: number | null;
@@ -148,6 +149,53 @@ export interface ReclaimRule {
   video_color_primaries_not_in: string[] | null;
   created_at: string;
   updated_at: string;
+}
+
+export type RuleGroupOperator = "and" | "or";
+export type RuleConditionOperator =
+  | "equals"
+  | "not_equals"
+  | "greater_than"
+  | "greater_than_or_equal"
+  | "less_than"
+  | "less_than_or_equal"
+  | "in"
+  | "not_in"
+  | "contains_any"
+  | "not_contains_any"
+  | "exists"
+  | "not_exists"
+  | "is_true"
+  | "is_false"
+  | "matches_any_regex";
+
+export interface RuleCondition {
+  type: "condition";
+  field: string;
+  operator: RuleConditionOperator;
+  value?: string | number | boolean | string[] | number[] | null;
+}
+
+export interface RuleGroup {
+  type: "group";
+  op: RuleGroupOperator;
+  children: RuleNode[];
+}
+
+export type RuleNode = RuleCondition | RuleGroup;
+
+export interface RuleDefinition {
+  version: number;
+  root: RuleGroup;
+}
+
+export interface RuleAction {
+  candidate: boolean;
+  tag_enabled: boolean;
+  arr_tag: string | null;
+  media_server_action: "delete" | null;
+  radarr_service_config_id: number | null;
+  sonarr_service_config_id: number | null;
 }
 
 export enum ScheduleType {
@@ -231,7 +279,7 @@ export interface MovieWithStatus {
   tmdb_id: number;
   size: number | null;
   versions: MovieVersion[];
-  radarr_id: number | null;
+  arr_refs: ArrRef[];
   imdb_id: string | null;
   tmdb_title: string | null;
   original_title: string | null;
@@ -267,7 +315,7 @@ export interface SeriesWithStatus {
   tmdb_id: number;
   size: number | null;
   service_refs: SeriesServiceRef[];
-  sonarr_id: number | null;
+  arr_refs: ArrRef[];
   imdb_id: string | null;
   tvdb_id: string | null;
   tmdb_title: string | null;
@@ -299,6 +347,12 @@ export interface SeasonWithStatus {
   last_viewed_at: string | null;
   air_date: string | null;
   status: MediaStatusInfo;
+}
+
+export interface ArrRef {
+  service_type: string;
+  service_config_id: number;
+  arr_id: number;
 }
 
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
@@ -371,6 +425,7 @@ export interface ReclaimCandidateEntry {
   media_year: number | null;
   poster_url: string | null;
   version_service: string | null;
+  version_library_id: string | null;
   version_library_name: string | null;
   version_video_codec_family: string | null;
   version_audio_codec_family: string | null;
@@ -385,7 +440,28 @@ export interface ReclaimCandidateEntry {
   version_path: string | null;
   version_file_name: string | null;
   version_subtitle_languages: string[] | null;
-  reason: string;
+  reason_parts: {
+    rule_id: number | null;
+    rule_name: string;
+    target_scope: string;
+    season_label: string | null;
+    conditions: {
+      field: string;
+      field_label: string;
+      operator: string;
+      operator_label: string;
+      expected:
+        | string
+        | number
+        | boolean
+        | (string | number | boolean)[]
+        | null;
+      actual: string | number | boolean | (string | number | boolean)[] | null;
+      display: string;
+    }[];
+    text: string;
+  }[];
+  reason_tokens: string[];
   estimated_space_gb: number | null;
   has_pending_request: boolean;
   created_at: string;
@@ -401,6 +477,13 @@ export interface ReclaimCandidateEntry {
   season_audio_codec_families: string[] | null;
   season_audio_languages: string[] | null;
   season_subtitle_languages: string[] | null;
+  series_library_refs:
+    | {
+        library_id: string;
+        library_name: string;
+        service: string | null;
+      }[]
+    | null;
 }
 
 export interface DashboardKpis {
