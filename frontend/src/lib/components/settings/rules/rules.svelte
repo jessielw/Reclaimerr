@@ -171,158 +171,23 @@
 
   // generate summary text for a rule based on its conditions
   const getRuleSummary = (rule: ReclaimRule): string => {
-    if (rule.definition?.root) {
-      const countConditions = (node: RuleNode): number => {
-        if (node.type === "condition") return 1;
-        return node.children.reduce(
-          (count, child) => count + countConditions(child),
-          0,
-        );
-      };
-      const count = countConditions(rule.definition.root);
-      const target =
-        rule.target_scope === "movie_version"
-          ? "movie versions"
-          : rule.target_scope === "season"
-            ? "seasons"
-            : "series";
-      return `${count} condition${count === 1 ? "" : "s"} targeting ${target}`;
-    }
+    if (!rule.definition?.root) return "No conditions set";
 
-    const conditions: string[] = [];
-    const hasListValues = (values: string[] | null | undefined) =>
-      values !== null && values !== undefined && values.length > 0;
-
-    if (rule.library_ids && rule.library_ids.length > 0) {
-      // map library IDs to names
-      const libraryNames = rule.library_ids
-        .map(
-          (id) =>
-            availableLibraries.find((lib) => lib.libraryId === id)?.libraryName,
-        )
-        .filter((name): name is string => name !== undefined);
-
-      if (libraryNames.length > 0) {
-        conditions.push(`Libraries: ${libraryNames.join(", ")}`);
-      }
-    }
-
-    if (rule.min_popularity !== null || rule.max_popularity !== null) {
-      if (rule.min_popularity !== null && rule.max_popularity !== null) {
-        conditions.push(
-          `Popularity: ${rule.min_popularity}-${rule.max_popularity}`,
-        );
-      } else if (rule.min_popularity !== null) {
-        conditions.push(`Popularity ≥ ${rule.min_popularity}`);
-      } else {
-        conditions.push(`Popularity ≤ ${rule.max_popularity}`);
-      }
-    }
-
-    if (rule.min_vote_average !== null || rule.max_vote_average !== null) {
-      if (rule.min_vote_average !== null && rule.max_vote_average !== null) {
-        conditions.push(
-          `Rating: ${rule.min_vote_average}-${rule.max_vote_average}`,
-        );
-      } else if (rule.min_vote_average !== null) {
-        conditions.push(`Rating ≥ ${rule.min_vote_average}`);
-      } else {
-        conditions.push(`Rating ≤ ${rule.max_vote_average}`);
-      }
-    }
-
-    if (rule.min_days_since_added !== null) {
-      conditions.push(`Added ${rule.min_days_since_added}+ days ago`);
-    }
-
-    if (rule.max_days_since_last_watched !== null) {
-      conditions.push(
-        `Not watched in ${rule.max_days_since_last_watched}+ days`,
+    const countConditions = (node: RuleNode): number => {
+      if (node.type === "condition") return 1;
+      return node.children.reduce(
+        (count, child) => count + countConditions(child),
+        0,
       );
-    }
-
-    if (rule.include_never_watched) {
-      conditions.push("Never watched");
-    }
-
-    if (rule.paths && rule.paths.length > 0) {
-      conditions.push(`Paths: ${rule.paths.length}`);
-    }
-
-    if (hasListValues(rule.video_codec_families_in)) {
-      conditions.push(
-        `Video codecs in: ${rule.video_codec_families_in!.join(", ")}`,
-      );
-    }
-
-    if (hasListValues(rule.audio_codec_families_in)) {
-      conditions.push(
-        `Audio codecs in: ${rule.audio_codec_families_in!.join(", ")}`,
-      );
-    }
-
-    if (rule.has_hdr !== null) {
-      conditions.push(`HDR: ${rule.has_hdr ? "yes" : "no"}`);
-    }
-
-    if (rule.has_dolby_vision !== null) {
-      conditions.push(`Dolby Vision: ${rule.has_dolby_vision ? "yes" : "no"}`);
-    }
-
-    if (rule.min_video_width !== null || rule.max_video_width !== null) {
-      if (rule.min_video_width !== null && rule.max_video_width !== null) {
-        conditions.push(
-          `Width: ${rule.min_video_width}-${rule.max_video_width}`,
-        );
-      } else if (rule.min_video_width !== null) {
-        conditions.push(`Width >= ${rule.min_video_width}`);
-      } else {
-        conditions.push(`Width <= ${rule.max_video_width}`);
-      }
-    }
-
-    if (rule.min_video_height !== null || rule.max_video_height !== null) {
-      if (rule.min_video_height !== null && rule.max_video_height !== null) {
-        conditions.push(
-          `Height: ${rule.min_video_height}-${rule.max_video_height}`,
-        );
-      } else if (rule.min_video_height !== null) {
-        conditions.push(`Height >= ${rule.min_video_height}`);
-      } else {
-        conditions.push(`Height <= ${rule.max_video_height}`);
-      }
-    }
-
-    if (rule.min_audio_channels !== null || rule.max_audio_channels !== null) {
-      if (
-        rule.min_audio_channels !== null &&
-        rule.max_audio_channels !== null
-      ) {
-        conditions.push(
-          `Audio channels: ${rule.min_audio_channels}-${rule.max_audio_channels}`,
-        );
-      } else if (rule.min_audio_channels !== null) {
-        conditions.push(`Audio channels >= ${rule.min_audio_channels}`);
-      } else {
-        conditions.push(`Audio channels <= ${rule.max_audio_channels}`);
-      }
-    }
-
-    if (hasListValues(rule.subtitle_languages_in)) {
-      conditions.push(`Subtitle in: ${rule.subtitle_languages_in!.join(", ")}`);
-    }
-
-    if (rule.min_view_count !== null || rule.max_view_count !== null) {
-      if (rule.min_view_count !== null && rule.max_view_count !== null) {
-        conditions.push(`Views: ${rule.min_view_count}-${rule.max_view_count}`);
-      } else if (rule.min_view_count !== null) {
-        conditions.push(`Views ≥ ${rule.min_view_count}`);
-      } else {
-        conditions.push(`Views ≤ ${rule.max_view_count}`);
-      }
-    }
-
-    return conditions.length > 0 ? conditions.join(" • ") : "No conditions set";
+    };
+    const count = countConditions(rule.definition.root);
+    const target =
+      rule.target_scope === "movie_version"
+        ? "movie versions"
+        : rule.target_scope === "season"
+          ? "seasons"
+          : "series";
+    return `${count} condition${count === 1 ? "" : "s"} targeting ${target}`;
   };
 
   // open delete confirmation dialog
