@@ -351,7 +351,7 @@
           </th>
         {/if}
         <th
-          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider w-88"
         >
           Media
         </th>
@@ -399,7 +399,7 @@
               </td>
             {/if}
             <td class="px-6 py-4">
-              <div class="flex gap-4 items-center">
+              <div class="flex gap-4 items-center min-w-88">
                 <div class="flex flex-col items-center w-max gap-1">
                   <PosterThumb
                     mediaType={entry.media_type}
@@ -407,7 +407,7 @@
                   />
                   <MediaTypeBadge mediaType={entry.media_type} />
                 </div>
-                <div class="text-sm font-medium text-foreground">
+                <div class="min-w-0 flex-1 text-sm font-medium text-foreground">
                   {entry.media_title}
                   {#if entry.media_year}
                     <span class="text-muted-foreground"
@@ -418,7 +418,7 @@
               </div>
             </td>
             <td
-              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
+              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
             >
               <div class="flex flex-wrap gap-1.5">
                 {#each movieSummaryChips(entry) as chip}
@@ -494,7 +494,7 @@
               </td>
             {/if}
             <td class="px-6 py-4">
-              <div class="flex gap-4 items-center">
+              <div class="flex gap-4 items-center min-w-88">
                 <div class="flex flex-col items-center w-max gap-1">
                   <PosterThumb
                     mediaType={MediaType.Movie}
@@ -502,7 +502,7 @@
                   />
                   <MediaTypeBadge mediaType={MediaType.Movie} />
                 </div>
-                <div class="text-sm font-medium text-foreground">
+                <div class="min-w-0 flex-1 text-sm font-medium text-foreground">
                   {row.media_title}
                   {#if row.media_year}
                     <span class="text-muted-foreground">({row.media_year})</span
@@ -519,7 +519,7 @@
               </div>
             </td>
             <td
-              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
+              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
             >
               <div class="flex flex-wrap gap-1.5">
                 {#each movieSummaryChips(row.versions[0]) as chip}
@@ -552,9 +552,8 @@
             {#each row.versions as version (version.id)}
               {@const parsedRules = parseRuleTokens(version.reason_tokens)}
               <tr
-                class="bg-muted/20 border-l-2 border-l-cyan-500/40 hover:bg-muted/40 transition-colors {selectedIds.has(
-                  version.id,
-                )
+                class="bg-muted/20 border-l-2 border-l-cyan-500/40 hover:bg-muted/40
+                  transition-colors {selectedIds.has(version.id)
                   ? 'bg-primary/5'
                   : ''}"
               >
@@ -586,13 +585,14 @@
                   </div>
                 </td>
                 <td
-                  class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word w-full"
+                  class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
                 >
                   <div class="flex flex-wrap gap-1.5">
                     {#if parsedRules.length > 0}
                       {#each parsedRules as rule}
                         <span
-                          class="text-xs leading-5 px-2 rounded-2xl border border-border bg-muted/50 text-foreground"
+                          class="text-xs leading-5 px-2 rounded-2xl border border-border
+                            bg-muted/50 text-foreground"
                         >
                           {rule}
                         </span>
