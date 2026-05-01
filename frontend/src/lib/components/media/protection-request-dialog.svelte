@@ -23,6 +23,7 @@
 
   interface MediaLike {
     id: number;
+    movie_version_id?: number | null;
     title: string;
     year: number | null;
     poster_url: string | null;
@@ -149,6 +150,9 @@
       const basePayload = {
         media_type: mediaType,
         media_id: media.id,
+        ...(mediaType === MediaType.Movie && media.movie_version_id != null
+          ? { movie_version_id: media.movie_version_id }
+          : {}),
         reason: reason.trim() || null,
         duration_days: durationDays,
       };
