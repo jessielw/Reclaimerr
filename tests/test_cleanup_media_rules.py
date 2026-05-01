@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from backend.api.candidate_views import build_rule_preview_items
 from backend.database import Base
 from backend.database.models import (
     Movie,
@@ -20,13 +21,11 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, Service
 from backend.tasks.cleanup import (
-    _evaluate_movie_media_rule,
     _evaluate_movie_rule,
     _evaluate_rule_for_season,
-    _evaluate_season_aggregate_media_rule,
-    _evaluate_series_aggregate_media_rule,
     _process_series_seasons,
     _scan_with_db,
+    collect_rule_preview_matches,
 )
 
 
@@ -45,8 +44,6 @@ def _make_rule(media_type: MediaType, **overrides: object) -> ReclaimRule:
         definition=_definition_from_overrides(overrides),
         action={"candidate": True, "media_server_action": "delete"},
     )
-    for key, value in overrides.items():
-        setattr(rule, key, value)
     return rule
 
 
@@ -384,7 +381,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             min_size=1 * 1024**3,
         )
         matched_criteria: dict[str, object] = {}
-        reasons: list[str] = []
+        reasons: list[dict[str, object]] = []
 
         matched = _evaluate_movie_rule(movie, rule, matched_criteria, reasons)
 
@@ -392,176 +389,6 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertIn("tmdb.popularity", matched_criteria)
         self.assertIn("media.size", matched_criteria)
         self.assertTrue(reasons)
-
-    def test_movie_media_rule_matches_if_any_version_matches(self) -> None:
-        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
-        v1 = _make_movie_version(
-            service_media_id="m1",
-            service_item_id="i1",
-            video_codec_family="h264",
-            audio_codec_family="aac",
-            video_width=1920,
-            video_height=1080,
-        )
-        v2 = _make_movie_version(
-            service_media_id="m2",
-            service_item_id="i2",
-            video_codec_family="h265",
-            audio_codec_family="eac3",
-            video_hdr=True,
-            video_dolby_vision=False,
-            video_width=3840,
-            video_height=2160,
-            audio_channels=6,
-            duration=7_200_000,
-            audio_count=2,
-            audio_languages=["eng", "jpn"],
-            subtitle_languages=["eng"],
-            video_color_space="bt2020nc",
-            video_color_transfer="smpte2084",
-            video_color_primaries="bt2020",
-        )
-        v2.id = 22
-        movie.versions = [v1, v2]
-        rule = _make_rule(
-            MediaType.MOVIE,
-            video_codec_families_in=["h265"],
-            audio_codec_families_in=["eac3"],
-            has_hdr=True,
-            has_dolby_vision=False,
-            min_video_width=3000,
-            min_video_height=2000,
-            min_audio_channels=6,
-            min_duration=7_000_000,
-            min_audio_track_count=2,
-            audio_languages_in=["eng"],
-            subtitle_languages_in=["eng"],
-            video_color_spaces_in=["bt2020nc"],
-            video_color_transfers_in=["smpte2084"],
-            video_color_primaries_in=["bt2020"],
-        )
-        matched_criteria: dict[str, object] = {}
-        reasons: list[str] = []
-
-        matched = _evaluate_movie_media_rule(movie, rule, matched_criteria, reasons)
-
-        self.assertTrue(matched)
-        self.assertEqual(matched_criteria["media_version_id"], 22)
-        self.assertTrue(any("media match on version 22" in r for r in reasons))
-
-    def test_movie_media_rule_fails_when_no_versions_match(self) -> None:
-        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
-        movie.versions = [
-            _make_movie_version(
-                service_media_id="m1",
-                service_item_id="i1",
-                video_codec_family="h264",
-                audio_codec_family="aac",
-            )
-        ]
-        rule = _make_rule(
-            MediaType.MOVIE,
-            video_codec_families_in=["h265"],
-            audio_codec_families_not_in=["aac"],
-        )
-
-        matched = _evaluate_movie_media_rule(movie, rule, {}, [])
-
-        self.assertFalse(matched)
-
-    def test_series_aggregate_media_rule_matches(self) -> None:
-        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
-        series.video_codec_families = ["h264", "h265"]
-        series.audio_codec_families = ["aac", "eac3"]
-        series.has_hdr = True
-        series.has_dolby_vision = False
-        series.max_video_width = 3840
-        series.max_video_height = 2160
-        series.max_audio_channels = 8
-        series.subtitle_languages = ["eng", "spa"]
-        rule = _make_rule(
-            MediaType.SERIES,
-            video_codec_families_in=["h265"],
-            audio_codec_families_in=["eac3"],
-            has_hdr=True,
-            has_dolby_vision=False,
-            min_video_width=3800,
-            min_video_height=2100,
-            min_audio_channels=6,
-            subtitle_languages_in=["eng"],
-        )
-        matched_criteria: dict[str, object] = {}
-        reasons: list[str] = []
-
-        matched = _evaluate_series_aggregate_media_rule(
-            series, rule, matched_criteria, reasons
-        )
-
-        self.assertTrue(matched)
-        self.assertEqual(matched_criteria["max_video_width"], 3840)
-        self.assertTrue(any("series media aggregate match" in r for r in reasons))
-
-    def test_series_aggregate_media_rule_rejects_unsupported_fields(self) -> None:
-        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
-        series.video_codec_families = ["h265"]
-        series.audio_codec_families = ["eac3"]
-        series.has_hdr = True
-        series.has_dolby_vision = False
-        series.max_video_width = 3840
-        series.max_video_height = 2160
-        series.max_audio_channels = 6
-        series.subtitle_languages = ["eng"]
-        rule = _make_rule(
-            MediaType.SERIES,
-            video_codec_families_in=["h265"],
-            min_duration=1_000,
-        )
-
-        matched = _evaluate_series_aggregate_media_rule(series, rule, {}, [])
-
-        self.assertFalse(matched)
-
-    def test_season_aggregate_media_rule_matches(self) -> None:
-        season = Season(series_id=1, season_number=1, size=5 * 1024**3)
-        season.video_codec_families = ["h265"]
-        season.audio_codec_families = ["ac3", "eac3"]
-        season.has_hdr = False
-        season.has_dolby_vision = False
-        season.max_video_width = 1920
-        season.max_video_height = 1080
-        season.max_audio_channels = 6
-        season.subtitle_languages = ["eng", "fre"]
-        rule = _make_rule(
-            MediaType.SERIES,
-            video_codec_families_in=["h265"],
-            audio_codec_families_in=["eac3"],
-            has_hdr=False,
-            max_video_width=2000,
-            max_video_height=1200,
-            min_audio_channels=6,
-            subtitle_languages_in=["eng"],
-            subtitle_languages_not_in=["ger"],
-        )
-
-        matched = _evaluate_season_aggregate_media_rule(season, rule, {}, [])
-
-        self.assertTrue(matched)
-
-    def test_season_aggregate_media_rule_fails_subtitle_exclusion(self) -> None:
-        season = Season(series_id=1, season_number=1, size=5 * 1024**3)
-        season.video_codec_families = ["h265"]
-        season.audio_codec_families = ["eac3"]
-        season.has_hdr = False
-        season.has_dolby_vision = False
-        season.max_video_width = 1920
-        season.max_video_height = 1080
-        season.max_audio_channels = 6
-        season.subtitle_languages = ["eng", "jpn"]
-        rule = _make_rule(MediaType.SERIES, subtitle_languages_not_in=["jpn"])
-
-        matched = _evaluate_season_aggregate_media_rule(season, rule, {}, [])
-
-        self.assertFalse(matched)
 
     def test_evaluate_movie_rule_dispatches_to_movie_media_path(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
@@ -599,7 +426,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(matched)
         self.assertEqual(matched_criteria["media_version_id"], 33)
-        self.assertTrue(any("Video codec" in r for r in reasons))
+        self.assertTrue(any("Video codec" in str(r.get("text", "")) for r in reasons))
 
     def test_evaluate_movie_rule_dispatches_to_series_aggregate_path(self) -> None:
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
@@ -622,13 +449,13 @@ class CleanupMediaRuleTests(unittest.TestCase):
             include_never_watched=True,
         )
         matched_criteria: dict[str, object] = {}
-        reasons: list[str] = []
+        reasons: list[dict[str, object]] = []
 
         matched = _evaluate_movie_rule(series, rule, matched_criteria, reasons)
 
         self.assertTrue(matched)
         self.assertEqual(matched_criteria["video.width"], 3840)
-        self.assertTrue(any("Video codec" in r for r in reasons))
+        self.assertTrue(any("Video codec" in str(r.get("text", "")) for r in reasons))
 
     def test_evaluate_movie_rule_fails_series_with_unsupported_aggregate_fields(
         self,
@@ -696,6 +523,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             version.movie_id = movie.id
             db.add(version)
+            await db.flush()
+            version_id = version.id
             await db.commit()
             movie_id = movie.id
 
@@ -841,3 +670,60 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 .all()
             )
             self.assertEqual(remaining_season_candidates, [])
+
+    async def test_collect_rule_preview_matches_does_not_persist_candidates(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Preview Movie", tmdb_id=3001, size=6 * 1024**3)
+            db.add_all([rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="preview-mv-1",
+                service_item_id="preview-item-1",
+                file_name="Preview.Movie.mkv",
+                video_height=2160,
+                video_resolution="2160p",
+                video_hdr=True,
+            )
+            version.movie_id = movie.id
+            db.add(version)
+            await db.flush()
+            version_id = version.id
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            rule = (
+                await db.execute(
+                    select(ReclaimRule).where(ReclaimRule.media_type == MediaType.MOVIE)
+                )
+            ).scalar_one()
+            matches = await collect_rule_preview_matches(db, [rule])
+
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].movie_version_id, version_id)
+
+            candidates = (
+                (
+                    await db.execute(
+                        select(ReclaimCandidate).where(
+                            ReclaimCandidate.media_type == MediaType.MOVIE
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            self.assertEqual(candidates, [])
+
+            preview_items = await build_rule_preview_items(db, matches)
+            self.assertEqual(len(preview_items), 1)
+            self.assertEqual(preview_items[0].media_title, "Preview Movie")
+            self.assertEqual(preview_items[0].version_video_resolution, "2160p")
+            self.assertTrue(preview_items[0].reason_tokens)
