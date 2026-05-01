@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates
   - Movie/Series & Season level media info (movies are more detailed)
   - Movie version control of deletions
+- Multi *arr multi instance
+  - Added ability to name *arr instance in frontend
+  - Added ability to manage *arr instances via API in backend
+  - Support in ServiceManager
 
 ### Changed
 
@@ -27,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Migration issue that could happen when jumping several version at once
+- Arr tag requirements are now correctly set (A-Za-z0-9-) with a max of 50 that includes **-rec** for internal uses
+- Media being parsed from other libraries that wasn't selected in the rule
 
 ## [0.1.0-beta.13] - 2026-04-25
 
