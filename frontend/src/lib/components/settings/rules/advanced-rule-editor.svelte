@@ -1,23 +1,27 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
-  import { get_api } from "$lib/api";
+  import { get_api, post_api } from "$lib/api";
   import { onMount } from "svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import Notice from "$lib/components/notice.svelte";
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import { toast } from "svelte-sonner";
   import {
     MediaType,
     SettingsTab,
     type LibraryType,
     type ReclaimRule,
     type RuleCondition,
+    type RuleConditionOperator,
     type RuleDefinition,
     type RuleNode,
   } from "$lib/types/shared";
@@ -43,14 +47,7 @@
     root: {
       type: "group",
       op: "and",
-      children: [
-        {
-          type: "condition",
-          field: "media.size",
-          operator: "greater_than",
-          value: 0,
-        },
-      ],
+      children: [],
     },
   });
 
@@ -96,6 +93,11 @@
   let radarrInstances = $state<ArrInstance[]>([]);
   let sonarrInstances = $state<ArrInstance[]>([]);
   let saving = $state(false);
+  let evaluatingLibraryChange = $state(false);
+  let libraryChangeDialogOpen = $state(false);
+  let pendingLibrarySelection = $state<string[] | null>(null);
+  let pendingInvalidPaths = $state<string[]>([]);
+  let pendingTotalPaths = $state(0);
 
   const selectedMediaType = $derived(
     targetScope === "movie_version" ? MediaType.Movie : MediaType.Series,
@@ -127,12 +129,19 @@
 
   const normalizedTag = $derived(sanitizeTagInput(arrTag || name));
 
-  const DEFAULT_LIBRARY_CONDITION: RuleCondition = {
-    type: "condition",
-    field: "media.size",
-    operator: "greater_than",
-    value: 0,
-  };
+  const pathLibraryInclusionOperators = new Set<RuleConditionOperator>([
+    "contains_any",
+    "in",
+    "equals",
+  ]);
+
+  const pathLibraryUnsupportedOperators = new Set<RuleConditionOperator>([
+    "not_in",
+    "not_contains_any",
+    "not_equals",
+    "exists",
+    "not_exists",
+  ]);
 
   // normalize library ids from a condition value, ensuring it's always an array of non empty strings
   const normalizeLibraryIds = (value: RuleCondition["value"]) =>
@@ -141,12 +150,67 @@
       .map((id) => String(id).trim())
       .filter(Boolean);
 
+  const normalizePathPatterns = (value: RuleCondition["value"]) =>
+    (Array.isArray(value) ? value : [value])
+      .filter(
+        (pattern): pattern is string | number =>
+          pattern !== null && pattern !== undefined,
+      )
+      .map((pattern) => String(pattern).trim())
+      .filter(Boolean);
+
+  const valuelessOperators = new Set<RuleConditionOperator>([
+    "exists",
+    "not_exists",
+    "is_true",
+    "is_false",
+  ]);
+
+  const isConditionValueSet = (condition: RuleCondition): boolean => {
+    if (valuelessOperators.has(condition.operator)) return true;
+    const value = condition.value;
+    if (Array.isArray(value)) {
+      return value.some(
+        (item) =>
+          item !== null && item !== undefined && String(item).trim() !== "",
+      );
+    }
+    if (value === null || value === undefined) return false;
+    return String(value).trim() !== "";
+  };
+
+  const hasValidConditions = (node: RuleNode): boolean => {
+    if (node.type === "condition") return isConditionValueSet(node);
+    if (node.children.length === 0) return false;
+    return node.children.every((child) => hasValidConditions(child));
+  };
+
   // recursively collect all library.id conditions in the rule tree
   const collectLibraryConditions = (node: RuleNode): RuleCondition[] => {
     if (node.type === "condition") {
       return node.field === "library.id" ? [node] : [];
     }
     return node.children.flatMap(collectLibraryConditions);
+  };
+
+  const collectPathConditions = (node: RuleNode): RuleCondition[] => {
+    if (node.type === "condition") {
+      return node.field === "media.path" ? [node] : [];
+    }
+    return node.children.flatMap(collectPathConditions);
+  };
+
+  const collectPathPatterns = (root: RuleDefinition["root"]): string[] => {
+    const seen = new Set<string>();
+    const paths: string[] = [];
+    for (const condition of collectPathConditions(root)) {
+      for (const pattern of normalizePathPatterns(condition.value)) {
+        if (seen.has(pattern)) continue;
+        seen.add(pattern);
+        paths.push(pattern);
+      }
+    }
+    return paths;
   };
 
   // find a single canonical library.id condition at the root level with the expected structure
@@ -245,13 +309,145 @@
     libraryId: string,
     selected: boolean,
   ) => {
-    if (hasCustomLibraryCondition) return;
+    if (hasCustomLibraryCondition || evaluatingLibraryChange) return;
     const next = selected
       ? [...selectedScopeLibraryIds, libraryId]
       : selectedScopeLibraryIds.filter((id) => id !== libraryId);
     const filtered = next.filter((id) => scopeLibraryIds.has(id));
-    selectedScopeLibraryIds = Array.from(new Set(filtered));
-    applyCanonicalLibraryScope(selectedScopeLibraryIds);
+    void applyScopeLibrarySelectionWithValidation(
+      Array.from(new Set(filtered)),
+    );
+  };
+
+  const derivePathScopeLibraryIds = (
+    root: RuleDefinition["root"],
+  ): string[] | null => {
+    const conditions = collectLibraryConditions(root);
+    if (conditions.length === 0) return null;
+
+    const ids = new Set<string>();
+    for (const condition of conditions) {
+      if (pathLibraryUnsupportedOperators.has(condition.operator)) return null;
+      if (!pathLibraryInclusionOperators.has(condition.operator)) return null;
+      const values = normalizeLibraryIds(condition.value);
+      if (values.length === 0) return null;
+      for (const id of values) ids.add(id);
+    }
+
+    return ids.size > 0 ? Array.from(ids) : null;
+  };
+
+  const selectedPathScopeLibraryIds = $derived.by(() => {
+    const ids = derivePathScopeLibraryIds(definition.root);
+    if (!ids) return null;
+    const allowed = ids.filter((id) => scopeLibraryIds.has(id));
+    return allowed.length > 0 ? allowed : null;
+  });
+
+  const canSaveRule = $derived(
+    name.trim().length > 0 && hasValidConditions(definition.root),
+  );
+
+  const pruneInvalidPathPatternsFromNode = (
+    node: RuleNode,
+    invalid: Set<string>,
+  ): RuleNode | null => {
+    if (node.type === "condition") {
+      if (node.field !== "media.path") return node;
+      const patterns = normalizePathPatterns(node.value).filter(
+        (pattern) => !invalid.has(pattern),
+      );
+      if (patterns.length === 0) return null;
+      return {
+        ...node,
+        value: Array.isArray(node.value) ? patterns : patterns[0],
+      };
+    }
+
+    const nextChildren = node.children
+      .map((child) => pruneInvalidPathPatternsFromNode(child, invalid))
+      .filter((child): child is RuleNode => child !== null);
+    if (nextChildren.length === 0) return null;
+    return {
+      ...node,
+      children: nextChildren,
+    };
+  };
+
+  const applyPathPruning = (invalidPatterns: string[]) => {
+    if (invalidPatterns.length === 0) return;
+    const invalid = new Set(invalidPatterns);
+    const prunedRoot = pruneInvalidPathPatternsFromNode(
+      definition.root,
+      invalid,
+    );
+    definition.root =
+      prunedRoot?.type === "group"
+        ? prunedRoot
+        : {
+            ...definition.root,
+            children: [],
+          };
+    definition = { ...definition };
+  };
+
+  const validatePathsForScope = async (
+    nextLibraryIds: string[],
+  ): Promise<{ invalidPaths: string[]; totalPaths: number } | null> => {
+    const paths = collectPathPatterns(definition.root);
+    if (paths.length === 0) return { invalidPaths: [], totalPaths: 0 };
+    try {
+      const response = await post_api<{
+        valid_paths: string[];
+        invalid_paths: string[];
+      }>("/api/rules/validate-paths", {
+        media_type: selectedMediaType,
+        library_ids: nextLibraryIds.length > 0 ? nextLibraryIds : null,
+        paths,
+      });
+      return {
+        invalidPaths: response.invalid_paths ?? [],
+        totalPaths: paths.length,
+      };
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to validate path criteria.");
+      return null;
+    }
+  };
+
+  const applyScopeLibrarySelectionWithValidation = async (
+    nextLibraryIds: string[],
+  ) => {
+    evaluatingLibraryChange = true;
+    const validation = await validatePathsForScope(nextLibraryIds);
+    evaluatingLibraryChange = false;
+    if (!validation) return;
+
+    if (validation.invalidPaths.length === 0) {
+      selectedScopeLibraryIds = nextLibraryIds;
+      applyCanonicalLibraryScope(nextLibraryIds);
+      return;
+    }
+
+    pendingLibrarySelection = nextLibraryIds;
+    pendingInvalidPaths = validation.invalidPaths;
+    pendingTotalPaths = validation.totalPaths;
+    libraryChangeDialogOpen = true;
+  };
+
+  const confirmLibraryScopeChange = () => {
+    if (!pendingLibrarySelection) return;
+    selectedScopeLibraryIds = pendingLibrarySelection;
+    applyCanonicalLibraryScope(pendingLibrarySelection);
+    applyPathPruning(pendingInvalidPaths);
+    cancelLibraryScopeChange();
+  };
+
+  const cancelLibraryScopeChange = () => {
+    libraryChangeDialogOpen = false;
+    pendingLibrarySelection = null;
+    pendingInvalidPaths = [];
+    pendingTotalPaths = 0;
   };
 
   const clearCustomLibraryConditions = () => {
@@ -263,7 +459,7 @@
         ? cleanedRoot
         : {
             ...definition.root,
-            children: [DEFAULT_LIBRARY_CONDITION],
+            children: [],
           };
     selectedScopeLibraryIds = [];
     hasCustomLibraryCondition = false;
@@ -378,7 +574,7 @@
     </div>
     <Button
       onclick={save}
-      disabled={saving || !name.trim()}
+      disabled={saving || !canSaveRule}
       class="gap-2 cursor-pointer"
     >
       <Save class="size-4" />
@@ -466,9 +662,9 @@
             <Switch
               id={`scope-library-${library.libraryId}`}
               checked={selectedScopeLibraryIds.includes(library.libraryId)}
-              disabled={hasCustomLibraryCondition}
+              disabled={hasCustomLibraryCondition || evaluatingLibraryChange}
               onCheckedChange={(checked) =>
-                updateScopeLibrarySelection(library.libraryId, checked)}
+                void updateScopeLibrarySelection(library.libraryId, checked)}
             />
             <div class="flex items-center gap-1.5">
               <div class="w-4 h-4 shrink-0">
@@ -502,10 +698,17 @@
       <p class="text-xs text-muted-foreground mt-1">
         Up to 5 groups total are supported per rule.
       </p>
+      {#if !hasValidConditions(definition.root)}
+        <p class="text-xs text-amber-500 mt-1">
+          Add at least one complete condition before saving.
+        </p>
+      {/if}
     </div>
     <div class="rounded-lg border border-border/60 bg-muted/20 p-4 md:p-5">
       <RuleNodeEditor
         node={definition.root}
+        pathPickerMediaType={selectedMediaType}
+        pathPickerLibraryIds={selectedPathScopeLibraryIds}
         onChange={() => (definition = { ...definition })}
       />
     </div>
@@ -596,3 +799,72 @@
     {/if}
   </div>
 </div>
+
+<AlertDialog.Root
+  open={libraryChangeDialogOpen}
+  onOpenChange={(open) => {
+    if (!open) cancelLibraryScopeChange();
+  }}
+>
+  <AlertDialog.Content
+    class="bg-card border border-border rounded-lg p-6 max-w-xl w-full text-foreground"
+  >
+    <AlertDialog.Header>
+      <AlertDialog.Title
+        class="text-xl font-semibold text-foreground mb-2 flex items-center gap-2"
+      >
+        <TriangleAlert class="size-5 text-amber-500" />
+        Path Criteria Needs Confirmation
+      </AlertDialog.Title>
+      <AlertDialog.Description class="text-muted-foreground space-y-3">
+        {#if pendingInvalidPaths.length >= pendingTotalPaths && pendingTotalPaths > 0}
+          <p>
+            This library scope change invalidates all current path criteria.
+            Confirming will clear all path conditions from this rule.
+          </p>
+        {:else}
+          <p>
+            This library scope change invalidates some path criteria. Confirming
+            will remove only the invalid patterns and keep the rest.
+          </p>
+        {/if}
+        {#if pendingInvalidPaths.length > 0}
+          <div
+            class="rounded-md border border-border bg-muted/30 p-3 max-h-44 overflow-y-auto"
+          >
+            <p
+              class="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2"
+            >
+              Invalid Patterns ({pendingInvalidPaths.length})
+            </p>
+            <ul class="space-y-1.5">
+              {#each pendingInvalidPaths as pattern}
+                <li class="font-mono text-xs break-all text-foreground/90">
+                  {pattern}
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="flex justify-end gap-3 pt-4">
+      <AlertDialog.Cancel
+        class="cursor-pointer hover text-foreground bg-secondary"
+        onclick={cancelLibraryScopeChange}
+      >
+        Cancel
+      </AlertDialog.Cancel>
+      <AlertDialog.Action
+        class="cursor-pointer hover"
+        onclick={confirmLibraryScopeChange}
+      >
+        {#if pendingInvalidPaths.length >= pendingTotalPaths && pendingTotalPaths > 0}
+          Clear Paths and Continue
+        {:else}
+          Remove Invalid Paths and Continue
+        {/if}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
