@@ -6,24 +6,35 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+  import Eye from "@lucide/svelte/icons/eye";
+  import CompactPagination from "$lib/components/compact-pagination.svelte";
   import Notice from "$lib/components/notice.svelte";
+  import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
+  import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
   import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
+  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
+  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
+  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { toast } from "svelte-sonner";
   import {
     MediaType,
     SettingsTab,
     type LibraryType,
     type ReclaimRule,
+    type PaginatedResponse,
     type RuleCondition,
     type RuleConditionOperator,
     type RuleDefinition,
     type RuleNode,
+    type RulePreviewEntry,
   } from "$lib/types/shared";
 
   interface Props {
@@ -98,6 +109,21 @@
   let pendingLibrarySelection = $state<string[] | null>(null);
   let pendingInvalidPaths = $state<string[]>([]);
   let pendingTotalPaths = $state(0);
+
+  // preview states
+  let previewDialogOpen = $state(false);
+  let previewLoading = $state(false);
+  let previewError = $state("");
+  let previewData = $state<PaginatedResponse<RulePreviewEntry> | null>(null);
+  let previewSnapshot = $state<{
+    name: string | null;
+    media_type: MediaType;
+    target_scope: "movie_version" | "series" | "season";
+    definition: RuleDefinition;
+    per_page: number;
+  } | null>(null);
+
+  const PREVIEW_PER_PAGE = 25;
 
   const selectedMediaType = $derived(
     targetScope === "movie_version" ? MediaType.Movie : MediaType.Series,
@@ -347,6 +373,7 @@
   const canSaveRule = $derived(
     name.trim().length > 0 && hasValidConditions(definition.root),
   );
+  const canPreviewRule = $derived(hasValidConditions(definition.root));
 
   const pruneInvalidPathPatternsFromNode = (
     node: RuleNode,
@@ -500,7 +527,6 @@
         enabled,
         media_type: selectedMediaType,
         target_scope: targetScope,
-        library_ids: null,
         definition,
         action: {
           candidate: true,
@@ -517,6 +543,85 @@
       saving = false;
     }
   };
+
+  // --- preview helpers ----
+  const previewSizeLabel = (value: number | null): string =>
+    value !== null ? `${value.toFixed(2)} GB` : "Unknown size";
+
+  const fileNameFromPath = (
+    path: string | null,
+    fallbackFileName: string | null = null,
+  ): string => {
+    if (fallbackFileName && fallbackFileName.trim()) {
+      return fallbackFileName.trim();
+    }
+    if (!path) return "Unknown file";
+    const parts = path.split(/[/\\]/);
+    return parts[parts.length - 1] || "Unknown file";
+  };
+
+  const previewBadges = (entry: RulePreviewEntry): string[] => {
+    const badges: string[] = [];
+    if (entry.season_id !== null) {
+      if (entry.season_max_video_height) {
+        badges.push(`${entry.season_max_video_height}p`);
+      }
+      if (entry.season_has_dolby_vision) badges.push("DV");
+      else if (entry.season_has_hdr) badges.push("HDR");
+    } else {
+      if (entry.version_video_resolution) {
+        badges.push(entry.version_video_resolution);
+      } else if (entry.version_video_height) {
+        badges.push(`${entry.version_video_height}p`);
+      }
+      if (entry.version_video_dolby_vision) badges.push("DV");
+      else if (entry.version_video_hdr) badges.push("HDR");
+      if (entry.version_video_codec_family) {
+        badges.push(entry.version_video_codec_family.toUpperCase());
+      }
+    }
+    badges.push(previewSizeLabel(entry.estimated_space_gb));
+    return badges;
+  };
+
+  const previewRuleSummary = (entry: RulePreviewEntry): string[] =>
+    entry.reason_tokens.slice(0, 2);
+
+  const previewExtraRuleCount = (entry: RulePreviewEntry): number =>
+    Math.max(0, entry.reason_tokens.length - 2);
+
+  const buildPreviewSnapshot = () => ({
+    name: name.trim() || null,
+    media_type: selectedMediaType,
+    target_scope: targetScope,
+    definition: cloneDefinition(definition),
+    per_page: PREVIEW_PER_PAGE,
+  });
+
+  const loadPreviewPage = async (page: number, openDialog = true) => {
+    const snapshot = page === 1 ? buildPreviewSnapshot() : previewSnapshot;
+    if (!snapshot) return;
+    previewLoading = true;
+    previewError = "";
+    if (page === 1) previewData = null;
+    if (openDialog) previewDialogOpen = true;
+    try {
+      previewData = await post_api<PaginatedResponse<RulePreviewEntry>>(
+        "/api/rules/preview",
+        {
+          ...snapshot,
+          page,
+        },
+      );
+      previewSnapshot = snapshot;
+    } catch (e: any) {
+      previewData = null;
+      previewError = e.message ?? "Failed to preview rule matches.";
+    } finally {
+      previewLoading = false;
+    }
+  };
+  // --- preview helpers ----
 
   // synchronize library scope state with rule definition, ensuring the canonical library
   // condition is the single source of truth
@@ -553,7 +658,7 @@
 </script>
 
 <div class="space-y-6">
-  <div class="flex items-center justify-between gap-3">
+  <div class="flex flex-col md:flex-row items-center justify-between gap-3">
     <div class="flex items-center gap-3">
       <Button
         class="cursor-pointer"
@@ -572,14 +677,29 @@
         </p>
       </div>
     </div>
-    <Button
-      onclick={save}
-      disabled={saving || !canSaveRule}
-      class="gap-2 cursor-pointer"
-    >
-      <Save class="size-4" />
-      {saving ? "Saving..." : "Save Rule"}
-    </Button>
+    <div class="flex items-center gap-2">
+      <Button
+        type="button"
+        variant="secondary"
+        onclick={() => void loadPreviewPage(1)}
+        disabled={previewLoading || !canPreviewRule}
+        class="cursor-pointer"
+      >
+        {#if previewLoading}
+          <Eye class="size-4 animate-spin" /> Previewing...
+        {:else}
+          <Eye class="size-4" /> Preview Matches
+        {/if}
+      </Button>
+      <Button
+        onclick={save}
+        disabled={saving || !canSaveRule}
+        class="gap-2 cursor-pointer"
+      >
+        <Save class="size-4" />
+        {saving ? "Saving..." : "Save Rule"}
+      </Button>
+    </div>
   </div>
 
   <div class="flex flex-col gap-4 rounded-lg border border-border bg-card p-5">
@@ -600,7 +720,7 @@
         >
         <Input
           id="rule-name"
-          class="input-hover-el"
+          class="input-hover-el text-foreground"
           bind:value={name}
           placeholder="Rule name"
         />
@@ -610,7 +730,9 @@
       <div class="space-y-2 w-full">
         <Label class="text-sm font-medium text-foreground">Target</Label>
         <Select.Root type="single" bind:value={targetScope}>
-          <Select.Trigger class="w-full flex-10 bg-card text-card-foreground">
+          <Select.Trigger
+            class="w-full flex-10 bg-card text-card-foreground cursor-pointer"
+          >
             {targetScope === "movie_version"
               ? "Movie version"
               : targetScope === "series"
@@ -672,9 +794,14 @@
                   <JellyfinSVG />
                 {:else if library.serviceType === SettingsTab.Plex}
                   <PlexSVG />
+                {:else if library.serviceType === SettingsTab.Emby}
+                  <EmbySVG />
                 {/if}
               </div>
-              <Label for={`scope-library-${library.libraryId}`}>
+              <Label
+                class="text-foreground"
+                for={`scope-library-${library.libraryId}`}
+              >
                 {library.libraryName}
               </Label>
             </div>
@@ -718,7 +845,13 @@
     <div class="flex items-center justify-between gap-3">
       <div class="w-full">
         <div class="flex justify-between w-full">
-          <h3 class="font-semibold text-foreground">{selectedArrName}</h3>
+          <h3 class="font-semibold text-foreground flex items-center gap-2">
+            {#if selectedArrName === "Radarr"}
+              <RadarrSVG class="size-4 inline" /> {selectedArrName}
+            {:else if selectedArrName === "Sonarr"}
+              <SonarrSVG class="size-4 inline" /> {selectedArrName}
+            {/if}
+          </h3>
           <div class="flex items-center gap-2">
             <span class="text-sm font-medium text-foreground">Enabled</span>
             <Switch
@@ -759,7 +892,9 @@
               }
             }}
           >
-            <Select.Trigger class="w-full flex-10 bg-card text-card-foreground">
+            <Select.Trigger
+              class="w-full flex-10 bg-card text-card-foreground cursor-pointer"
+            >
               {#if selectedArrInstanceName}
                 {selectedArrInstanceName}
               {:else}
@@ -800,6 +935,139 @@
   </div>
 </div>
 
+<!-- preview dialog -->
+<Dialog.Root bind:open={previewDialogOpen}>
+  <Dialog.Content
+    onInteractOutside={(e) => {
+      e.preventDefault(); // prevent clicking out of preview without hitting X
+    }}
+    class="w-full sm:max-w-4xl overflow-hidden bg-card text-card-foreground"
+  >
+    <Dialog.Header>
+      <Dialog.Title>Preview Matches</Dialog.Title>
+      <Dialog.Description>
+        Dry run only. Previewing does not save the rule or create cleanup
+        candidates.
+      </Dialog.Description>
+    </Dialog.Header>
+
+    <div class="space-y-4">
+      <div class="flex items-center justify-between gap-3">
+        <div class="text-sm text-muted-foreground">
+          {#if previewData}
+            <strong>{previewData.total}</strong> matching item{previewData.total ===
+            1
+              ? ""
+              : "s"}
+          {:else}
+            No preview loaded.
+          {/if}
+        </div>
+        {#if previewData && previewData.total_pages > 1}
+          <CompactPagination
+            currentPage={previewData.page}
+            totalPages={previewData.total_pages}
+            onPageChange={(page) => void loadPreviewPage(page, false)}
+          />
+        {/if}
+      </div>
+      <div class="h-[55vh] overflow-y-auto overflow-x-hidden pr-2">
+        {#if previewError}
+          <Notice type="error" title="Preview Failed">
+            {previewError}
+          </Notice>
+        {:else if previewLoading}
+          <div class="flex justify-center items-center py-20">
+            <Spinner class="size-12 text-primary" />
+          </div>
+        {:else if previewData && previewData.items.length === 0}
+          <div
+            class="rounded-md border border-border bg-muted/20 p-6 text-sm text-muted-foreground"
+          >
+            No matching items for the current preview.
+          </div>
+        {:else if previewData}
+          <div class="space-y-3 pr-1">
+            {#each previewData.items as entry, index (`${entry.media_type}-${entry.media_id}-${entry.movie_version_id ?? "base"}-${entry.season_id ?? "none"}-${index}`)}
+              {@const previewRules = previewRuleSummary(entry)}
+              {@const extraRuleCount = previewExtraRuleCount(entry)}
+              <div class="rounded-lg border border-border bg-muted/20 p-4">
+                <div class="flex gap-3">
+                  <PosterThumb
+                    mediaType={entry.media_type}
+                    posterUrl={entry.poster_url}
+                  />
+                  <div class="min-w-0 flex-1 space-y-2">
+                    <div
+                      class="flex flex-wrap items-start justify-between gap-2"
+                    >
+                      <div class="min-w-0">
+                        <div class="text-sm font-medium text-foreground">
+                          <span class="break-all">{entry.media_title}</span>
+                          {#if entry.media_year}
+                            <span class="text-muted-foreground"
+                              >({entry.media_year})</span
+                            >
+                          {/if}
+                        </div>
+                        <div class="mt-1 flex flex-wrap items-center gap-2">
+                          <MediaTypeBadge mediaType={entry.media_type} />
+                          {#if entry.season_id !== null}
+                            <span class="text-xs text-muted-foreground">
+                              Season {entry.season_number ?? "?"}
+                            </span>
+                          {:else if entry.movie_version_id !== null}
+                            <span
+                              class="text-xs text-muted-foreground break-all"
+                            >
+                              {fileNameFromPath(
+                                entry.version_path,
+                                entry.version_file_name,
+                              )}
+                            </span>
+                          {/if}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each previewBadges(entry) as badge}
+                        <span
+                          class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card text-foreground"
+                        >
+                          {badge}
+                        </span>
+                      {/each}
+                    </div>
+
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each previewRules as rule}
+                        <span
+                          class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card text-foreground"
+                        >
+                          {rule}
+                        </span>
+                      {/each}
+                      {#if extraRuleCount > 0}
+                        <span
+                          class="text-xs leading-5 px-2 rounded-full border border-border bg-card text-muted-foreground"
+                        >
+                          +{extraRuleCount} more
+                        </span>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- library change confirmation dialog -->
 <AlertDialog.Root
   open={libraryChangeDialogOpen}
   onOpenChange={(open) => {
