@@ -103,50 +103,6 @@ export interface ReclaimRule {
   target_scope: "movie_version" | "series" | "season" | null;
   definition: RuleDefinition | null;
   action: RuleAction | null;
-  library_ids: string[] | null;
-  min_popularity: number | null;
-  max_popularity: number | null;
-  min_vote_average: number | null;
-  max_vote_average: number | null;
-  min_vote_count: number | null;
-  max_vote_count: number | null;
-  min_view_count: number | null;
-  max_view_count: number | null;
-  include_never_watched: boolean;
-  min_days_since_added: number | null;
-  max_days_since_added: number | null;
-  min_days_since_last_watched: number | null;
-  max_days_since_last_watched: number | null;
-  min_size: number | null;
-  max_size: number | null;
-  paths: string[] | null;
-  series_status: string[] | null;
-  video_codec_families_in: string[] | null;
-  video_codec_families_not_in: string[] | null;
-  audio_codec_families_in: string[] | null;
-  audio_codec_families_not_in: string[] | null;
-  has_hdr: boolean | null;
-  has_dolby_vision: boolean | null;
-  min_video_width: number | null;
-  max_video_width: number | null;
-  min_video_height: number | null;
-  max_video_height: number | null;
-  min_audio_channels: number | null;
-  max_audio_channels: number | null;
-  min_duration: number | null;
-  max_duration: number | null;
-  min_audio_track_count: number | null;
-  max_audio_track_count: number | null;
-  audio_languages_in: string[] | null;
-  audio_languages_not_in: string[] | null;
-  subtitle_languages_in: string[] | null;
-  subtitle_languages_not_in: string[] | null;
-  video_color_spaces_in: string[] | null;
-  video_color_spaces_not_in: string[] | null;
-  video_color_transfers_in: string[] | null;
-  video_color_transfers_not_in: string[] | null;
-  video_color_primaries_in: string[] | null;
-  video_color_primaries_not_in: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -485,6 +441,11 @@ export interface ReclaimCandidateEntry {
       }[]
     | null;
 }
+
+export type RulePreviewEntry = Omit<
+  ReclaimCandidateEntry,
+  "id" | "has_pending_request" | "created_at"
+>;
 
 export interface DashboardKpis {
   total_movies: number;
