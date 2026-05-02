@@ -781,6 +781,25 @@ class ProtectionRequest(Base):
     )
 
 
+class ReclaimHistory(Base):
+    """Historical record of reclaim actions taken on media items."""
+
+    __tablename__ = "reclaim_history"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(32))
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    name: Mapped[str | None] = mapped_column(String(255), default=None)
+    size: Mapped[int | None] = mapped_column(Integer, default=None)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+
+
 class TaskRun(Base):
     """Track scheduled task execution history and status."""
 
