@@ -13,14 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates
   - Movie/Series & Season level media info (movies are more detailed)
   - Movie version control of deletions
-- Multi *arr multi instance
-  - Added ability to name *arr instance in frontend
-  - Added ability to manage *arr instances via API in backend
+- Multi \*arr multi instance
+  - Added ability to name \*arr instance in frontend
+  - Added ability to manage \*arr instances via API in backend
   - Support in ServiceManager
 - Rule Engine
   - Rebuilt rule engine completely
   - Added support for complex logical rules via AND/OR and groups
   - Can now preview potential candidates based on the current rules selections
+- Now keeps history of reclaimed media (starting from **0.1.0-beta-14**)
 
 ### Changed
 
@@ -31,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- *Arr tagging in general settings (this is handled per rule now)
+- \*Arr tagging in general settings (this is handled per rule now)
 
 ### Fixed
 
