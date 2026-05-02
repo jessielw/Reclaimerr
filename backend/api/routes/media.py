@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
@@ -19,12 +20,15 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
+    SeriesServiceRef,
+    ServiceMediaLibrary,
     User,
 )
 from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
 from backend.models.media import (
     ArrRefResponse,
     CandidateEntry,
+    CandidateLibraryRef,
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
     MediaStatusInfo,
@@ -582,6 +586,7 @@ async def get_candidates(
             Movie.year.label("movie_year"),
             Movie.poster_url.label("movie_poster_url"),
             MovieVersion.service.label("version_service"),
+            MovieVersion.library_id.label("version_library_id"),
             MovieVersion.library_name.label("version_library_name"),
             MovieVersion.video_codec_family.label("version_video_codec_family"),
             MovieVersion.audio_codec_family.label("version_audio_codec_family"),
@@ -713,6 +718,40 @@ async def get_candidates(
         )
         pending_series = {r[0] for r in req_result.all()}
 
+    global_library_name_by_id: dict[str, str] = {}
+    libraries_result = await db.execute(
+        select(ServiceMediaLibrary.library_id, ServiceMediaLibrary.library_name)
+    )
+    for library_id, library_name in libraries_result.all():
+        if not library_id or not library_name:
+            continue
+        if library_id not in global_library_name_by_id:
+            global_library_name_by_id[library_id] = library_name
+
+    series_library_refs_by_id: dict[int, list[CandidateLibraryRef]] = {}
+    if series_ids:
+        refs_result = await db.execute(
+            select(
+                SeriesServiceRef.series_id,
+                SeriesServiceRef.service,
+                SeriesServiceRef.library_id,
+                SeriesServiceRef.library_name,
+            ).where(SeriesServiceRef.series_id.in_(series_ids))
+        )
+        for series_id, service, library_id, library_name in refs_result.all():
+            if series_id is None or not library_id or not library_name:
+                continue
+            refs = series_library_refs_by_id.setdefault(series_id, [])
+            if any(ref.library_id == library_id for ref in refs):
+                continue
+            refs.append(
+                CandidateLibraryRef(
+                    library_id=library_id,
+                    library_name=library_name,
+                    service=service.value if service is not None else None,
+                )
+            )
+
     items_out: list[CandidateEntry] = []
     for row in rows:
         c = row.ReclaimCandidate
@@ -721,6 +760,13 @@ async def get_candidates(
         media_title = row.movie_title if is_movie else row.series_title
         media_year = row.movie_year if is_movie else row.series_year
         poster_url = row.movie_poster_url if is_movie else row.series_poster_url
+        library_name_by_id = dict(global_library_name_by_id)
+        if row.version_library_id and row.version_library_name:
+            library_name_by_id[row.version_library_id] = row.version_library_name
+        for ref in series_library_refs_by_id.get(c.series_id or -1, []):
+            library_name_by_id[ref.library_id] = ref.library_name
+        reason_parts = normalize_reason_parts(c.reason_data, library_name_by_id)
+
         has_pending = (
             (
                 (c.movie_id in pending_movies_whole)
@@ -749,6 +795,7 @@ async def get_candidates(
                 version_service=row.version_service
                 if row.version_service is not None
                 else None,
+                version_library_id=row.version_library_id,
                 version_library_name=row.version_library_name,
                 version_video_codec_family=row.version_video_codec_family,
                 version_audio_codec_family=row.version_audio_codec_family,
@@ -763,7 +810,8 @@ async def get_candidates(
                 version_path=row.version_path,
                 version_file_name=row.version_file_name,
                 version_subtitle_languages=row.version_subtitle_languages,
-                reason=c.reason,
+                reason_parts=reason_parts,
+                reason_tokens=reason_tokens(reason_parts),
                 estimated_space_gb=c.estimated_space_gb,
                 has_pending_request=has_pending,
                 created_at=to_utc_isoformat(c.created_at) or "",
@@ -790,6 +838,9 @@ async def get_candidates(
                 if c.season_id is not None
                 else None,
                 season_subtitle_languages=row.season_subtitle_languages
+                if c.season_id is not None
+                else None,
+                series_library_refs=series_library_refs_by_id.get(c.series_id or -1)
                 if c.season_id is not None
                 else None,
             )
