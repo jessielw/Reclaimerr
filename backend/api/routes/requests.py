@@ -12,6 +12,7 @@ from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     Movie,
+    MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
@@ -48,7 +49,8 @@ async def resolve_effective_protection(
     )
     if request.media_type == MediaType.MOVIE:
         protected_query = protected_query.where(
-            ProtectedMedia.movie_id == request.movie_id
+            ProtectedMedia.movie_id == request.movie_id,
+            ProtectedMedia.movie_version_id == request.movie_version_id,
         )
     else:
         protected_query = protected_query.where(
@@ -108,6 +110,7 @@ async def create_protection_request(
 
     # validate season if provided
     season: Season | None = None
+    movie_version: MovieVersion | None = None
     if request_data.season_id is not None:
         if request_data.media_type is not MediaType.SERIES:
             raise HTTPException(
@@ -126,13 +129,33 @@ async def create_protection_request(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
             )
 
+    if request_data.movie_version_id is not None:
+        if request_data.media_type is not MediaType.MOVIE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="movie_version_id is only valid for movies",
+            )
+        version_result = await db.execute(
+            select(MovieVersion).where(
+                MovieVersion.id == request_data.movie_version_id,
+                MovieVersion.movie_id == request_data.media_id,
+            )
+        )
+        movie_version = version_result.scalar_one_or_none()
+        if not movie_version:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Movie version not found",
+            )
+
     # check if already protected
     protected_query = select(ProtectedMedia).where(
         ProtectedMedia.media_type == request_data.media_type
     )
     if request_data.media_type is MediaType.MOVIE:
         protected_query = protected_query.where(
-            ProtectedMedia.movie_id == request_data.media_id
+            ProtectedMedia.movie_id == request_data.media_id,
+            ProtectedMedia.movie_version_id == request_data.movie_version_id,
         )
     else:
         protected_query = protected_query.where(
@@ -155,7 +178,8 @@ async def create_protection_request(
     )
     if request_data.media_type == MediaType.MOVIE:
         existing_query = existing_query.where(
-            ProtectionRequest.movie_id == request_data.media_id
+            ProtectionRequest.movie_id == request_data.media_id,
+            ProtectionRequest.movie_version_id == request_data.movie_version_id,
         )
     else:
         existing_query = existing_query.where(
@@ -176,7 +200,8 @@ async def create_protection_request(
     )
     if request_data.media_type is MediaType.MOVIE:
         candidate_query = candidate_query.where(
-            ReclaimCandidate.movie_id == request_data.media_id
+            ReclaimCandidate.movie_id == request_data.media_id,
+            ReclaimCandidate.movie_version_id == request_data.movie_version_id,
         )
     else:
         candidate_query = candidate_query.where(
@@ -211,6 +236,7 @@ async def create_protection_request(
         movie_id=request_data.media_id
         if request_data.media_type is MediaType.MOVIE
         else None,
+        movie_version_id=request_data.movie_version_id,
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
@@ -242,6 +268,7 @@ async def create_protection_request(
             movie_id=request_data.media_id
             if request_data.media_type == MediaType.MOVIE
             else None,
+            movie_version_id=request_data.movie_version_id,
             series_id=request_data.media_id
             if request_data.media_type == MediaType.SERIES
             else None,
@@ -289,6 +316,7 @@ async def create_protection_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=protection_request.candidate_id,
+        movie_version_id=protection_request.movie_version_id,
         season_id=request_data.season_id,
         season_number=season.season_number if season else None,
         requested_by_user_id=user.id,
@@ -369,6 +397,7 @@ async def get_my_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                movie_version_id=req.movie_version_id,
                 season_id=req.season_id,
                 season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
@@ -441,6 +470,7 @@ async def get_all_requests(
                 media_year=media.year,
                 poster_url=media.poster_url,
                 candidate_id=req.candidate_id,
+                movie_version_id=req.movie_version_id,
                 season_id=req.season_id,
                 season_number=req.season.season_number if req.season else None,
                 requested_by_user_id=req.requested_by_user_id,
@@ -554,6 +584,7 @@ async def approve_request(
     protection_entry = ProtectedMedia(
         media_type=request.media_type,
         movie_id=request.movie_id,
+        movie_version_id=request.movie_version_id,
         series_id=request.series_id,
         season_id=request.season_id,
         reason=f"Exception request approved: {request.reason}",
@@ -612,6 +643,7 @@ async def approve_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        movie_version_id=request.movie_version_id,
         season_id=request.season_id,
         season_number=approve_season_number,
         requested_by_user_id=request.requested_by_user_id,
@@ -731,6 +763,7 @@ async def deny_request(
         media_title=media.title,
         media_year=media.year,
         candidate_id=request.candidate_id,
+        movie_version_id=request.movie_version_id,
         season_id=request.season_id,
         season_number=deny_season_number,
         requested_by_user_id=request.requested_by_user_id,
