@@ -1,63 +1,64 @@
-import re
 from datetime import UTC, datetime
-from pathlib import PurePath
+from typing import Any
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.logger import LOG
+from backend.core.rule_engine import (
+    TARGET_MOVIE_VERSION,
+    TARGET_SEASON,
+    TARGET_SERIES,
+    evaluate_advanced_rule,
+    normalize_rule_target,
+)
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
 from backend.database.models import (
-    GeneralSettings,
     Movie,
+    MovieArrRef,
+    MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
     ReclaimRule,
     Season,
     Series,
+    SeriesArrRef,
 )
 from backend.enums import MediaType, NotificationType, Service, Task
+from backend.models.cleanup import MatchedCandidateRecord
 from backend.services.notifications import notify_all_users
 
 __all__ = [
     "scan_cleanup_candidates",
     "tag_cleanup_candidates",
-    "delete_cleanup_candidates",
+    # "delete_cleanup_candidates",
     "delete_specific_candidates",
+    "collect_rule_preview_matches",
 ]
 
 
-def _path_matches_any(file_paths: list[str], patterns: list[str]) -> bool:
-    """Return True if any file_path matches any pattern.
+async def collect_rule_preview_matches(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> list[MatchedCandidateRecord]:
+    """Evaluate rules without mutating persisted candidates."""
 
-    Patterns are regex strings (case-insensitive) that should be validated
-    before being stored. All patterns are expected to be valid regex.
-    """
-    if not patterns or not file_paths:
-        return False
+    movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
+    series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
+    season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
 
-    normalized_files = [PurePath(fp).as_posix().lower() for fp in file_paths if fp]
-    if not normalized_files:
-        return False
-
-    for pattern in patterns:
-        pattern = (pattern or "").strip()
-        if not pattern:
-            continue
-
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-            if any(regex.search(fp) for fp in normalized_files):
-                return True
-        except re.error:
-            # invalid regex (should not happen if patterns are validated, but skip to be safe)
-            LOG.warning(f"Invalid regex pattern: {pattern}")
-            continue
-    return False
+    matches: list[MatchedCandidateRecord] = []
+    if movie_rules:
+        matches.extend(await _collect_movie_version_candidate_records(db, movie_rules))
+    if series_rules:
+        matches.extend(await _collect_series_candidate_records(db, series_rules))
+    if season_rules:
+        matches.extend(await _collect_season_candidate_records(db, season_rules))
+    return matches
 
 
 async def scan_cleanup_candidates() -> None:
@@ -93,9 +94,13 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         )
         rules = result.scalars().all()
 
-        # separate rules by media type
-        movie_rules = [r for r in rules if r.media_type == MediaType.MOVIE]
-        series_rules = [r for r in rules if r.media_type == MediaType.SERIES]
+        # Separate rules by explicit advanced target. Rules without a valid
+        # advanced definition are skipped by the evaluator and will not match.
+        movie_rules = [
+            r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION
+        ]
+        series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
+        season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
 
         if not rules:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
@@ -135,17 +140,26 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             candidates_created += created
             candidates_updated += updated
             candidates_removed += removed
+        else:
+            del_result = await db.execute(
+                delete(ReclaimCandidate).where(
+                    ReclaimCandidate.media_type == MediaType.SERIES,
+                    ReclaimCandidate.season_id.is_(None),
+                )
+            )
+            candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await db.commit()
 
-            # also evaluate at season level for series rules
-            s_cr, s_up, s_rm = await _process_series_seasons(db, series_rules)
+        if season_rules:
+            s_cr, s_up, s_rm = await _process_series_seasons(db, season_rules)
             candidates_created += s_cr
             candidates_updated += s_up
             candidates_removed += s_rm
         else:
-            # no series rules active - remove stale series candidates
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
-                    ReclaimCandidate.media_type == MediaType.SERIES
+                    ReclaimCandidate.media_type == MediaType.SERIES,
+                    ReclaimCandidate.season_id.isnot(None),
                 )
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
@@ -169,86 +183,49 @@ async def _process_media(
 
     Returns (created_count, updated_count, removed_count)
     """
-    # get all media items
     if media_type is MediaType.MOVIE:
-        result = await db.execute(
-            select(Movie)
-            .where(Movie.removed_at.is_(None))
-            .options(selectinload(Movie.versions))
-        )
-        media_items = result.scalars().all()
-        id_field = "movie_id"
-    else:
-        result = await db.execute(
-            select(Series)
-            .where(Series.removed_at.is_(None))
-            .options(selectinload(Series.service_refs))
-        )
-        media_items = result.scalars().all()
-        id_field = "series_id"
+        return await _process_movie_versions(db, rules)
 
-    LOG.info(f"Processing {len(media_items)} {media_type.value} items")
+    records = await _collect_series_candidate_records(db, rules)
+    return await _sync_series_candidates(db, records)
+
+
+async def _collect_series_candidate_records(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> list[MatchedCandidateRecord]:
+    """Evaluate whole-series rules without mutating persisted candidates."""
+
+    # get all media items
+    result = await db.execute(
+        select(Series)
+        .where(Series.removed_at.is_(None))
+        .options(selectinload(Series.service_refs))
+    )
+    media_items = result.scalars().all()
+
+    LOG.info(f"Processing {len(media_items)} {MediaType.SERIES.value} items")
 
     # fetch all protected items for this media type to skip them
     now = datetime.now(UTC)
-    if media_type is MediaType.MOVIE:
-        protected_result = await db.execute(
-            select(ProtectedMedia).where(
-                ProtectedMedia.media_type == MediaType.MOVIE,
-                ProtectedMedia.movie_id.isnot(None),
-                or_(
-                    ProtectedMedia.permanent.is_(True),
-                    ProtectedMedia.expires_at.is_(None),
-                    ProtectedMedia.expires_at > now,
-                ),
-            )
+    protected_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.series_id.isnot(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
         )
-        protected_ids = {b.movie_id for b in protected_result.scalars().all()}
-    else:
-        protected_result = await db.execute(
-            select(ProtectedMedia).where(
-                ProtectedMedia.media_type == MediaType.SERIES,
-                ProtectedMedia.series_id.isnot(None),
-                or_(
-                    ProtectedMedia.permanent.is_(True),
-                    ProtectedMedia.expires_at.is_(None),
-                    ProtectedMedia.expires_at > now,
-                ),
-            )
-        )
-        protected_ids = {b.series_id for b in protected_result.scalars().all()}
+    )
+    protected_ids = {b.series_id for b in protected_result.scalars().all()}
 
-    LOG.info(f"Found {len(protected_ids)} protected {media_type.value} items to skip")
+    LOG.info(
+        f"Found {len(protected_ids)} protected {MediaType.SERIES.value} items to skip"
+    )
 
-    # fetch all existing candidates for this media type once (avoid N queries in loop)
-    if media_type is MediaType.MOVIE:
-        result = await db.execute(
-            select(ReclaimCandidate).where(
-                ReclaimCandidate.media_type == MediaType.MOVIE
-            )
-        )
-    else:
-        # only series-level candidates (season_id IS NULL)
-        result = await db.execute(
-            select(ReclaimCandidate).where(
-                ReclaimCandidate.media_type == MediaType.SERIES,
-                ReclaimCandidate.season_id.is_(None),
-            )
-        )
-    existing_candidates = result.scalars().all()
-
-    # build lookup - movie_id/series_id -> candidate
-    candidate_lookup = {}
-    for candidate in existing_candidates:
-        key = (
-            candidate.movie_id if media_type is MediaType.MOVIE else candidate.series_id
-        )
-        if key:
-            candidate_lookup[key] = candidate
-
-    candidates_created = 0
-    candidates_updated = 0
-    matched_item_ids: set[int] = set()
+    records: list[MatchedCandidateRecord] = []
 
     for item in media_items:
         # skip protected items
@@ -258,103 +235,257 @@ async def _process_media(
         # evaluate all rules against this item
         matched_rules = []
         matched_criteria = {}
-        reasons = []
+        reasons: list[dict[str, Any]] = []
 
         for rule in rules:
             if _evaluate_movie_rule(item, rule, matched_criteria, reasons):
                 matched_rules.append(rule.id)
 
-        # if item matches at least one rule, create/update candidate
-        if matched_rules:
-            matched_item_ids.add(item.id)
-            # check if candidate already exists using lookup dict
-            existing = candidate_lookup.get(item.id)
+        if not matched_rules:
+            continue
 
-            combined_reason = "; ".join(reasons)
+        records.append(
+            MatchedCandidateRecord(
+                media_type=MediaType.SERIES,
+                series_id=item.id,
+                matched_rule_ids=matched_rules,
+                matched_criteria=matched_criteria,
+                reason=_rule_reason_text(reasons),
+                reason_data=reasons,
+                estimated_space_gb=item.size / (1024**3) if item.size else None,
+            )
+        )
 
-            # calculate space savings (convert bytes to GB)
-            space_gb = item.size / (1024**3) if item.size else None
+    return records
 
-            if existing:
-                # update existing candidate
-                existing.matched_rule_ids = matched_rules
-                existing.matched_criteria = matched_criteria
-                existing.reason = combined_reason
-                existing.estimated_space_gb = space_gb
-                existing.updated_at = datetime.now(UTC)
-                candidates_updated += 1
-            else:
-                # create new candidate
-                candidate_data = {
-                    "media_type": media_type,
-                    "matched_rule_ids": matched_rules,
-                    "matched_criteria": matched_criteria,
-                    "reason": combined_reason,
-                    "estimated_space_gb": space_gb,
-                }
-                if id_field == "movie_id":
-                    candidate_data["movie_id"] = item.id
-                else:
-                    candidate_data["series_id"] = item.id
 
-                candidate = ReclaimCandidate(**candidate_data)
-                db.add(candidate)
-                candidates_created += 1
+async def _sync_series_candidates(
+    db: AsyncSession,
+    records: list[MatchedCandidateRecord],
+) -> tuple[int, int, int]:
+    """Synchronize series candidates with the database."""
+    result = await db.execute(
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.media_type == MediaType.SERIES,
+            ReclaimCandidate.season_id.is_(None),
+        )
+    )
+    existing_candidates = result.scalars().all()
+    candidate_lookup = {
+        candidate.series_id: candidate
+        for candidate in existing_candidates
+        if candidate.series_id is not None
+    }
+    matched_item_ids = {
+        record.series_id for record in records if record.series_id is not None
+    }
 
-    # remove candidates for items that no longer match any rule (or are now protected)
+    candidates_created = 0
+    candidates_updated = 0
+    for record in records:
+        if record.series_id is None:
+            continue
+        existing = candidate_lookup.get(record.series_id)
+        if existing:
+            existing.matched_rule_ids = record.matched_rule_ids
+            existing.matched_criteria = record.matched_criteria
+            existing.reason = record.reason
+            existing.reason_data = record.reason_data
+            existing.estimated_space_gb = record.estimated_space_gb
+            existing.updated_at = datetime.now(UTC)
+            candidates_updated += 1
+        else:
+            db.add(
+                ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    series_id=record.series_id,
+                    matched_rule_ids=record.matched_rule_ids,
+                    matched_criteria=record.matched_criteria,
+                    reason=record.reason,
+                    reason_data=record.reason_data,
+                    estimated_space_gb=record.estimated_space_gb,
+                )
+            )
+            candidates_created += 1
+
     stale_candidates = [
-        c for key, c in candidate_lookup.items() if key not in matched_item_ids
+        candidate
+        for series_id, candidate in candidate_lookup.items()
+        if series_id not in matched_item_ids
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    # commit if anything changed
     if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
         await db.commit()
 
-    # diagnostic: if nothing matched at all, log a breakdown of why
-    # evaluable = [
-    #     item
-    #     for item in media_items
-    #     if item.id not in {b for b in protected_ids}
-    # ]
-    # if candidates_created == 0 and candidates_updated == 0 and evaluable:
-    #     no_size = sum(1 for item in evaluable if not item.size or item.size == 0)
-    #     null_popularity = sum(
-    #         1 for item in evaluable if item.popularity is None
-    #     ) if any(r.min_popularity is not None or r.max_popularity is not None for r in rules) else 0
-    #     null_vote_avg = sum(
-    #         1 for item in evaluable if item.vote_average is None
-    #     ) if any(r.min_vote_average is not None or r.max_vote_average is not None for r in rules) else 0
+    return candidates_created, candidates_updated, candidates_removed
 
-    #     # check library filter: count items that have no version matching any rule's library_ids
-    #     lib_filtered_rules = [r for r in rules if r.library_ids and len(r.library_ids) > 0]
-    #     all_rule_lib_ids: set[str] = set()
-    #     for r in lib_filtered_rules:
-    #         all_rule_lib_ids.update(r.library_ids or [])
-    #     if all_rule_lib_ids:
-    #         no_lib_match = sum(
-    #             1
-    #             for item in evaluable
-    #             if item.size and item.size > 0
-    #             and not any(
-    #                 v.library_id in all_rule_lib_ids
-    #                 for v in (item.versions if isinstance(item, Movie) else item.service_refs)
-    #             )
-    #         )
-    #     else:
-    #         no_lib_match = 0
 
-    #     LOG.warning(
-    #         f"Scan produced 0 {media_type.value} candidates from {len(evaluable)} eligible items. "
-    #         f"Breakdown: {no_size} excluded (size=0/None), "
-    #         f"{null_popularity} excluded (popularity=None), "
-    #         f"{null_vote_avg} excluded (vote_average=None), "
-    #         f"{no_lib_match} excluded (library_ids filter mismatch). "
-    #         f"If library_ids mismatch is high, your rules reference library IDs from a previous "
-    #         f"media server. Re-save or clear the library filter on your rules to fix this."
-    #     )
+async def _process_movie_versions(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> tuple[int, int, int]:
+    """Evaluate movie rules at movie-version granularity."""
+    records = await _collect_movie_version_candidate_records(db, rules)
+    return await _sync_movie_version_candidates(db, records)
+
+
+async def _collect_movie_version_candidate_records(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> list[MatchedCandidateRecord]:
+    """Evaluate movie-version rules without mutating persisted candidates."""
+    result = await db.execute(
+        select(Movie)
+        .where(Movie.removed_at.is_(None))
+        .options(selectinload(Movie.versions))
+    )
+    movies = result.scalars().all()
+    LOG.info(f"Processing {len(movies)} movie items at version granularity")
+
+    now = datetime.now(UTC)
+    protected_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.MOVIE,
+            ProtectedMedia.movie_id.isnot(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_rows = protected_result.scalars().all()
+    protected_movie_ids = {
+        p.movie_id
+        for p in protected_rows
+        if p.movie_id is not None and p.movie_version_id is None
+    }
+    protected_version_ids = {
+        p.movie_version_id for p in protected_rows if p.movie_version_id is not None
+    }
+    LOG.info(
+        f"Found {len(protected_movie_ids)} protected movies and "
+        f"{len(protected_version_ids)} protected movie versions to skip"
+    )
+
+    records: list[MatchedCandidateRecord] = []
+
+    for movie in movies:
+        if movie.id in protected_movie_ids:
+            continue
+        if not movie.versions:
+            continue
+
+        for version in movie.versions:
+            if version.id in protected_version_ids:
+                continue
+
+            matched_rules: list[int] = []
+            matched_criteria: dict = {}
+            reasons: list[dict[str, Any]] = []
+
+            for rule in rules:
+                if _evaluate_movie_version_rule(
+                    movie, version, rule, matched_criteria, reasons
+                ):
+                    matched_rules.append(rule.id)
+
+            if not matched_rules:
+                continue
+
+            candidate_size = (
+                version.size if version.size and version.size > 0 else movie.size
+            )
+            records.append(
+                MatchedCandidateRecord(
+                    media_type=MediaType.MOVIE,
+                    movie_id=movie.id,
+                    movie_version_id=version.id,
+                    matched_rule_ids=matched_rules,
+                    matched_criteria=matched_criteria,
+                    reason=_rule_reason_text(reasons),
+                    reason_data=reasons,
+                    estimated_space_gb=candidate_size / (1024**3)
+                    if candidate_size
+                    else None,
+                )
+            )
+
+    return records
+
+
+async def _sync_movie_version_candidates(
+    db: AsyncSession,
+    records: list[MatchedCandidateRecord],
+) -> tuple[int, int, int]:
+    """Synchronize movie version candidates with the database."""
+    existing_result = await db.execute(
+        select(ReclaimCandidate).where(ReclaimCandidate.media_type == MediaType.MOVIE)
+    )
+    existing_candidates = existing_result.scalars().all()
+    version_candidate_lookup: dict[int, ReclaimCandidate] = {
+        candidate.movie_version_id: candidate
+        for candidate in existing_candidates
+        if candidate.movie_version_id is not None
+    }
+    legacy_movie_candidates = [
+        candidate
+        for candidate in existing_candidates
+        if candidate.movie_version_id is None
+    ]
+
+    matched_version_ids = {
+        record.movie_version_id
+        for record in records
+        if record.movie_version_id is not None
+    }
+
+    candidates_created = 0
+    candidates_updated = 0
+    for record in records:
+        if record.movie_version_id is None or record.movie_id is None:
+            continue
+        existing = version_candidate_lookup.get(record.movie_version_id)
+        if existing:
+            existing.matched_rule_ids = record.matched_rule_ids
+            existing.matched_criteria = record.matched_criteria
+            existing.reason = record.reason
+            existing.reason_data = record.reason_data
+            existing.estimated_space_gb = record.estimated_space_gb
+            existing.movie_id = record.movie_id
+            existing.updated_at = datetime.now(UTC)
+            candidates_updated += 1
+        else:
+            db.add(
+                ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=record.movie_id,
+                    movie_version_id=record.movie_version_id,
+                    matched_rule_ids=record.matched_rule_ids,
+                    matched_criteria=record.matched_criteria,
+                    reason=record.reason,
+                    reason_data=record.reason_data,
+                    estimated_space_gb=record.estimated_space_gb,
+                )
+            )
+            candidates_created += 1
+
+    stale_version_candidates = [
+        candidate
+        for version_id, candidate in version_candidate_lookup.items()
+        if version_id not in matched_version_ids
+    ]
+    candidates_removed = len(stale_version_candidates) + len(legacy_movie_candidates)
+    for candidate in stale_version_candidates:
+        await db.delete(candidate)
+    for candidate in legacy_movie_candidates:
+        await db.delete(candidate)
+
+    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+        await db.commit()
 
     return candidates_created, candidates_updated, candidates_removed
 
@@ -366,6 +497,15 @@ async def _process_series_seasons(
 
     Returns (created_count, updated_count, removed_count).
     """
+    records = await _collect_season_candidate_records(db, rules)
+    return await _sync_season_candidates(db, records)
+
+
+async def _collect_season_candidate_records(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> list[MatchedCandidateRecord]:
+    """Evaluate season rules without mutating persisted candidates."""
     # load all non-deleted series with their seasons and service refs
     result = await db.execute(
         select(Series)
@@ -375,7 +515,7 @@ async def _process_series_seasons(
     all_series = result.scalars().all()
 
     if not all_series:
-        return 0, 0, 0
+        return []
 
     # whole-series protection also covers every season of that series
     now = datetime.now(UTC)
@@ -411,22 +551,7 @@ async def _process_series_seasons(
         b.season_id for b in protected_season_result.scalars().all()
     }
 
-    # load all existing season-level candidates
-    existing_result = await db.execute(
-        select(ReclaimCandidate).where(
-            ReclaimCandidate.media_type == MediaType.SERIES,
-            ReclaimCandidate.season_id.isnot(None),
-        )
-    )
-    season_candidate_lookup: dict[int, ReclaimCandidate] = {
-        c.season_id: c
-        for c in existing_result.scalars().all()
-        if c.season_id is not None
-    }
-
-    candidates_created = 0
-    candidates_updated = 0
-    matched_season_ids: set[int] = set()
+    records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
         if not series.seasons:
@@ -440,7 +565,7 @@ async def _process_series_seasons(
 
             matched_rules: list[int] = []
             matched_criteria: dict = {}
-            reasons: list[str] = []
+            reasons: list[dict[str, Any]] = []
 
             for rule in rules:
                 if _evaluate_rule_for_season(
@@ -451,39 +576,81 @@ async def _process_series_seasons(
             if not matched_rules:
                 continue
 
-            matched_season_ids.add(season.id)
-            combined_reason = "; ".join(reasons)
-            space_gb = season.size / (1024**3) if season.size else None
-            existing = season_candidate_lookup.get(season.id)
-
-            if existing:
-                existing.matched_rule_ids = matched_rules
-                existing.matched_criteria = matched_criteria
-                existing.reason = combined_reason
-                existing.estimated_space_gb = space_gb
-                existing.updated_at = datetime.now(UTC)
-                candidates_updated += 1
-            else:
-                db.add(
-                    ReclaimCandidate(
-                        media_type=MediaType.SERIES,
-                        matched_rule_ids=matched_rules,
-                        matched_criteria=matched_criteria,
-                        reason=combined_reason,
-                        estimated_space_gb=space_gb,
-                        series_id=series.id,
-                        season_id=season.id,
-                    )
+            records.append(
+                MatchedCandidateRecord(
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    season_id=season.id,
+                    matched_rule_ids=matched_rules,
+                    matched_criteria=matched_criteria,
+                    reason=_rule_reason_text(reasons),
+                    reason_data=reasons,
+                    estimated_space_gb=season.size / (1024**3) if season.size else None,
                 )
-                candidates_created += 1
+            )
 
-    # remove season candidates that no longer match any rule
-    stale = [
-        c for sid, c in season_candidate_lookup.items() if sid not in matched_season_ids
+    return records
+
+
+async def _sync_season_candidates(
+    db: AsyncSession,
+    records: list[MatchedCandidateRecord],
+) -> tuple[int, int, int]:
+    """Synchronize season candidates with the database."""
+    existing_result = await db.execute(
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.media_type == MediaType.SERIES,
+            ReclaimCandidate.season_id.isnot(None),
+        )
+    )
+    season_candidate_lookup: dict[int, ReclaimCandidate] = {
+        candidate.season_id: candidate
+        for candidate in existing_result.scalars().all()
+        if candidate.season_id is not None
+    }
+
+    matched_season_ids = {
+        record.season_id for record in records if record.season_id is not None
+    }
+
+    candidates_created = 0
+    candidates_updated = 0
+    for record in records:
+        if record.season_id is None or record.series_id is None:
+            continue
+        existing = season_candidate_lookup.get(record.season_id)
+
+        if existing:
+            existing.matched_rule_ids = record.matched_rule_ids
+            existing.matched_criteria = record.matched_criteria
+            existing.reason = record.reason
+            existing.reason_data = record.reason_data
+            existing.estimated_space_gb = record.estimated_space_gb
+            existing.updated_at = datetime.now(UTC)
+            candidates_updated += 1
+        else:
+            db.add(
+                ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    matched_rule_ids=record.matched_rule_ids,
+                    matched_criteria=record.matched_criteria,
+                    reason=record.reason,
+                    reason_data=record.reason_data,
+                    estimated_space_gb=record.estimated_space_gb,
+                    series_id=record.series_id,
+                    season_id=record.season_id,
+                )
+            )
+            candidates_created += 1
+
+    stale_candidates = [
+        candidate
+        for season_id, candidate in season_candidate_lookup.items()
+        if season_id not in matched_season_ids
     ]
-    candidates_removed = len(stale)
-    for c in stale:
-        await db.delete(c)
+    candidates_removed = len(stale_candidates)
+    for candidate in stale_candidates:
+        await db.delete(candidate)
 
     if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
         await db.commit()
@@ -491,255 +658,110 @@ async def _process_series_seasons(
     return candidates_created, candidates_updated, candidates_removed
 
 
-def _check_has_criteria(rule: ReclaimRule) -> bool:
-    """
-    Check if the rule has at least one criterion set (beyond just being enabled). If not,
-    it would match everything and cause mass deletions, so we skip it and log a warning.
+def _append_rule_reason(
+    reasons: list[dict[str, Any]],
+    *,
+    rule: ReclaimRule,
+    target_scope: str,
+    conditions: list[dict[str, Any]],
+    season_label: str | None = None,
+) -> None:
+    """Append normalized reason data for a matched rule."""
+    if not conditions:
+        return
 
-    Any new rules should be added below (if applicable) to ensure they are considered.
-    """
-    return any(
-        (
-            rule.library_ids is not None,
-            rule.min_popularity is not None,
-            rule.max_popularity is not None,
-            rule.min_vote_average is not None,
-            rule.max_vote_average is not None,
-            rule.min_vote_count is not None,
-            rule.max_vote_count is not None,
-            rule.min_view_count is not None,
-            rule.max_view_count is not None,
-            rule.include_never_watched is not None,
-            rule.min_days_since_added is not None,
-            rule.max_days_since_added is not None,
-            rule.min_days_since_last_watched is not None,
-            rule.max_days_since_last_watched is not None,
-            rule.min_size is not None,
-            rule.max_size is not None,
-            rule.paths is not None and len(rule.paths) > 0,
-            rule.series_status is not None and len(rule.series_status) > 0,
-        )
+    label = rule.name if not season_label else f"{rule.name} ({season_label})"
+    summary = ", ".join(
+        str(condition.get("display", "")).strip()
+        for condition in conditions
+        if isinstance(condition, dict) and str(condition.get("display", "")).strip()
+    )
+    text = f"{label}: {summary}" if summary else label
+    reasons.append(
+        {
+            "rule_id": rule.id,
+            "rule_name": rule.name,
+            "target_scope": target_scope,
+            "season_label": season_label,
+            "conditions": conditions,
+            "text": text,
+        }
     )
 
 
-def _evaluate_tmdb_criteria(
-    rule: ReclaimRule,
-    popularity: float | None,
-    vote_average: float | None,
-    vote_count: int | None,
-    matched_criteria: dict,
-    rule_reasons: list[str],
-) -> bool:
-    """Evaluate TMDB metadata criteria. Returns False if any criterion fails."""
-    if rule.min_popularity is not None and (
-        popularity is None or popularity < rule.min_popularity
-    ):
-        return False
-    if rule.max_popularity is not None and (
-        popularity is None or popularity > rule.max_popularity
-    ):
-        return False
-    if rule.min_popularity is not None or rule.max_popularity is not None:
-        matched_criteria["popularity"] = popularity
-        rule_reasons.append(f"Popularity {popularity}")
-
-    if rule.min_vote_average is not None and (
-        vote_average is None or vote_average < rule.min_vote_average
-    ):
-        return False
-    if rule.max_vote_average is not None and (
-        vote_average is None or vote_average > rule.max_vote_average
-    ):
-        return False
-    if rule.min_vote_average is not None or rule.max_vote_average is not None:
-        matched_criteria["vote_average"] = vote_average
-        rule_reasons.append(f"Rating {vote_average}/10")
-
-    if rule.min_vote_count is not None and (
-        vote_count is None or vote_count < rule.min_vote_count
-    ):
-        return False
-    if rule.max_vote_count is not None and (
-        vote_count is None or vote_count > rule.max_vote_count
-    ):
-        return False
-    if rule.min_vote_count is not None or rule.max_vote_count is not None:
-        matched_criteria["vote_count"] = vote_count
-        rule_reasons.append(f"{vote_count} votes")
-
-    return True
-
-
-def _evaluate_watch_criteria(
-    rule: ReclaimRule,
-    view_count: int | None,
-    last_viewed_at: datetime | None,
-    label: str,  # e.g. "" for movies, "S01" for seasons
-    matched_criteria: dict,
-    rule_reasons: list[str],
-) -> bool:
-    """Evaluate watch/view criteria. Returns False if any criterion fails."""
-    if rule.min_view_count is not None and (
-        view_count is None or view_count < rule.min_view_count
-    ):
-        return False
-    if rule.max_view_count is not None and (
-        view_count is None or view_count > rule.max_view_count
-    ):
-        return False
-    if rule.include_never_watched is False and last_viewed_at is None:
-        return False
-
-    if (
-        rule.min_view_count is not None
-        or rule.max_view_count is not None
-        or rule.include_never_watched is True
-    ):
-        matched_criteria["view_count"] = view_count
-        matched_criteria["never_watched"] = last_viewed_at is None
-        prefix = f"{label} " if label else ""
-        if last_viewed_at is None:
-            rule_reasons.append(f"{prefix}never watched")
-        else:
-            rule_reasons.append(f"{prefix}watched {view_count} time(s)")
-
-    return True
-
-
-def _evaluate_temporal_criteria(
-    rule: ReclaimRule,
-    added_at: datetime | None,
-    last_viewed_at: datetime | None,
-    label: str,
-    matched_criteria: dict,
-    rule_reasons: list[str],
-) -> bool:
-    """Evaluate days since added and days since last watched criteria."""
-    if added_at:
-        days_since_added = (datetime.now(UTC) - added_at.replace(tzinfo=UTC)).days
-        if (
-            rule.min_days_since_added is not None
-            and days_since_added < rule.min_days_since_added
-        ):
-            return False
-        if (
-            rule.max_days_since_added is not None
-            and days_since_added > rule.max_days_since_added
-        ):
-            return False
-        if (
-            rule.min_days_since_added is not None
-            or rule.max_days_since_added is not None
-        ):
-            matched_criteria["days_since_added"] = days_since_added
-            prefix = f"{label} " if label else ""
-            rule_reasons.append(f"{prefix}added {days_since_added} days ago")
-    elif rule.min_days_since_added is not None or rule.max_days_since_added is not None:
-        return False
-
-    if last_viewed_at:
-        days_since_last_watched = (
-            datetime.now(UTC) - last_viewed_at.replace(tzinfo=UTC)
-        ).days
-        if (
-            rule.min_days_since_last_watched is not None
-            and days_since_last_watched < rule.min_days_since_last_watched
-        ):
-            return False
-        if (
-            rule.max_days_since_last_watched is not None
-            and days_since_last_watched > rule.max_days_since_last_watched
-        ):
-            return False
-        if (
-            rule.min_days_since_last_watched is not None
-            or rule.max_days_since_last_watched is not None
-        ):
-            matched_criteria["days_since_last_watched"] = days_since_last_watched
-            prefix = f"{label} " if label else ""
-            rule_reasons.append(
-                f"{prefix}last watched {days_since_last_watched} days ago"
-            )
-    elif (
-        rule.min_days_since_last_watched is not None
-        or rule.max_days_since_last_watched is not None
-    ):
-        return False
-
-    return True
-
-
-def _evaluate_size_criteria(
-    rule: ReclaimRule,
-    size: int | None,
-    label: str,
-    matched_criteria: dict,
-    rule_reasons: list[str],
-) -> bool:
-    """Evaluate size criteria. Returns False if any criterion fails."""
-    if rule.min_size is not None and (size is None or size < rule.min_size):
-        return False
-    if rule.max_size is not None and (size is None or size > rule.max_size):
-        return False
-    if rule.min_size is not None or rule.max_size is not None:
-        matched_criteria["size"] = size
-        size_gb = size / (1024**3) if size else 0
-        prefix = f"{label} " if label else ""
-        rule_reasons.append(f"{prefix}size {size_gb:.2f} GB")
-    return True
+def _rule_reason_text(reasons: list[dict[str, Any]]) -> str:
+    """Generate a human-readable text summary of rule reasons."""
+    tokens = [
+        str(part.get("text", "")).strip() for part in reasons if isinstance(part, dict)
+    ]
+    tokens = [token for token in tokens if token]
+    return " | ".join(tokens) if tokens else "Matched cleanup rule"
 
 
 def _evaluate_movie_rule(
-    item: Movie | Series, rule: ReclaimRule, matched_criteria: dict, reasons: list[str]
+    item: Movie | Series,
+    rule: ReclaimRule,
+    matched_criteria: dict,
+    reasons: list[dict[str, Any]],
 ) -> bool:
-    """Evaluate a movie rule."""
-    if not _check_has_criteria(rule):
-        LOG.warning(f"Rule '{rule.name}' has no criteria set, skipping")
-        return False
-
-    if not item.size or item.size == 0:
-        return False
-
-    rule_reasons: list[str] = []
-    refs = item.versions if isinstance(item, Movie) else item.service_refs
-
-    if rule.library_ids and not any(v.library_id in rule.library_ids for v in refs):
-        return False
-
-    if rule.paths:
-        if not _path_matches_any([v.path for v in refs if v.path], rule.paths):
+    """Evaluate a whole-series rule, or any movie version for direct tests."""
+    if isinstance(item, Movie):
+        if normalize_rule_target(rule) != TARGET_MOVIE_VERSION:
             return False
-        matched_criteria["paths"] = rule.paths
-        rule_reasons.append("path match")
-
-    if isinstance(item, Series) and rule.series_status:
-        if item.status is None or item.status not in rule.series_status:
-            return False
-        matched_criteria["series_status"] = item.status
-        rule_reasons.append(f"Status: {item.status}")
-
-    if not _evaluate_tmdb_criteria(
-        rule,
-        item.popularity,
-        item.vote_average,
-        item.vote_count,
-        matched_criteria,
-        rule_reasons,
-    ):
-        return False
-    if not _evaluate_watch_criteria(
-        rule, item.view_count, item.last_viewed_at, "", matched_criteria, rule_reasons
-    ):
-        return False
-    if not _evaluate_temporal_criteria(
-        rule, item.added_at, item.last_viewed_at, "", matched_criteria, rule_reasons
-    ):
-        return False
-    if not _evaluate_size_criteria(rule, item.size, "", matched_criteria, rule_reasons):
+        for version in item.versions:
+            if _evaluate_movie_version_rule(
+                item, version, rule, matched_criteria, reasons
+            ):
+                return True
         return False
 
-    if rule_reasons:
-        reasons.append(f"{rule.name}: {', '.join(rule_reasons)}")
+    if normalize_rule_target(rule) != TARGET_SERIES or not item.size:
+        return False
+
+    matched, criteria, rule_reasons = evaluate_advanced_rule(
+        rule, target_scope=TARGET_SERIES, series=item
+    )
+    if not matched:
+        return False
+    matched_criteria.update(criteria)
+    _append_rule_reason(
+        reasons,
+        rule=rule,
+        target_scope=TARGET_SERIES,
+        conditions=rule_reasons,
+    )
+    return True
+
+
+def _evaluate_movie_version_rule(
+    movie: Movie,
+    version: MovieVersion,
+    rule: ReclaimRule,
+    matched_criteria: dict,
+    reasons: list[dict[str, Any]],
+) -> bool:
+    """Evaluate a movie rule against a single movie version candidate."""
+    if normalize_rule_target(rule) != TARGET_MOVIE_VERSION:
+        return False
+
+    effective_size = version.size if version.size and version.size > 0 else movie.size
+    if not effective_size or effective_size == 0:
+        return False
+
+    matched, criteria, rule_reasons = evaluate_advanced_rule(
+        rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+    )
+    if not matched:
+        return False
+    matched_criteria.update(criteria)
+    matched_criteria["media_version_id"] = version.id
+    matched_criteria["movie_id"] = movie.id
+    _append_rule_reason(
+        reasons,
+        rule=rule,
+        target_scope=TARGET_MOVIE_VERSION,
+        conditions=rule_reasons,
+    )
     return True
 
 
@@ -748,121 +770,45 @@ def _evaluate_rule_for_season(
     season: Season,
     rule: ReclaimRule,
     matched_criteria: dict,
-    reasons: list[str],
+    reasons: list[dict[str, Any]],
 ) -> bool:
     """Evaluate a rule against a specific season of a series."""
-    if not _check_has_criteria(rule):
+    if normalize_rule_target(rule) != TARGET_SEASON:
         return False
 
     if not season.size or season.size == 0:
         return False
 
-    rule_reasons: list[str] = []
     label = f"S{season.season_number:02d}"
-
-    if rule.library_ids and not any(
-        ref.library_id in rule.library_ids for ref in series.service_refs
-    ):
+    matched, criteria, rule_reasons = evaluate_advanced_rule(
+        rule, target_scope=TARGET_SEASON, series=series, season=season
+    )
+    if not matched:
         return False
-
-    if rule.paths:
-        if not _path_matches_any(
-            [ref.path for ref in series.service_refs if ref.path], rule.paths
-        ):
-            return False
-        matched_criteria["paths"] = rule.paths
-        rule_reasons.append("path match")
-
-    if rule.series_status:
-        if series.status is None or series.status not in rule.series_status:
-            return False
-        matched_criteria["series_status"] = series.status
-        rule_reasons.append(f"Status: {series.status}")
-
-    if not _evaluate_tmdb_criteria(
-        rule,
-        series.popularity,
-        series.vote_average,
-        series.vote_count,
-        matched_criteria,
-        rule_reasons,
-    ):
-        return False
-    if not _evaluate_watch_criteria(
-        rule,
-        season.view_count,
-        season.last_viewed_at,
-        label,
-        matched_criteria,
-        rule_reasons,
-    ):
-        return False
-    if not _evaluate_temporal_criteria(
-        rule,
-        season.added_at,
-        season.last_viewed_at,
-        label,
-        matched_criteria,
-        rule_reasons,
-    ):
-        return False
-    if not _evaluate_size_criteria(
-        rule, season.size, label, matched_criteria, rule_reasons
-    ):
-        return False
-
-    if rule_reasons:
-        reasons.append(f"{rule.name} ({label}): {', '.join(rule_reasons)}")
+    matched_criteria.update(criteria)
+    _append_rule_reason(
+        reasons,
+        rule=rule,
+        target_scope=TARGET_SEASON,
+        conditions=rule_reasons,
+        season_label=label,
+    )
     return True
 
 
 async def tag_cleanup_candidates() -> None:
-    """Sync tags for cleanup candidates in Radarr/Sonarr.
-
-    Efficiently tags candidates and removes tags from items no longer candidates.
-    Uses bulk operations for performance.
-    """
-    tag = "reclaimerr"
-
+    """Sync rule scoped rec-* tags for cleanup candidates in Radarr/Sonarr."""
     # check if services are configured before doing any work
     if not service_manager.radarr and not service_manager.sonarr:
         LOG.debug("Neither Radarr nor Sonarr configured, skipping tag sync")
         return
 
-    # check if auto-tagging is enabled in settings before doing any work
-    tagging_enabled = False
-    async with async_db() as db:
-        result = await db.execute(select(GeneralSettings))
-        settings = result.scalars().first()
-        if settings:
-            tagging_enabled = settings.auto_tag_enabled
-            tag = f"{tag}{settings.cleanup_tag_suffix or ''}"
-
-    # if tagging is disabled, skip entire process (don't even query media or candidates)
-    if not tagging_enabled:
-        LOG.debug("Auto-tagging disabled in settings, skipping")
-        return
-
-    LOG.info(f"Starting cleanup candidate tagging (tag: {tag})")
+    LOG.info("Starting rule scoped cleanup candidate tagging")
 
     async with track_task_execution(Task.TAG_CLEANUP_CANDIDATES):
         try:
-            movies_tagged = 0
-            movies_untagged = 0
-            series_tagged = 0
-            series_untagged = 0
-
-            # process Radarr movies
-            if service_manager.radarr:
-                tagged, untagged = await _sync_radarr_tags(tag)
-                movies_tagged = tagged
-                movies_untagged = untagged
-
-            # process Sonarr series
-            if service_manager.sonarr:
-                tagged, untagged = await _sync_sonarr_tags(tag)
-                series_tagged = tagged
-                series_untagged = untagged
+            movies_tagged, movies_untagged = await _sync_rule_radarr_tags()
+            series_tagged, series_untagged = await _sync_rule_sonarr_tags()
 
             LOG.info(
                 f"Tag sync completed: Movies ({movies_tagged} tagged, {movies_untagged} untagged), "
@@ -874,258 +820,426 @@ async def tag_cleanup_candidates() -> None:
             raise
 
 
-async def _sync_radarr_tags(cleanup_tag: str) -> tuple[int, int]:
-    """Sync Radarr movie tags. Returns (tagged_count, untagged_count)."""
+def _rule_action(rule: ReclaimRule) -> dict:
+    """Get the action dictionary for a rule, or an empty dictionary if none."""
+    return rule.action or {}
+
+
+def _managed_tag_for_rule(rule: ReclaimRule) -> str | None:
+    """Determine the rec-* tag to manage for a given rule, or None if no tagging."""
+    action = _rule_action(rule)
+    if action.get("tag_enabled", True) is False:
+        return None
+    tag = str(action.get("arr_tag") or "").strip().lower()
+    if not tag:
+        return None
+    return tag if tag.startswith("rec-") else f"rec-{tag}"
+
+
+async def _sync_rule_radarr_tags() -> tuple[int, int]:
+    """Synchronize Radarr tags for cleanup candidates."""
     if not service_manager.radarr:
         return 0, 0
 
-    # get all tags to detect old cleanup tags
-    all_tags = await service_manager.radarr.get_tags()
+    clients = service_manager.radarr_clients()
+    if not clients and service_manager.radarr:
+        clients = {0: service_manager.radarr}
 
-    # get or create the current cleanup tag
-    tag = await service_manager.radarr.get_or_create_tag(cleanup_tag)
-    LOG.debug(f"Using Radarr tag '{tag.label}' (ID: {tag.id})")
-
-    # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
-    old_tags = [
-        t for t in all_tags if t.label.startswith("reclaimerr") and t.id != tag.id
-    ]
-    if old_tags:
-        LOG.info(
-            f"Found {len(old_tags)} old cleanup tags to migrate: {[t.label for t in old_tags]}"
-        )
-
-    # get all movies from Radarr
-    all_movies = await service_manager.radarr.get_all_movies()
-    LOG.debug(f"Found {len(all_movies)} movies in Radarr")
-
-    # build lookup: radarr_id -> movie
-    movies_by_id = {movie.id: movie for movie in all_movies}
-    # also build tmdb_id -> radarr_id for resolving candidates that lack a stored radarr_id
-    radarr_by_tmdb = {m.tmdb_id: m.id for m in all_movies if m.tmdb_id}
-
-    # get radarr IDs for all movie candidates from database (including those not yet resolved)
     async with async_db() as db:
-        result = await db.execute(
-            select(Movie.id, Movie.radarr_id, Movie.tmdb_id)
-            .join(ReclaimCandidate, Movie.id == ReclaimCandidate.movie_id)
-            .where(ReclaimCandidate.media_type == MediaType.MOVIE)
-        )
-        candidate_rows = result.all()
-
-    candidate_radarr_ids: set[int] = set()
-    for movie_db_id, radarr_id, tmdb_id in candidate_rows:
-        if radarr_id is not None:
-            candidate_radarr_ids.add(radarr_id)
-        elif tmdb_id and tmdb_id in radarr_by_tmdb:
-            resolved = radarr_by_tmdb[tmdb_id]
-            candidate_radarr_ids.add(resolved)
-            LOG.debug(
-                f"Resolved missing Radarr ID for movie db_id={movie_db_id} "
-                f"via live lookup (radarr_id={resolved})"
+        rules = {
+            rule.id: rule
+            for rule in (
+                await db.execute(select(ReclaimRule).where(ReclaimRule.enabled == True))
             )
+            .scalars()
+            .all()
+        }
+        candidate_rows = (
+            await db.execute(
+                select(
+                    ReclaimCandidate,
+                    Movie.id,
+                    MovieArrRef.service_config_id,
+                    MovieArrRef.arr_movie_id,
+                    Movie.tmdb_id,
+                )
+                .join(Movie, Movie.id == ReclaimCandidate.movie_id)
+                .outerjoin(MovieArrRef, MovieArrRef.movie_id == Movie.id)
+                .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+            )
+        ).all()
 
-    LOG.debug(f"Found {len(candidate_radarr_ids)} movie candidates with Radarr IDs")
+    by_config: dict[int, dict[str, set[int]]] = {}
+    fallback_tmdb: dict[int, set[tuple[str, int]]] = {}
+    for candidate, _movie_id, ref_config_id, arr_movie_id, tmdb_id in candidate_rows:
+        for rule_id in candidate.matched_rule_ids or []:
+            rule = rules.get(rule_id)
+            if not rule:
+                continue
+            tag = _managed_tag_for_rule(rule)
+            config_id = _rule_action(rule).get("radarr_service_config_id")
+            if not tag or not isinstance(config_id, int):
+                continue
+            if ref_config_id == config_id and arr_movie_id is not None:
+                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                    arr_movie_id
+                )
+            elif tmdb_id:
+                fallback_tmdb.setdefault(config_id, set()).add((tag, tmdb_id))
 
-    # determine which movies need tagging/un-tagging
-    movies_to_tag = []  # candidates without current tag
-    movies_to_untag = []  # non-candidates with current tag
-    movies_with_old_tags = {}  # movies with old tags: {old_tag_id: [movie_ids]}
-
-    for radarr_id, movie in movies_by_id.items():
-        has_tag = tag.id in movie.tags
-        should_have_tag = radarr_id in candidate_radarr_ids
-
-        if should_have_tag and not has_tag:
-            movies_to_tag.append(radarr_id)
-        elif not should_have_tag and has_tag:
-            movies_to_untag.append(radarr_id)
-
-        # check for old cleanup tags that need removal
-        for old_tag in old_tags:
-            if old_tag.id in movie.tags:
-                if old_tag.id not in movies_with_old_tags:
-                    movies_with_old_tags[old_tag.id] = []
-                movies_with_old_tags[old_tag.id].append(radarr_id)
-
-    LOG.debug(
-        f"Need to tag {len(movies_to_tag)} movies, untag {len(movies_to_untag)} movies"
-    )
-
-    # clean up old cleanup tags first (migration)
-    for old_tag_id, movie_ids in movies_with_old_tags.items():
-        old_tag_label = next(
-            (t.label for t in old_tags if t.id == old_tag_id), "unknown"
+    total_tagged = 0
+    total_untagged = 0
+    for config_id, client in clients.items():
+        expected = by_config.get(config_id, {})
+        all_movies = await client.get_all_movies()
+        tmdb_to_id = {movie.tmdb_id: movie.id for movie in all_movies if movie.tmdb_id}
+        for tag, tmdb_id in fallback_tmdb.get(config_id, set()):
+            resolved = tmdb_to_id.get(tmdb_id)
+            if resolved is not None:
+                expected.setdefault(tag, set()).add(resolved)
+        tagged, untagged = await _sync_expected_arr_tags(
+            client=client,
+            items_by_id={movie.id: movie for movie in all_movies},
+            expected_by_tag=expected,
+            add_tag=client.add_tag_to_movies,
+            remove_tag=client.remove_tag_from_movies,
+            label="Radarr",
         )
-        await service_manager.radarr.remove_tag_from_movies(movie_ids, old_tag_id)
-        LOG.info(f"Removed old tag '{old_tag_label}' from {len(movie_ids)} movies")
-
-    # apply current tags in bulk
-    if movies_to_tag:
-        await service_manager.radarr.add_tag_to_movies(movies_to_tag, tag.id)
-        LOG.info(f"Tagged {len(movies_to_tag)} movies in Radarr")
-
-    # remove current tags from non-candidates in bulk
-    if movies_to_untag:
-        await service_manager.radarr.remove_tag_from_movies(movies_to_untag, tag.id)
-        LOG.info(f"Untagged {len(movies_to_untag)} movies in Radarr")
-
-    return len(movies_to_tag), len(movies_to_untag)
+        total_tagged += tagged
+        total_untagged += untagged
+    return total_tagged, total_untagged
 
 
-async def _sync_sonarr_tags(cleanup_tag: str) -> tuple[int, int]:
-    """Sync Sonarr series tags. Returns (tagged_count, untagged_count)."""
+async def _sync_rule_sonarr_tags() -> tuple[int, int]:
+    """Synchronize Sonarr tags for cleanup candidates."""
     if not service_manager.sonarr:
         return 0, 0
 
-    # get all tags to detect old cleanup tags
-    all_tags = await service_manager.sonarr.get_tags()
+    clients = service_manager.sonarr_clients()
+    if not clients and service_manager.sonarr:
+        clients = {0: service_manager.sonarr}
 
-    # get or create the current cleanup tag
-    tag = await service_manager.sonarr.get_or_create_tag(cleanup_tag)
-    LOG.debug(f"Using Sonarr tag '{tag.label}' (ID: {tag.id})")
+    async with async_db() as db:
+        rules = {
+            rule.id: rule
+            for rule in (
+                await db.execute(select(ReclaimRule).where(ReclaimRule.enabled == True))
+            )
+            .scalars()
+            .all()
+        }
+        candidate_rows = (
+            await db.execute(
+                select(
+                    ReclaimCandidate,
+                    Series.id,
+                    SeriesArrRef.service_config_id,
+                    SeriesArrRef.arr_series_id,
+                    Series.tmdb_id,
+                )
+                .join(Series, Series.id == ReclaimCandidate.series_id)
+                .outerjoin(SeriesArrRef, SeriesArrRef.series_id == Series.id)
+                .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            )
+        ).all()
 
-    # find old reclaimerr tags (starts with 'reclaimerr' but isn't current tag)
-    old_tags = [
-        t for t in all_tags if t.label.startswith("reclaimerr") and t.id != tag.id
-    ]
-    if old_tags:
-        LOG.info(
-            f"Found {len(old_tags)} old cleanup tags to migrate: {[t.label for t in old_tags]}"
+    by_config: dict[int, dict[str, set[int]]] = {}
+    fallback_tmdb: dict[int, set[tuple[str, int]]] = {}
+    for candidate, _series_id, ref_config_id, arr_series_id, tmdb_id in candidate_rows:
+        for rule_id in candidate.matched_rule_ids or []:
+            rule = rules.get(rule_id)
+            if not rule:
+                continue
+            tag = _managed_tag_for_rule(rule)
+            config_id = _rule_action(rule).get("sonarr_service_config_id")
+            if not tag or not isinstance(config_id, int):
+                continue
+            if ref_config_id == config_id and arr_series_id is not None:
+                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                    arr_series_id
+                )
+            elif tmdb_id:
+                fallback_tmdb.setdefault(config_id, set()).add((tag, int(tmdb_id)))
+
+    total_tagged = 0
+    total_untagged = 0
+    for config_id, client in clients.items():
+        expected = by_config.get(config_id, {})
+        all_series = await client.get_all_series()
+        tmdb_to_id = {
+            series.tmdb_id: series.id for series in all_series if series.tmdb_id
+        }
+        for tag, tmdb_id in fallback_tmdb.get(config_id, set()):
+            resolved = tmdb_to_id.get(tmdb_id)
+            if resolved is not None:
+                expected.setdefault(tag, set()).add(resolved)
+        tagged, untagged = await _sync_expected_arr_tags(
+            client=client,
+            items_by_id={series.id: series for series in all_series},
+            expected_by_tag=expected,
+            add_tag=client.add_tag_to_series,
+            remove_tag=client.remove_tag_from_series,
+            label="Sonarr",
         )
+        total_tagged += tagged
+        total_untagged += untagged
+    return total_tagged, total_untagged
 
-    # get all series from Sonarr
-    all_series = await service_manager.sonarr.get_all_series()
-    LOG.debug(f"Found {len(all_series)} series in Sonarr")
 
-    # build lookup: sonarr_id -> series
-    series_by_id = {series.id: series for series in all_series}
-    # also build tmdb_id -> sonarr_id for resolving candidates that lack a stored sonarr_id
-    sonarr_by_tmdb = {s.tmdb_id: s.id for s in all_series if s.tmdb_id}
+async def _sync_expected_arr_tags(
+    *,
+    client,
+    items_by_id: dict[int, object],
+    expected_by_tag: dict[str, set[int]],
+    add_tag,
+    remove_tag,
+    label: str,
+) -> tuple[int, int]:
+    """Sync expected tags for a set of items, adding/removing as needed. Returns
+    (tagged_count, untagged_count)."""
+    tags = await client.get_tags()
+    active_labels = set(expected_by_tag)
+    tag_by_label = {tag.label.lower(): tag for tag in tags}
+    managed_stale_tags = [
+        tag
+        for tag in tags
+        if (
+            tag.label.lower().startswith("rec-")
+            or tag.label.lower().startswith("reclaimerr")
+        )
+        and tag.label.lower() not in active_labels
+    ]
 
-    # get sonarr IDs for all series candidates from database (including those not yet resolved)
+    tagged_count = 0
+    untagged_count = 0
+
+    for tag_label, expected_ids in expected_by_tag.items():
+        tag = tag_by_label.get(tag_label) or await client.get_or_create_tag(tag_label)
+        tag_by_label[tag_label] = tag
+        to_add = [
+            item_id
+            for item_id in expected_ids
+            if item_id in items_by_id
+            and tag.id not in getattr(items_by_id[item_id], "tags", [])
+        ]
+        if to_add:
+            await add_tag(to_add, tag.id)
+            tagged_count += len(to_add)
+            LOG.info(f"Tagged {len(to_add)} {label} item(s) with {tag_label}")
+
+    for stale_tag in managed_stale_tags:
+        to_remove = [
+            item_id
+            for item_id, item in items_by_id.items()
+            if stale_tag.id in getattr(item, "tags", [])
+        ]
+        if to_remove:
+            await remove_tag(to_remove, stale_tag.id)
+            untagged_count += len(to_remove)
+            LOG.info(
+                f"Removed stale managed tag '{stale_tag.label}' from {len(to_remove)} {label} item(s)"
+            )
+
+    for tag_label, tag in tag_by_label.items():
+        if not tag_label.startswith("rec-") or tag_label not in active_labels:
+            continue
+        expected_ids = expected_by_tag.get(tag_label, set())
+        to_remove = [
+            item_id
+            for item_id, item in items_by_id.items()
+            if item_id not in expected_ids and tag.id in getattr(item, "tags", [])
+        ]
+        if to_remove:
+            await remove_tag(to_remove, tag.id)
+            untagged_count += len(to_remove)
+            LOG.info(
+                f"Removed tag '{tag.label}' from {len(to_remove)} non-candidate {label} item(s)"
+            )
+
+    return tagged_count, untagged_count
+
+
+# NOT USING THIS YET BUT RE-WRITE IT WHEN WE AUTOMATE FULL DELETIONS IF NEEDED
+# async def delete_cleanup_candidates() -> None:
+#     """Deletes all cleanup candidates from their respective services.
+
+#     Deletion is based purely on ReclaimCandidate records in the database.
+#     Tags are optional visual indicators only and do not affect deletion.
+
+#     Deletion priority:
+#     1. Use Radarr (movies) or Sonarr (series) if item has radarr_id/sonarr_id
+#     2. Fall back to Media Server deletion (Jellyfin/Emby/Plex) if no radarr_id/sonarr_id but media_refs
+#     exist for that service
+
+#     After deletion, resets the request in Seerr and marks item as removed in database.
+#     """
+#     LOG.info("Starting cleanup candidate deletion")
+
+#     async with track_task_execution(Task.DELETE_CLEANUP_CANDIDATES):
+#         try:
+#             movies_deleted = 0
+#             series_deleted = 0
+#             season_deleted = 0
+
+#             # process movies
+#             if (
+#                 service_manager.radarr
+#                 or service_manager.jellyfin
+#                 or service_manager.emby
+#                 or service_manager.plex
+#             ):
+#                 movies_deleted = await _delete_movie_candidates()
+
+#             # process series
+#             if (
+#                 service_manager.sonarr
+#                 or service_manager.jellyfin
+#                 or service_manager.emby
+#                 or service_manager.plex
+#             ):
+#                 series_deleted = await _delete_series_candidates()
+#                 season_deleted = await _delete_season_candidates()
+
+#             LOG.info(
+#                 f"Deletion completed: {movies_deleted} movies, "
+#                 f"{series_deleted} whole series, {season_deleted} season(s) removed"
+#             )
+
+#         except Exception as e:
+#             LOG.error(f"Error deleting cleanup candidates: {e}", exc_info=True)
+#             raise
+
+
+async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
+    """Persist delete failure details for a candidate."""
     async with async_db() as db:
         result = await db.execute(
-            select(Series.id, Series.sonarr_id, Series.tmdb_id)
-            .join(ReclaimCandidate, Series.id == ReclaimCandidate.series_id)
-            .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            select(ReclaimCandidate).where(ReclaimCandidate.id == candidate_id)
         )
-        candidate_rows = result.all()
+        candidate = result.scalar_one_or_none()
+        if candidate is None:
+            return
+        candidate.delete_attempts = (candidate.delete_attempts or 0) + 1
+        candidate.last_delete_attempt_at = datetime.now(UTC)
+        candidate.last_delete_error = error[:2000]
+        await db.commit()
 
-    candidate_sonarr_ids: set[int] = set()
-    for series_db_id, sonarr_id, tmdb_id in candidate_rows:
-        if sonarr_id is not None:
-            candidate_sonarr_ids.add(sonarr_id)
-        elif tmdb_id and tmdb_id in sonarr_by_tmdb:
-            resolved = sonarr_by_tmdb[tmdb_id]
-            candidate_sonarr_ids.add(resolved)
-            LOG.debug(
-                f"Resolved missing Sonarr ID for series db_id={series_db_id} "
-                f"via live lookup (sonarr_id={resolved})"
+
+async def _delete_movie_version_candidates(
+    version_candidates: list[ReclaimCandidate],
+) -> int:
+    """Delete movie-version candidates using service-aware targeted deletion."""
+    if not version_candidates:
+        return 0
+
+    main_service = service_manager.main_media_server
+    if not main_service:
+        for candidate in version_candidates:
+            await _mark_candidate_delete_failure(
+                candidate.id, "No main media server configured"
             )
+        return 0
 
-    LOG.debug(f"Found {len(candidate_sonarr_ids)} series candidates with Sonarr IDs")
+    if main_service is service_manager.jellyfin:
+        main_service_type = Service.JELLYFIN
+    elif main_service is service_manager.emby:
+        main_service_type = Service.EMBY
+    else:
+        main_service_type = Service.PLEX
 
-    # determine which series need tagging/un-tagging
-    series_to_tag = []  # candidates without current tag
-    series_to_untag = []  # non-candidates with current tag
-    series_with_old_tags = {}  # series with old tags: {old_tag_id: [series_ids]}
-
-    for sonarr_id, series in series_by_id.items():
-        has_tag = tag.id in series.tags
-        should_have_tag = sonarr_id in candidate_sonarr_ids
-
-        if should_have_tag and not has_tag:
-            series_to_tag.append(sonarr_id)
-        elif not should_have_tag and has_tag:
-            series_to_untag.append(sonarr_id)
-
-        # check for old cleanup tags that need removal
-        for old_tag in old_tags:
-            if old_tag.id in series.tags:
-                if old_tag.id not in series_with_old_tags:
-                    series_with_old_tags[old_tag.id] = []
-                series_with_old_tags[old_tag.id].append(sonarr_id)
-
-    LOG.debug(
-        f"Need to tag {len(series_to_tag)} series, untag {len(series_to_untag)} series"
-    )
-
-    # clean up old cleanup tags first (migration)
-    for old_tag_id, series_ids in series_with_old_tags.items():
-        old_tag_label = next(
-            (t.label for t in old_tags if t.id == old_tag_id), "unknown"
+    async with async_db() as db:
+        version_ids = [
+            c.movie_version_id for c in version_candidates if c.movie_version_id
+        ]
+        result = await db.execute(
+            select(MovieVersion)
+            .where(MovieVersion.id.in_(version_ids))
+            .options(selectinload(MovieVersion.movie).selectinload(Movie.versions))
         )
-        await service_manager.sonarr.remove_tag_from_series(series_ids, old_tag_id)
-        LOG.info(f"Removed old tag '{old_tag_label}' from {len(series_ids)} series")
+        versions = {v.id: v for v in result.scalars().all()}
 
-    # apply current tags in bulk
-    if series_to_tag:
-        await service_manager.sonarr.add_tag_to_series(series_to_tag, tag.id)
-        LOG.info(f"Tagged {len(series_to_tag)} series in Sonarr")
+    deleted_count = 0
+    for candidate in version_candidates:
+        if candidate.movie_version_id is None:
+            continue
+        version = versions.get(candidate.movie_version_id)
+        if version is None:
+            await _mark_candidate_delete_failure(
+                candidate.id, "Movie version missing from database"
+            )
+            continue
+        movie = version.movie
+        if movie is None:
+            await _mark_candidate_delete_failure(
+                candidate.id, "Movie missing for candidate version"
+            )
+            continue
+        if version.service != main_service_type:
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                f"Version belongs to {version.service.value}, main media server is {main_service_type.value}",
+            )
+            continue
 
-    # remove current tags from non-candidates in bulk
-    if series_to_untag:
-        await service_manager.sonarr.remove_tag_from_series(series_to_untag, tag.id)
-        LOG.info(f"Untagged {len(series_to_untag)} series in Sonarr")
+        same_item_versions = [
+            v
+            for v in movie.versions
+            if v.service == main_service_type
+            and v.service_item_id == version.service_item_id
+        ]
+        if main_service_type in {Service.JELLYFIN, Service.EMBY}:
+            if len(same_item_versions) != 1:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    "Exact version delete unsupported: multiple versions share one Emby/Jellyfin item id",
+                )
+                continue
 
-    return len(series_to_tag), len(series_to_untag)
-
-
-async def delete_cleanup_candidates() -> None:
-    """Deletes all cleanup candidates from their respective services.
-
-    Deletion is based purely on ReclaimCandidate records in the database.
-    Tags are optional visual indicators only and do not affect deletion.
-
-    Deletion priority:
-    1. Use Radarr (movies) or Sonarr (series) if item has radarr_id/sonarr_id
-    2. Fall back to Media Server deletion (Jellyfin/Emby/Plex) if no radarr_id/sonarr_id but media_refs
-    exist for that service
-
-    After deletion, resets the request in Seerr and marks item as removed in database.
-    """
-    LOG.info("Starting cleanup candidate deletion")
-
-    async with track_task_execution(Task.DELETE_CLEANUP_CANDIDATES):
         try:
-            movies_deleted = 0
-            series_deleted = 0
-            season_deleted = 0
-
-            # process movies
-            if (
-                service_manager.radarr
-                or service_manager.jellyfin
-                or service_manager.emby
-                or service_manager.plex
-            ):
-                movies_deleted = await _delete_movie_candidates()
-
-            # process series
-            if (
-                service_manager.sonarr
-                or service_manager.jellyfin
-                or service_manager.emby
-                or service_manager.plex
-            ):
-                series_deleted = await _delete_series_candidates()
-                season_deleted = await _delete_season_candidates()
-
-            LOG.info(
-                f"Deletion completed: {movies_deleted} movies, "
-                f"{series_deleted} whole series, {season_deleted} season(s) removed"
+            await main_service.delete_movie_version(
+                version.service_item_id, version.service_media_id
             )
 
+            async with async_db() as db:
+                cand_result = await db.execute(
+                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                )
+                cand = cand_result.scalar_one_or_none()
+                if cand:
+                    await db.delete(cand)
+
+                ver_result = await db.execute(
+                    select(MovieVersion).where(MovieVersion.id == version.id)
+                )
+                ver_db = ver_result.scalar_one_or_none()
+                if ver_db:
+                    deleted_size = ver_db.size or 0
+                    movie_result = await db.execute(
+                        select(Movie).where(Movie.id == ver_db.movie_id)
+                    )
+                    movie_db = movie_result.scalar_one_or_none()
+                    if movie_db and movie_db.size:
+                        movie_db.size = max(0, movie_db.size - deleted_size)
+                    await db.delete(ver_db)
+                await db.commit()
+
+            deleted_count += 1
+            LOG.info(
+                f"Deleted movie version {version.id} for '{movie.title}' via {main_service_type.value}"
+            )
         except Exception as e:
-            LOG.error(f"Error deleting cleanup candidates: {e}", exc_info=True)
-            raise
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                f"Version delete failed via {main_service_type.value}: {e}",
+            )
+
+    return deleted_count
 
 
 async def _delete_movie_candidates(
     restrict_to_ids: frozenset[int] | None = None,
 ) -> int:
-    """Delete movie candidates. Returns count of deleted movies."""
+    """Delete movie candidates. Returns count of deleted candidates."""
     deleted_count = 0
 
     # get all movie candidates from database
@@ -1146,68 +1260,84 @@ async def _delete_movie_candidates(
 
         LOG.info(f"Found {len(candidates)} movie candidates to evaluate for deletion")
 
-        # get radarr IDs and build lookup
+    whole_movie_candidates = [c for c in candidates if c.movie_version_id is None]
+    version_candidates = [c for c in candidates if c.movie_version_id is not None]
+
+    if version_candidates:
+        deleted_count += await _delete_movie_version_candidates(version_candidates)
+
+    if not whole_movie_candidates:
+        return deleted_count
+
+    async with async_db() as db:
         result = await db.execute(
-            select(Movie.id, Movie.radarr_id, Movie.title, Movie.tmdb_id)
+            select(
+                Movie.id,
+                Movie.title,
+                Movie.tmdb_id,
+                MovieArrRef.service_config_id,
+                MovieArrRef.arr_movie_id,
+            )
             .join(ReclaimCandidate, Movie.id == ReclaimCandidate.movie_id)
+            .outerjoin(MovieArrRef, MovieArrRef.movie_id == Movie.id)
             .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+            .where(ReclaimCandidate.movie_version_id.is_(None))
             .where(Movie.removed_at.is_(None))
         )
-        movie_data = {
-            row[0]: {"radarr_id": row[1], "title": row[2], "tmdb_id": row[3]}
-            for row in result.all()
-        }
+        rows = result.all()
+        movie_data: dict[int, dict] = {}
+        for movie_id, title, tmdb_id, config_id, arr_movie_id in rows:
+            info = movie_data.setdefault(
+                movie_id,
+                {"title": title, "tmdb_id": tmdb_id, "refs": []},
+            )
+            if config_id is not None and arr_movie_id is not None:
+                info["refs"].append((config_id, arr_movie_id))
 
-    # For movies with a missing radarr_id, attempt a live lookup by TMDB ID.
-    # Note: this will actually only ever need to be ran if something is missing, once a full
-    # sync is ran this will all be cached
-    if service_manager.radarr:
-        missing = [
-            (mid, info)
-            for mid, info in movie_data.items()
-            if info["radarr_id"] is None and info["tmdb_id"]
-        ]
-        if missing:
-            try:
-                all_radarr = await service_manager.radarr.get_all_movies()
-                radarr_by_tmdb = {m.tmdb_id: m.id for m in all_radarr if m.tmdb_id}
-                for _movie_id, info in missing:
-                    found = radarr_by_tmdb.get(info["tmdb_id"])
-                    if found:
-                        info["radarr_id"] = found
-                        LOG.debug(
-                            f"Resolved missing Radarr ID for '{info['title']}' "
-                            f"via live lookup (radarr_id={found})"
-                        )
-            except Exception as e:
-                LOG.warning(f"Live Radarr lookup for missing IDs failed: {e}")
+    radarr_clients = service_manager.radarr_clients()
+    if not radarr_clients and service_manager.radarr:
+        radarr_clients = {0: service_manager.radarr}
 
-    # delete all candidates that exist in Radarr (by radarr_id)
-    movies_to_delete = []
-    if service_manager.radarr:
-        for candidate in candidates:
+    movies_to_delete_by_config: dict[int, list[dict]] = {}
+    if radarr_clients:
+        for candidate in whole_movie_candidates:
+            if candidate.movie_id is None:
+                continue
             movie_info = movie_data.get(candidate.movie_id)
-            if movie_info and movie_info["radarr_id"]:
-                movies_to_delete.append(
-                    {
-                        "candidate_id": candidate.id,
-                        "movie_id": candidate.movie_id,
-                        "radarr_id": movie_info["radarr_id"],
-                        "title": movie_info["title"],
-                        "method": "radarr",
-                        "tmdb_id": movie_info["tmdb_id"],
-                    }
-                )
+            if not movie_info:
+                continue
+            for config_id, arr_movie_id in movie_info["refs"]:
+                if config_id in radarr_clients:
+                    movies_to_delete_by_config.setdefault(config_id, []).append(
+                        {
+                            "candidate_id": candidate.id,
+                            "movie_id": candidate.movie_id,
+                            "radarr_id": arr_movie_id,
+                            "title": movie_info["title"],
+                            "method": "radarr",
+                            "tmdb_id": movie_info["tmdb_id"],
+                        }
+                    )
+                    break
 
-    # delete using radarr
-    if movies_to_delete and service_manager.radarr:
-        LOG.info(f"Deleting {len(movies_to_delete)} movies via Radarr")
-        radarr_ids = [m["radarr_id"] for m in movies_to_delete]
-
+    movies_to_delete: list[dict] = []
+    for config_id, batch in movies_to_delete_by_config.items():
+        client = radarr_clients.get(config_id)
+        if not client:
+            continue
+        LOG.info(f"Deleting {len(batch)} movies via Radarr config {config_id}")
+        radarr_ids = [m["radarr_id"] for m in batch]
         try:
-            await service_manager.radarr.delete_movies(radarr_ids)
+            await client.delete_movies(radarr_ids)
+            movies_to_delete.extend(batch)
+        except Exception as e:
+            LOG.error(
+                f"Error deleting movies via Radarr config {config_id}: {e}",
+                exc_info=True,
+            )
 
-            # mark as removed in database and delete candidate
+    if movies_to_delete:
+        try:
             async with async_db() as db:
                 for movie_info in movies_to_delete:
                     # update movie record
@@ -1242,14 +1372,13 @@ async def _delete_movie_candidates(
 
             deleted_count = len(movies_to_delete)
             LOG.info(f"Successfully deleted {deleted_count} movies via Radarr")
-
         except Exception as e:
-            LOG.error(f"Error deleting movies via Radarr: {e}", exc_info=True)
+            LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
 
     # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Radarr
-    if not movies_to_delete or (len(candidates) > len(movies_to_delete)):
+    if not movies_to_delete or (len(whole_movie_candidates) > len(movies_to_delete)):
         deleted_count += await _delete_movies_via_media_server(
-            candidates, movies_to_delete
+            whole_movie_candidates, movies_to_delete
         )
 
     return deleted_count
@@ -1280,71 +1409,73 @@ async def _delete_series_candidates(
 
         LOG.info(f"Found {len(candidates)} series candidates to evaluate for deletion")
 
-        # get sonarr IDs and build lookup
         result = await db.execute(
-            select(Series.id, Series.sonarr_id, Series.title, Series.tmdb_id)
+            select(
+                Series.id,
+                Series.title,
+                Series.tmdb_id,
+                SeriesArrRef.service_config_id,
+                SeriesArrRef.arr_series_id,
+            )
             .join(ReclaimCandidate, Series.id == ReclaimCandidate.series_id)
+            .outerjoin(SeriesArrRef, SeriesArrRef.series_id == Series.id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
             .where(Series.removed_at.is_(None))
         )
-        series_data = {
-            row[0]: {"sonarr_id": row[1], "title": row[2], "tmdb_id": row[3]}
-            for row in result.all()
-        }
+        rows = result.all()
+        series_data: dict[int, dict] = {}
+        for series_id, title, tmdb_id, config_id, arr_series_id in rows:
+            info = series_data.setdefault(
+                series_id,
+                {"title": title, "tmdb_id": tmdb_id, "refs": []},
+            )
+            if config_id is not None and arr_series_id is not None:
+                info["refs"].append((config_id, arr_series_id))
 
-    # For series with a missing sonarr_id, attempt a live lookup by TMDB ID.
-    # Note: this will actually only ever need to be ran if something is missing, once a full
-    # sync is ran this will all be cached
-    if service_manager.sonarr:
-        missing = [
-            (sid, info)
-            for sid, info in series_data.items()
-            if info["sonarr_id"] is None and info["tmdb_id"]
-        ]
-        if missing:
-            try:
-                all_sonarr = await service_manager.sonarr.get_all_series()
-                sonarr_by_tmdb = {s.tmdb_id: s.id for s in all_sonarr if s.tmdb_id}
-                for _series_id, info in missing:
-                    found = sonarr_by_tmdb.get(info["tmdb_id"])
-                    if found:
-                        info["sonarr_id"] = found
-                        LOG.debug(
-                            f"Resolved missing Sonarr ID for '{info['title']}' "
-                            f"via live lookup (sonarr_id={found})"
-                        )
-            except Exception as e:
-                LOG.warning(f"Live Sonarr lookup for missing IDs failed: {e}")
+    sonarr_clients = service_manager.sonarr_clients()
+    if not sonarr_clients and service_manager.sonarr:
+        sonarr_clients = {0: service_manager.sonarr}
 
-    # delete all candidates that exist in Sonarr (by sonarr_id)
-    series_to_delete = []
-    if service_manager.sonarr:
+    series_to_delete_by_config: dict[int, list[dict]] = {}
+    if sonarr_clients:
         for candidate in candidates:
+            if candidate.series_id is None:
+                continue
             series_info = series_data.get(candidate.series_id)
-            if series_info and series_info["sonarr_id"]:
-                series_to_delete.append(
-                    {
-                        "candidate_id": candidate.id,
-                        "series_id": candidate.series_id,
-                        "sonarr_id": series_info["sonarr_id"],
-                        "title": series_info["title"],
-                        "method": "sonarr",
-                        "tmdb_id": series_info["tmdb_id"],
-                    }
-                )
+            if not series_info:
+                continue
+            for config_id, arr_series_id in series_info["refs"]:
+                if config_id in sonarr_clients:
+                    series_to_delete_by_config.setdefault(config_id, []).append(
+                        {
+                            "candidate_id": candidate.id,
+                            "series_id": candidate.series_id,
+                            "sonarr_id": arr_series_id,
+                            "title": series_info["title"],
+                            "method": "sonarr",
+                            "tmdb_id": series_info["tmdb_id"],
+                        }
+                    )
+                    break
 
-    # delete using Sonarr
-    if series_to_delete and service_manager.sonarr:
-        LOG.info(f"Deleting {len(series_to_delete)} series via Sonarr")
-
+    series_to_delete: list[dict] = []
+    for config_id, batch in series_to_delete_by_config.items():
+        client = sonarr_clients.get(config_id)
+        if not client:
+            continue
+        LOG.info(f"Deleting {len(batch)} series via Sonarr config {config_id}")
         try:
-            # Sonarr deletes one at a time (no bulk endpoint)
-            for series_info in series_to_delete:
-                await service_manager.sonarr.delete_series(
-                    series_info["sonarr_id"], delete_files=True
-                )
+            for series_info in batch:
+                await client.delete_series(series_info["sonarr_id"], delete_files=True)
+            series_to_delete.extend(batch)
+        except Exception as e:
+            LOG.error(
+                f"Error deleting series via Sonarr config {config_id}: {e}",
+                exc_info=True,
+            )
 
-            # mark as removed in database and delete candidate
+    if series_to_delete:
+        try:
             async with async_db() as db:
                 for series_info in series_to_delete:
                     # update series record
@@ -1379,9 +1510,8 @@ async def _delete_series_candidates(
 
             deleted_count = len(series_to_delete)
             LOG.info(f"Successfully deleted {deleted_count} series via Sonarr")
-
         except Exception as e:
-            LOG.error(f"Error deleting series via Sonarr: {e}", exc_info=True)
+            LOG.error(f"Error finalizing series deletion state: {e}", exc_info=True)
 
     # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Sonarr
     if not series_to_delete or (len(candidates) > len(series_to_delete)):
@@ -1449,15 +1579,37 @@ async def _delete_season_candidates(
         deleted_via_sonarr = False
 
         # try Sonarr first
-        if service_manager.sonarr and series_obj.sonarr_id:
-            try:
-                await service_manager.sonarr.delete_season_files(
-                    series_obj.sonarr_id, season_number
+        sonarr_ref_id: int | None = None
+        sonarr_ref_config_id: int | None = None
+        async with async_db() as db:
+            ref = (
+                (
+                    await db.execute(
+                        select(SeriesArrRef)
+                        .where(SeriesArrRef.series_id == series_obj.id)
+                        .order_by(SeriesArrRef.id.asc())
+                    )
                 )
+                .scalars()
+                .first()
+            )
+            if ref:
+                sonarr_ref_id = ref.arr_series_id
+                sonarr_ref_config_id = ref.service_config_id
+
+        sonarr_client = None
+        if sonarr_ref_config_id is not None:
+            sonarr_client = service_manager.get_sonarr(sonarr_ref_config_id)
+        if sonarr_client is None:
+            sonarr_client = service_manager.sonarr
+
+        if sonarr_client and sonarr_ref_id:
+            try:
+                await sonarr_client.delete_season_files(sonarr_ref_id, season_number)
                 deleted_via_sonarr = True
                 LOG.info(
                     f"Deleted '{series_obj.title}' S{season_number:02d} "
-                    f"via Sonarr (sonarr_id={series_obj.sonarr_id})"
+                    f"via Sonarr (sonarr_id={sonarr_ref_id})"
                 )
             except Exception as e:
                 LOG.warning(

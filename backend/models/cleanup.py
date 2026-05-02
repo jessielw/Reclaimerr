@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -48,3 +49,19 @@ class CleanupRuleResponse(CleanupRuleBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+@dataclass(slots=True)
+class MatchedCandidateRecord:
+    """Represents a record of a media item that matched a cleanup rule."""
+
+    media_type: MediaType
+    matched_rule_ids: list[int]
+    matched_criteria: dict[str, Any]
+    reason: str
+    reason_data: list[dict[str, Any]]
+    estimated_space_gb: float | None
+    movie_id: int | None = None
+    movie_version_id: int | None = None
+    series_id: int | None = None
+    season_id: int | None = None
