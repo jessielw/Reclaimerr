@@ -23,6 +23,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    ReclaimHistory,
     ReclaimRule,
     Season,
     Series,
@@ -1127,6 +1128,7 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
 
 async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
+    approved_by: str = "system",
 ) -> int:
     """Delete movie-version candidates using service-aware targeted deletion."""
     if not version_candidates:
@@ -1221,6 +1223,18 @@ async def _delete_movie_version_candidates(
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
                     await db.delete(ver_db)
+
+                db.add(
+                    ReclaimHistory(
+                        approved_by=approved_by,
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=movie.tmdb_id,
+                        name=movie.title,
+                        path=version.path,
+                        size=version.size,
+                    )
+                )
+
                 await db.commit()
 
             deleted_count += 1
@@ -1238,6 +1252,7 @@ async def _delete_movie_version_candidates(
 
 async def _delete_movie_candidates(
     restrict_to_ids: frozenset[int] | None = None,
+    approved_by: str = "system",
 ) -> int:
     """Delete movie candidates. Returns count of deleted candidates."""
     deleted_count = 0
@@ -1264,7 +1279,9 @@ async def _delete_movie_candidates(
     version_candidates = [c for c in candidates if c.movie_version_id is not None]
 
     if version_candidates:
-        deleted_count += await _delete_movie_version_candidates(version_candidates)
+        deleted_count += await _delete_movie_version_candidates(
+            version_candidates, approved_by
+        )
 
     if not whole_movie_candidates:
         return deleted_count
@@ -1368,6 +1385,16 @@ async def _delete_movie_candidates(
                                 f"Failed to reset Seerr request for {movie_info['title']}: {e}"
                             )
 
+                    db.add(
+                        ReclaimHistory(
+                            approved_by=approved_by,
+                            media_type=MediaType.MOVIE,
+                            tmdb_id=movie_info.get("tmdb_id"),
+                            name=movie_info.get("title"),
+                            size=movie.size if movie else None,
+                        )
+                    )
+
                 await db.commit()
 
             deleted_count = len(movies_to_delete)
@@ -1378,7 +1405,7 @@ async def _delete_movie_candidates(
     # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Radarr
     if not movies_to_delete or (len(whole_movie_candidates) > len(movies_to_delete)):
         deleted_count += await _delete_movies_via_media_server(
-            whole_movie_candidates, movies_to_delete
+            whole_movie_candidates, movies_to_delete, approved_by
         )
 
     return deleted_count
@@ -1386,6 +1413,7 @@ async def _delete_movie_candidates(
 
 async def _delete_series_candidates(
     restrict_to_ids: frozenset[int] | None = None,
+    approved_by: str = "system",
 ) -> int:
     """Delete series candidates. Returns count of deleted series."""
     deleted_count = 0
@@ -1506,6 +1534,16 @@ async def _delete_series_candidates(
                                 f"Failed to reset Seerr request for {series_info['title']}: {e}"
                             )
 
+                    db.add(
+                        ReclaimHistory(
+                            approved_by=approved_by,
+                            media_type=MediaType.SERIES,
+                            tmdb_id=series_info.get("tmdb_id"),
+                            name=series_info.get("title"),
+                            size=series.size if series else None,
+                        )
+                    )
+
                 await db.commit()
 
             deleted_count = len(series_to_delete)
@@ -1516,7 +1554,7 @@ async def _delete_series_candidates(
     # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Sonarr
     if not series_to_delete or (len(candidates) > len(series_to_delete)):
         deleted_count += await _delete_series_via_media_server(
-            candidates, series_to_delete
+            candidates, series_to_delete, approved_by
         )
 
     return deleted_count
@@ -1524,6 +1562,7 @@ async def _delete_series_candidates(
 
 async def _delete_season_candidates(
     restrict_to_ids: frozenset[int] | None = None,
+    approved_by: str = "system",
 ) -> int:
     """Delete season-level candidates.  Tries Sonarr first; falls back to media server.
 
@@ -1688,6 +1727,15 @@ async def _delete_season_candidates(
                 )
                 await db.delete(season_db)
 
+            db.add(
+                ReclaimHistory(
+                    approved_by=approved_by,
+                    media_type=MediaType.SERIES,
+                    tmdb_id=series_obj.tmdb_id,
+                    name=f"{series_obj.title} S{season_number:02d}",
+                    size=season.size,
+                )
+            )
             await db.commit()
 
         deleted_count += 1
@@ -1696,7 +1744,7 @@ async def _delete_season_candidates(
 
 
 async def _delete_movies_via_media_server(
-    candidates, already_deleted: list[dict]
+    candidates, already_deleted: list[dict], approved_by: str = "system"
 ) -> int:
     """Deletes movies via the main media server as fallback when not in Radarr.
 
@@ -1786,6 +1834,16 @@ async def _delete_movies_via_media_server(
                             f"Failed to reset Seerr request for '{movie.title}': {e}"
                         )
 
+                db.add(
+                    ReclaimHistory(
+                        approved_by=approved_by,
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=movie.tmdb_id,
+                        name=movie.title,
+                        size=movie.size,
+                    )
+                )
+
                 await db.commit()
 
             deleted_count += 1
@@ -1800,7 +1858,7 @@ async def _delete_movies_via_media_server(
 
 
 async def _delete_series_via_media_server(
-    candidates, already_deleted: list[dict]
+    candidates, already_deleted: list[dict], approved_by: str = "system"
 ) -> int:
     """Deletes series via Jellyfin or Plex as fallback when not in Sonarr.
 
@@ -1887,6 +1945,16 @@ async def _delete_series_via_media_server(
                             f"Failed to reset Seerr request for {series_obj.title}: {e}"
                         )
 
+                db.add(
+                    ReclaimHistory(
+                        approved_by=approved_by,
+                        media_type=MediaType.SERIES,
+                        tmdb_id=series_obj.tmdb_id,
+                        name=series_obj.title,
+                        size=series_db.size if series_db else None,
+                    )
+                )
+
                 await db.commit()
 
             deleted_count += 1
@@ -1931,7 +1999,9 @@ async def _reset_seerr_request(tmdb_id: int, media_type: MediaType) -> None:
         LOG.warning(f"Failed to delete Seerr data for TMDB {tmdb_id}: {e}")
 
 
-async def delete_specific_candidates(candidate_ids: list[int]) -> tuple[int, int]:
+async def delete_specific_candidates(
+    candidate_ids: list[int], approved_by: str = "system"
+) -> tuple[int, int]:
     """Deletes specific reclaim candidates by their IDs.
 
     Uses the same deletion priority as delete_cleanup_candidates:
@@ -1965,13 +2035,19 @@ async def delete_specific_candidates(candidate_ids: list[int]) -> tuple[int, int
     if MediaType.MOVIE in types and (
         service_manager.radarr or service_manager.main_media_server
     ):
-        deleted += await _delete_movie_candidates(restrict_to_ids=restrict)
+        deleted += await _delete_movie_candidates(
+            restrict_to_ids=restrict, approved_by=approved_by
+        )
 
     if MediaType.SERIES in types and (
         service_manager.sonarr or service_manager.main_media_server
     ):
-        deleted += await _delete_series_candidates(restrict_to_ids=restrict)
-        deleted += await _delete_season_candidates(restrict_to_ids=restrict)
+        deleted += await _delete_series_candidates(
+            restrict_to_ids=restrict, approved_by=approved_by
+        )
+        deleted += await _delete_season_candidates(
+            restrict_to_ids=restrict, approved_by=approved_by
+        )
 
     failed = max(0, len(found_ids) - deleted)
     LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
