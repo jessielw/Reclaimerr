@@ -420,7 +420,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             include_never_watched=True,
         )
         matched_criteria: dict[str, object] = {}
-        reasons: list[str] = []
+        reasons: list[dict] = []
 
         matched = _evaluate_movie_rule(movie, rule, matched_criteria, reasons)
 
