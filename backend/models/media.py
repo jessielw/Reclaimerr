@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -374,10 +375,34 @@ class PaginatedMediaResponse(BaseModel):
     total_pages: int
 
 
-class CandidateEntry(BaseModel):
-    """A single reclaim candidate with enough info to display and act on."""
+class CandidateLibraryRef(BaseModel):
+    library_id: str
+    library_name: str
+    service: str | None = None
 
-    id: int
+
+class CandidateReasonCondition(BaseModel):
+    field: str
+    field_label: str
+    operator: str
+    operator_label: str
+    expected: str | int | float | bool | list[str | int | float | bool] | None = None
+    actual: str | int | float | bool | list[str | int | float | bool] | None = None
+    display: str
+
+
+class CandidateReasonPart(BaseModel):
+    rule_id: int | None = None
+    rule_name: str
+    target_scope: str
+    season_label: str | None = None
+    conditions: list[CandidateReasonCondition]
+    text: str
+
+
+class CandidateEntryBase(BaseModel):
+    """Shared media payload used by candidate and preview responses."""
+
     media_type: str
     media_id: int
     media_title: str
@@ -385,6 +410,7 @@ class CandidateEntry(BaseModel):
     poster_url: str | None
     movie_version_id: int | None = None
     version_service: str | None = None
+    version_library_id: str | None = None
     version_library_name: str | None = None
     version_video_codec_family: str | None = None
     version_audio_codec_family: str | None = None
@@ -399,10 +425,9 @@ class CandidateEntry(BaseModel):
     version_path: str | None = None
     version_file_name: str | None = None
     version_subtitle_languages: list[str] | None = None
-    reason: str
+    reason_parts: Sequence[CandidateReasonPart]
+    reason_tokens: list[str]
     estimated_space_gb: float | None
-    has_pending_request: bool
-    created_at: str
     # set for season level candidates
     season_id: int | None = None
     season_number: int | None = None
@@ -416,6 +441,19 @@ class CandidateEntry(BaseModel):
     season_audio_codec_families: list[str] | None = None
     season_audio_languages: list[str] | None = None
     season_subtitle_languages: list[str] | None = None
+    series_library_refs: list[CandidateLibraryRef] | None = None
+
+
+class CandidateEntry(CandidateEntryBase):
+    """A single reclaim candidate with enough info to display and act on."""
+
+    id: int
+    has_pending_request: bool
+    created_at: str
+
+
+class RulePreviewEntry(CandidateEntryBase):
+    """Transient dry-run preview row for an unsaved rule."""
 
 
 class PaginatedCandidatesResponse(BaseModel):
@@ -433,3 +471,11 @@ class DeleteCandidatesRequest(BaseModel):
 class DeleteCandidatesResponse(BaseModel):
     deleted: int
     failed: int
+
+
+class PaginatedRulePreviewResponse(BaseModel):
+    items: list[RulePreviewEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
