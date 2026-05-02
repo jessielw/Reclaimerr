@@ -17,6 +17,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    ReclaimHistory,
     Season,
     Series,
     SeriesArrRef,
@@ -36,6 +37,8 @@ from backend.models.media import (
     MovieWithStatus,
     PaginatedCandidatesResponse,
     PaginatedMediaResponse,
+    PaginatedReclaimHistoryResponse,
+    ReclaimHistoryEntry,
     SeasonWithStatus,
     SeriesServiceRefResponse,
     SeriesWithStatus,
@@ -878,5 +881,62 @@ async def delete_candidates(
     if not request.candidate_ids:
         return DeleteCandidatesResponse(deleted=0, failed=0)
 
-    deleted, failed = await delete_specific_candidates(request.candidate_ids)
+    deleted, failed = await delete_specific_candidates(
+        request.candidate_ids, approved_by=user.username
+    )
     return DeleteCandidatesResponse(deleted=deleted, failed=failed)
+
+
+@router.get("/reclaim-history", response_model=PaginatedReclaimHistoryResponse)
+async def get_reclaim_history(
+    _user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    media_type: MediaType | None = Query(None),
+    search: str | None = Query(None, max_length=200),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+):
+    """Get paginated reclaim history records."""
+    base = select(ReclaimHistory)
+
+    if media_type is not None:
+        base = base.where(ReclaimHistory.media_type == media_type)
+    if search and search.strip():
+        base = base.where(ReclaimHistory.name.ilike(f"%{search.strip()}%"))
+
+    count_result = await db.execute(select(func.count()).select_from(base.subquery()))
+    total: int = count_result.scalar_one()
+
+    rows_result = await db.execute(
+        base.order_by(
+            ReclaimHistory.created_at.asc()
+            if sort_order == "asc"
+            else ReclaimHistory.created_at.desc()
+        )
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    rows = rows_result.scalars().all()
+
+    items = [
+        ReclaimHistoryEntry(
+            id=row.id,
+            approved_by=row.approved_by,
+            media_type=row.media_type.value,
+            tmdb_id=row.tmdb_id,
+            name=row.name,
+            size=row.size,
+            created_at=to_utc_isoformat(row.created_at) or "",
+        )
+        for row in rows
+    ]
+
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    return PaginatedReclaimHistoryResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )

@@ -479,3 +479,21 @@ class PaginatedRulePreviewResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class ReclaimHistoryEntry(BaseModel):
+    id: int
+    approved_by: str
+    media_type: str
+    tmdb_id: int | None
+    name: str | None
+    size: int | None
+    created_at: str
+
+
+class PaginatedReclaimHistoryResponse(BaseModel):
+    items: list[ReclaimHistoryEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

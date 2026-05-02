@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Total space reclaimed
     - Total movies reclaimed
     - Total series reclaimed
+- Added a section to **Candidates** to view reclaimed history in a paginated format with filters/search
 
 ### Changed
 
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded niquests to 3.18.7
 - Auto tagging configuration/tag suffix in general settings is now moved to per rule
 - All switch elements should now use cursor-pointer
+- Polished **Candidates** tab a little bit
 
 ### Removed
 

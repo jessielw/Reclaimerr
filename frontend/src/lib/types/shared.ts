@@ -455,6 +455,19 @@ export interface DashboardKpis {
   reclaimable_movies_gb: number;
   reclaimable_series_gb: number;
   reclaimable_total_gb: number;
+  reclaimed_movies: number;
+  reclaimed_series: number;
+  reclaimed_total_gb: number;
+}
+
+export interface ReclaimHistoryEntry {
+  id: number;
+  approved_by: string;
+  media_type: string;
+  tmdb_id: number | null;
+  name: string | null;
+  size: number | null;
+  created_at: string;
 }
 
 export interface DashboardRequestsSummary {
