@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -26,6 +27,12 @@ from backend.tasks.sync import sync_media_libraries
 from backend.types import MEDIA_SERVERS
 
 router = APIRouter(tags=["settings", "services"])
+
+ARR_SERVICES = {Service.RADARR, Service.SONARR}
+
+
+def _default_service_name(service_type: Service) -> str:
+    return service_type.title()
 
 
 def _mask_api_key(key: str) -> str:
@@ -57,17 +64,11 @@ async def get_service_settings(
     )
     service_libraries = get_service_libraries.all()
 
-    return {
-        config.service_type: {
-            "enabled": config.enabled,
-            "base_url": config.base_url,
-            "api_key": _mask_api_key(
-                fer_decrypt(config.api_key) if config.api_key else ""
-            ),
-            "extra_settings": config.extra_settings,
-            "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
-            # libraries only for the designated main media server
-            "libraries": [
+    response: dict[str, Any] = {}
+    for config in service_configs:
+        payload = _service_config_payload(config)
+        payload["libraries"] = (
+            [
                 {
                     "id": lib_id,
                     "library_id": library_id,
@@ -84,9 +85,31 @@ async def get_service_settings(
                 ) in service_libraries
             ]
             if config.service_type in MEDIA_SERVERS and config.is_main
-            else None,
-        }
-        for config in service_configs
+            else None
+        )
+
+        key = config.service_type
+        if key in ARR_SERVICES:
+            bucket = response.setdefault(key, {"instances": []})
+            bucket["instances"].append(payload)
+            if "id" not in bucket:
+                bucket.update(payload)
+        else:
+            response[key] = payload
+    return response
+
+
+def _service_config_payload(config: ServiceConfig) -> dict[str, Any]:
+    """Prepare service configuration payload, masking API key and including main server libraries."""
+    return {
+        "id": config.id,
+        "name": config.name or _default_service_name(config.service_type),
+        "service_type": config.service_type,
+        "enabled": config.enabled,
+        "base_url": config.base_url,
+        "api_key": _mask_api_key(fer_decrypt(config.api_key) if config.api_key else ""),
+        "extra_settings": config.extra_settings,
+        "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
     }
 
 
@@ -97,13 +120,12 @@ async def set_service_settings(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Set service settings for a given service."""
+    service_name = data.name or _default_service_name(data.service_type)
     # if the client omitted the api_key (unchanged masked field), resolve the
     # existing key from the database so we don't overwrite it with garbage
     resolved_api_key = data.api_key
     if not resolved_api_key:
-        existing = await db.execute(
-            select(ServiceConfig).where(ServiceConfig.service_type == data.service_type)
-        )
+        existing = await _find_existing_service_config(db, data, service_name)
         existing_config = existing.scalar_one_or_none()
         if not existing_config:
             raise HTTPException(
@@ -142,6 +164,8 @@ async def set_service_settings(
     await _upsert_service_config(
         db,
         ServiceConfigUpdate(
+            id=data.id,
+            name=service_name,
             service_type=data.service_type,
             base_url=data.base_url,
             api_key=resolved_api_key,
@@ -150,18 +174,23 @@ async def set_service_settings(
             extra_settings=data.extra_settings,
         ),
     )
+    saved_config_result = await _find_existing_service_config(db, data, service_name)
+    saved_config = saved_config_result.scalar_one()
 
     queued_job = await enqueue_background_job(
         job_type=BackgroundJobType.SERVICE_TOGGLE,
         payload=ServiceToggleJobPayload(
+            service_config_id=saved_config.id,
+            name=service_name,
             service_type=data.service_type,
             base_url=data.base_url,
             api_key=resolved_api_key,
             enabled=data.enabled,
             is_main=data.is_main,
+            extra_settings=data.extra_settings,
             trigger_resync=main_switched,
         ).model_dump(mode="json"),
-        dedupe_key=f"service-toggle-{data.service_type}",
+        dedupe_key=f"service-toggle-{saved_config.id}",
         replace_pending=True,
     )
     if queued_job is None:
@@ -189,6 +218,8 @@ async def set_service_settings(
         "message": f"{data.service_type.title()} settings updated",
         "sync_action": sync_action,
         "data": {
+            "id": saved_config.id,
+            "name": service_name,
             "service_type": data.service_type,
             "base_url": data.base_url,
             "api_key": _mask_api_key(resolved_api_key),
@@ -197,6 +228,75 @@ async def set_service_settings(
             "extra_settings": data.extra_settings,
         },
     }
+
+
+@router.delete("/service/{service_config_id}")
+async def delete_service_settings(
+    service_config_id: int,
+    _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Deletes a service configuration by ID."""
+    result = await db.execute(
+        select(ServiceConfig).where(ServiceConfig.id == service_config_id)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Service configuration not found")
+
+    if config.service_type in MEDIA_SERVERS and config.is_main:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete the active main media server. Assign a different main server first.",
+        )
+
+    service_type = config.service_type
+    config_id = config.id
+
+    await db.execute(sql_delete(ServiceConfig).where(ServiceConfig.id == config_id))
+    await db.commit()
+
+    if service_type is Service.RADARR:
+        await service_manager.clear_radarr(config_id)
+    elif service_type is Service.SONARR:
+        await service_manager.clear_sonarr(config_id)
+    elif service_type is Service.SEERR:
+        await service_manager.clear_seerr()
+    elif service_type is Service.JELLYFIN:
+        await service_manager.clear_jellyfin()
+    elif service_type is Service.EMBY:
+        await service_manager.clear_emby()
+    elif service_type is Service.PLEX:
+        await service_manager.clear_plex()
+
+    return {
+        "message": f"{service_type.value.title()} configuration deleted",
+        "data": {
+            "id": config_id,
+            "service_type": service_type.value,
+            "deleted": True,
+        },
+    }
+
+
+async def _find_existing_service_config(
+    db: AsyncSession, data: ServiceConfigUpdate, service_name: str
+):
+    """Find existing service configuration by ID or service type/name."""
+    if data.id is not None:
+        return await db.execute(
+            select(ServiceConfig).where(ServiceConfig.id == data.id)
+        )
+    if data.service_type in ARR_SERVICES:
+        return await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type == data.service_type,
+                ServiceConfig.name == service_name,
+            )
+        )
+    return await db.execute(
+        select(ServiceConfig).where(ServiceConfig.service_type == data.service_type)
+    )
 
 
 async def _upsert_service_config(
@@ -221,26 +321,36 @@ async def _upsert_service_config(
             .values(is_main=False)
         )
 
-    # upsert into database
-    insert_statement = sqlite_insert(ServiceConfig).values(
+    service_name = data.name or _default_service_name(data.service_type)
+    values = dict(
         service_type=data.service_type,
+        name=service_name,
         base_url=data.base_url,
         api_key=fer_encrypt(data.api_key),
         enabled=data.enabled,
         is_main=data.is_main,
         extra_settings=data.extra_settings,
     )
-    upsert_statement = insert_statement.on_conflict_do_update(
-        index_elements=["service_type"],
-        set_={
-            "base_url": data.base_url,
-            "api_key": fer_encrypt(data.api_key),
-            "enabled": data.enabled,
-            "is_main": data.is_main,
-            "extra_settings": data.extra_settings,
-        },
-    )
-    await db.execute(upsert_statement)
+
+    if data.id is not None:
+        await db.execute(
+            sql_update(ServiceConfig)
+            .where(ServiceConfig.id == data.id)
+            .values(**values)
+        )
+    else:
+        insert_statement = sqlite_insert(ServiceConfig).values(**values)
+        upsert_statement = insert_statement.on_conflict_do_update(
+            index_elements=["service_type", "name"],
+            set_={
+                "base_url": data.base_url,
+                "api_key": fer_encrypt(data.api_key),
+                "enabled": data.enabled,
+                "is_main": data.is_main,
+                "extra_settings": data.extra_settings,
+            },
+        )
+        await db.execute(upsert_statement)
     await db.commit()
     return data
 
@@ -271,11 +381,10 @@ async def test_service_settings(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Test service settings for a given service."""
+    service_name = data.name or _default_service_name(data.service_type)
     resolved_api_key = data.api_key
     if not resolved_api_key:
-        existing = await db.execute(
-            select(ServiceConfig).where(ServiceConfig.service_type == data.service_type)
-        )
+        existing = await _find_existing_service_config(db, data, service_name)
         existing_config = existing.scalar_one_or_none()
         if not existing_config:
             raise HTTPException(

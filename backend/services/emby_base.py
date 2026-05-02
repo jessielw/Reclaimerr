@@ -21,6 +21,7 @@ from backend.core.codecs import (
 from backend.core.logger import LOG
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
@@ -105,6 +106,14 @@ class EmbyServiceBase:
             raise ValueError(
                 f"Failed to delete {self.service_type} item {item_id}: {e}"
             )
+
+    async def delete_movie_version(self, item_id: str, _media_source_id: str) -> None:
+        """Deletes one movie version for Emby/Jellyfin.
+
+        Emby/Jellyfin libraries represented as separate items per version can delete
+        a single version by deleting that specific item id.
+        """
+        await self.delete_item(item_id)
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.
@@ -253,6 +262,8 @@ class EmbyServiceBase:
                 )
 
                 run_time_ticks = as_float(source.get("RunTimeTicks"))
+                width = as_int(first_video.get("Width"))
+                height = as_int(first_video.get("Height"))
                 versions.append(
                     MovieVersionData(
                         service=self.service_type,  # type: ignore[reportArgumentType]
@@ -282,9 +293,11 @@ class EmbyServiceBase:
                         else None,
                         video_bitrate=as_int(first_video.get("BitRate")),
                         video_bit_depth=as_int(first_video.get("BitDepth")),
-                        video_width=as_int(first_video.get("Width")),
-                        video_height=as_int(first_video.get("Height")),
-                        video_resolution=first_video.get("DisplayTitle"),
+                        video_width=width,
+                        video_height=height,
+                        video_resolution=guesstimate_resolution(width, height)
+                        if width and height
+                        else None,
                         video_color_primaries=first_video.get("ColorPrimaries"),
                         video_color_space=first_video.get("ColorSpace"),
                         video_color_transfer=first_video.get("ColorTransfer"),
@@ -453,6 +466,7 @@ class EmbyServiceBase:
         season_max_height: dict[tuple[str, int], int] = {}
         season_video_families: dict[tuple[str, int], set[str]] = {}
         season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_languages: dict[tuple[str, int], set[str]] = {}
         season_max_audio_channels: dict[tuple[str, int], int] = {}
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
 
@@ -588,13 +602,17 @@ class EmbyServiceBase:
                             video_range_type = str(
                                 stream.get("VideoRangeType", "")
                             ).lower()
+                            is_hdr_range = (
+                                video_range_type.startswith("hdr")
+                                or "hlg" in video_range_type
+                                or "dovi" in video_range_type
+                                or "dolby" in video_range_type
+                            )
                             has_dv = (
                                 dv_profile is not None or "dovi" in video_range_type
                             )
                             has_hdr = (
-                                has_dv
-                                or bool(stream.get("IsHdr"))
-                                or bool(video_range_type)
+                                has_dv or bool(stream.get("IsHdr")) or is_hdr_range
                             )
                             if has_dv:
                                 season_has_dv[sk] = True
@@ -606,6 +624,11 @@ class EmbyServiceBase:
                                 af = normalize_audio_codec_family(str(acodec))
                                 if af:
                                     season_audio_families.setdefault(sk, set()).add(af)
+                            alang = stream.get("Language")
+                            if alang:
+                                season_audio_languages.setdefault(sk, set()).add(
+                                    str(alang).lower()
+                                )
                             channels = as_int(stream.get("Channels"))
                             if channels is not None:
                                 season_max_audio_channels[sk] = max(
@@ -647,6 +670,7 @@ class EmbyServiceBase:
                 or None,
                 audio_codec_families=sorted(season_audio_families.get(sk, set()))
                 or None,
+                audio_languages=sorted(season_audio_languages.get(sk, set())) or None,
                 max_audio_channels=season_max_audio_channels.get(sk),
                 subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
                 or None,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -119,6 +120,7 @@ class AggregatedSeasonData:
     max_video_height: int | None = None
     video_codec_families: list[str] | None = None
     audio_codec_families: list[str] | None = None
+    audio_languages: list[str] | None = None
     max_audio_channels: int | None = None
     subtitle_languages: list[str] | None = None
 
@@ -222,6 +224,14 @@ class MediaStatusInfo(BaseModel):
     request_reason: str | None = None
 
 
+class ArrRefResponse(BaseModel):
+    """API representation of an Arr instance reference."""
+
+    service_type: str
+    service_config_id: int
+    arr_id: int
+
+
 class MovieWithStatus(BaseModel):
     """Movie with all metadata and status information."""
 
@@ -235,8 +245,8 @@ class MovieWithStatus(BaseModel):
     size: int | None
     versions: list[MovieVersionResponse]
 
-    # external IDs
-    radarr_id: int | None
+    # arr instance refs
+    arr_refs: list[ArrRefResponse]
     imdb_id: str | None
 
     # TMDB metadata
@@ -288,8 +298,8 @@ class SeriesWithStatus(BaseModel):
     size: int | None
     service_refs: list[SeriesServiceRefResponse]
 
-    # external IDs
-    sonarr_id: int | None
+    # arr instance refs
+    arr_refs: list[ArrRefResponse]
     imdb_id: str | None
     tvdb_id: str | None
 
@@ -349,6 +359,7 @@ class SeasonWithStatus(BaseModel):
     max_video_height: int | None = None
     video_codec_families: list[str] | None = None
     audio_codec_families: list[str] | None = None
+    audio_languages: list[str] | None = None
     max_audio_channels: int | None = None
     subtitle_languages: list[str] | None = None
     status: MediaStatusInfo
@@ -364,24 +375,85 @@ class PaginatedMediaResponse(BaseModel):
     total_pages: int
 
 
-class CandidateEntry(BaseModel):
-    """A single reclaim candidate with enough info to display and act on."""
+class CandidateLibraryRef(BaseModel):
+    library_id: str
+    library_name: str
+    service: str | None = None
 
-    id: int
+
+class CandidateReasonCondition(BaseModel):
+    field: str
+    field_label: str
+    operator: str
+    operator_label: str
+    expected: str | int | float | bool | list[str | int | float | bool] | None = None
+    actual: str | int | float | bool | list[str | int | float | bool] | None = None
+    display: str
+
+
+class CandidateReasonPart(BaseModel):
+    rule_id: int | None = None
+    rule_name: str
+    target_scope: str
+    season_label: str | None = None
+    conditions: list[CandidateReasonCondition]
+    text: str
+
+
+class CandidateEntryBase(BaseModel):
+    """Shared media payload used by candidate and preview responses."""
+
     media_type: str
     media_id: int
     media_title: str
     media_year: int | None
     poster_url: str | None
-    reason: str
+    movie_version_id: int | None = None
+    version_service: str | None = None
+    version_library_id: str | None = None
+    version_library_name: str | None = None
+    version_video_codec_family: str | None = None
+    version_audio_codec_family: str | None = None
+    version_video_width: int | None = None
+    version_video_height: int | None = None
+    version_video_resolution: str | None = None
+    version_video_hdr: bool | None = None
+    version_video_dolby_vision: bool | None = None
+    version_audio_channels: int | None = None
+    version_audio_languages: list[str] | None = None
+    version_size: int | None = None
+    version_path: str | None = None
+    version_file_name: str | None = None
+    version_subtitle_languages: list[str] | None = None
+    reason_parts: Sequence[CandidateReasonPart]
+    reason_tokens: list[str]
     estimated_space_gb: float | None
-    has_pending_request: bool
-    created_at: str
     # set for season level candidates
     season_id: int | None = None
     season_number: int | None = None
     # parent series title when candidate is season level
     series_title: str | None = None
+    season_has_hdr: bool | None = None
+    season_has_dolby_vision: bool | None = None
+    season_max_video_width: int | None = None
+    season_max_video_height: int | None = None
+    season_video_codec_families: list[str] | None = None
+    season_audio_codec_families: list[str] | None = None
+    season_audio_languages: list[str] | None = None
+    season_subtitle_languages: list[str] | None = None
+    series_library_refs: list[CandidateLibraryRef] | None = None
+
+
+class CandidateEntry(CandidateEntryBase):
+    """A single reclaim candidate with enough info to display and act on."""
+
+    id: int
+    has_pending_request: bool
+    created_at: str
+
+
+class RulePreviewEntry(CandidateEntryBase):
+    """Transient dry-run preview row for an unsaved rule."""
 
 
 class PaginatedCandidatesResponse(BaseModel):
@@ -399,3 +471,11 @@ class DeleteCandidatesRequest(BaseModel):
 class DeleteCandidatesResponse(BaseModel):
     deleted: int
     failed: int
+
+
+class PaginatedRulePreviewResponse(BaseModel):
+    items: list[RulePreviewEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

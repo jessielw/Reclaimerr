@@ -17,8 +17,9 @@
     SettingsTab,
     type ReclaimRule,
     type LibraryType,
+    type RuleNode,
   } from "$lib/types/shared";
-  import RuleForm from "$lib/components/settings/rules/rule-form.svelte";
+  import AdvancedRuleEditor from "$lib/components/settings/rules/advanced-rule-editor.svelte";
   import Notice from "$lib/components/notice.svelte";
 
   interface Props {
@@ -38,6 +39,14 @@
 
   // additional states
   let isSynced = $state(true); // assume synced until we check
+
+  const toPlainRule = (rule: ReclaimRule): ReclaimRule => {
+    try {
+      return structuredClone(rule);
+    } catch {
+      return JSON.parse(JSON.stringify(rule)) as ReclaimRule;
+    }
+  };
 
   // load rules from API
   const loadRules = async () => {
@@ -144,7 +153,7 @@
 
   // open form to edit existing rule
   const editRule = (rule: ReclaimRule) => {
-    editingRule = rule;
+    editingRule = toPlainRule(rule);
     showRuleForm = true;
   };
 
@@ -162,75 +171,23 @@
 
   // generate summary text for a rule based on its conditions
   const getRuleSummary = (rule: ReclaimRule): string => {
-    const conditions: string[] = [];
+    if (!rule.definition?.root) return "No conditions set";
 
-    if (rule.library_ids && rule.library_ids.length > 0) {
-      // map library IDs to names
-      const libraryNames = rule.library_ids
-        .map(
-          (id) =>
-            availableLibraries.find((lib) => lib.libraryId === id)?.libraryName,
-        )
-        .filter((name): name is string => name !== undefined);
-
-      if (libraryNames.length > 0) {
-        conditions.push(`Libraries: ${libraryNames.join(", ")}`);
-      }
-    }
-
-    if (rule.min_popularity !== null || rule.max_popularity !== null) {
-      if (rule.min_popularity !== null && rule.max_popularity !== null) {
-        conditions.push(
-          `Popularity: ${rule.min_popularity}-${rule.max_popularity}`,
-        );
-      } else if (rule.min_popularity !== null) {
-        conditions.push(`Popularity ≥ ${rule.min_popularity}`);
-      } else {
-        conditions.push(`Popularity ≤ ${rule.max_popularity}`);
-      }
-    }
-
-    if (rule.min_vote_average !== null || rule.max_vote_average !== null) {
-      if (rule.min_vote_average !== null && rule.max_vote_average !== null) {
-        conditions.push(
-          `Rating: ${rule.min_vote_average}-${rule.max_vote_average}`,
-        );
-      } else if (rule.min_vote_average !== null) {
-        conditions.push(`Rating ≥ ${rule.min_vote_average}`);
-      } else {
-        conditions.push(`Rating ≤ ${rule.max_vote_average}`);
-      }
-    }
-
-    if (rule.min_days_since_added !== null) {
-      conditions.push(`Added ${rule.min_days_since_added}+ days ago`);
-    }
-
-    if (rule.max_days_since_last_watched !== null) {
-      conditions.push(
-        `Not watched in ${rule.max_days_since_last_watched}+ days`,
+    const countConditions = (node: RuleNode): number => {
+      if (node.type === "condition") return 1;
+      return node.children.reduce(
+        (count, child) => count + countConditions(child),
+        0,
       );
-    }
-
-    if (rule.include_never_watched) {
-      conditions.push("Never watched");
-    }
-
-    if (rule.paths && rule.paths.length > 0) {
-      conditions.push(`Paths: ${rule.paths.length}`);
-    }
-
-    if (rule.min_view_count !== null || rule.max_view_count !== null) {
-      if (rule.min_view_count !== null && rule.max_view_count !== null) {
-        conditions.push(`Views: ${rule.min_view_count}-${rule.max_view_count}`);
-      } else if (rule.min_view_count !== null) {
-        conditions.push(`Views ≥ ${rule.min_view_count}`);
-      } else {
-        conditions.push(`Views ≤ ${rule.max_view_count}`);
-      }
-    }
-
-    return conditions.length > 0 ? conditions.join(" • ") : "No conditions set";
+    };
+    const count = countConditions(rule.definition.root);
+    const target =
+      rule.target_scope === "movie_version"
+        ? "movie versions"
+        : rule.target_scope === "season"
+          ? "seasons"
+          : "series";
+    return `${count} condition${count === 1 ? "" : "s"} targeting ${target}`;
   };
 
   // open delete confirmation dialog
@@ -295,6 +252,13 @@
     <Spinner class="size-5 text-primary" />
     Loading...
   </div>
+{:else if showRuleForm}
+  <AdvancedRuleEditor
+    rule={editingRule}
+    libraries={availableLibraries}
+    onSave={handleSaveRule}
+    onCancel={closeRuleForm}
+  />
 {:else}
   <div class="space-y-6">
     <div class="flex justify-between items-center mb-3">
@@ -379,7 +343,11 @@
                         {:else}
                           <Tv class="size-4" />
                         {/if}
-                        <span class="capitalize">{rule.media_type}</span>
+                        <span class="capitalize">
+                          {rule.target_scope === "movie_version"
+                            ? "Movie version"
+                            : (rule.target_scope ?? rule.media_type)}
+                        </span>
                       </div>
                     </Badge>
                     <Badge
@@ -424,16 +392,6 @@
       {/if}
     </div>
   </div>
-{/if}
-
-<!-- rule form modal -->
-{#if showRuleForm}
-  <RuleForm
-    rule={editingRule}
-    libraries={availableLibraries}
-    onSave={handleSaveRule}
-    onCancel={closeRuleForm}
-  />
 {/if}
 
 <!-- confirm delete alert dialog -->

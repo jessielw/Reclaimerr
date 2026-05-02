@@ -41,13 +41,19 @@ async def handle_service_toggle(
                     data.base_url, data.api_key, data.is_main
                 )
         elif data.service_type is Service.RADARR:
-            await service_manager.clear_radarr()
+            await service_manager.clear_radarr(data.id)
             if data.enabled:
-                await service_manager.initialize_radarr(data.base_url, data.api_key)
+                timeout = int((data.extra_settings or {}).get("timeout", 300))
+                await service_manager.initialize_radarr(
+                    data.base_url, data.api_key, timeout, data.id
+                )
         elif data.service_type is Service.SONARR:
-            await service_manager.clear_sonarr()
+            await service_manager.clear_sonarr(data.id)
             if data.enabled:
-                await service_manager.initialize_sonarr(data.base_url, data.api_key)
+                timeout = int((data.extra_settings or {}).get("timeout", 300))
+                await service_manager.initialize_sonarr(
+                    data.base_url, data.api_key, timeout, data.id
+                )
         elif data.service_type is Service.SEERR:
             await service_manager.clear_seerr()
             if data.enabled:

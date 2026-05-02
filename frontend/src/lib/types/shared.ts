@@ -91,8 +91,6 @@ export enum NotificationType {
 }
 
 export interface GeneralSettings {
-  auto_tag_enabled: boolean;
-  cleanup_tag_suffix: string;
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
 }
@@ -102,26 +100,58 @@ export interface ReclaimRule {
   name: string;
   media_type: MediaType;
   enabled: boolean;
-  library_ids: string[] | null;
-  min_popularity: number | null;
-  max_popularity: number | null;
-  min_vote_average: number | null;
-  max_vote_average: number | null;
-  min_vote_count: number | null;
-  max_vote_count: number | null;
-  min_view_count: number | null;
-  max_view_count: number | null;
-  include_never_watched: boolean;
-  min_days_since_added: number | null;
-  max_days_since_added: number | null;
-  min_days_since_last_watched: number | null;
-  max_days_since_last_watched: number | null;
-  min_size: number | null;
-  max_size: number | null;
-  paths: string[] | null;
-  series_status: string[] | null;
+  target_scope: "movie_version" | "series" | "season" | null;
+  definition: RuleDefinition | null;
+  action: RuleAction | null;
   created_at: string;
   updated_at: string;
+}
+
+export type RuleGroupOperator = "and" | "or";
+export type RuleConditionOperator =
+  | "equals"
+  | "not_equals"
+  | "greater_than"
+  | "greater_than_or_equal"
+  | "less_than"
+  | "less_than_or_equal"
+  | "in"
+  | "not_in"
+  | "contains_any"
+  | "not_contains_any"
+  | "exists"
+  | "not_exists"
+  | "is_true"
+  | "is_false"
+  | "matches_any_regex";
+
+export interface RuleCondition {
+  type: "condition";
+  field: string;
+  operator: RuleConditionOperator;
+  value?: string | number | boolean | string[] | number[] | null;
+}
+
+export interface RuleGroup {
+  type: "group";
+  op: RuleGroupOperator;
+  children: RuleNode[];
+}
+
+export type RuleNode = RuleCondition | RuleGroup;
+
+export interface RuleDefinition {
+  version: number;
+  root: RuleGroup;
+}
+
+export interface RuleAction {
+  candidate: boolean;
+  tag_enabled: boolean;
+  arr_tag: string | null;
+  media_server_action: "delete" | null;
+  radarr_service_config_id: number | null;
+  sonarr_service_config_id: number | null;
 }
 
 export enum ScheduleType {
@@ -205,7 +235,7 @@ export interface MovieWithStatus {
   tmdb_id: number;
   size: number | null;
   versions: MovieVersion[];
-  radarr_id: number | null;
+  arr_refs: ArrRef[];
   imdb_id: string | null;
   tmdb_title: string | null;
   original_title: string | null;
@@ -241,7 +271,7 @@ export interface SeriesWithStatus {
   tmdb_id: number;
   size: number | null;
   service_refs: SeriesServiceRef[];
-  sonarr_id: number | null;
+  arr_refs: ArrRef[];
   imdb_id: string | null;
   tvdb_id: string | null;
   tmdb_title: string | null;
@@ -275,6 +305,12 @@ export interface SeasonWithStatus {
   status: MediaStatusInfo;
 }
 
+export interface ArrRef {
+  service_type: string;
+  service_config_id: number;
+  arr_id: number;
+}
+
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
 
 export interface PaginatedResponse<T> {
@@ -298,6 +334,7 @@ export interface ProtectionRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   candidate_id: number | null;
@@ -322,6 +359,7 @@ export interface ProtectedEntry {
   id: number;
   media_type: MediaType;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
@@ -338,10 +376,48 @@ export interface ReclaimCandidateEntry {
   id: number;
   media_type: MediaType;
   media_id: number;
+  movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
-  reason: string;
+  version_service: string | null;
+  version_library_id: string | null;
+  version_library_name: string | null;
+  version_video_codec_family: string | null;
+  version_audio_codec_family: string | null;
+  version_video_width: number | null;
+  version_video_height: number | null;
+  version_video_resolution: string | null;
+  version_video_hdr: boolean | null;
+  version_video_dolby_vision: boolean | null;
+  version_audio_channels: number | null;
+  version_audio_languages: string[] | null;
+  version_size: number | null;
+  version_path: string | null;
+  version_file_name: string | null;
+  version_subtitle_languages: string[] | null;
+  reason_parts: {
+    rule_id: number | null;
+    rule_name: string;
+    target_scope: string;
+    season_label: string | null;
+    conditions: {
+      field: string;
+      field_label: string;
+      operator: string;
+      operator_label: string;
+      expected:
+        | string
+        | number
+        | boolean
+        | (string | number | boolean)[]
+        | null;
+      actual: string | number | boolean | (string | number | boolean)[] | null;
+      display: string;
+    }[];
+    text: string;
+  }[];
+  reason_tokens: string[];
   estimated_space_gb: number | null;
   has_pending_request: boolean;
   created_at: string;
@@ -349,7 +425,27 @@ export interface ReclaimCandidateEntry {
   season_id: number | null;
   season_number: number | null;
   series_title: string | null;
+  season_has_hdr: boolean | null;
+  season_has_dolby_vision: boolean | null;
+  season_max_video_width: number | null;
+  season_max_video_height: number | null;
+  season_video_codec_families: string[] | null;
+  season_audio_codec_families: string[] | null;
+  season_audio_languages: string[] | null;
+  season_subtitle_languages: string[] | null;
+  series_library_refs:
+    | {
+        library_id: string;
+        library_name: string;
+        service: string | null;
+      }[]
+    | null;
 }
+
+export type RulePreviewEntry = Omit<
+  ReclaimCandidateEntry,
+  "id" | "has_pending_request" | "created_at"
+>;
 
 export interface DashboardKpis {
   total_movies: number;

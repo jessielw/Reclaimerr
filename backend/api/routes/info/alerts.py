@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import get_current_user, has_permission
+from backend.core.rule_engine import collect_rule_library_ids
 from backend.database import get_db
 from backend.database.models import ReclaimRule, ServiceMediaLibrary, User
 from backend.enums import AlertLevel, Permission
@@ -51,20 +52,18 @@ async def get_system_alerts(
 
     #### stale library IDs in rules ####
     # Occurs when the main media server is swapped: old library IDs stored in
-    # ReclaimRule.library_ids no longer exist in ServiceMediaLibrary.
+    # advanced rule definitions no longer exist in ServiceMediaLibrary.
     known_lib_result = await db.execute(select(ServiceMediaLibrary.library_id))
     known_library_ids: set[str] = {row[0] for row in known_lib_result.all()}
 
     rules_result = await db.execute(
-        select(ReclaimRule).where(
-            ReclaimRule.enabled == True,
-            ReclaimRule.library_ids.is_not(None),
-        )
+        select(ReclaimRule).where(ReclaimRule.enabled == True)
     )
     stale_rule_names: list[str] = []
     for rule in rules_result.scalars().all():
-        if rule.library_ids and any(
-            lid not in known_library_ids for lid in rule.library_ids
+        rule_library_ids = collect_rule_library_ids(rule.definition)
+        if rule_library_ids and any(
+            lid not in known_library_ids for lid in rule_library_ids
         ):
             stale_rule_names.append(rule.name)
 

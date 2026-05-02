@@ -6,21 +6,29 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     Movie,
+    MovieArrRef,
+    MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
     Season,
     Series,
+    SeriesArrRef,
+    SeriesServiceRef,
+    ServiceMediaLibrary,
     User,
 )
 from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
 from backend.models.media import (
+    ArrRefResponse,
     CandidateEntry,
+    CandidateLibraryRef,
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
     MediaStatusInfo,
@@ -168,6 +176,11 @@ async def get_movies(
             request_reason=request.reason if request else None,
         )
 
+        movie_arr_refs_result = await db.execute(
+            select(MovieArrRef).where(MovieArrRef.movie_id == movie.id)
+        )
+        movie_arr_refs = movie_arr_refs_result.scalars().all()
+
         movie_dict = {
             "id": movie.id,
             "title": movie.title,
@@ -220,7 +233,14 @@ async def get_movies(
                 )
                 for v in movie.versions
             ],
-            "radarr_id": movie.radarr_id,
+            "arr_refs": [
+                ArrRefResponse(
+                    service_type="radarr",
+                    service_config_id=ref.service_config_id,
+                    arr_id=ref.arr_movie_id,
+                )
+                for ref in movie_arr_refs
+            ],
             "imdb_id": movie.imdb_id,
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
@@ -386,6 +406,11 @@ async def get_series(
             request_reason=request.reason if request else None,
         )
 
+        series_arr_refs_result = await db.execute(
+            select(SeriesArrRef).where(SeriesArrRef.series_id == series.id)
+        )
+        series_arr_refs = series_arr_refs_result.scalars().all()
+
         series_dict = {
             "id": series.id,
             "title": series.title,
@@ -402,7 +427,14 @@ async def get_series(
                 )
                 for ref in series.service_refs
             ],
-            "sonarr_id": series.sonarr_id,
+            "arr_refs": [
+                ArrRefResponse(
+                    service_type="sonarr",
+                    service_config_id=ref.service_config_id,
+                    arr_id=ref.arr_series_id,
+                )
+                for ref in series_arr_refs
+            ],
             "imdb_id": series.imdb_id,
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
@@ -522,6 +554,7 @@ async def get_series_seasons(
                 max_video_height=season.max_video_height,
                 video_codec_families=season.video_codec_families,
                 audio_codec_families=season.audio_codec_families,
+                audio_languages=season.audio_languages,
                 max_audio_channels=season.max_audio_channels,
                 subtitle_languages=season.subtitle_languages,
                 status=season_status,
@@ -552,12 +585,37 @@ async def get_candidates(
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
             Movie.poster_url.label("movie_poster_url"),
+            MovieVersion.service.label("version_service"),
+            MovieVersion.library_id.label("version_library_id"),
+            MovieVersion.library_name.label("version_library_name"),
+            MovieVersion.video_codec_family.label("version_video_codec_family"),
+            MovieVersion.audio_codec_family.label("version_audio_codec_family"),
+            MovieVersion.video_width.label("version_video_width"),
+            MovieVersion.video_height.label("version_video_height"),
+            MovieVersion.video_resolution.label("version_video_resolution"),
+            MovieVersion.video_hdr.label("version_video_hdr"),
+            MovieVersion.video_dolby_vision.label("version_video_dolby_vision"),
+            MovieVersion.audio_channels.label("version_audio_channels"),
+            MovieVersion.audio_languages.label("version_audio_languages"),
+            MovieVersion.size.label("version_size"),
+            MovieVersion.path.label("version_path"),
+            MovieVersion.file_name.label("version_file_name"),
+            MovieVersion.subtitle_languages.label("version_subtitle_languages"),
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
             Season.season_number.label("season_number"),
+            Season.has_hdr.label("season_has_hdr"),
+            Season.has_dolby_vision.label("season_has_dolby_vision"),
+            Season.max_video_width.label("season_max_video_width"),
+            Season.max_video_height.label("season_max_video_height"),
+            Season.video_codec_families.label("season_video_codec_families"),
+            Season.audio_codec_families.label("season_audio_codec_families"),
+            Season.audio_languages.label("season_audio_languages"),
+            Season.subtitle_languages.label("season_subtitle_languages"),
         )
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+        .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
         .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
     )
@@ -578,6 +636,7 @@ async def get_candidates(
     count_query = (
         select(func.count(ReclaimCandidate.id))
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+        .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
         .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
     )
@@ -620,23 +679,35 @@ async def get_candidates(
 
     # collect IDs to check for pending exception requests in one query each
     movie_ids = [
-        r.ReclaimCandidate.movie_id for r in rows if r.ReclaimCandidate.movie_id
+        r.ReclaimCandidate.movie_id
+        for r in rows
+        if r.ReclaimCandidate.media_type is MediaType.MOVIE
+        and r.ReclaimCandidate.movie_id
     ]
     series_ids = [
         r.ReclaimCandidate.series_id for r in rows if r.ReclaimCandidate.series_id
     ]
 
-    pending_movies: set[int] = set()
+    pending_movies_whole: set[int] = set()
+    pending_movie_versions: set[tuple[int, int]] = set()
     pending_series: set[int] = set()
 
     if movie_ids:
         req_result = await db.execute(
-            select(ProtectionRequest.movie_id).where(
+            select(
+                ProtectionRequest.movie_id, ProtectionRequest.movie_version_id
+            ).where(
                 ProtectionRequest.movie_id.in_(movie_ids),
                 ProtectionRequest.status == ProtectionRequestStatus.PENDING,
             )
         )
-        pending_movies = {r[0] for r in req_result.all()}
+        for movie_id, movie_version_id in req_result.all():
+            if movie_id is None:
+                continue
+            if movie_version_id is None:
+                pending_movies_whole.add(movie_id)
+            else:
+                pending_movie_versions.add((movie_id, movie_version_id))
 
     if series_ids:
         req_result = await db.execute(
@@ -647,6 +718,40 @@ async def get_candidates(
         )
         pending_series = {r[0] for r in req_result.all()}
 
+    global_library_name_by_id: dict[str, str] = {}
+    libraries_result = await db.execute(
+        select(ServiceMediaLibrary.library_id, ServiceMediaLibrary.library_name)
+    )
+    for library_id, library_name in libraries_result.all():
+        if not library_id or not library_name:
+            continue
+        if library_id not in global_library_name_by_id:
+            global_library_name_by_id[library_id] = library_name
+
+    series_library_refs_by_id: dict[int, list[CandidateLibraryRef]] = {}
+    if series_ids:
+        refs_result = await db.execute(
+            select(
+                SeriesServiceRef.series_id,
+                SeriesServiceRef.service,
+                SeriesServiceRef.library_id,
+                SeriesServiceRef.library_name,
+            ).where(SeriesServiceRef.series_id.in_(series_ids))
+        )
+        for series_id, service, library_id, library_name in refs_result.all():
+            if series_id is None or not library_id or not library_name:
+                continue
+            refs = series_library_refs_by_id.setdefault(series_id, [])
+            if any(ref.library_id == library_id for ref in refs):
+                continue
+            refs.append(
+                CandidateLibraryRef(
+                    library_id=library_id,
+                    library_name=library_name,
+                    service=service.value if service is not None else None,
+                )
+            )
+
     items_out: list[CandidateEntry] = []
     for row in rows:
         c = row.ReclaimCandidate
@@ -655,8 +760,24 @@ async def get_candidates(
         media_title = row.movie_title if is_movie else row.series_title
         media_year = row.movie_year if is_movie else row.series_year
         poster_url = row.movie_poster_url if is_movie else row.series_poster_url
+        library_name_by_id = dict(global_library_name_by_id)
+        if row.version_library_id and row.version_library_name:
+            library_name_by_id[row.version_library_id] = row.version_library_name
+        for ref in series_library_refs_by_id.get(c.series_id or -1, []):
+            library_name_by_id[ref.library_id] = ref.library_name
+        reason_parts = normalize_reason_parts(c.reason_data, library_name_by_id)
+
         has_pending = (
-            c.movie_id in pending_movies if is_movie else c.series_id in pending_series
+            (
+                (c.movie_id in pending_movies_whole)
+                or (
+                    c.movie_id is not None
+                    and c.movie_version_id is not None
+                    and (c.movie_id, c.movie_version_id) in pending_movie_versions
+                )
+            )
+            if is_movie
+            else c.series_id in pending_series
         )
 
         if media_id is None or media_title is None:
@@ -670,13 +791,58 @@ async def get_candidates(
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
-                reason=c.reason,
+                movie_version_id=c.movie_version_id,
+                version_service=row.version_service
+                if row.version_service is not None
+                else None,
+                version_library_id=row.version_library_id,
+                version_library_name=row.version_library_name,
+                version_video_codec_family=row.version_video_codec_family,
+                version_audio_codec_family=row.version_audio_codec_family,
+                version_video_width=row.version_video_width,
+                version_video_height=row.version_video_height,
+                version_video_resolution=row.version_video_resolution,
+                version_video_hdr=row.version_video_hdr,
+                version_video_dolby_vision=row.version_video_dolby_vision,
+                version_audio_channels=row.version_audio_channels,
+                version_audio_languages=row.version_audio_languages,
+                version_size=row.version_size,
+                version_path=row.version_path,
+                version_file_name=row.version_file_name,
+                version_subtitle_languages=row.version_subtitle_languages,
+                reason_parts=reason_parts,
+                reason_tokens=reason_tokens(reason_parts),
                 estimated_space_gb=c.estimated_space_gb,
                 has_pending_request=has_pending,
                 created_at=to_utc_isoformat(c.created_at) or "",
                 season_id=c.season_id,
                 season_number=row.season_number,
                 series_title=row.series_title if c.season_id is not None else None,
+                season_has_hdr=row.season_has_hdr if c.season_id is not None else None,
+                season_has_dolby_vision=row.season_has_dolby_vision
+                if c.season_id is not None
+                else None,
+                season_max_video_width=row.season_max_video_width
+                if c.season_id is not None
+                else None,
+                season_max_video_height=row.season_max_video_height
+                if c.season_id is not None
+                else None,
+                season_video_codec_families=row.season_video_codec_families
+                if c.season_id is not None
+                else None,
+                season_audio_codec_families=row.season_audio_codec_families
+                if c.season_id is not None
+                else None,
+                season_audio_languages=row.season_audio_languages
+                if c.season_id is not None
+                else None,
+                season_subtitle_languages=row.season_subtitle_languages
+                if c.season_id is not None
+                else None,
+                series_library_refs=series_library_refs_by_id.get(c.series_id or -1)
+                if c.season_id is not None
+                else None,
             )
         )
 

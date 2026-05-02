@@ -20,9 +20,7 @@
   // state
   let loading = $state(true);
   let savingSettings = $state(false);
-  let aarrTagging = $state({
-    autoTagEnabled: false,
-    cleanupTagSuffix: "",
+  let generalSettings = $state({
     workerPollMinSeconds: "",
     workerPollMaxSeconds: "",
   });
@@ -43,13 +41,11 @@
 
       // save settings to backend
       await put_api("/api/settings/general", {
-        auto_tag_enabled: aarrTagging.autoTagEnabled,
-        cleanup_tag_suffix: aarrTagging.cleanupTagSuffix,
         worker_poll_min_seconds: parseOptionalSeconds(
-          aarrTagging.workerPollMinSeconds,
+          generalSettings.workerPollMinSeconds,
         ),
         worker_poll_max_seconds: parseOptionalSeconds(
-          aarrTagging.workerPollMaxSeconds,
+          generalSettings.workerPollMaxSeconds,
         ),
       });
       toast.success("General settings saved");
@@ -65,34 +61,22 @@
 
   // check cleanup tag suffix for invalid characters and notify user if not valid
   const validateCleanupTagSuffix = (): string | void => {
-    // allow empty suffix
-    if (aarrTagging.cleanupTagSuffix) {
-      // must start with hyphen or underscore, and only contain allowed chars
-      const valid = /^[-_][a-z_-]*$/.test(aarrTagging.cleanupTagSuffix);
-      if (!valid) {
-        return (
-          "Cleanup tag suffix must start with a hyphen or underscore and only contain lowercase letters, " +
-          "underscores, or hyphens"
-        );
-      }
-    }
-
     const workerPollMinSeconds = parseOptionalSeconds(
-      aarrTagging.workerPollMinSeconds,
+      generalSettings.workerPollMinSeconds,
     );
     const workerPollMaxSeconds = parseOptionalSeconds(
-      aarrTagging.workerPollMaxSeconds,
+      generalSettings.workerPollMaxSeconds,
     );
 
     if (
-      aarrTagging.workerPollMinSeconds.trim() &&
+      generalSettings.workerPollMinSeconds.trim() &&
       workerPollMinSeconds === null
     ) {
       return "Worker poll minimum must be a valid number of seconds";
     }
 
     if (
-      aarrTagging.workerPollMaxSeconds.trim() &&
+      generalSettings.workerPollMaxSeconds.trim() &&
       workerPollMaxSeconds === null
     ) {
       return "Worker poll maximum must be a valid number of seconds";
@@ -127,9 +111,7 @@
     try {
       const settings: GeneralSettings = await get_api("/api/settings/general");
       if (settings) {
-        aarrTagging = {
-          autoTagEnabled: settings.auto_tag_enabled,
-          cleanupTagSuffix: settings.cleanup_tag_suffix,
+        generalSettings = {
           workerPollMinSeconds:
             settings.worker_poll_min_seconds?.toString() ?? "",
           workerPollMaxSeconds:
@@ -164,56 +146,6 @@
       <Spinner />
     </div>
   {:else}
-    <!-- arr tagging -->
-    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm mt-6">
-      <h3 class="font-semibold text-foreground items-center mb-3">
-        Radarr and Sonarr tagging
-      </h3>
-
-      <!-- automatic tagging toggle -->
-      <div class="flex gap-2 items-center mb-4">
-        <Checkbox
-          id="autoTagEnabled"
-          name="autoTagEnabled"
-          class="cursor-pointer"
-          bind:checked={aarrTagging.autoTagEnabled}
-        />
-        <Label
-          for="autoTagEnabled"
-          class="inline-flex items-center gap-2 cursor-pointer"
-        >
-          <span class="text-sm text-foreground"
-            >Enable automatic tagging of reclaimerr candidates</span
-          >
-        </Label>
-      </div>
-
-      <!-- cleanup tag suffix -->
-      <div>
-        <Label for="cleanupTagSuffix" class="mb-2">
-          <span class="text-sm text-foreground">Cleanup Tag Suffix</span>
-        </Label>
-        <Input
-          id="cleanupTagSuffix"
-          name="cleanupTagSuffix"
-          type="text"
-          class="input-hover-el text-foreground placeholder:text-muted-foreground"
-          placeholder="e.g. '-candidate'"
-          maxlength={15}
-          bind:value={aarrTagging.cleanupTagSuffix}
-        />
-        <p class="mt-1 text-xs text-muted-foreground">
-          Optional suffix for cleanup tag (base: 'reclaimerr'). Example:
-          '-candidate' -> 'reclaimerr-candidate'
-        </p>
-        <p class="mt-1 text-xs text-muted-foreground">
-          Note: modifying this will update existing tags during the <span
-            class="font-bold">Tag Cleanup Candidates</span
-          > task.
-        </p>
-      </div>
-    </div>
-
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm mt-6">
       <h3 class="font-semibold text-foreground items-center">Worker polling</h3>
       <p class="text-muted-foreground text-sm mb-3">
@@ -238,7 +170,7 @@
             step="0.1"
             class="input-hover-el text-foreground placeholder:text-muted-foreground"
             placeholder="Default: 0.5"
-            bind:value={aarrTagging.workerPollMinSeconds}
+            bind:value={generalSettings.workerPollMinSeconds}
           />
         </div>
 
@@ -256,7 +188,7 @@
             step="0.1"
             class="input-hover-el text-foreground placeholder:text-muted-foreground"
             placeholder="Default: 5"
-            bind:value={aarrTagging.workerPollMaxSeconds}
+            bind:value={generalSettings.workerPollMaxSeconds}
           />
         </div>
       </div>

@@ -23,6 +23,7 @@ from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
@@ -108,6 +109,19 @@ class PlexService:
             LOG.debug(f"Deleted Plex item {rating_key}")
         except Exception as e:
             raise ValueError(f"Failed to delete Plex item {rating_key}: {e}")
+
+    async def delete_movie_version(self, rating_key: str, media_item_id: str) -> None:
+        """Deletes one media version from a Plex metadata item."""
+        try:
+            response = await self.session.delete(
+                f"{self.plex_url}/library/metadata/{rating_key}/media/{media_item_id}"
+            )
+            response.raise_for_status()
+            LOG.debug(f"Deleted Plex media item {media_item_id} from {rating_key}")
+        except Exception as e:
+            raise ValueError(
+                f"Failed to delete Plex media item {media_item_id} from {rating_key}: {e}"
+            )
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Scan a specific item path in Plex library.
@@ -260,6 +274,7 @@ class PlexService:
         season_max_height: dict[tuple[str, int], int] = {}
         season_video_families: dict[tuple[str, int], set[str]] = {}
         season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_languages: dict[tuple[str, int], set[str]] = {}
         season_max_audio_channels: dict[tuple[str, int], int] = {}
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
 
@@ -422,6 +437,15 @@ class PlexService:
                                 af = normalize_audio_codec_family(str(acodec))
                                 if af:
                                     season_audio_families.setdefault(sk, set()).add(af)
+                            alang = (
+                                stream.get("languageCode")
+                                or stream.get("languageTag")
+                                or stream.get("language")
+                            )
+                            if alang:
+                                season_audio_languages.setdefault(sk, set()).add(
+                                    str(alang).lower()
+                                )
                             channels = as_int(stream.get("channels"))
                             if channels is not None:
                                 season_max_audio_channels[sk] = max(
@@ -477,6 +501,7 @@ class PlexService:
                 or None,
                 audio_codec_families=sorted(season_audio_families.get(sk, set()))
                 or None,
+                audio_languages=sorted(season_audio_languages.get(sk, set())) or None,
                 max_audio_channels=season_max_audio_channels.get(sk),
                 subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
                 or None,
@@ -599,6 +624,8 @@ class PlexService:
                         else None
                     )
                     version_size = sum(p.get("size", 0) for p in media.get("Part", []))
+                    width = as_int(first_video.get("width"))
+                    height = as_int(first_video.get("height"))
                     versions.append(
                         MovieVersionData(
                             service=Service.PLEX,
@@ -632,9 +659,12 @@ class PlexService:
                                 first_video.get("bitrate") or media.get("bitrate")
                             ),
                             video_bit_depth=as_int(first_video.get("bitDepth")),
-                            video_width=as_int(first_video.get("width")),
-                            video_height=as_int(first_video.get("height")),
-                            video_resolution=media.get("videoResolution"),
+                            video_width=width,
+                            video_height=height,
+                            video_resolution=media.get("videoResolution")
+                            or guesstimate_resolution(width, height)
+                            if width and height
+                            else None,
                             video_color_primaries=first_video.get("colorPrimaries"),
                             video_color_space=first_video.get("colorSpace"),
                             video_color_transfer=first_video.get("colorTrc"),

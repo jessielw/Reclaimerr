@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-0?-??
+
+### Added
+
+- Now parses detailed mediainfo from media servers for movies and lightly gets what makes sense for series
+- Candidates
+  - Movie/Series & Season level media info (movies are more detailed)
+  - Movie version control of deletions
+- Multi *arr multi instance
+  - Added ability to name *arr instance in frontend
+  - Added ability to manage *arr instances via API in backend
+  - Support in ServiceManager
+- Rule Engine
+  - Rebuilt rule engine completely
+  - Added support for complex logical rules via AND/OR and groups
+  - Can now preview potential candidates based on the current rules selections
+
+### Changed
+
+- Greatly improved resolution detection for ingested movies
+- Upgraded niquests to 3.18.7
+- Auto tagging configuration/tag suffix in general settings is now moved to per rule
+- All switch elements should now use cursor-pointer
+
+### Removed
+
+- *Arr tagging in general settings (this is handled per rule now)
+
+### Fixed
+
+- Migration issue that could happen when jumping several version at once
+- Arr tag requirements are now correctly set (A-Za-z0-9-) with a max of 50 that includes **-rec** for internal uses
+- Media being parsed from other libraries that wasn't selected in the rule
+- In rare cases posters could stretch
+
 ## [0.1.0-beta.13] - 2026-04-25
 
 ### Fixed
