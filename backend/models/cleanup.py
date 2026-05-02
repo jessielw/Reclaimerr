@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -8,45 +9,14 @@ from backend.enums import MediaType
 
 
 class CleanupRuleBase(BaseModel):
-    """Base model with all cleanup rule fields."""
+    """Advanced cleanup rule payload."""
 
     name: str
     media_type: MediaType
     enabled: bool = True
-    library_ids: list[str] | None = None
-
-    # TMDB criteria
-    min_popularity: float | None = None
-    max_popularity: float | None = None
-    min_vote_average: float | None = None
-    max_vote_average: float | None = None
-    min_vote_count: int | None = None
-    max_vote_count: int | None = None
-
-    # watch history criteria
-    min_view_count: int | None = None
-    max_view_count: int | None = None
-    include_never_watched: bool = False
-
-    # age criteria (days since added)
-    min_days_since_added: int | None = None
-    max_days_since_added: int | None = None
-
-    # watch recency criteria (days since last watched)
-    min_days_since_last_watched: int | None = None
-    max_days_since_last_watched: int | None = None
-
-    # size criteria (bytes)
-    min_size: int | None = None
-    max_size: int | None = None
-
-    # path criteria - list of glob patterns rooted at known library paths
-    paths: list[str] | None = None
-
-    # series status criteria - only applies when media_type is Series
-    # None or empty list = any status
-    # List of TMDB status values to match (e.g., "Returning Series", "Ended", "Canceled", etc.)
-    series_status: list[str] | None = None
+    target_scope: str
+    definition: dict[str, Any]
+    action: dict[str, Any] | None = None
 
 
 class CleanupRuleCreate(CleanupRuleBase):
@@ -56,43 +26,18 @@ class CleanupRuleCreate(CleanupRuleBase):
 
 
 class CleanupRuleUpdate(BaseModel):
-    """Model for updating an existing cleanup rule. All fields are optional."""
+    """Model for updating an existing cleanup rule. All fields are optional.
+
+    This model intentionally declares optional update fields explicitly to keep
+    PATCH semantics clear and stable with ``exclude_unset=True``.
+    """
 
     name: str | None = None
     media_type: MediaType | None = None
     enabled: bool | None = None
-    library_ids: list[str] | None = None
-
-    # TMDB criteria
-    min_popularity: float | None = None
-    max_popularity: float | None = None
-    min_vote_average: float | None = None
-    max_vote_average: float | None = None
-    min_vote_count: int | None = None
-    max_vote_count: int | None = None
-
-    # watch history criteria
-    min_view_count: int | None = None
-    max_view_count: int | None = None
-    include_never_watched: bool | None = None
-
-    # age criteria (days since added)
-    min_days_since_added: int | None = None
-    max_days_since_added: int | None = None
-
-    # watch recency criteria (days since last watched)
-    min_days_since_last_watched: int | None = None
-    max_days_since_last_watched: int | None = None
-
-    # size criteria (bytes)
-    min_size: int | None = None
-    max_size: int | None = None
-
-    # path criteria - list of glob patterns rooted at known library paths
-    paths: list[str] | None = None
-
-    # series status criteria
-    series_status: list[str] | None = None
+    target_scope: str | None = None
+    definition: dict[str, Any] | None = None
+    action: dict[str, Any] | None = None
 
 
 class CleanupRuleResponse(CleanupRuleBase):
