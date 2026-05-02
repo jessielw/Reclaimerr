@@ -13,29 +13,27 @@ from backend.core.tmdb import AsyncTMDBClient
 from backend.database import async_db
 from backend.database.models import (
     Movie,
+    MovieArrRef,
     MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
-    ReclaimRule,
     Season,
     Series,
+    SeriesArrRef,
     SeriesServiceRef,
     ServiceConfig,
     ServiceMediaLibrary,
 )
-from backend.enums import MediaType, NotificationType, Service, Task
+from backend.enums import MediaType, Service, Task
 from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
     MovieVersionData,
 )
-from backend.models.services.radarr import RadarrMovie
-from backend.models.services.sonarr import SonarrSeries
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
-from backend.services.notifications import notify_admins
 from backend.services.plex import PlexService
 from backend.types import MEDIA_SERVERS, MediaServerType
 
@@ -608,6 +606,8 @@ async def sync_movies(
     service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
+    """Sync movies from media server to database, optionally filtered by service. 
+    Returns set of synced TMDB IDs."""
     # resolve main server
     async with async_db() as _cfg:
         main_server = await _get_main_media_server(_cfg)
@@ -659,12 +659,6 @@ async def sync_movies(
 
             parsed_tmdb_ids: set[int] = set()
 
-            # if radarr is enabled collect it's ids
-            radarr_movies: dict[int, RadarrMovie] = {}
-            if service_manager.radarr:
-                get_movies = await service_manager.radarr.get_all_movies()
-                radarr_movies = {m.tmdb_id: m for m in get_movies if m.tmdb_id}
-
             # iterate through aggregated movies
             batch_count = 0
             for idx, movie in enumerate[AggregatedMovieData](
@@ -672,10 +666,6 @@ async def sync_movies(
             ):
                 tmdb_id = int(movie.external_ids.tmdb)
                 parsed_tmdb_ids.add(tmdb_id)
-
-                radarr_obj = (
-                    radarr_movies.get(tmdb_id) if tmdb_id in radarr_movies else None
-                )
 
                 # earliest added_at across all versions
                 earliest_added = min(
@@ -686,9 +676,6 @@ async def sync_movies(
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
 
-                    existing_movie.radarr_id = (
-                        radarr_obj.id if radarr_obj else existing_movie.radarr_id
-                    )
                     # update added_at if available and not already set
                     if earliest_added and not existing_movie.added_at:
                         existing_movie.added_at = earliest_added
@@ -728,9 +715,6 @@ async def sync_movies(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
                             f"existing record by imdb_id ({imdb_id}) — updating instead of inserting"
                         )
-                        existing_movie.radarr_id = (
-                            radarr_obj.id if radarr_obj else existing_movie.radarr_id
-                        )
                         if earliest_added and not existing_movie.added_at:
                             existing_movie.added_at = earliest_added
                         existing_movie.last_viewed_at = movie.last_viewed_at
@@ -749,18 +733,12 @@ async def sync_movies(
                         )
                     else:
                         LOG.info(f"Adding new movie: {movie.name} ({tmdb_id})")
-                        radarr_obj = (
-                            radarr_movies.get(tmdb_id)
-                            if tmdb_id in radarr_movies
-                            else None
-                        )
                         initial_size = sum(v.size for v in movie.versions)
                         new_movie = Movie(
                             title=movie.name,
                             year=movie.year,
                             tmdb_id=tmdb_id,
                             size=initial_size,
-                            radarr_id=radarr_obj.id if radarr_obj else None,
                             imdb_id=imdb_id,
                             last_viewed_at=movie.last_viewed_at,
                             view_count=movie.view_count,
@@ -836,6 +814,40 @@ async def sync_movies(
             LOG.debug(
                 f"Committed {len(aggregated_movies)} movies in {batch_count + 1} batches"
             )
+
+            # refresh per instance Radarr refs for active movies
+            radarr_clients = service_manager.radarr_clients()
+            if not radarr_clients and service_manager.radarr:
+                radarr_clients = {0: service_manager.radarr}
+            if radarr_clients:
+                movie_rows = await session.execute(
+                    select(Movie.id, Movie.tmdb_id).where(Movie.removed_at.is_(None))
+                )
+                movie_id_by_tmdb = {
+                    tmdb_id: movie_id for movie_id, tmdb_id in movie_rows
+                }
+                for config_id, client in radarr_clients.items():
+                    await session.execute(
+                        sql_delete(MovieArrRef).where(
+                            MovieArrRef.service_config_id == config_id
+                        )
+                    )
+                    all_movies = await client.get_all_movies()
+                    for arr_movie in all_movies:
+                        if not arr_movie.tmdb_id:
+                            continue
+                        movie_id = movie_id_by_tmdb.get(arr_movie.tmdb_id)
+                        if movie_id is None:
+                            continue
+                        session.add(
+                            MovieArrRef(
+                                movie_id=movie_id,
+                                service_config_id=config_id,
+                                arr_movie_id=arr_movie.id,
+                                tmdb_id=arr_movie.tmdb_id,
+                            )
+                        )
+                await session.commit()
 
             if allow_soft_delete:
                 movies_to_delete = [
@@ -969,12 +981,6 @@ async def sync_series(
             # track all tmdb_ids seen in this sync
             parsed_tmdb_ids = set[int]()
 
-            # if sonarr is enabled collect its ids
-            sonarr_series: dict[int, SonarrSeries] = {}
-            if service_manager.sonarr:
-                get_series = await service_manager.sonarr.get_all_series()
-                sonarr_series = {s.tmdb_id: s for s in get_series if s.tmdb_id}
-
             # iterate through aggregated series
             batch_count = 0
             for idx, series in enumerate[AggregatedSeriesData](
@@ -982,11 +988,6 @@ async def sync_series(
             ):
                 tmdb_id = series.external_ids.tmdb
                 parsed_tmdb_ids.add(tmdb_id)
-
-                # match Sonarr by tmdb_id if available
-                sonarr_obj = (
-                    sonarr_series.get(tmdb_id) if tmdb_id in sonarr_series else None
-                )
 
                 # locate existing series: primary key is tmdb_id, fall back to
                 # tvdb_id / imdb_id to avoid UNIQUE constraint violations when two
@@ -1030,9 +1031,6 @@ async def sync_series(
                         session, existing_series_obj.id, series
                     )
 
-                    existing_series_obj.sonarr_id = (
-                        sonarr_obj.id if sonarr_obj else existing_series_obj.sonarr_id
-                    )
                     # update added_at if available and not already set
                     if series.added_at and not existing_series_obj.added_at:
                         existing_series_obj.added_at = series.added_at
@@ -1072,7 +1070,6 @@ async def sync_series(
                         year=series.year,
                         tmdb_id=tmdb_id,
                         size=series.size,
-                        sonarr_id=sonarr_obj.id if sonarr_obj else None,
                         imdb_id=series.external_ids.imdb,
                         tvdb_id=series.external_ids.tvdb,
                         last_viewed_at=series.last_viewed_at,
@@ -1121,6 +1118,40 @@ async def sync_series(
             LOG.debug(
                 f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
             )
+
+            # refresh per instance Sonarr refs for active series
+            sonarr_clients = service_manager.sonarr_clients()
+            if not sonarr_clients and service_manager.sonarr:
+                sonarr_clients = {0: service_manager.sonarr}
+            if sonarr_clients:
+                series_rows = await session.execute(
+                    select(Series.id, Series.tmdb_id).where(Series.removed_at.is_(None))
+                )
+                series_id_by_tmdb = {
+                    tmdb_id: series_id for series_id, tmdb_id in series_rows
+                }
+                for config_id, client in sonarr_clients.items():
+                    await session.execute(
+                        sql_delete(SeriesArrRef).where(
+                            SeriesArrRef.service_config_id == config_id
+                        )
+                    )
+                    all_series = await client.get_all_series()
+                    for arr_series in all_series:
+                        if not arr_series.tmdb_id:
+                            continue
+                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        if series_id is None:
+                            continue
+                        session.add(
+                            SeriesArrRef(
+                                series_id=series_id,
+                                service_config_id=config_id,
+                                arr_series_id=arr_series.id,
+                                tmdb_id=arr_series.tmdb_id,
+                            )
+                        )
+                await session.commit()
 
             if allow_soft_delete:
                 series_to_delete = [
@@ -1449,51 +1480,12 @@ async def sync_media_libraries() -> dict[str, Any]:
                     await session.delete(lib)
                     removed_ids.add(lib_id)
 
-            # scrub removed library IDs from any rules that reference them
+            # Advanced rules now keep library scope inside the rule definition.
+            # We surface stale-library references through alerts instead of
+            # mutating rule definitions during sync.
             affected_rules: list[dict[str, Any]] = []
-            if removed_ids:
-                rules_result = await session.execute(
-                    select(ReclaimRule).where(ReclaimRule.library_ids.is_not(None))
-                )
-                for rule in rules_result.scalars().all():
-                    if rule.library_ids and any(
-                        lid in removed_ids for lid in rule.library_ids
-                    ):
-                        removed_from_rule = [
-                            lid for lid in rule.library_ids if lid in removed_ids
-                        ]
-                        cleaned = [
-                            lid for lid in rule.library_ids if lid not in removed_ids
-                        ]
-                        rule.library_ids = cleaned if cleaned else None
-                        affected_rules.append(
-                            {
-                                "id": rule.id,
-                                "name": rule.name,
-                                "removed_library_ids": removed_from_rule,
-                                "remaining_library_ids": cleaned,
-                            }
-                        )
-                        LOG.info(
-                            f"Removed stale library IDs {removed_ids} from rule '{rule.name}'"
-                        )
 
             await session.commit()
-
-            if affected_rules:
-                try:
-                    await notify_admins(
-                        notification_type=NotificationType.ADMIN_MESSAGE,
-                        title="Rules Updated After Library Sync",
-                        message=(
-                            f"Library sync removed missing libraries from {len(affected_rules)} rule(s): "
-                            + ", ".join(rule["name"] for rule in affected_rules)
-                        ),
-                    )
-                except Exception as notify_error:
-                    LOG.error(
-                        f"Failed to notify admins about rule library cleanup: {notify_error}"
-                    )
 
             LOG.info(
                 f"Updated service libraries: {len(current_ids)} total libraries "
