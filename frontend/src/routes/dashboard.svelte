@@ -249,6 +249,35 @@
               in <strong>Tasks</strong> to populate your library.
             </Notice>
           {/if}
+
+          <!-- reclaimed totals banner -->
+          <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Space Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {formatSize(dashboard.kpis.reclaimed_total_gb)}
+              </p>
+            </article>
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Movies Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {dashboard.kpis.reclaimed_movies}
+              </p>
+            </article>
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Series Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {dashboard.kpis.reclaimed_series}
+              </p>
+            </article>
+          </section>
+
           <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <!-- movies -->
             <article
