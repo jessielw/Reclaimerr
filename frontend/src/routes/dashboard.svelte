@@ -12,12 +12,12 @@
     DashboardResponse,
   } from "$lib/types/shared";
   import { capitalizeFirstLetter } from "$lib/utils/strings";
-  import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
-  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
-  import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
-  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
-  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
-  import SeerrSVG from "$lib/components/svgs/SeerrSVG.svelte";
+  import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
+  import EmbySVG from "$lib/components/svgs/emby-svg.svelte";
+  import PlexSVG from "$lib/components/svgs/plex-svg.svelte";
+  import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
+  import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
+  import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
 
   // state
   let dashboard = $state<DashboardResponse | null>(null);

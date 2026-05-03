@@ -13,11 +13,11 @@
   import Notice from "$lib/components/notice.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
-  import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
-  import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
-  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
-  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
-  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
+  import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
+  import PlexSVG from "$lib/components/svgs/plex-svg.svelte";
+  import EmbySVG from "$lib/components/svgs/emby-svg.svelte";
+  import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
+  import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
