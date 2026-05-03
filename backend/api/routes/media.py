@@ -33,6 +33,8 @@ from backend.models.media import (
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
     MediaStatusInfo,
+    MoveCandidatesRequest,
+    MoveCandidatesResponse,
     MovieVersionResponse,
     MovieWithStatus,
     PaginatedCandidatesResponse,
@@ -43,8 +45,7 @@ from backend.models.media import (
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
-from backend.tasks.cleanup import delete_specific_candidates
-from backend.types.media import AudioCodecFamily, VideoCodecFamily
+from backend.tasks.cleanup import delete_specific_candidates, move_specific_candidates
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -918,6 +919,33 @@ async def delete_candidates(
     return DeleteCandidatesResponse(deleted=deleted, failed=failed)
 
 
+@router.post("/candidates/move", response_model=MoveCandidatesResponse)
+async def move_candidates(
+    request: MoveCandidatesRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    _db: AsyncSession = Depends(get_db),
+):
+    """Move specific reclaim candidates to the configured destination instead of deleting.
+
+    Requires admin or manage_reclaim permission and move must be enabled in General Settings.
+    """
+    if not (
+        user.role is UserRole.ADMIN or has_permission(user, Permission.MANAGE_RECLAIM)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manage reclaim permission required",
+        )
+
+    if not request.candidate_ids:
+        return MoveCandidatesResponse(moved=0, failed=0)
+
+    moved, failed = await move_specific_candidates(
+        request.candidate_ids, approved_by=user.username
+    )
+    return MoveCandidatesResponse(moved=moved, failed=failed)
+
+
 @router.get("/reclaim-history", response_model=PaginatedReclaimHistoryResponse)
 async def get_reclaim_history(
     _user: Annotated[User, Depends(get_current_user)],
@@ -958,6 +986,8 @@ async def get_reclaim_history(
             tmdb_id=row.tmdb_id,
             name=row.name,
             size=row.size,
+            action=row.action or "deleted",
+            destination_path=row.destination_path,
             created_at=to_utc_isoformat(row.created_at) or "",
         )
         for row in rows
