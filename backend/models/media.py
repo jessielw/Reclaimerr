@@ -408,6 +408,12 @@ class CandidateEntryBase(BaseModel):
     media_title: str
     media_year: int | None
     poster_url: str | None
+    tmdb_id: int | None = None
+    genres: list[str] | None = None
+    popularity: float | None = None
+    vote_average: float | None = None
+    vote_count: int | None = None
+    tmdb_status: str | None = None
     movie_version_id: int | None = None
     version_service: str | None = None
     version_library_id: str | None = None

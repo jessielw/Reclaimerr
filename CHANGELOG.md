@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates
   - Movie/Series & Season level media info (movies are more detailed)
   - Movie version control of deletions
+  - Added TMDb section for a quick view of stats/link to the media (series will show current status as well)
 - Multi \*arr multi instance
   - Added ability to name \*arr instance in frontend
   - Added ability to manage \*arr instances via API in backend
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto tagging configuration/tag suffix in general settings is now moved to per rule
 - All switch elements should now use cursor-pointer
 - Polished **Candidates** tab a little bit
+- Candidates api endpoint **/candidates** now returns TMDB data
 
 ### Removed
 
