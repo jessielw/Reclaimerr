@@ -10,6 +10,7 @@
   import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import VersionMediaInfoWidget from "$lib/components/candidates/movie-version-mediainfo.svelte";
+  import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
 
   type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
   type MovieGroupRow = {
@@ -167,6 +168,7 @@
                 <div class="mt-2 text-xs text-muted-foreground">
                   {formatDate(entry.created_at)}
                 </div>
+                <CandidateTmdbMeta {entry} />
               </div>
             </div>
           </div>
@@ -249,6 +251,7 @@
                     </span>
                   {/each}
                 </div>
+                <CandidateTmdbMeta entry={row.versions[0]} />
               </div>
             </div>
           </button>
@@ -414,6 +417,7 @@
                       >({entry.media_year})</span
                     >
                   {/if}
+                  <CandidateTmdbMeta {entry} />
                 </div>
               </div>
             </td>
@@ -515,6 +519,7 @@
                         : ""} flagged
                     </span>
                   </div>
+                  <CandidateTmdbMeta entry={row.versions[0]} />
                 </div>
               </div>
             </td>

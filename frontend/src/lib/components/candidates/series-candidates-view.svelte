@@ -4,6 +4,7 @@
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import SeasonMediaInfoWidget from "$lib/components/candidates/season-mediainfo.svelte";
+  import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Info from "@lucide/svelte/icons/info";
@@ -147,6 +148,7 @@
                 <div class="mt-2 text-xs text-muted-foreground">
                   {formatDate(entry.created_at)}
                 </div>
+                <CandidateTmdbMeta {entry} />
               </div>
             </div>
           </div>
@@ -223,6 +225,7 @@
                 <div class="mt-2 text-xs text-muted-foreground">
                   {groupSummary(row)}
                 </div>
+                <CandidateTmdbMeta entry={row.seriesEntry ?? row.seasons[0]} />
               </div>
             </div>
           </button>
@@ -440,6 +443,7 @@
                       >({entry.media_year})</span
                     >
                   {/if}
+                  <CandidateTmdbMeta {entry} />
                 </div>
               </div>
             </td>
@@ -539,6 +543,9 @@
                         : ""} flagged
                     </span>
                   </div>
+                  <CandidateTmdbMeta
+                    entry={row.seriesEntry ?? row.seasons[0]}
+                  />
                 </div>
               </div>
             </td>

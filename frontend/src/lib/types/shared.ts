@@ -380,6 +380,12 @@ export interface ReclaimCandidateEntry {
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
+  tmdb_id: number | null;
+  genres: string[] | null;
+  popularity: number | null;
+  vote_average: number | null;
+  vote_count: number | null;
+  tmdb_status: string | null;
   version_service: string | null;
   version_library_id: string | null;
   version_library_name: string | null;

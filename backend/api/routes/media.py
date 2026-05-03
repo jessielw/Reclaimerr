@@ -585,9 +585,18 @@ async def get_candidates(
     base_query = (
         select(
             ReclaimCandidate,
+            #### movies ####
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
+            # movie tmdb data
+            Movie.tmdb_id.label("movie_tmdb_id"),
             Movie.poster_url.label("movie_poster_url"),
+            Movie.genres.label("movie_genres"),
+            Movie.popularity.label("movie_popularity"),
+            Movie.vote_average.label("movie_vote_average"),
+            Movie.vote_count.label("movie_vote_count"),
+            Movie.status.label("movie_status"),
+            # movie version
             MovieVersion.service.label("version_service"),
             MovieVersion.library_id.label("version_library_id"),
             MovieVersion.library_name.label("version_library_name"),
@@ -604,6 +613,7 @@ async def get_candidates(
             MovieVersion.path.label("version_path"),
             MovieVersion.file_name.label("version_file_name"),
             MovieVersion.subtitle_languages.label("version_subtitle_languages"),
+            #### series ####
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
@@ -616,6 +626,13 @@ async def get_candidates(
             Season.audio_codec_families.label("season_audio_codec_families"),
             Season.audio_languages.label("season_audio_languages"),
             Season.subtitle_languages.label("season_subtitle_languages"),
+            # series tmdb data
+            Series.tmdb_id.label("series_tmdb_id"),
+            Series.genres.label("series_genres"),
+            Series.popularity.label("series_popularity"),
+            Series.vote_average.label("series_vote_average"),
+            Series.vote_count.label("series_vote_count"),
+            Series.status.label("series_status"),
         )
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
         .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
@@ -763,6 +780,14 @@ async def get_candidates(
         media_title = row.movie_title if is_movie else row.series_title
         media_year = row.movie_year if is_movie else row.series_year
         poster_url = row.movie_poster_url if is_movie else row.series_poster_url
+        tmdb_id = row.movie_tmdb_id if is_movie else row.series_tmdb_id
+        genres = extract_genre_names(
+            row.movie_genres if is_movie else row.series_genres  # type: ignore[arg-type]
+        )
+        popularity = row.movie_popularity if is_movie else row.series_popularity
+        vote_average = row.movie_vote_average if is_movie else row.series_vote_average
+        vote_count = row.movie_vote_count if is_movie else row.series_vote_count
+        tmdb_status = row.movie_status if is_movie else row.series_status
         library_name_by_id = dict(global_library_name_by_id)
         if row.version_library_id and row.version_library_name:
             library_name_by_id[row.version_library_id] = row.version_library_name
@@ -793,7 +818,13 @@ async def get_candidates(
                 media_id=media_id,
                 media_title=media_title,
                 media_year=media_year,
+                tmdb_id=tmdb_id,
                 poster_url=poster_url,
+                genres=genres,
+                popularity=popularity,
+                vote_average=vote_average,
+                vote_count=vote_count,
+                tmdb_status=tmdb_status,
                 movie_version_id=c.movie_version_id,
                 version_service=row.version_service
                 if row.version_service is not None
