@@ -28,9 +28,9 @@
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Boxes from "@lucide/svelte/icons/boxes";
   import Server from "@lucide/svelte/icons/server";
-  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
-  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
-  import SeerrSVG from "$lib/components/svgs/SeerrSVG.svelte";
+  import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
+  import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
+  import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import Filter from "@lucide/svelte/icons/filter";
