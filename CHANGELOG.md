@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Total movies reclaimed
     - Total series reclaimed
 - Added a section to **Candidates** API to view reclaimed history in a paginated format with filters/search
+- Added path mapping toggle to General settings
+- Added path mapping destination for movies & series
 
 ### Changed
 
