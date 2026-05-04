@@ -232,6 +232,8 @@ async def _sync_seasons(
             s.audio_languages = sd.audio_languages
             s.max_audio_channels = sd.max_audio_channels
             s.subtitle_languages = sd.subtitle_languages
+            s.path = sd.path
+            s.episode_paths = sd.episode_paths
             if sd.service_season_id:
                 if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
@@ -272,6 +274,8 @@ async def _sync_seasons(
                 plex_season_rating_key=plex_key,
             )
             new_season.added_at = sd.added_at
+            new_season.path = sd.path
+            new_season.episode_paths = sd.episode_paths
             session.add(new_season)
 
     # remove seasons no longer in the media server
@@ -606,8 +610,10 @@ async def sync_movies(
     service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    """Sync movies from media server to database, optionally filtered by service. 
-    Returns set of synced TMDB IDs."""
+    """Sync movies from media server to database, optionally filtered by service.
+
+    Returns set of synced TMDB IDs.
+    """
     # resolve main server
     async with async_db() as _cfg:
         main_server = await _get_main_media_server(_cfg)
