@@ -231,18 +231,20 @@ class RadarrClient:
     async def delete_movies(
         self,
         movie_ids: list[int],
+        delete_files: bool = True,
     ) -> None:
         """Delete multiple movies at once.
 
         Args:
             movie_ids: List of movie IDs to delete
+            delete_files: Whether to delete the movie files from disk
         """
         status_code, _ = await self._make_request(
             "DELETE",
             "movie/editor",
             json={
                 "movieIds": movie_ids,
-                "deleteFiles": True,
+                "deleteFiles": delete_files,
             },
         )
         if status_code != 200:
