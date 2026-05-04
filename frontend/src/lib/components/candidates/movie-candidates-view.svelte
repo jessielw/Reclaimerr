@@ -1,14 +1,11 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
-  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import Info from "@lucide/svelte/icons/info";
-  import Shield from "@lucide/svelte/icons/shield";
-  import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
+  import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import VersionMediaInfoWidget from "$lib/components/candidates/movie-version-mediainfo.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
 
@@ -41,6 +38,8 @@
     toggleExpand: (mediaId: number) => void;
     openSingleRequest: (entry: ReclaimCandidateEntry) => void;
     openSingleDelete: (entry: ReclaimCandidateEntry) => void;
+    openSingleMove: (entry: ReclaimCandidateEntry) => void;
+    moveEnabled: boolean;
     formatDate: (value: string) => string;
     sizeLabel: (value: number | null) => string;
     groupTotalGb: (row: MovieGroupRow) => number;
@@ -61,6 +60,8 @@
     toggleExpand,
     openSingleRequest,
     openSingleDelete,
+    openSingleMove,
+    moveEnabled,
     formatDate,
     sizeLabel,
     groupTotalGb,
@@ -174,28 +175,14 @@
           </div>
         </div>
         <div class="flex justify-end gap-2">
-          {#if entry.has_pending_request}
-            <span class="text-xs text-blue-400 self-center"
-              >Pending request</span
-            >
-          {:else}
-            <Button
-              size="icon"
-              class="cursor-pointer rounded-full"
-              onclick={() => openSingleRequest(entry)}
-            >
-              <Shield class="size-4" />
-            </Button>
-          {/if}
-          {#if canDelete}
-            <Button
-              size="icon"
-              class="cursor-pointer rounded-full bg-destructive/80 hover:bg-destructive/60"
-              onclick={() => openSingleDelete(entry)}
-            >
-              <Trash class="size-4" />
-            </Button>
-          {/if}
+          <CandidateActionButtons
+            {entry}
+            {canDelete}
+            {moveEnabled}
+            {openSingleRequest}
+            {openSingleDelete}
+            {openSingleMove}
+          />
         </div>
       </div>
     {:else}
@@ -300,35 +287,16 @@
                   {/if}
                 </div>
                 <div class="flex justify-end gap-2">
-                  {#if version.has_pending_request}
-                    <span class="text-xs text-blue-400 self-center"
-                      >Pending request</span
-                    >
-                  {:else}
-                    <Button
-                      size="icon"
-                      class="cursor-pointer rounded-full size-7"
-                      onclick={() => openSingleRequest(version)}
-                    >
-                      <Shield class="size-3.5" />
-                    </Button>
-                  {/if}
-                  {#if canDelete}
-                    <Button
-                      size="icon"
-                      class="cursor-pointer rounded-full size-7 bg-destructive/80 hover:bg-destructive/60"
-                      onclick={() => openSingleDelete(version)}
-                    >
-                      <Trash class="size-3.5" />
-                    </Button>
-                  {/if}
-                  <Button
-                    size="icon"
-                    class="cursor-pointer rounded-full size-7"
-                    onclick={() => openInfo(version)}
-                  >
-                    <Info class="size-3.5" />
-                  </Button>
+                  <CandidateActionButtons
+                    entry={version}
+                    {canDelete}
+                    {moveEnabled}
+                    {openSingleRequest}
+                    {openSingleDelete}
+                    {openSingleMove}
+                    onInfo={openInfo}
+                    compact
+                  />
                 </div>
               </div>
             {/each}
@@ -443,36 +411,15 @@
             >
             <td class="px-6 py-4 text-right whitespace-nowrap">
               <div class="flex gap-2 justify-end items-center">
-                {#if entry.has_pending_request}
-                  <span class="text-xs text-blue-400">Pending request</span>
-                {:else}
-                  <Tooltip.Root>
-                    <Tooltip.Trigger>
-                      <Button
-                        size="icon"
-                        class="cursor-pointer rounded-full"
-                        onclick={() => openSingleRequest(entry)}
-                      >
-                        <Shield class="size-4" />
-                      </Button>
-                    </Tooltip.Trigger>
-                    <Tooltip.Content><p>Protect</p></Tooltip.Content>
-                  </Tooltip.Root>
-                {/if}
-                {#if canDelete}
-                  <Tooltip.Root>
-                    <Tooltip.Trigger>
-                      <Button
-                        size="icon"
-                        class="cursor-pointer rounded-full bg-destructive/80 hover:bg-destructive/60"
-                        onclick={() => openSingleDelete(entry)}
-                      >
-                        <Trash class="size-4" />
-                      </Button>
-                    </Tooltip.Trigger>
-                    <Tooltip.Content><p>Delete</p></Tooltip.Content>
-                  </Tooltip.Root>
-                {/if}
+                <CandidateActionButtons
+                  {entry}
+                  {canDelete}
+                  {moveEnabled}
+                  {openSingleRequest}
+                  {openSingleDelete}
+                  {openSingleMove}
+                  showTooltips
+                />
               </div>
             </td>
           </tr>
@@ -618,48 +565,17 @@
                 >
                 <td class="px-6 py-3 text-right whitespace-nowrap">
                   <div class="flex gap-2 justify-end items-center">
-                    {#if version.has_pending_request}
-                      <span class="text-xs text-blue-400">Pending request</span>
-                    {:else}
-                      <Tooltip.Root>
-                        <Tooltip.Trigger>
-                          <Button
-                            size="icon"
-                            class="cursor-pointer rounded-full size-7"
-                            onclick={() => openSingleRequest(version)}
-                          >
-                            <Shield class="size-3.5" />
-                          </Button>
-                        </Tooltip.Trigger>
-                        <Tooltip.Content><p>Protect</p></Tooltip.Content>
-                      </Tooltip.Root>
-                    {/if}
-                    {#if canDelete}
-                      <Tooltip.Root>
-                        <Tooltip.Trigger>
-                          <Button
-                            size="icon"
-                            class="cursor-pointer rounded-full size-7 bg-destructive/80 hover:bg-destructive/60"
-                            onclick={() => openSingleDelete(version)}
-                          >
-                            <Trash class="size-3.5" />
-                          </Button>
-                        </Tooltip.Trigger>
-                        <Tooltip.Content><p>Delete</p></Tooltip.Content>
-                      </Tooltip.Root>
-                    {/if}
-                    <Tooltip.Root>
-                      <Tooltip.Trigger>
-                        <Button
-                          size="icon"
-                          class="cursor-pointer rounded-full size-7"
-                          onclick={() => openInfo(version)}
-                        >
-                          <Info class="size-3.5" />
-                        </Button>
-                      </Tooltip.Trigger>
-                      <Tooltip.Content><p>Details</p></Tooltip.Content>
-                    </Tooltip.Root>
+                    <CandidateActionButtons
+                      entry={version}
+                      {canDelete}
+                      {moveEnabled}
+                      {openSingleRequest}
+                      {openSingleDelete}
+                      {openSingleMove}
+                      onInfo={openInfo}
+                      showTooltips
+                      compact
+                    />
                   </div>
                 </td>
               </tr>
