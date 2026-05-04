@@ -144,7 +144,16 @@ services:
     restart: unless-stopped
     env_file: ".env"
     volumes:
+      # persist app data
       - ./data:/app/data
+
+      # bind mount for media files (adjust the host path as needed) - this is needed for
+      # Reclaimerr to clean up additional files on delete when deleting via the main media server
+      # directly
+      - /media:/media
+
+      # optional volume for moved files (adjust the host path as needed)
+      # - /moved_files:/moved_files
     ports:
       - "8000:8000"
 ```
