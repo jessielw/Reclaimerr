@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, or_, select
@@ -15,8 +16,17 @@ from backend.core.rule_engine import (
 )
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
+from backend.core.utils.filesystem import (
+    find_season_folder,
+    move_directory,
+    move_media,
+    move_season_files,
+    resolve_path,
+    sibling_cleanup,
+)
 from backend.database import async_db
 from backend.database.models import (
+    GeneralSettings,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -28,6 +38,7 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
+    SeriesServiceRef,
 )
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.cleanup import MatchedCandidateRecord
@@ -38,6 +49,7 @@ __all__ = [
     "tag_cleanup_candidates",
     # "delete_cleanup_candidates",
     "delete_specific_candidates",
+    "move_specific_candidates",
     "collect_rule_preview_matches",
 ]
 
@@ -1126,6 +1138,16 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
         await db.commit()
 
 
+async def _load_path_mappings() -> list[dict]:
+    """Load path mappings from GeneralSettings (returns empty list if unset)."""
+    async with async_db() as db:
+        result = await db.execute(select(GeneralSettings))
+        settings = result.scalars().first()
+        if settings and settings.path_mappings:
+            return settings.path_mappings
+    return []
+
+
 async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
@@ -1201,6 +1223,17 @@ async def _delete_movie_version_candidates(
             await main_service.delete_movie_version(
                 version.service_item_id, version.service_media_id
             )
+
+            # attempt filesystem sibling cleanup (subtitle/nfo files + empty dirs)
+            path_mappings = await _load_path_mappings()
+            local_path = resolve_path(version.path, path_mappings)
+            if local_path:
+                try:
+                    sibling_cleanup(local_path)
+                except Exception as fs_err:
+                    LOG.warning(
+                        f"sibling_cleanup failed for '{version.path}': {fs_err}"
+                    )
 
             async with async_db() as db:
                 cand_result = await db.execute(
@@ -1810,6 +1843,18 @@ async def _delete_movies_via_media_server(
                     await main_service.delete_item(ver.service_item_id)
                     deleted_item_ids.add(ver.service_item_id)
 
+            # attempt filesystem sibling cleanup for each deleted version
+            path_mappings = await _load_path_mappings()
+            for ver in service_versions:
+                local_path = resolve_path(ver.path, path_mappings)
+                if local_path:
+                    try:
+                        sibling_cleanup(local_path)
+                    except Exception as fs_err:
+                        LOG.warning(
+                            f"sibling_cleanup failed for '{ver.path}': {fs_err}"
+                        )
+
             # mark as removed and delete candidate
             async with async_db() as db:
                 result = await db.execute(
@@ -2052,3 +2097,382 @@ async def delete_specific_candidates(
     failed = max(0, len(found_ids) - deleted)
     LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
     return deleted, failed
+
+
+async def move_specific_candidates(
+    candidate_ids: list[int], approved_by: str = "system"
+) -> tuple[int, int]:
+    """Move specific reclaim candidates to the configured destination root.
+
+    Resolves each candidate's file path using configured path mappings, moves the
+    file (and same stem siblings) to ``move_destination_root``, then removes the
+    item from the arr/media-server without deleting the original (since it was
+    already moved).
+
+    Returns (moved_count, failed_count).
+    """
+    if not candidate_ids:
+        return 0, 0
+
+    # load move settings + path mappings from DB
+    async with async_db() as db:
+        result = await db.execute(select(GeneralSettings))
+        gen_settings = result.scalars().first()
+
+    if not gen_settings or not gen_settings.move_enabled:
+        LOG.warning("move_specific_candidates called but move is not enabled")
+        return 0, len(candidate_ids)
+
+    destination_movies_str = gen_settings.move_destination_movies or ""
+    destination_series_str = gen_settings.move_destination_series or ""
+    path_mappings = gen_settings.path_mappings or []
+
+    # load candidates with their version/movie data
+    async with async_db() as db:
+        result = await db.execute(
+            select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
+        )
+        candidates = result.scalars().all()
+        candidate_version_ids = [
+            c.movie_version_id for c in candidates if c.movie_version_id
+        ]
+        ver_result = await db.execute(
+            select(MovieVersion)
+            .where(MovieVersion.id.in_(candidate_version_ids))
+            .options(selectinload(MovieVersion.movie))
+        )
+        versions_by_id: dict[int, MovieVersion] = {
+            v.id: v for v in ver_result.scalars().all()
+        }
+
+    moved = 0
+    failed = 0
+
+    #### movie candidates ####
+    movie_candidates = [c for c in candidates if c.media_type == MediaType.MOVIE]
+    for candidate in movie_candidates:
+        try:
+            version = (
+                versions_by_id.get(candidate.movie_version_id)
+                if candidate.movie_version_id
+                else None
+            )
+            if version is None:
+                LOG.warning(
+                    f"move_specific_candidates: candidate {candidate.id} has no movie version"
+                )
+                failed += 1
+                continue
+
+            movie = version.movie
+            if movie is None:
+                failed += 1
+                continue
+
+            # pick destination root based on media type
+            dest_str = (
+                destination_series_str
+                if candidate.media_type == MediaType.SERIES
+                else destination_movies_str
+            )
+            if not dest_str.strip():
+                LOG.warning(
+                    f"move_specific_candidates: destination not configured for "
+                    f"{candidate.media_type} (candidate {candidate.id})"
+                )
+                failed += 1
+                continue
+            destination_root = Path(dest_str)
+
+            local_path = resolve_path(version.path, path_mappings)
+            if local_path is None:
+                LOG.warning(
+                    f"move_specific_candidates: cannot resolve path for '{version.path}' "
+                    f"(candidate {candidate.id})"
+                )
+                failed += 1
+                continue
+
+            # move the file + same stem siblings to destination
+            dest = move_media(local_path, destination_root)
+
+            # remove the item from the arr/media server (no file deletion)
+            try:
+                main_service = service_manager.main_media_server
+                if main_service:
+                    await main_service.delete_movie_version(
+                        version.service_item_id, version.service_media_id
+                    )
+            except Exception as svc_err:
+                LOG.warning(
+                    f"move_specific_candidates: service removal failed for "
+                    f"'{movie.title}' after move: {svc_err}"
+                )
+
+            # update DB
+            async with async_db() as db:
+                cand_result = await db.execute(
+                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                )
+                cand = cand_result.scalar_one_or_none()
+                if cand:
+                    await db.delete(cand)
+
+                ver_result = await db.execute(
+                    select(MovieVersion).where(MovieVersion.id == version.id)
+                )
+                ver_db = ver_result.scalar_one_or_none()
+                if ver_db:
+                    deleted_size = ver_db.size or 0
+                    movie_result = await db.execute(
+                        select(Movie).where(Movie.id == ver_db.movie_id)
+                    )
+                    movie_db = movie_result.scalar_one_or_none()
+                    if movie_db and movie_db.size:
+                        movie_db.size = max(0, movie_db.size - deleted_size)
+                    await db.delete(ver_db)
+
+                db.add(
+                    ReclaimHistory(
+                        approved_by=approved_by,
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=movie.tmdb_id,
+                        name=movie.title,
+                        path=version.path,
+                        size=version.size,
+                        action="moved",
+                        destination_path=str(dest),
+                    )
+                )
+                await db.commit()
+
+            moved += 1
+            LOG.info(f"Moved '{movie.title}' version {version.id} to {dest}")
+
+        except Exception as e:
+            LOG.error(
+                f"move_specific_candidates: failed for candidate {candidate.id}: {e}",
+                exc_info=True,
+            )
+            failed += 1
+
+    #### series / season candidates ####
+    series_candidates = [c for c in candidates if c.media_type == MediaType.SERIES]
+    if series_candidates:
+        series_ids = list({c.series_id for c in series_candidates if c.series_id})
+        season_ids = [c.season_id for c in series_candidates if c.season_id]
+
+        async with async_db() as db:
+            series_result = await db.execute(
+                select(Series)
+                .where(Series.id.in_(series_ids))
+                .options(selectinload(Series.service_refs))
+            )
+            series_map: dict[int, Series] = {
+                s.id: s for s in series_result.scalars().all()
+            }
+
+            seasons_map: dict[int, Season] = {}
+            if season_ids:
+                seasons_result = await db.execute(
+                    select(Season).where(Season.id.in_(season_ids))
+                )
+                seasons_map = {s.id: s for s in seasons_result.scalars().all()}
+
+        for candidate in series_candidates:
+            try:
+                series_obj = (
+                    series_map.get(candidate.series_id) if candidate.series_id else None
+                )
+                if not series_obj:
+                    LOG.warning(
+                        f"move_specific_candidates: no series for candidate {candidate.id}"
+                    )
+                    failed += 1
+                    continue
+
+                if not destination_series_str.strip():
+                    LOG.warning(
+                        f"move_specific_candidates: series destination not configured "
+                        f"(candidate {candidate.id})"
+                    )
+                    failed += 1
+                    continue
+                destination_root = Path(destination_series_str)
+
+                # pick the primary service ref that has a path
+                series_ref = next((r for r in series_obj.service_refs if r.path), None)
+                if not series_ref or not series_ref.path:
+                    LOG.warning(
+                        f"move_specific_candidates: no path on service ref for "
+                        f"'{series_obj.title}' (candidate {candidate.id})"
+                    )
+                    failed += 1
+                    continue
+
+                local_series_path = resolve_path(series_ref.path, path_mappings)
+                if local_series_path is None:
+                    LOG.warning(
+                        f"move_specific_candidates: cannot resolve path for "
+                        f"'{series_obj.title}' (candidate {candidate.id})"
+                    )
+                    failed += 1
+                    continue
+
+                is_season = candidate.season_id is not None
+                season = (
+                    seasons_map.get(candidate.season_id)
+                    if is_season and candidate.season_id
+                    else None
+                )
+
+                if is_season:
+                    if season is None:
+                        LOG.warning(
+                            f"move_specific_candidates: season record missing "
+                            f"(candidate {candidate.id})"
+                        )
+                        failed += 1
+                        continue
+                    resolved_season_path = (
+                        resolve_path(season.path, path_mappings)
+                        if season.path
+                        else None
+                    )
+                    season_folder = resolved_season_path or find_season_folder(
+                        local_series_path, season.season_number
+                    )
+                    if season_folder is None:
+                        LOG.warning(
+                            f"move_specific_candidates: cannot find season folder "
+                            f"S{season.season_number:02d} inside '{local_series_path}' "
+                            f"(candidate {candidate.id})"
+                        )
+                        failed += 1
+                        continue
+
+                    # flat series: episodes live directly in the series root with
+                    # no season sub folders (move only this season's files so
+                    # other seasons are left intact)
+                    if season_folder == local_series_path:
+                        dest = move_season_files(
+                            local_series_path,
+                            destination_root,
+                            episode_paths=season.episode_paths or [],
+                            path_mappings=path_mappings,
+                        )
+                    else:
+                        # nest under the series folder name so the destination is readable
+                        series_dest_root = destination_root / local_series_path.name
+                        dest = move_directory(season_folder, series_dest_root)
+                else:
+                    dest = move_directory(local_series_path, destination_root)
+
+                # remove from media server (no file deletion - already moved)
+                try:
+                    main_service = service_manager.main_media_server
+                    if main_service and series_ref:
+                        if is_season and season:
+                            # delete the season item from the media server
+                            if main_service is service_manager.jellyfin:
+                                season_service_id = season.jellyfin_season_id
+                            elif main_service is service_manager.emby:
+                                season_service_id = season.emby_season_id
+                            else:
+                                season_service_id = season.plex_season_rating_key
+                            if season_service_id:
+                                await main_service.delete_item(season_service_id)
+                        else:
+                            await main_service.delete_item(series_ref.service_id)
+                except Exception as svc_err:
+                    LOG.warning(
+                        f"move_specific_candidates: media server removal failed for "
+                        f"'{series_obj.title}' after move: {svc_err}"
+                    )
+
+                # update DB
+                async with async_db() as db:
+                    cand_result = await db.execute(
+                        select(ReclaimCandidate).where(
+                            ReclaimCandidate.id == candidate.id
+                        )
+                    )
+                    cand = cand_result.scalar_one_or_none()
+                    if cand:
+                        await db.delete(cand)
+
+                    if is_season and season:
+                        # reduce series size and remove season row
+                        series_db = (
+                            await db.execute(
+                                select(Series).where(Series.id == candidate.series_id)
+                            )
+                        ).scalar_one_or_none()
+                        if series_db and series_db.size and season.size:
+                            series_db.size = max(0, series_db.size - season.size)
+
+                        season_db = (
+                            await db.execute(
+                                select(Season).where(Season.id == candidate.season_id)
+                            )
+                        ).scalar_one_or_none()
+                        if season_db:
+                            await db.execute(
+                                delete(ReclaimCandidate).where(
+                                    ReclaimCandidate.season_id == season_db.id
+                                )
+                            )
+                            await db.execute(
+                                delete(ProtectionRequest).where(
+                                    ProtectionRequest.season_id == season_db.id
+                                )
+                            )
+                            await db.execute(
+                                delete(ProtectedMedia).where(
+                                    ProtectedMedia.season_id == season_db.id
+                                )
+                            )
+                            await db.delete(season_db)
+
+                        history_name = f"{series_obj.title} S{season.season_number:02d}"
+                        history_size = season.size
+                    else:
+                        # mark entire series as removed
+                        series_db = (
+                            await db.execute(
+                                select(Series).where(Series.id == candidate.series_id)
+                            )
+                        ).scalar_one_or_none()
+                        if series_db:
+                            series_db.removed_at = datetime.now(UTC)
+
+                        history_name = series_obj.title
+                        history_size = series_obj.size
+
+                    db.add(
+                        ReclaimHistory(
+                            approved_by=approved_by,
+                            media_type=MediaType.SERIES,
+                            tmdb_id=series_obj.tmdb_id,
+                            name=history_name,
+                            path=series_ref.path,
+                            size=history_size,
+                            action="moved",
+                            destination_path=str(dest),
+                        )
+                    )
+                    await db.commit()
+
+                moved += 1
+                LOG.info(f"Moved '{series_obj.title}' to {dest}")
+
+            except Exception as e:
+                LOG.error(
+                    f"move_specific_candidates: failed for series candidate "
+                    f"{candidate.id}: {e}",
+                    exc_info=True,
+                )
+                failed += 1
+
+    LOG.info(f"Move complete: {moved} moved, {failed} failed")
+    return moved, failed
