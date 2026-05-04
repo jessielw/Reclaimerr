@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added path mapping toggle to General settings
 - Added path mapping destination for movies & series
 - Added api endpoint **/candidates/move** on the backend
+- Added option to enable to move files instead of deleting in General setting
+- Added move button that is visible _(when the option is enabled to move instead of delete)_ in settings to movies/series/seasons
+- Added backend support to handle moving files
+- Now cleans up related files and parent folder when deleting files where it makes sense (behaves similar to Sonarr/Radarr)
 
 ### Changed
 
@@ -42,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Polished **Candidates** tab a little bit
 - Candidates api endpoint **/candidates** now returns TMDB data
 - Normalize all paths to be forward slashes internally when parsing from media servers
+- Now parses season and episode paths on from the **main media server** _(episode granularity is still not in this update - but this is needed to ensure we're deleting/moving all the correct files)_
+- Improved normalization of paths
+- Improved style of action buttons for candidates
 
 ### Removed
 
