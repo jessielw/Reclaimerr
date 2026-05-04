@@ -141,6 +141,13 @@
       defaultOperator: "matches_any_regex",
     },
     {
+      value: "media.file_name",
+      label: "Filename",
+      kind: "text",
+      operators: pathOperators,
+      defaultOperator: "matches_any_regex",
+    },
+    {
       value: "media.size",
       label: "Size (bytes)",
       kind: "number",

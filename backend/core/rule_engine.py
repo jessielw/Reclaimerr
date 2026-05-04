@@ -18,6 +18,7 @@ RuleDefinition = dict[str, Any]
 FIELD_LABELS: dict[str, str] = {
     "library.id": "Library",
     "media.path": "Path",
+    "media.file_name": "Filename",
     "media.size": "Size",
     "media.days_since_added": "Days since added",
     "watch.view_count": "Views",
@@ -98,7 +99,7 @@ TEXT_FIELDS = {
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {"video.hdr", "video.dolby_vision"}
 TEMPORAL_FIELDS = {"watch.last_viewed_at"}
-PATH_FIELDS = {"media.path"}
+PATH_FIELDS = {"media.path", "media.file_name"}
 NUMERIC_OPERATORS = {
     "equals",
     "not_equals",
@@ -348,6 +349,7 @@ def _build_context(
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
+            "media.file_name": [version.file_name] if version.file_name else [],
             "media.size": size,
             "media.days_since_added": _days_between(
                 version.added_at or movie.added_at, now
@@ -380,6 +382,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
+            "media.file_name": [],
             "media.size": series.size,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
@@ -404,6 +407,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
+            "media.file_name": [season.path.rsplit("/", 1)[-1]] if season.path else [],
             "media.size": season.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
