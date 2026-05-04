@@ -19,11 +19,6 @@
     type ProtectionRequest,
     type PaginatedResponse,
   } from "$lib/types/shared";
-
-  interface DeleteResponse {
-    deleted: number;
-    failed: number;
-  }
   import { formatDate } from "$lib/utils/date";
   import { formatSizeToGB } from "$lib/utils/formatters";
   import {
@@ -34,6 +29,7 @@
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
   import Trash from "@lucide/svelte/icons/trash";
+  import FolderOutput from "@lucide/svelte/icons/folder-output";
   import History from "@lucide/svelte/icons/history";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import ClapperBoard from "@lucide/svelte/icons/clapperboard";
@@ -43,6 +39,16 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import MovieCandidatesView from "$lib/components/candidates/movie-candidates-view.svelte";
   import SeriesCandidatesView from "$lib/components/candidates/series-candidates-view.svelte";
+
+  interface DeleteResponse {
+    deleted: number;
+    failed: number;
+  }
+
+  interface MoveResponse {
+    moved: number;
+    failed: number;
+  }
 
   // display row (either a flat entry, a series season group, or a movie version group)
   type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
@@ -135,6 +141,18 @@
   let deleteDialogOpen = $state(false);
   let deleteTarget = $state<ReclaimCandidateEntry | null>(null);
   let deleteSubmitting = $state(false);
+
+  // single item move
+  let moveDialogOpen = $state(false);
+  let moveTarget = $state<ReclaimCandidateEntry | null>(null);
+  let moveSubmitting = $state(false);
+
+  // bulk move
+  let bulkMoveDialogOpen = $state(false);
+  let bulkMoveSubmitting = $state(false);
+
+  // whether move is enabled (loaded from general settings)
+  let moveEnabled = $state(false);
 
   // bulk request dialog
   let bulkDialogOpen = $state(false);
@@ -476,6 +494,11 @@
     deleteDialogOpen = true;
   };
 
+  const openSingleMove = (entry: ReclaimCandidateEntry) => {
+    moveTarget = entry;
+    moveDialogOpen = true;
+  };
+
   const removeCandidateIds = (ids: Set<number>) => {
     if (!data) return;
     const remaining = data.items.filter((i) => !ids.has(i.id));
@@ -546,6 +569,59 @@
     } finally {
       bulkDeleteSubmitting = false;
       bulkDeleteDialogOpen = false;
+      selectedIds = new Set();
+    }
+  };
+
+  const submitSingleMove = async () => {
+    if (!moveTarget) return;
+    moveSubmitting = true;
+    try {
+      const resp = await post_api<MoveResponse>("/api/media/candidates/move", {
+        candidate_ids: [moveTarget.id],
+      });
+      if (resp.moved > 0) {
+        const label = moveTarget.media_title;
+        toast.success(`Moved ${label}.`);
+        const remaining = data?.items.filter((i) => i.id !== moveTarget!.id);
+        if (!remaining || (remaining.length === 0 && currentPage > 1)) {
+          await loadCandidates(currentPage - 1);
+        } else {
+          removeCandidateIds(new Set([moveTarget.id]));
+        }
+      } else {
+        toast.error("Failed to move.");
+      }
+      moveDialogOpen = false;
+      moveTarget = null;
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to move candidate.");
+    } finally {
+      moveSubmitting = false;
+    }
+  };
+
+  const submitBulkMove = async () => {
+    if (selectedEntries.length === 0) return;
+    bulkMoveSubmitting = true;
+    try {
+      const resp = await post_api<MoveResponse>("/api/media/candidates/move", {
+        candidate_ids: selectedEntries.map((e) => e.id),
+      });
+      if (resp.moved > 0)
+        toast.success(
+          `Moved ${resp.moved} item${resp.moved !== 1 ? "s" : ""}.`,
+        );
+      if (resp.failed > 0)
+        toast.error(
+          `${resp.failed} item${resp.failed !== 1 ? "s" : ""} could not be moved.`,
+        );
+      if (resp.moved > 0) await loadCandidates(currentPage);
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to move candidates.");
+    } finally {
+      bulkMoveSubmitting = false;
+      bulkMoveDialogOpen = false;
       selectedIds = new Set();
     }
   };
@@ -648,6 +724,15 @@
     mounted = true;
     await loadCandidates();
     if (activeView === "history") await loadHistory();
+    // load move enabled state from general settings
+    try {
+      const settings = await get_api<{ move_enabled?: boolean }>(
+        "/api/settings/general",
+      );
+      moveEnabled = settings?.move_enabled ?? false;
+    } catch {
+      // non critical (move button simply won't appear)
+    }
   });
 
   onDestroy(() => {
@@ -725,6 +810,59 @@
         disabled={deleteSubmitting}
       >
         {deleteSubmitting ? "Deleting..." : "Delete"}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<!-- bulk move confirmation -->
+<AlertDialog.Root bind:open={bulkMoveDialogOpen}>
+  <AlertDialog.Content class="text-foreground">
+    <AlertDialog.Header>
+      <AlertDialog.Title
+        >Move {selectedEntries.length} Item{selectedEntries.length !== 1
+          ? "s"
+          : ""}?</AlertDialog.Title
+      >
+      <AlertDialog.Description>
+        This will move {selectedEntries.length} item{selectedEntries.length !==
+        1
+          ? "s"
+          : ""} to the configured destination folder and remove them from the media
+        server. Files will not be deleted from disk.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel disabled={bulkMoveSubmitting}
+        >Cancel</AlertDialog.Cancel
+      >
+      <AlertDialog.Action
+        onclick={submitBulkMove}
+        disabled={bulkMoveSubmitting}
+      >
+        {bulkMoveSubmitting ? "Moving..." : `Move ${selectedEntries.length}`}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<!-- single move confirmation -->
+<AlertDialog.Root bind:open={moveDialogOpen}>
+  <AlertDialog.Content class="text-foreground">
+    <AlertDialog.Header>
+      <AlertDialog.Title>Move to Destination?</AlertDialog.Title>
+      <AlertDialog.Description>
+        {#if moveTarget}
+          Move <strong>{moveTarget.media_title}</strong> to the configured destination
+          folder and remove it from the media server. The file will not be deleted
+          from disk.
+        {/if}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel disabled={moveSubmitting}>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action onclick={submitSingleMove} disabled={moveSubmitting}>
+        {moveSubmitting ? "Moving..." : "Move"}
       </AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
@@ -1018,6 +1156,24 @@
                 <p>Delete</p>
               </Tooltip.Content>
             </Tooltip.Root>
+            {#if moveEnabled}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="cursor-pointer"
+                    onclick={() => (bulkMoveDialogOpen = true)}
+                  >
+                    <FolderOutput class="size-4" />
+                    Move {selectedIds.size}
+                  </Button>
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Move to destination folder</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
           {/if}
         </div>
       </div>
@@ -1055,6 +1211,8 @@
           {toggleExpand}
           {openSingleRequest}
           {openSingleDelete}
+          {openSingleMove}
+          {moveEnabled}
           {formatDate}
           {sizeLabel}
           groupTotalGb={movieGroupTotalGb}
@@ -1075,6 +1233,8 @@
           {toggleExpand}
           {openSingleRequest}
           {openSingleDelete}
+          {openSingleMove}
+          {moveEnabled}
           {formatDate}
           {sizeLabel}
           groupTotalGb={seriesGroupTotalGb}
@@ -1223,6 +1383,7 @@
             <tr class="border-b border-border text-muted-foreground text-left">
               <th class="px-4 py-3 font-medium">Title</th>
               <th class="px-4 py-3 font-medium">Type</th>
+              <th class="px-4 py-3 font-medium">Action</th>
               <th class="px-4 py-3 font-medium">Size</th>
               <th class="px-4 py-3 font-medium">Deleted By</th>
               <th class="px-4 py-3 font-medium">Date</th>
@@ -1246,8 +1407,18 @@
                     {entry.media_type === MediaType.Movie ? "Movie" : "Series"}
                   </span>
                 </td>
+                <td class="px-4 py-3">
+                  <span
+                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                    {entry.action === 'moved'
+                      ? 'bg-amber-500/15 text-amber-400'
+                      : 'bg-red-500/15 text-red-400'}"
+                  >
+                    {entry.action === "moved" ? "Moved" : "Deleted"}
+                  </span>
+                </td>
                 <td class="px-4 py-3 text-muted-foreground">
-                  {entry.size != null ? formatSizeToGB(entry.size) : "—"}
+                  {entry.size != null ? formatSizeToGB(entry.size) : "-"}
                 </td>
                 <td class="px-4 py-3 text-muted-foreground">
                   {entry.approved_by}

@@ -90,9 +90,18 @@ export enum NotificationType {
   TaskFailure = "task_failure",
 }
 
+export interface PathMapping {
+  source_prefix: string;
+  local_prefix: string;
+}
+
 export interface GeneralSettings {
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
+  path_mappings: PathMapping[];
+  move_enabled: boolean;
+  move_destination_movies: string | null;
+  move_destination_series: string | null;
 }
 
 export interface ReclaimRule {
@@ -473,6 +482,8 @@ export interface ReclaimHistoryEntry {
   tmdb_id: number | null;
   name: string | null;
   size: number | null;
+  action: string;
+  destination_path: string | null;
   created_at: string;
 }
 
