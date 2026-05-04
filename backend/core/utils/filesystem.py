@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -127,6 +128,132 @@ def _move_single_file(src: Path, destination_root: Path) -> Path:
 
     # delete source only after verified copy
     src.unlink()
+    return dest
+
+
+def find_season_folder(series_path: Path, season_number: int) -> Path | None:
+    """Locate a season subdirectory within *series_path*.
+
+    Scans the actual directory contents for a subdirectory whose name contains
+    the season number, matching the patterns Sonarr and other managers produce
+    (e.g. ``Season 1``, ``Season 01``, ``Specials``, ``Season 1 (2005)``).
+
+    Season 0 is treated as specials and also matches folders named ``Specials``.
+
+    Args:
+        series_path: Root folder of the series on disk.
+        season_number: Season number to look for.
+
+    Returns:
+        Path to the season folder, or ``None`` if not found.
+    """
+    if not series_path.is_dir():
+        return None
+
+    # Build patterns: "season 1" must be followed by a non-digit (so S1 ≠ S10)
+    if season_number == 0:
+        patterns = [
+            re.compile(r"season\s+0+(?:\D|$)", re.IGNORECASE),
+            re.compile(r"specials", re.IGNORECASE),
+        ]
+    else:
+        patterns = [re.compile(rf"season\s+0*{season_number}(?:\D|$)", re.IGNORECASE)]
+
+    for entry in series_path.iterdir():
+        if not entry.is_dir():
+            continue
+        if any(p.search(entry.name) for p in patterns):
+            return entry
+
+    return None
+
+
+def move_season_files(
+    series_path: Path,
+    destination_root: Path,
+    episode_paths: list[str],
+    path_mappings: list[dict] | None = None,
+) -> Path:
+    """Move only the episode files belonging to a season out of a flat series directory.
+
+    Used when all episodes share a single directory with no season sub folders.
+    Files are identified by the authoritative episode paths recorded from the
+    media server sync.  Each listed file and any same-stem siblings (subtitles,
+    NFOs, images, etc.) are moved.  The source directory is removed only if it
+    is completely empty afterward.
+
+    Args:
+        series_path: Flat series directory containing episodes from multiple seasons.
+        destination_root: Parent directory to move files into. Files land in
+            ``destination_root / series_path.name /``.
+        episode_paths: Exact episode file paths as stored from the media server sync.
+        path_mappings: Path mappings for resolving container/remote paths to local paths.
+
+    Returns:
+        The destination directory (``destination_root / series_path.name``).
+
+    Raises:
+        OSError: If a file move fails.
+    """
+    dest_dir = destination_root / series_path.name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    episode_stems: set[str] = set()
+    for raw_path in episode_paths:
+        local = resolve_path(raw_path, path_mappings)
+        if local and local.is_file():
+            episode_stems.add(local.stem)
+        else:
+            episode_stems.add(Path(raw_path).stem)
+
+    # move each matched episode and any same stem siblings (subs, NFOs, images)
+    for stem in episode_stems:
+        for f in list(series_path.iterdir()):
+            if f.is_file() and f.stem == stem:
+                try:
+                    moved_to = _move_single_file(f, dest_dir)
+                    LOG.info(f"move_season_files: moved {f} -> {moved_to}")
+                except OSError as e:
+                    LOG.warning(f"move_season_files: could not move {f}: {e}")
+
+    # remove the source directory only if completely empty
+    try:
+        series_path.rmdir()  # raises OSError if anything remains
+        LOG.info(f"move_season_files: removed empty series directory {series_path}")
+    except OSError:
+        pass  # other seasons still present (leave the directory alone)
+
+    return dest_dir
+
+
+def move_directory(src: Path, destination_root: Path) -> Path:
+    """Move directory *src* into *destination_root*.
+
+    Tries an OS-level rename first (fast, same filesystem).  Falls back to
+    ``shutil.copytree`` + ``shutil.rmtree`` for cross-device/network moves.
+
+    Args:
+        src: Source directory to move.
+        destination_root: Parent directory to move *src* into.
+
+    Returns:
+        The final destination path (``destination_root / src.name``).
+
+    Raises:
+        OSError: If the copy or source removal fails.
+    """
+    destination_root.mkdir(parents=True, exist_ok=True)
+    dest = destination_root / src.name
+
+    try:
+        os.rename(src, dest)
+        return dest
+    except OSError:
+        pass  # cross-device (fall through to copy + remove)
+
+    shutil.copytree(str(src), str(dest))
+    shutil.rmtree(str(src))
+
     return dest
 
 
