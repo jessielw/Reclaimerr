@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
@@ -89,9 +89,22 @@ class NotificationTestRequest(BaseModel):
         return self
 
 
+class PathMappingItem(BaseModel):
+    source_prefix: str
+    local_prefix: str
+
+
 class GeneralSettingsResponse(BaseModel):
     worker_poll_min_seconds: float | None = None
     worker_poll_max_seconds: float | None = None
+
+    # path mappings for resolving media-server paths to local paths
+    path_mappings: list[PathMappingItem] = Field(default_factory=list)
+
+    # move settings
+    move_enabled: bool = False
+    move_destination_movies: str | None = None
+    move_destination_series: str | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
