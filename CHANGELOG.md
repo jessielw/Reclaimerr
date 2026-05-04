@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added move button that is visible _(when the option is enabled to move instead of delete)_ in settings to movies/series/seasons
 - Added backend support to handle moving files
 - Now cleans up related files and parent folder when deleting files where it makes sense (behaves similar to Sonarr/Radarr)
+- Added \*arr tag rules
 
 ### Changed
 
