@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import PurePath
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import niquests
@@ -242,6 +242,11 @@ class EmbyServiceBase:
             for source in item.get("MediaSources", []):
                 if not source.get("Id"):
                     continue
+                normalized_fpath = (
+                    PurePosixPath(normalize_fpath(source["Path"]))
+                    if source.get("Path")
+                    else None
+                )
                 video_streams, audio_streams, subtitle_streams = (
                     self._media_streams_by_type(source)
                 )
@@ -272,12 +277,10 @@ class EmbyServiceBase:
                         service_media_id=source["Id"],
                         library_id=library_id,
                         library_name=library_name,
-                        path=source.get("Path"),
+                        path=str(normalized_fpath) if normalized_fpath else None,
                         size=source.get("Size", 0),
                         added_at=added_at,
-                        file_name=PurePath(source["Path"]).name
-                        if source.get("Path")
-                        else source.get("Name"),
+                        file_name=normalized_fpath.name if normalized_fpath else None,
                         container=source.get("Container"),
                         duration=(run_time_ticks / 10000.0)
                         if run_time_ticks is not None
@@ -430,7 +433,7 @@ class EmbyServiceBase:
                 date_created=datetime.fromisoformat(item.get("DateCreated")),
                 library_id=library_id,
                 library_name=library_name,
-                path=item.get("Path"),
+                path=str(normalize_fpath(item["Path"])) if item.get("Path") else None,
                 external_ids=external_ids,
                 size=total_size,
                 user_data=user_data,
@@ -560,8 +563,8 @@ class EmbyServiceBase:
                     for _source in episode.get("MediaSources", []):
                         _ep_path = _source.get("Path")
                         if _ep_path:
-                            season_paths[sk] = normalize_fpath(
-                                PurePath(_ep_path).parent
+                            season_paths[sk] = str(
+                                PurePosixPath(normalize_fpath(_ep_path)).parent
                             )
                             break
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import PurePath
+from pathlib import PurePosixPath
 from typing import Any
 
 import niquests
@@ -328,8 +328,8 @@ class PlexService:
                 if media_list and media_list[0].get("Part"):
                     ep_file = media_list[0]["Part"][0].get("file")
                     if ep_file:
-                        series_paths[series_key] = normalize_fpath(
-                            PurePath(ep_file).parent.parent
+                        series_paths[series_key] = str(
+                            PurePosixPath(normalize_fpath(ep_file)).parent.parent
                         )
 
             # accumulate season totals
@@ -347,7 +347,9 @@ class PlexService:
                 if _media_list and _media_list[0].get("Part"):
                     _ep_file = _media_list[0]["Part"][0].get("file")
                     if _ep_file:
-                        season_paths[sk] = normalize_fpath(PurePath(_ep_file).parent)
+                        season_paths[sk] = str(
+                            PurePosixPath(normalize_fpath(_ep_file)).parent
+                        )
 
             # episode paths for this season
             _media_list = source_episode.get("Media", []) or episode.get("Media", [])
@@ -625,6 +627,11 @@ class PlexService:
                     subtitle_streams = [
                         s for s in streams if str(s.get("streamType")) == "3"
                     ]
+                    normalized_fpath = (
+                        PurePosixPath(normalize_fpath(part["file"]))
+                        if part.get("file")
+                        else None
+                    )
                     first_video = video_streams[0] if video_streams else {}
                     first_audio = audio_streams[0] if audio_streams else {}
                     video_codec_raw = (
@@ -659,11 +666,11 @@ class PlexService:
                             service_media_id=media_id,
                             library_id=section_uuid,
                             library_name=section_name,
-                            path=part.get("file"),
+                            path=str(normalized_fpath) if normalized_fpath else None,
                             size=version_size,
                             added_at=added_at,
-                            file_name=PurePath(str(part.get("file"))).name
-                            if part.get("file")
+                            file_name=normalized_fpath.name
+                            if normalized_fpath
                             else None,
                             container=media.get("container"),
                             duration=as_float(media.get("duration")),
