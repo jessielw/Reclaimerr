@@ -9,9 +9,36 @@ from pathlib import Path
 from backend.core.logger import LOG
 
 
-def normalize_fpath(path: str | PathLike[str]) -> str:
-    """Normalize path to forward slashes."""
-    return str(path).replace("\\", "/")
+def normalize_fpath(
+    path: str | PathLike[str],
+    strip_ending_slash: bool = False,
+    lower: bool = False,
+    upper: bool = False,
+) -> str:
+    """Normalize path to forward slashes with optional modifiers.
+
+    Args:
+        path: The path to normalize.
+        strip_ending_slash: If True, remove any trailing slashes.
+        lower: If True, convert the path to lowercase.
+        upper: If True, convert the path to uppercase.
+
+    Returns:
+        The normalized path as a string.
+    """
+    if not path:
+        return ""
+    normalized = str(path).strip()
+    if not normalized:
+        return ""
+    normalized = normalized.replace("\\", "/")
+    if strip_ending_slash:
+        normalized = normalized.rstrip("/")
+    if lower:
+        normalized = normalized.lower()
+    if upper:
+        normalized = normalized.upper()
+    return normalized
 
 
 def resolve_path(
