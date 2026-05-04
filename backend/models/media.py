@@ -113,6 +113,10 @@ class AggregatedSeasonData:
     air_date: datetime | None = None
     # plex parentRatingKey or jellyfin/emby season item ID for direct ops
     service_season_id: str | None = None
+    # filesystem path to the season folder (derived from episode paths during sync)
+    path: str | None = None
+    # all episode file paths belonging to this season (as reported by the media server)
+    episode_paths: list[str] | None = None
     # aggregate media signals
     has_hdr: bool | None = None
     has_dolby_vision: bool | None = None
@@ -479,6 +483,15 @@ class DeleteCandidatesResponse(BaseModel):
     failed: int
 
 
+class MoveCandidatesRequest(BaseModel):
+    candidate_ids: list[int]
+
+
+class MoveCandidatesResponse(BaseModel):
+    moved: int
+    failed: int
+
+
 class PaginatedRulePreviewResponse(BaseModel):
     items: list[RulePreviewEntry]
     total: int
@@ -494,6 +507,8 @@ class ReclaimHistoryEntry(BaseModel):
     tmdb_id: int | None
     name: str | None
     size: int | None
+    action: str = "deleted"
+    destination_path: str | None = None
     created_at: str
 
 
