@@ -21,6 +21,7 @@ from backend.core.codecs import (
 )
 from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
+from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
@@ -277,6 +278,8 @@ class PlexService:
         season_audio_languages: dict[tuple[str, int], set[str]] = {}
         season_max_audio_channels: dict[tuple[str, int], int] = {}
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
+        season_paths: dict[tuple[str, int], str] = {}
+        season_episode_paths: dict[tuple[str, int], list[str]] = {}
 
         # section-level episode list responses can omit per-stream details.
         # collect only episodes that need enrichment and fetch them in batches.
@@ -325,7 +328,9 @@ class PlexService:
                 if media_list and media_list[0].get("Part"):
                     ep_file = media_list[0]["Part"][0].get("file")
                     if ep_file:
-                        series_paths[series_key] = str(PurePath(ep_file).parent.parent)
+                        series_paths[series_key] = normalize_fpath(
+                            PurePath(ep_file).parent.parent
+                        )
 
             # accumulate season totals
             sk = (series_key, season_num)
@@ -333,6 +338,25 @@ class PlexService:
             season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
             if season_key and sk not in season_keys:
                 season_keys[sk] = season_key
+
+            # season path (first episode of each season)
+            if sk not in season_paths:
+                _media_list = source_episode.get("Media", []) or episode.get(
+                    "Media", []
+                )
+                if _media_list and _media_list[0].get("Part"):
+                    _ep_file = _media_list[0]["Part"][0].get("file")
+                    if _ep_file:
+                        season_paths[sk] = normalize_fpath(PurePath(_ep_file).parent)
+
+            # episode paths for this season
+            _media_list = source_episode.get("Media", []) or episode.get("Media", [])
+            if _media_list and _media_list[0].get("Part"):
+                _ep_file = _media_list[0]["Part"][0].get("file")
+                if _ep_file:
+                    season_episode_paths.setdefault(sk, []).append(
+                        normalize_fpath(_ep_file)
+                    )
 
             # season air date = earliest episode air date
             ep_air_date_raw = source_episode.get(
@@ -505,6 +529,8 @@ class PlexService:
                 max_audio_channels=season_max_audio_channels.get(sk),
                 subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
                 or None,
+                path=season_paths.get(sk),
+                episode_paths=season_episode_paths.get(sk) or None,
             )
 
         return series_sizes, series_paths, season_data
@@ -1085,6 +1111,8 @@ class PlexService:
                         audio_codec_families=sd.audio_codec_families,
                         max_audio_channels=sd.max_audio_channels,
                         subtitle_languages=sd.subtitle_languages,
+                        path=sd.path,
+                        episode_paths=sd.episode_paths,
                     )
                 )
 

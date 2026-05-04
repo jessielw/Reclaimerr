@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import os
 import re
 import shutil
+from os import PathLike
+from os import rename as os_rename
 from pathlib import Path
 
 from backend.core.logger import LOG
+
+
+def normalize_fpath(path: str | PathLike[str]) -> str:
+    """Normalize path to forward slashes."""
+    return str(path).replace("\\", "/")
 
 
 def resolve_path(
@@ -110,7 +116,7 @@ def _move_single_file(src: Path, destination_root: Path) -> Path:
     dest = destination_root / src.name
     # fast path: same filesystem rename
     try:
-        os.rename(src, dest)
+        os_rename(src, dest)
         return dest
     except OSError:
         pass  # cross device (fall through to copy + delete)
@@ -246,7 +252,7 @@ def move_directory(src: Path, destination_root: Path) -> Path:
     dest = destination_root / src.name
 
     try:
-        os.rename(src, dest)
+        os_rename(src, dest)
         return dest
     except OSError:
         pass  # cross-device (fall through to copy + remove)

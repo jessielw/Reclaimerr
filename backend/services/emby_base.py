@@ -19,6 +19,7 @@ from backend.core.codecs import (
     normalize_video_codec_family,
 )
 from backend.core.logger import LOG
+from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
@@ -469,6 +470,8 @@ class EmbyServiceBase:
         season_audio_languages: dict[tuple[str, int], set[str]] = {}
         season_max_audio_channels: dict[tuple[str, int], int] = {}
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
+        season_paths: dict[tuple[str, int], str] = {}
+        season_episode_paths: dict[tuple[str, int], list[str]] = {}
 
         start_index = 0
         limit = 500
@@ -551,6 +554,25 @@ class EmbyServiceBase:
                 # store Emby/Jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
                     season_ids[sk] = episode["SeasonId"]
+
+                # season path (first episode of each season)
+                if sk not in season_paths:
+                    for _source in episode.get("MediaSources", []):
+                        _ep_path = _source.get("Path")
+                        if _ep_path:
+                            season_paths[sk] = normalize_fpath(
+                                PurePath(_ep_path).parent
+                            )
+                            break
+
+                # episode paths for this season
+                for _source in episode.get("MediaSources", []):
+                    _ep_path = _source.get("Path")
+                    if _ep_path:
+                        season_episode_paths.setdefault(sk, []).append(
+                            normalize_fpath(_ep_path)
+                        )
+                        break
 
                 # watch data
                 user_data = episode.get("UserData", {})
@@ -674,6 +696,8 @@ class EmbyServiceBase:
                 max_audio_channels=season_max_audio_channels.get(sk),
                 subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
                 or None,
+                path=season_paths.get(sk),
+                episode_paths=season_episode_paths.get(sk) or None,
             )
 
         return series_sizes, season_data

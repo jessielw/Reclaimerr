@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All switch elements should now use cursor-pointer
 - Polished **Candidates** tab a little bit
 - Candidates api endpoint **/candidates** now returns TMDB data
+- Normalize all paths to be forward slashes internally when parsing from media servers
 
 ### Removed
 
