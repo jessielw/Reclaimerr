@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from pathlib import PurePath
+from os import PathLike
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -18,6 +18,7 @@ from backend.core.rule_engine import (
     normalize_rule_target,
     validate_rule_definition,
 )
+from backend.core.utils.filesystem import normalize_fpath
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -120,7 +121,7 @@ def _rule_response(rule: ReclaimRule) -> CleanupRuleResponse:
     )
 
 
-def _split_ancestors(path: str) -> list[str]:
+def _split_ancestors(path: PathLike[str] | str) -> list[str]:
     """Return all ancestor directory paths for ``path`` (including the path itself).
 
     The returned list is ordered from the shallowest ancestor to the full path.
@@ -130,7 +131,7 @@ def _split_ancestors(path: str) -> list[str]:
     """
     if not path:
         return []
-    norm = PurePath(path).as_posix().rstrip("/")
+    norm = normalize_fpath(path, strip_ending_slash=True) if path else None
     if not norm:
         return []
     if norm.startswith("/"):
@@ -194,7 +195,7 @@ async def _validate_rule_paths(
             ),
         )
 
-    normalized_media = [PurePath(mp).as_posix().lower() for mp in media_paths if mp]
+    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
 
     cleaned: list[str] = []
     for pattern in paths:
@@ -345,8 +346,12 @@ async def validate_regex_pattern(
     can contain regex patterns. Returns the valid/complete pattern on success.
     """
     # normalize both paths
-    normalized_base = PurePath(body.base_path or "").as_posix().lower().rstrip("/")
-    normalized_suffix = PurePath(body.suffix or "").as_posix().lower().rstrip("/")
+    normalized_base = normalize_fpath(
+        body.base_path, lower=True, strip_ending_slash=True
+    )
+    normalized_suffix = normalize_fpath(
+        body.suffix, lower=True, strip_ending_slash=True
+    )
 
     # escape the base path to treat it as a literal string
     escaped_base = re.escape(normalized_base)
@@ -386,7 +391,7 @@ async def validate_paths_against_scope(
         return ValidatePathsResponse(valid_paths=[], invalid_paths=[])
 
     media_paths = await _collect_media_paths(db, body.media_type, body.library_ids)
-    normalized_media = [PurePath(mp).as_posix().lower() for mp in media_paths if mp]
+    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
 
     valid_paths: list[str] = []
     invalid_paths: list[str] = []

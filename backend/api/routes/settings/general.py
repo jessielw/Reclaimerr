@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from backend.core.auth import require_admin
+from backend.core.utils.filesystem import normalize_fpath
 from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
@@ -83,6 +84,9 @@ def _library_root(path: str) -> str | None:
     So we walk up two levels from the file.  Works for both POSIX and
     Windows-style paths; always normalizes the result to forward slashes.
     """
+    # filter to prevent too short/empty results that aren't useful as suggestions
+    NO_RETURN = {".", "/", ""}
+
     # detect path style and parse accordingly
     p_win = PureWindowsPath(path)
     p_pos = PurePosixPath(path)
@@ -97,8 +101,8 @@ def _library_root(path: str) -> str | None:
         p = p_win if len(p_win.parts) >= len(p_pos.parts) else p_pos
 
     parent = p.parent.parent  # strip filename + title folder
-    result = PurePath(parent).as_posix()  # convert to forward slashes
-    return result if result not in (".", "/", "") else None
+    result = normalize_fpath(parent)
+    return result if result not in NO_RETURN else None
 
 
 @router.get("/general/path-suggestions", response_model=list[str])

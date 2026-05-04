@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from pathlib import PurePath
 from typing import Any
 
+from backend.core.utils.filesystem import normalize_fpath
 from backend.database.models import Movie, MovieVersion, ReclaimRule, Season, Series
 from backend.enums import MediaType
 
@@ -543,7 +543,7 @@ def _matches_list_operator(actual: Any, operator: str, expected: Any) -> bool:
 def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
     """Evaluate whether any of the provided values match any of the provided regex patterns."""
     normalized_values = [
-        PurePath(str(value)).as_posix().lower() for value in values if _exists(value)
+        normalize_fpath(value, lower=True) for value in values if _exists(value)
     ]
     for pattern in patterns:
         try:
