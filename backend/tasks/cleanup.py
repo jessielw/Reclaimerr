@@ -11,6 +11,7 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    collect_rule_conditions,
     evaluate_advanced_rule,
     normalize_rule_target,
 )
@@ -59,6 +60,7 @@ async def collect_rule_preview_matches(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
+    await _refresh_arr_tags_for_rules(list(rules))
 
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
@@ -96,6 +98,172 @@ async def scan_cleanup_candidates() -> None:
             raise
 
 
+def _collect_arr_tag_labels(rules: list[ReclaimRule]) -> set[str]:
+    """Return the distinct lowercase tag labels referenced in arr.tags conditions across rules."""
+    labels: set[str] = set()
+    for rule in rules:
+        for condition in collect_rule_conditions(rule.definition, field="arr.tags"):
+            value = condition.get("value")
+            values = value if isinstance(value, list) else [value]
+            for v in values:
+                if v is not None and str(v).strip():
+                    labels.add(str(v).strip().lower())
+    return labels
+
+
+async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
+    """Refresh arr_tags on Movie/Series rows for tag labels referenced by active rules.
+
+    Steps:
+    1. Collect the distinct tag labels used in arr.tags conditions across all rules.
+    2. Per arr client: single GET /tag/detail call returning all tags with their item IDs.
+    3. Map arr item IDs -> DB IDs via MovieArrRef / SeriesArrRef.
+    4. Strip rule relevant labels from all tracked rows, then re add only where confirmed present.
+    This keeps negative operators (not_contains_any) correct without fetching all movies/series.
+    """
+    movie_rules = [
+        r for r in rules if normalize_rule_target(r) in {TARGET_MOVIE_VERSION}
+    ]
+    series_rules = [
+        r for r in rules if normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON}
+    ]
+
+    movie_tag_labels = _collect_arr_tag_labels(movie_rules)
+    series_tag_labels = _collect_arr_tag_labels(series_rules)
+
+    if not movie_tag_labels and not series_tag_labels:
+        return
+
+    #### radarr: refresh movie arr_tags for rule relevant labels ####
+    if movie_tag_labels:
+        radarr_clients = service_manager.radarr_clients()
+        if not radarr_clients and service_manager.radarr:
+            radarr_clients = {0: service_manager.radarr}
+
+        if radarr_clients:
+            # movie_id (DB) -> set of labels to add
+            movie_label_additions: dict[int, set[str]] = {}
+
+            async with async_db() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            MovieArrRef.arr_movie_id,
+                            MovieArrRef.movie_id,
+                            MovieArrRef.service_config_id,
+                        )
+                    )
+                ).all()
+            # arr_movie_id -> db movie_id, grouped by config_id
+            arr_to_db_by_config: dict[int, dict[int, int]] = {}
+            for arr_movie_id, db_movie_id, config_id in rows:
+                arr_to_db_by_config.setdefault(config_id, {})[arr_movie_id] = (
+                    db_movie_id
+                )
+
+            for config_id, client in radarr_clients.items():
+                try:
+                    # single call: label -> [arr_movie_id, ...] for ALL tags
+                    tag_details = await client.get_all_tag_details()
+                except Exception as e:
+                    LOG.warning(
+                        f"Failed to fetch Radarr tag details for config {config_id}: {e}"
+                    )
+                    continue
+
+                arr_to_db = arr_to_db_by_config.get(config_id, {})
+                for label in movie_tag_labels:
+                    for arr_id in tag_details.get(label, []):
+                        db_id = arr_to_db.get(arr_id)
+                        if db_id is not None:
+                            movie_label_additions.setdefault(db_id, set()).add(label)
+
+            # apply: strip then re-add relevant labels on all tracked movie rows
+            all_db_movie_ids = {
+                db_id
+                for mapping in arr_to_db_by_config.values()
+                for db_id in mapping.values()
+            }
+            if all_db_movie_ids:
+                async with async_db() as db:
+                    result = await db.execute(
+                        select(Movie).where(Movie.id.in_(all_db_movie_ids))
+                    )
+                    for movie in result.scalars().all():
+                        current = set(movie.arr_tags or [])
+                        current -= movie_tag_labels  # strip stale rule-relevant labels
+                        current |= movie_label_additions.get(
+                            movie.id, set()
+                        )  # re-add current ones
+                        movie.arr_tags = sorted(current)
+                    await db.commit()
+            LOG.debug(
+                f"Refreshed arr_tags for {len(all_db_movie_ids)} movies (labels: {movie_tag_labels})"
+            )
+
+    #### sonarr: refresh series arr_tags for rule relevant labels ####
+    if series_tag_labels:
+        sonarr_clients = service_manager.sonarr_clients()
+        if not sonarr_clients and service_manager.sonarr:
+            sonarr_clients = {0: service_manager.sonarr}
+
+        if sonarr_clients:
+            series_label_additions: dict[int, set[str]] = {}
+
+            async with async_db() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            SeriesArrRef.arr_series_id,
+                            SeriesArrRef.series_id,
+                            SeriesArrRef.service_config_id,
+                        )
+                    )
+                ).all()
+            sonarr_arr_to_db_by_config: dict[int, dict[int, int]] = {}
+            for arr_series_id, db_series_id, config_id in rows:
+                sonarr_arr_to_db_by_config.setdefault(config_id, {})[arr_series_id] = (
+                    db_series_id
+                )
+
+            for config_id, client in sonarr_clients.items():
+                try:
+                    # single call: label -> [arr_series_id, ...] for ALL tags
+                    tag_details = await client.get_all_tag_details()
+                except Exception as e:
+                    LOG.warning(
+                        f"Failed to fetch Sonarr tag details for config {config_id}: {e}"
+                    )
+                    continue
+
+                arr_to_db = sonarr_arr_to_db_by_config.get(config_id, {})
+                for label in series_tag_labels:
+                    for arr_id in tag_details.get(label, []):
+                        db_id = arr_to_db.get(arr_id)
+                        if db_id is not None:
+                            series_label_additions.setdefault(db_id, set()).add(label)
+
+            all_db_series_ids = {
+                db_id
+                for mapping in sonarr_arr_to_db_by_config.values()
+                for db_id in mapping.values()
+            }
+            if all_db_series_ids:
+                async with async_db() as db:
+                    result = await db.execute(
+                        select(Series).where(Series.id.in_(all_db_series_ids))
+                    )
+                    for series in result.scalars().all():
+                        current = set(series.arr_tags or [])
+                        current -= series_tag_labels
+                        current |= series_label_additions.get(series.id, set())
+                        series.arr_tags = sorted(current)
+                    await db.commit()
+            LOG.debug(
+                f"Refreshed arr_tags for {len(all_db_series_ids)} series (labels: {series_tag_labels})"
+            )
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -122,6 +290,10 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             return
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
+
+        # refresh arr_tags from Radarr/Sonarr for any labels referenced in active rules
+        # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client — no bulk fetch)
+        await _refresh_arr_tags_for_rules(list(rules))
 
         candidates_created = 0
         candidates_updated = 0

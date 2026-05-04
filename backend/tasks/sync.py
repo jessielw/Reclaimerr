@@ -832,6 +832,9 @@ async def sync_movies(
                 movie_id_by_tmdb = {
                     tmdb_id: movie_id for movie_id, tmdb_id in movie_rows
                 }
+
+                # accumulate resolved tag labels per movie across all Radarr instances
+                movie_tags: dict[int, set[str]] = {}
                 for config_id, client in radarr_clients.items():
                     await session.execute(
                         sql_delete(MovieArrRef).where(
@@ -839,6 +842,8 @@ async def sync_movies(
                         )
                     )
                     all_movies = await client.get_all_movies()
+                    tag_list = await client.get_tags()
+                    id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     for arr_movie in all_movies:
                         if not arr_movie.tmdb_id:
                             continue
@@ -853,6 +858,18 @@ async def sync_movies(
                                 tmdb_id=arr_movie.tmdb_id,
                             )
                         )
+                        for tag_id in arr_movie.tags:
+                            label = id_to_label.get(tag_id)
+                            if label:
+                                movie_tags.setdefault(movie_id, set()).add(label)
+
+                # write resolved tags back to Movie rows
+                for movie_id in movie_id_by_tmdb.values():
+                    result_row = await session.get(Movie, movie_id)
+                    if result_row is not None:
+                        tags = movie_tags.get(movie_id)
+                        result_row.arr_tags = sorted(tags) if tags else []
+
                 await session.commit()
 
             if allow_soft_delete:
@@ -1136,6 +1153,9 @@ async def sync_series(
                 series_id_by_tmdb = {
                     tmdb_id: series_id for series_id, tmdb_id in series_rows
                 }
+
+                # accumulate resolved tag labels per series across all Sonarr instances
+                series_tags: dict[int, set[str]] = {}
                 for config_id, client in sonarr_clients.items():
                     await session.execute(
                         sql_delete(SeriesArrRef).where(
@@ -1143,6 +1163,8 @@ async def sync_series(
                         )
                     )
                     all_series = await client.get_all_series()
+                    tag_list = await client.get_tags()
+                    id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     for arr_series in all_series:
                         if not arr_series.tmdb_id:
                             continue
@@ -1157,6 +1179,18 @@ async def sync_series(
                                 tmdb_id=arr_series.tmdb_id,
                             )
                         )
+                        for tag_id in arr_series.tags:
+                            label = id_to_label.get(tag_id)
+                            if label:
+                                series_tags.setdefault(series_id, set()).add(label)
+
+                # write resolved tags back to Series rows
+                for series_id in series_id_by_tmdb.values():
+                    result_row = await session.get(Series, series_id)
+                    if result_row is not None:
+                        tags = series_tags.get(series_id)
+                        result_row.arr_tags = sorted(tags) if tags else []
+
                 await session.commit()
 
             if allow_soft_delete:

@@ -315,6 +315,13 @@
       operators: numericOperators,
       defaultOperator: "greater_than_or_equal",
     },
+    {
+      value: "arr.tags",
+      label: "Arr tags",
+      kind: "text",
+      operators: textOperators,
+      defaultOperator: "contains_any",
+    },
   ];
 
   const MAX_TOTAL_GROUPS = 5;

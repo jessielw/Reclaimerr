@@ -237,6 +237,7 @@ class Movie(Base):
     runtime: Mapped[int | None] = mapped_column(Integer, default=None)
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
+    arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # watch tracking (from media server)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -435,6 +436,7 @@ class Series(Base):
     vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
+    arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # series-specific info
     season_count: Mapped[int | None] = mapped_column(Integer, default=None, init=False)

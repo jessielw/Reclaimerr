@@ -142,6 +142,22 @@ class SonarrClient:
             return []
         return [ArrTag(id=tag["id"], label=tag["label"]) for tag in data]
 
+    async def get_all_tag_details(self) -> dict[str, list[int]]:
+        """Get all tags with their associated series IDs in a single call.
+
+        Returns a dict mapping lowercase tag label → list of Sonarr series IDs.
+        """
+        _, data = await self._make_request("GET", "tag/detail", timeout=60)
+        if not isinstance(data, list):
+            return {}
+        return {
+            str(tag.get("label", "")).lower(): [
+                int(i) for i in tag.get("seriesIds", []) if i is not None
+            ]
+            for tag in data
+            if tag.get("label")
+        }
+
     async def create_tag(self, label: str) -> ArrTag:
         """Create a new tag.
 

@@ -43,6 +43,7 @@ FIELD_LABELS: dict[str, str] = {
     "video.color_transfer": "Color transfer",
     "video.color_primaries": "Color primaries",
     "media.duration": "Duration",
+    "arr.tags": "Arr tags",
 }
 
 OPERATOR_LABELS: dict[str, str] = {
@@ -95,6 +96,7 @@ TEXT_FIELDS = {
     "video.color_space",
     "video.color_transfer",
     "video.color_primaries",
+    "arr.tags",
 }
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {"video.hdr", "video.dolby_vision"}
@@ -375,6 +377,7 @@ def _build_context(
             "video.color_transfer": version.video_color_transfer,
             "video.color_primaries": version.video_color_primaries,
             "media.duration": version.duration,
+            "arr.tags": movie.arr_tags or [],
         }
 
     if target_scope == TARGET_SERIES and series:
@@ -400,6 +403,7 @@ def _build_context(
             "video.height": series.max_video_height,
             "audio.channels": series.max_audio_channels,
             "subtitle.languages": series.subtitle_languages,
+            "arr.tags": series.arr_tags or [],
         }
 
     if target_scope == TARGET_SEASON and series and season:
@@ -426,6 +430,7 @@ def _build_context(
             "audio.channels": season.max_audio_channels,
             "audio.languages": season.audio_languages,
             "subtitle.languages": season.subtitle_languages,
+            "arr.tags": series.arr_tags or [],
         }
 
     return {}
