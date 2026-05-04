@@ -174,6 +174,18 @@ class GeneralSettings(Base):
     worker_poll_min_seconds: Mapped[float | None] = mapped_column(Float, default=None)
     worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
 
+    # path mapping (media-server paths -> local paths)
+    path_mappings: Mapped[list | None] = mapped_column(JSON, default=None)
+
+    # move settings
+    move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    move_destination_movies: Mapped[str | None] = mapped_column(
+        String(1024), default=None
+    )
+    move_destination_series: Mapped[str | None] = mapped_column(
+        String(1024), default=None
+    )
+
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -494,6 +506,8 @@ class Season(Base):
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    episode_paths: Mapped[list[str] | None] = mapped_column(JSON, default=None)
     # aggregate media signals
     has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
     has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
@@ -795,6 +809,8 @@ class ReclaimHistory(Base):
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     name: Mapped[str | None] = mapped_column(String(255), default=None)
     size: Mapped[int | None] = mapped_column(Integer, default=None)
+    action: Mapped[str] = mapped_column(String(20), default="deleted")
+    destination_path: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
