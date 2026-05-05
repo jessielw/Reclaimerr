@@ -1848,6 +1848,23 @@ async def _delete_season_candidates(
             sonarr_client = service_manager.sonarr
 
         if sonarr_client and sonarr_ref_id:
+            # unmonitor first so Sonarr can't queue a re-grab if the delete is
+            # slow or partially fails; if un-monitoring fails we abort entirely
+            # rather than risk deleting files that will immediately be re-grabbed
+            try:
+                await sonarr_client.update_season_monitoring(
+                    sonarr_ref_id, season_number, monitored=False
+                )
+                LOG.debug(
+                    f"Unmonitored '{series_obj.title}' S{season_number:02d} in Sonarr"
+                )
+            except Exception as e:
+                LOG.warning(
+                    f"Failed to unmonitor '{series_obj.title}' S{season_number:02d} "
+                    f"in Sonarr: {e} - aborting deletion to avoid re-grab"
+                )
+                continue
+
             try:
                 await sonarr_client.delete_season_files(sonarr_ref_id, season_number)
                 deleted_via_sonarr = True
@@ -1857,9 +1874,31 @@ async def _delete_season_candidates(
                 )
             except Exception as e:
                 LOG.warning(
-                    f"Sonarr deletion failed for '{series_obj.title}' "
+                    f"Sonarr file deletion failed for '{series_obj.title}' "
                     f"S{season_number:02d}: {e} - trying media server fallback"
                 )
+
+            # if no files remain across all seasons, remove the series entry entirely
+            if deleted_via_sonarr:
+                try:
+                    fresh_series = await sonarr_client.get_series(sonarr_ref_id)
+                    all_empty = all(
+                        (s.statistics or {}).get("episodeFileCount", 0) == 0
+                        for s in fresh_series.seasons
+                    )
+                    if all_empty:
+                        await sonarr_client.delete_series(
+                            sonarr_ref_id, delete_files=False
+                        )
+                        LOG.info(
+                            f"Removed '{series_obj.title}' from Sonarr entirely "
+                            f"(no files remaining, sonarr_id={sonarr_ref_id})"
+                        )
+                except Exception as e:
+                    LOG.warning(
+                        f"Could not check/remove empty series '{series_obj.title}' "
+                        f"from Sonarr: {e}"
+                    )
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:

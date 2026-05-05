@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Arr tag requirements are now correctly set (A-Za-z0-9-) with a max of 50 that includes **-rec** for internal uses
 - Media being parsed from other libraries that wasn't selected in the rule
 - In rare cases posters could stretch
+- Now deletes/un-monitors each season/series as all entries are removed
 
 ## [0.1.0-beta.13] - 2026-04-25
 
