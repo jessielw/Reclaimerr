@@ -45,6 +45,7 @@ export enum SettingsTab {
   Radarr = "radarr",
   Sonarr = "sonarr",
   Seerr = "seerr",
+  Tautulli = "tautulli",
   General = "general",
   Tasks = "tasks",
   BackgroundJobs = "background_jobs",

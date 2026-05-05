@@ -18,6 +18,7 @@
   import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
   import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
   import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
+  import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
 
   // state
   let dashboard = $state<DashboardResponse | null>(null);
@@ -74,6 +75,7 @@
     seerr: SeerrSVG,
     sonarr: SonarrSVG,
     radarr: RadarrSVG,
+    tautulli: TautulliSVG,
   };
 
   // helpers

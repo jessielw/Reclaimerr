@@ -31,6 +31,7 @@
   import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
   import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
   import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
+  import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import Filter from "@lucide/svelte/icons/filter";
@@ -77,6 +78,7 @@
     SettingsTab.Radarr,
     SettingsTab.Sonarr,
     SettingsTab.Seerr,
+    SettingsTab.Tautulli,
   ];
 
   // default extra settings for services (e.g. radarr/sonarr timeout) - these will be sent
@@ -118,6 +120,13 @@
           label: "Seerr",
           icon: SeerrSVG,
           baseUrlPlaceholder: "e.g. http://localhost:5055",
+          adminOnly: true,
+        },
+        {
+          id: SettingsTab.Tautulli,
+          label: "Tautulli",
+          icon: TautulliSVG,
+          baseUrlPlaceholder: "e.g. http://localhost:8181",
           adminOnly: true,
         },
       ],
@@ -218,6 +227,7 @@
     [SettingsTab.Radarr]: emptyServiceState(SettingsTab.Radarr),
     [SettingsTab.Sonarr]: emptyServiceState(SettingsTab.Sonarr),
     [SettingsTab.Seerr]: emptyServiceState(SettingsTab.Seerr),
+    [SettingsTab.Tautulli]: emptyServiceState(SettingsTab.Tautulli),
   });
   let arrInstances = $state<Record<string, ServiceConfig[]>>({
     [SettingsTab.Radarr]: [],
