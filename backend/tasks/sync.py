@@ -42,6 +42,7 @@ __all__ = [
     "resync_media",
     "sync_media_libraries",
     "sync_linked_data",
+    "sync_emby_playback_reporting_data",
 ]
 
 # number of records to process before committing to the database during sync tasks
@@ -719,7 +720,7 @@ async def sync_movies(
                         existing_movie = existing_by_imdb[imdb_id]
                         LOG.info(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
-                            f"existing record by imdb_id ({imdb_id}) — updating instead of inserting"
+                            f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
                         )
                         if earliest_added and not existing_movie.added_at:
                             existing_movie.added_at = earliest_added
@@ -1249,6 +1250,146 @@ async def sync_series(
         await tmdb_service.session.close()
 
 
+async def sync_emby_playback_reporting_data() -> None:
+    """``Jellyfin/Emby only`` - supplement movie and series view counts using the
+    Playback Reporting plugin.
+
+    Supports both the original Emby plugin (faush01/playback_reporting,
+    ConfigurationFileName ``playback_reporting.xml``) and the Jellyfin fork
+    (jellyfin/jellyfin-plugin-playbackreporting,
+    ConfigurationFileName ``Jellyfin.Plugin.PlaybackReporting.xml``). Both expose
+    the same ``POST /user_usage_stats/submit_custom_query`` endpoint.
+
+    After the normal sync the plugin (if installed) provides play history filtered by
+    actual play duration, which eliminates brief scrubs that the native media server
+    play count API would otherwise count. The supplemental counts are applied as
+    ``max(existing, plugin_count)`` so existing data is never decreased.
+
+    Movies are linked via ``MovieVersion.service_item_id`` (where service matches the
+    main server).  Series are linked by aggregating episode level plugin data through
+    the Items API to resolve each episode's parent series, then joining against
+    ``SeriesServiceRef.service_id`` (where service matches the main server).
+
+    Does nothing if the main media server is not Jellyfin or Emby, or if the plugin
+    is not installed and active.
+    """
+    async with async_db() as session:
+        main = await _get_main_media_server(session)
+    if not main or main.service_type not in {Service.JELLYFIN, Service.EMBY}:
+        return
+
+    service_instance = await _get_media_service_instance(main.service_type)
+    if not isinstance(service_instance, (JellyfinService, EmbyService)):
+        return
+
+    server_service = main.service_type
+    LOG.info(f"Checking for Playback Reporting plugin on {server_service}...")
+    if not await service_instance.has_playback_reporting_plugin():
+        LOG.info("Playback Reporting plugin not found (skipping supplemental sync)")
+        return
+
+    LOG.info("Playback Reporting plugin found (syncing supplemental play data)")
+
+    #### movies ####
+    movie_stats = await service_instance.get_playback_reporting_stats(15, "Movie")
+    if movie_stats:
+        LOG.info(
+            f"Playback Reporting plugin returned play counts for {len(movie_stats)} movies"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(MovieVersion.service_item_id, Movie.id, Movie.view_count)
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == server_service,
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for item_id, movie_id, current_count in rows:
+                plugin_count = movie_stats.get(item_id)
+                if plugin_count and plugin_count > current_count:
+                    await session.execute(
+                        sql_update(Movie)
+                        .where(Movie.id == movie_id)
+                        .values(view_count=plugin_count)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(
+            f"Updated view_count for {updated} movies from Playback Reporting plugin"
+        )
+    else:
+        LOG.debug("No movie play data returned from Playback Reporting plugin")
+
+    #### series (aggregated from episode level data) ####
+    episode_stats = await service_instance.get_playback_reporting_stats(7, "Episode")
+    if not episode_stats:
+        LOG.debug("No episode play data returned from Playback Reporting plugin")
+        return
+
+    LOG.info(
+        f"Playback Reporting plugin returned play counts for {len(episode_stats)} episodes"
+    )
+
+    # resolve episode item IDs -> parent series item IDs via the Jellyfin Items API
+    episode_to_series = await service_instance.get_series_ids_for_episode_ids(
+        list(episode_stats.keys())
+    )
+    if not episode_to_series:
+        LOG.warning(
+            "Could not resolve any episode IDs to series IDs (skipping series update)"
+        )
+        return
+
+    # sum episode play counts per series item ID
+    series_play_counts: dict[str, int] = {}
+    for ep_id, ep_count in episode_stats.items():
+        parent_series_id = episode_to_series.get(ep_id)
+        if parent_series_id:
+            series_play_counts[parent_series_id] = (
+                series_play_counts.get(parent_series_id, 0) + ep_count
+            )
+
+    if not series_play_counts:
+        return
+
+    async with async_db() as session:
+        rows = (
+            await session.execute(
+                select(
+                    SeriesServiceRef.service_id,
+                    Series.id,
+                    Series.view_count,
+                )
+                .join(Series, SeriesServiceRef.series_id == Series.id)
+                .where(
+                    SeriesServiceRef.service == server_service,
+                    Series.removed_at.is_(None),
+                )
+            )
+        ).all()
+
+        updated = 0
+        for service_id, series_id, current_count in rows:
+            plugin_count = series_play_counts.get(service_id)
+            if plugin_count and plugin_count > current_count:
+                await session.execute(
+                    sql_update(Series)
+                    .where(Series.id == series_id)
+                    .values(view_count=plugin_count)
+                )
+                updated += 1
+
+        await session.commit()
+
+    LOG.info(f"Updated view_count for {updated} series from Playback Reporting plugin")
+
+
 async def sync_media() -> dict[str, Any] | None:
     """
     Main sync tasks task.
@@ -1290,6 +1431,10 @@ async def sync_media() -> dict[str, Any] | None:
             if svr.service_type != main_server and svr.service_type in MEDIA_SERVERS:
                 LOG.debug(f"Linked watch sync from {svr.service_type}")
                 await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
+
+        # supplement play counts from the Playback Reporting plugin if installed
+        # (supports both Jellyfin and Emby variants; no op if plugin not present)
+        await sync_emby_playback_reporting_data()
 
         return {"library_sync": library_sync_result}
 

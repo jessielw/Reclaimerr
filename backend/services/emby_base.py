@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -37,6 +37,8 @@ from backend.models.services.emby_base import (
     EmbyUserBase,
     EmbyUserDataBase,
 )
+
+RawSQL: TypeAlias = str
 
 
 class EmbyServiceBase:
@@ -942,6 +944,144 @@ class EmbyServiceBase:
             )
             for data in series_data.values()
         ]
+
+    async def has_playback_reporting_plugin(self) -> bool:
+        """Return True if the Jellyfin Playback Reporting plugin is installed and active."""
+        try:
+            plugins = await self._make_request("Plugins")
+            STATUSES_TO_EXCLUDE = {
+                "Disabled",
+                "Deleted",
+                "NotSupported",
+                "Malfunctioned",
+            }
+            PLUGINS_TO_INCLUDE = {
+                "playback_reporting.xml",
+                "Jellyfin.Plugin.PlaybackReporting.xml",
+            }
+        except Exception:
+            return False
+        if not isinstance(plugins, list):
+            return False
+        for plugin in plugins:
+            cfg = plugin.get("ConfigurationFileName", "")
+            status = plugin.get("Status", "")
+            if cfg in PLUGINS_TO_INCLUDE and status not in STATUSES_TO_EXCLUDE:
+                return True
+        return False
+
+    async def get_playback_reporting_stats(
+        self, min_play_duration: int, media_type: Literal["Movie", "Episode"]
+    ) -> dict[str, int]:
+        """Query the Playback Reporting plugin for per movie play counts.
+
+        Filters by minimum play duration to exclude brief scrubs.
+
+        Args:
+            min_play_duration: Minimum play duration in seconds to count as a play.
+            media_type: Movie or Episode.
+
+        Returns:
+            Mapping of Jellyfin/Emby item ID to play count.
+        """
+        query = (
+            "SELECT ItemId, COUNT(*) AS total_plays FROM PlaybackActivity "
+            f"WHERE ItemType = '{media_type}' AND PlayDuration >= {min_play_duration} "
+            "GROUP BY ItemId"
+        )
+        return await self._submit_playback_custom_query(query)
+
+    async def _submit_playback_custom_query(self, query: RawSQL) -> dict[str, int]:
+        # cSpell: disable
+        """Submit a raw SQL query to the Playback Reporting plugin endpoint.
+
+        Note: The plugin response uses the key ``colums`` (not ``columns``), this is
+        a known typo in the upstream plugin source and is handled intentionally here.
+
+        Args:
+            query: Raw SQL string to execute against the plugin's PlaybackActivity table.
+
+        Returns:
+            Mapping of ItemId to total_plays derived from the query result set.
+        """
+        try:
+            response = await self.session.post(
+                f"{self.service_url}/user_usage_stats/submit_custom_query",
+                json={"CustomQueryString": query, "ReplaceUserId": False},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            LOG.error(f"Playback Reporting plugin query failed: {e}")
+            return {}
+
+        # "colums" is an intentional typo in the plugin source
+        columns: list[str] = data.get("colums", [])
+        # cSpell: enable
+        results: list[list] = data.get("results", [])
+
+        try:
+            item_id_idx = columns.index("ItemId")
+            play_count_idx = columns.index("total_plays")
+        except ValueError:
+            LOG.error(
+                f"Unexpected column schema from Playback Reporting plugin: {columns}"
+            )
+            return {}
+
+        return {
+            row[item_id_idx]: int(row[play_count_idx])
+            for row in results
+            if row[item_id_idx]
+        }
+
+    async def get_series_ids_for_episode_ids(
+        self, episode_item_ids: list[str]
+    ) -> dict[str, str]:
+        """Batch-resolve Jellyfin episode item IDs to their parent series item IDs.
+
+        Args:
+            episode_item_ids: List of Jellyfin episode item ID strings.
+
+        Returns:
+            Mapping of episode item ID to series item ID.
+        """
+        if not episode_item_ids:
+            return {}
+
+        try:
+            users = await self.get_users()
+            if not users:
+                return {}
+            user_id = users[0].id
+        except Exception as e:
+            LOG.error(f"Failed to fetch users for episode→series mapping: {e}")
+            return {}
+
+        _CHUNK = 200
+        mapping: dict[str, str] = {}
+        for i in range(0, len(episode_item_ids), _CHUNK):
+            chunk = episode_item_ids[i : i + _CHUNK]
+            try:
+                data = await self._make_request(
+                    f"Users/{user_id}/Items",
+                    params={
+                        "Ids": ",".join(chunk),
+                        "Fields": "SeriesId",
+                        "EnableUserData": "false",
+                        "Recursive": "true",
+                    },
+                )
+                items = data.get("Items", []) if isinstance(data, dict) else []
+                for item in items:
+                    item_id = item.get("Id")
+                    series_id = item.get("SeriesId")
+                    if item_id and series_id:
+                        mapping[item_id] = series_id
+            except Exception as e:
+                LOG.warning(f"Failed to resolve episode IDs chunk to series IDs: {e}")
+
+        return mapping
 
     @staticmethod
     def _media_streams_by_type(

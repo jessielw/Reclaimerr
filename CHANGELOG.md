@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added backend support to handle moving files
 - Now cleans up related files and parent folder when deleting files where it makes sense (behaves similar to Sonarr/Radarr)
 - Added \*arr tag rules
+- **Jellyfin/Emby** will now pull watch data from the **Playback Reporting Plugin** if it's enabled/available for supplemental data
 
 ### Changed
 

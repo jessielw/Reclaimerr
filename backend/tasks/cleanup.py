@@ -292,7 +292,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
 
         # refresh arr_tags from Radarr/Sonarr for any labels referenced in active rules
-        # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client — no bulk fetch)
+        # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
         await _refresh_arr_tags_for_rules(list(rules))
 
         candidates_created = 0
