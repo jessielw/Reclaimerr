@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now cleans up related files and parent folder when deleting files where it makes sense (behaves similar to Sonarr/Radarr)
 - Added \*arr tag rules
 - **Jellyfin/Emby** will now pull watch data from the **Playback Reporting Plugin** if it's enabled/available for supplemental data
+- Desktop
+  - Added a **Shutdown** button that will work for desktop mode in the **Settings -> General**. This allows users to easily shut Reclaimerr down if they lack a system tray _(This will not be functional for anything other than desktop)_
+  - Now writes a **process ID** file _(reclaimerr.pid)_ in the **data** directory so users can kill this easily via scripting/terminal if needed
 
 ### Changed
 

@@ -3,15 +3,17 @@
   import type { Component } from "svelte";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
-  import { get_api, put_api } from "$lib/api";
+  import { get_api, post_api, put_api } from "$lib/api";
   import { toast } from "svelte-sonner";
   import { Button } from "$lib/components/ui/button/index.js";
   import Save from "@lucide/svelte/icons/save";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import PowerOff from "@lucide/svelte/icons/power-off";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { type GeneralSettings } from "$lib/types/shared";
+  import { auth } from "$lib/stores/auth";
 
   // props
   interface Props {
@@ -22,6 +24,9 @@
   // state
   let loading = $state(true);
   let savingSettings = $state(false);
+  let shuttingDown = $state(false);
+  let shutdownDone = $state(false);
+  const isAdmin = $derived($auth.user?.role === "admin");
   let generalSettings = $state({
     workerPollMinSeconds: "",
     workerPollMaxSeconds: "",
@@ -127,6 +132,29 @@
 
   const removePathMapping = (index: number) => {
     pathMappings = pathMappings.filter((_, i) => i !== index);
+  };
+
+  // shutdown app (desktop mode ONLY and requires admin)
+  const shutdownApp = async () => {
+    if (shuttingDown || shutdownDone) return;
+    shuttingDown = true;
+    try {
+      await post_api("/api/system/shutdown", {});
+      shutdownDone = true;
+      toast.success("Shutting down… you can close this tab.");
+    } catch (error: unknown) {
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? (error as { status: number }).status
+          : null;
+      if (status === 503) {
+        toast.info("Shutdown is not available in server mode.");
+      } else {
+        toast.error("Failed to shut down the application.");
+      }
+    } finally {
+      shuttingDown = false;
+    }
   };
 
   onMount(async () => {
@@ -377,6 +405,33 @@
         </p>
       {/if}
     </div>
+
+    <!-- shutdown (desktop mode / admin only) -->
+    {#if isAdmin}
+      <div
+        class="bg-muted/50 border border-destructive/30 rounded-lg p-4 shadow-sm"
+      >
+        <h3 class="font-semibold text-foreground">Shutdown</h3>
+        <p class="text-muted-foreground text-sm mb-3">
+          Stop the Reclaimerr desktop process. Only available when running in
+          desktop mode. Use the tray icon or this button to exit cleanly.
+        </p>
+        <Button
+          variant="destructive"
+          size="sm"
+          class="cursor-pointer gap-2"
+          disabled={shuttingDown || shutdownDone}
+          onclick={shutdownApp}
+        >
+          {#if shuttingDown}
+            <Spinner class="size-4" />
+          {:else}
+            <PowerOff class="size-4" />
+          {/if}
+          {shutdownDone ? "Shutting down…" : "Shutdown"}
+        </Button>
+      </div>
+    {/if}
 
     <!-- save -->
     <div class="flex gap-3 justify-end">

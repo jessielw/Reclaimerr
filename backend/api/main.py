@@ -22,6 +22,7 @@ from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
 from backend.api.routes.settings import router as settings_router
 from backend.api.routes.setup import router as setup_router
+from backend.api.routes.system import router as system_router
 from backend.api.routes.tasks import router as tasks_router
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
@@ -140,6 +141,7 @@ app.include_router(background_jobs_router)
 app.include_router(media_router)
 app.include_router(requests_router)
 app.include_router(protected_router)
+app.include_router(system_router)
 
 
 # mount static files LAST
