@@ -175,7 +175,7 @@ class GeneralSettings(Base):
     worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
 
     # path mapping (media-server paths -> local paths)
-    path_mappings: Mapped[list | None] = mapped_column(JSON, default=None)
+    path_mappings: Mapped[list] = mapped_column(JSON, default_factory=list)
 
     # move settings
     move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

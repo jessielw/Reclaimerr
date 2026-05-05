@@ -19,7 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table("general_settings", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("path_mappings", sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column("path_mappings", sa.JSON(), nullable=False, server_default="[]"))
         batch_op.add_column(
             sa.Column(
                 "move_enabled",
