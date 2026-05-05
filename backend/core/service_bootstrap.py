@@ -62,3 +62,5 @@ async def load_enabled_services() -> None:
             )
         elif config.service_type is Service.SEERR:
             await service_manager.initialize_seerr(config.base_url, api_key)
+        elif config.service_type is Service.TAUTULLI:
+            await service_manager.initialize_tautulli(config.base_url, api_key)

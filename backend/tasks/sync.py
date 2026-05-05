@@ -43,6 +43,7 @@ __all__ = [
     "sync_media_libraries",
     "sync_linked_data",
     "sync_emby_playback_reporting_data",
+    "sync_tautulli_playback_data",
 ]
 
 # number of records to process before committing to the database during sync tasks
@@ -1250,6 +1251,16 @@ async def sync_series(
         await tmdb_service.session.close()
 
 
+async def _run_supplemental_syncs() -> None:
+    """Run all supplemental play-count sync steps (Emby plugin + Tautulli).
+    Called at the end of both sync_media() and resync_media().
+    """
+    # emby/jellyfin playback reporting plugin sync (if applicable)
+    await sync_emby_playback_reporting_data()
+    # tautulli play history sync (if applicable) for plex
+    await sync_tautulli_playback_data()
+
+
 async def sync_emby_playback_reporting_data() -> None:
     """``Jellyfin/Emby only`` - supplement movie and series view counts using the
     Playback Reporting plugin.
@@ -1390,6 +1401,183 @@ async def sync_emby_playback_reporting_data() -> None:
     LOG.info(f"Updated view_count for {updated} series from Playback Reporting plugin")
 
 
+async def sync_tautulli_playback_data() -> None:
+    """Supplement movie and series view counts / last-viewed timestamps using
+    Tautulli play history.
+
+    Tautulli stores complete per-user play history that Plex's own API may under-
+    report (e.g. plays from managed accounts, partially-counted plays).  The
+    supplemental counts are applied as ``max(existing, tautulli_count)`` so
+    existing data is never decreased.
+
+    Movies are linked via ``MovieVersion.service_item_id`` (where service == PLEX).
+    Series are linked via ``SeriesServiceRef.service_id`` (where service == PLEX)
+    using series-level aggregation of episode history records.
+
+    On first run a full history pull is performed.  On subsequent runs only
+    records on/after ``last_synced_at`` (minus a 1-day overlap buffer) are
+    fetched.  The timestamp is persisted in ``ServiceConfig.extra_settings``
+    on the Tautulli config row.
+
+    Does nothing if Tautulli is not configured/enabled.
+    """
+    if service_manager.tautulli is None:
+        return
+
+    # load Tautulli ServiceConfig to read/write last_synced_at
+    async with async_db() as session:
+        result = await session.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type == Service.TAUTULLI,
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+        tautulli_config = result.scalar_one_or_none()
+
+    if tautulli_config is None:
+        return
+
+    extra: dict[str, Any] = dict(tautulli_config.extra_settings or {})
+    raw_ts = extra.get("last_synced_at")
+    last_synced_at: datetime | None = None
+    if raw_ts:
+        try:
+            last_synced_at = datetime.fromisoformat(raw_ts)
+        except (ValueError, TypeError):
+            last_synced_at = None
+
+    LOG.info(
+        "Syncing Tautulli playback data"
+        + (f" (since {last_synced_at.date()})" if last_synced_at else " (full pull)")
+    )
+
+    try:
+        movie_counts = await service_manager.tautulli.get_play_counts(
+            "movie", since=last_synced_at
+        )
+        episode_counts = await service_manager.tautulli.get_play_counts(
+            "episode", since=last_synced_at
+        )
+    except Exception as e:
+        LOG.error(f"Failed to fetch Tautulli history: {e}")
+        return
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    #### movies ####
+    if movie_counts:
+        LOG.info(
+            f"Tautulli returned play data for {len(movie_counts)} unique movie rating keys"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        MovieVersion.service_item_id,
+                        Movie.id,
+                        Movie.view_count,
+                        Movie.last_viewed_at,
+                    )
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == Service.PLEX,
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for item_id, movie_id, current_count, current_lva in rows:
+                try:
+                    key = int(item_id)
+                except (ValueError, TypeError):
+                    continue
+                entry = movie_counts.get(key)
+                if not entry:
+                    continue
+                taut_count, taut_lva = entry
+                new_count = max(current_count or 0, taut_count)
+                new_lva = (
+                    max(filter(None, [current_lva, taut_lva]))
+                    if (current_lva or taut_lva)
+                    else None
+                )
+                if new_count != current_count or new_lva != current_lva:
+                    await session.execute(
+                        sql_update(Movie)
+                        .where(Movie.id == movie_id)
+                        .values(view_count=new_count, last_viewed_at=new_lva)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(f"Updated {updated} movies from Tautulli playback data")
+    else:
+        LOG.debug("No movie play data returned from Tautulli")
+
+    #### series (aggregated from episode-level data) ####
+    if episode_counts:
+        LOG.info(
+            f"Tautulli returned episode play data for {len(episode_counts)} unique series rating keys"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        SeriesServiceRef.service_id,
+                        Series.id,
+                        Series.view_count,
+                        Series.last_viewed_at,
+                    )
+                    .join(Series, SeriesServiceRef.series_id == Series.id)
+                    .where(
+                        SeriesServiceRef.service == Service.PLEX,
+                        Series.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for service_id, series_id, current_count, current_lva in rows:
+                try:
+                    key = int(service_id)
+                except (ValueError, TypeError):
+                    continue
+                entry = episode_counts.get(key)
+                if not entry:
+                    continue
+                taut_count, taut_lva = entry
+                new_count = max(current_count or 0, taut_count)
+                new_lva = (
+                    max(filter(None, [current_lva, taut_lva]))
+                    if (current_lva or taut_lva)
+                    else None
+                )
+                if new_count != current_count or new_lva != current_lva:
+                    await session.execute(
+                        sql_update(Series)
+                        .where(Series.id == series_id)
+                        .values(view_count=new_count, last_viewed_at=new_lva)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(f"Updated {updated} series from Tautulli playback data")
+    else:
+        LOG.debug("No episode play data returned from Tautulli")
+
+    # persist the sync timestamp so next run is incremental
+    async with async_db() as session:
+        extra["last_synced_at"] = now.isoformat()
+        await session.execute(
+            sql_update(ServiceConfig)
+            .where(ServiceConfig.id == tautulli_config.id)
+            .values(extra_settings=extra)
+        )
+        await session.commit()
+    LOG.info("Tautulli playback sync complete")
+
+
 async def sync_media() -> dict[str, Any] | None:
     """
     Main sync tasks task.
@@ -1432,9 +1620,8 @@ async def sync_media() -> dict[str, Any] | None:
                 LOG.debug(f"Linked watch sync from {svr.service_type}")
                 await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
 
-        # supplement play counts from the Playback Reporting plugin if installed
-        # (supports both Jellyfin and Emby variants; no op if plugin not present)
-        await sync_emby_playback_reporting_data()
+        # gather supplemental sync data
+        await _run_supplemental_syncs()
 
         return {"library_sync": library_sync_result}
 
@@ -1553,6 +1740,7 @@ async def resync_media() -> None:
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
             await sync_series(allow_soft_delete=False)
+            await _run_supplemental_syncs()
         except Exception as e:
             LOG.error(f"Error during main server resync: {e}", exc_info=True)
             raise
