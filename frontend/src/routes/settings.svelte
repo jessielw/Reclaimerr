@@ -46,6 +46,7 @@
     icon: any;
     baseUrlPlaceholder?: string;
     adminOnly?: boolean;
+    lockName?: boolean;
   };
 
   type TabGroup = {
@@ -121,6 +122,7 @@
           icon: SeerrSVG,
           baseUrlPlaceholder: "e.g. http://localhost:5055",
           adminOnly: true,
+          lockName: true,
         },
         {
           id: SettingsTab.Tautulli,
@@ -128,6 +130,7 @@
           icon: TautulliSVG,
           baseUrlPlaceholder: "e.g. http://localhost:8181",
           adminOnly: true,
+          lockName: true,
         },
       ],
     },
@@ -804,6 +807,9 @@
               tabIcon={getTabIcon(activeTab)}
               enabled={serviceState[activeTab].config.enabled}
               name={serviceState[activeTab].config.name}
+              lockedName={tabs.find((t) => t.id === activeTab)?.lockName
+                ? tabs.find((t) => t.id === activeTab)?.label
+                : undefined}
               baseUrl={serviceState[activeTab].config.baseUrl}
               apiKey={serviceState[activeTab].config.apiKey}
               apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}

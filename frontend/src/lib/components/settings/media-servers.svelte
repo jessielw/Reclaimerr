@@ -510,6 +510,7 @@
           <ServiceConfigForm
             tabLabel={SERVER_LABELS[mainServer]}
             tabIcon={SERVER_ICONS[mainServer]}
+            lockedName={SERVER_LABELS[mainServer]}
             enabled={servers[mainServer].config.enabled}
             baseUrl={servers[mainServer].config.baseUrl}
             apiKey={servers[mainServer].config.apiKey}
@@ -553,6 +554,7 @@
               <ServiceConfigForm
                 tabLabel={SERVER_LABELS[serverKey]}
                 tabIcon={SERVER_ICONS[serverKey]}
+                lockedName={SERVER_LABELS[serverKey]}
                 enabled={servers[serverKey].config.enabled}
                 baseUrl={servers[serverKey].config.baseUrl}
                 apiKey={servers[serverKey].config.apiKey}

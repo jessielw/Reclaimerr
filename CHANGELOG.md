@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now parses season and episode paths on from the **main media server** _(episode granularity is still not in this update - but this is needed to ensure we're deleting/moving all the correct files)_
 - Improved normalization of paths
 - Improved style of action buttons for candidates
+- Lock name for all services other than Sonarr/Radarr since we only will only have one instance for now
 
 ### Removed
 

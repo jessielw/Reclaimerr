@@ -8,6 +8,7 @@
     tabIcon: Component | null;
     enabled: boolean;
     name?: string;
+    lockedName?: string;
     baseUrl: string;
     apiKey: string;
     apiKeyIsSet?: boolean;
@@ -23,6 +24,7 @@
     tabIcon,
     enabled,
     name = "",
+    lockedName,
     baseUrl,
     apiKey,
     apiKeyIsSet = false,
@@ -67,10 +69,11 @@
     <Input
       type="text"
       name="name"
-      value={name}
+      value={name || lockedName || ""}
       oninput={(e) => dispatchChange("name", e.currentTarget.value)}
       placeholder={`${tabLabel} instance`}
       class="input-hover-el text-foreground placeholder:text-muted-foreground"
+      disabled={lockedName != null}
     />
   </div>
 
