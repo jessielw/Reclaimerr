@@ -11,6 +11,7 @@ from backend.services.plex import PlexService
 from backend.services.radarr import RadarrClient
 from backend.services.seerr import SeerrClient
 from backend.services.sonarr import SonarrClient
+from backend.services.tautulli import TautulliClient
 
 
 class ServiceManager:
@@ -33,6 +34,7 @@ class ServiceManager:
         self._radarr_clients: dict[int, RadarrClient] = {}
         self._sonarr_clients: dict[int, SonarrClient] = {}
         self._seerr: SeerrClient | None = None
+        self._tautulli: TautulliClient | None = None
 
         LOG.info("ServiceManager initialized")
 
@@ -100,6 +102,11 @@ class ServiceManager:
         """Get Seerr service (must be initialized first)."""
         return self._seerr
 
+    @property
+    def tautulli(self) -> TautulliClient | None:
+        """Get Tautulli service (must be initialized first)."""
+        return self._tautulli
+
     async def get_status(self) -> dict[str, bool]:
         """Get connection status of all clients."""
         return {
@@ -109,6 +116,7 @@ class ServiceManager:
             "radarr": self.radarr is not None,
             "sonarr": self.sonarr is not None,
             "seerr": self._seerr is not None,
+            "tautulli": self._tautulli is not None,
         }
 
     async def test_service(
@@ -128,6 +136,8 @@ class ServiceManager:
                 return await SonarrClient.test_service(url, api_key), ""
             elif service_type is Service.SEERR:
                 return await SeerrClient.test_service(url, api_key), ""
+            elif service_type is Service.TAUTULLI:
+                return await TautulliClient.test_service(url, api_key), ""
         except niq_exceptions.ConnectionError:
             return (
                 False,
@@ -156,6 +166,7 @@ class ServiceManager:
         | RadarrClient
         | SonarrClient
         | SeerrClient
+        | TautulliClient
         | None
     ):
         """Return the requested service instance."""
@@ -171,6 +182,8 @@ class ServiceManager:
             return self._sonarr
         elif service_type is Service.SEERR:
             return self._seerr
+        elif service_type is Service.TAUTULLI:
+            return self._tautulli
 
     async def initialize_jellyfin(
         self, base_url: str, api_key: str, is_main: bool
@@ -300,6 +313,25 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Seerr service: {e}")
             return None
 
+    async def initialize_tautulli(
+        self, base_url: str, api_key: str, timeout: int = 30
+    ) -> TautulliClient | None:
+        """Initialize Tautulli service with provided config."""
+        try:
+            self._tautulli = TautulliClient(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+            )
+            if not await self._tautulli.health():
+                LOG.error(f"Tautulli service health check failed: {base_url}")
+                raise ValueError(f"Tautulli service health check failed: {base_url}")
+            LOG.info(f"Tautulli service initialized: {base_url}")
+            return self._tautulli
+        except Exception as e:
+            LOG.error(f"Failed to initialize Tautulli service: {e}")
+            return None
+
     async def clear_jellyfin(self) -> None:
         """Clear Jellyfin service (call before reinitializing)."""
         if self._main_media_server is self._jellyfin:
@@ -372,6 +404,13 @@ class ServiceManager:
             LOG.info("Seerr service cleared")
         self._seerr = None
 
+    async def clear_tautulli(self) -> None:
+        """Clear Tautulli service (call before reinitializing)."""
+        if self._tautulli and self._tautulli.session:
+            await self._tautulli.session.close()
+            LOG.info("Tautulli service cleared")
+        self._tautulli = None
+
     async def clear_all(self) -> None:
         """Clear all clients (call before reinitializing from database)."""
         LOG.info("Clearing all clients")
@@ -381,6 +420,7 @@ class ServiceManager:
         await self.clear_radarr()
         await self.clear_sonarr()
         await self.clear_seerr()
+        await self.clear_tautulli()
 
 
 # global manager instance

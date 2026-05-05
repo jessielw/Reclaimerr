@@ -262,6 +262,8 @@ async def delete_service_settings(
         await service_manager.clear_sonarr(config_id)
     elif service_type is Service.SEERR:
         await service_manager.clear_seerr()
+    elif service_type is Service.TAUTULLI:
+        await service_manager.clear_tautulli()
     elif service_type is Service.JELLYFIN:
         await service_manager.clear_jellyfin()
     elif service_type is Service.EMBY:
