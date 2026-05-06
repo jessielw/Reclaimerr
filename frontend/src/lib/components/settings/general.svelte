@@ -207,7 +207,7 @@
   <!-- check if loading -->
   {#if loading}
     <div class="flex justify-center py-8">
-      <Spinner />
+      <Spinner class="text-primary" />
     </div>
   {:else}
     <!-- worker polling -->

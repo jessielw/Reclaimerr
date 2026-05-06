@@ -180,7 +180,7 @@
 
   {#if loading}
     <div class="flex items-center gap-2 text-muted-foreground text-sm py-2">
-      <Spinner class="size-4" />
+      <Spinner class="size-4 text-primary" />
       Loading libraries...
     </div>
   {:else if localLibraries.length > 0}
