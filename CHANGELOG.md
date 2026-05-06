@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Media being parsed from other libraries that wasn't selected in the rule
 - In rare cases posters could stretch
 - Now deletes/un-monitors each season/series as all entries are removed
+- Numerous loading spinners was not styled properly
 
 ## [0.1.0-beta.13] - 2026-04-25
 
