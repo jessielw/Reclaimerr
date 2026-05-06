@@ -20,7 +20,7 @@
     type PaginatedResponse,
   } from "$lib/types/shared";
   import { formatDate } from "$lib/utils/date";
-  import { formatSizeToGB } from "$lib/utils/formatters";
+  import { formatFileSize } from "$lib/utils/formatters";
   import {
     createPerPageState,
     createFilterState,
@@ -312,8 +312,8 @@
     entries.filter((e) => selectedIds.has(e.id)),
   );
 
-  const selectedTotalGb = $derived(
-    selectedEntries.reduce((acc, e) => acc + (e.estimated_space_gb ?? 0), 0),
+  const selectedTotalBytes = $derived(
+    selectedEntries.reduce((acc, e) => acc + (e.estimated_space_bytes ?? 0), 0),
   );
 
   $effect(() => _tabStore.save(activeTab));
@@ -697,14 +697,16 @@
     status: { is_candidate: true },
   });
 
-  const sizeLabel = (gb: number | null) =>
-    gb != null ? `${gb.toFixed(2)} GB` : "?";
-
-  const groupTotalGb = (row: GroupRow): number =>
+  const groupTotalBytes = (row: GroupRow): number =>
     row.group_type === "series_seasons"
-      ? row.seasons.reduce((acc, s) => acc + (s.estimated_space_gb ?? 0), 0) +
-        (row.seriesEntry?.estimated_space_gb ?? 0)
-      : row.versions.reduce((acc, v) => acc + (v.estimated_space_gb ?? 0), 0);
+      ? row.seasons.reduce(
+          (acc, s) => acc + (s.estimated_space_bytes ?? 0),
+          0,
+        ) + (row.seriesEntry?.estimated_space_bytes ?? 0)
+      : row.versions.reduce(
+          (acc, v) => acc + (v.estimated_space_bytes ?? 0),
+          0,
+        );
 
   const toggleMovieGroupSelect = (row: MovieGroupRow) => toggleGroupSelect(row);
   const toggleSeriesGroupSelect = (row: SeriesGroupRow) =>
@@ -717,8 +719,8 @@
     isGroupPartialSelected(row);
   const isSeriesGroupPartialSelected = (row: SeriesGroupRow) =>
     isGroupPartialSelected(row);
-  const movieGroupTotalGb = (row: MovieGroupRow) => groupTotalGb(row);
-  const seriesGroupTotalGb = (row: SeriesGroupRow) => groupTotalGb(row);
+  const movieGroupTotalBytes = (row: MovieGroupRow) => groupTotalBytes(row);
+  const seriesGroupTotalBytes = (row: SeriesGroupRow) => groupTotalBytes(row);
 
   onMount(async () => {
     mounted = true;
@@ -1111,7 +1113,7 @@
         <span class="text-sm text-foreground font-medium">
           {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""} selected
           <span class="text-muted-foreground font-normal">
-            - {selectedTotalGb.toFixed(2)} GB
+            - {formatFileSize(selectedTotalBytes)}
           </span>
         </span>
         <div class="flex gap-2">
@@ -1214,8 +1216,7 @@
           {openSingleMove}
           {moveEnabled}
           {formatDate}
-          {sizeLabel}
-          groupTotalGb={movieGroupTotalGb}
+          groupTotalBytes={movieGroupTotalBytes}
         />
       {:else}
         <SeriesCandidatesView
@@ -1236,8 +1237,7 @@
           {openSingleMove}
           {moveEnabled}
           {formatDate}
-          {sizeLabel}
-          groupTotalGb={seriesGroupTotalGb}
+          groupTotalBytes={seriesGroupTotalBytes}
         />
       {/if}
     </div>
@@ -1418,7 +1418,7 @@
                   </span>
                 </td>
                 <td class="px-4 py-3 text-muted-foreground">
-                  {entry.size != null ? formatSizeToGB(entry.size) : "-"}
+                  {entry.size != null ? formatFileSize(entry.size) : "-"}
                 </td>
                 <td class="px-4 py-3 text-muted-foreground">
                   {entry.approved_by}

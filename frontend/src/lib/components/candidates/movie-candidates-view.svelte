@@ -8,6 +8,7 @@
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import VersionMediaInfoWidget from "$lib/components/candidates/movie-version-mediainfo.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
+  import { formatFileSize } from "$lib/utils/formatters";
 
   type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
   type MovieGroupRow = {
@@ -41,8 +42,7 @@
     openSingleMove: (entry: ReclaimCandidateEntry) => void;
     moveEnabled: boolean;
     formatDate: (value: string) => string;
-    sizeLabel: (value: number | null) => string;
-    groupTotalGb: (row: MovieGroupRow) => number;
+    groupTotalBytes: (row: MovieGroupRow) => number;
   }
 
   let {
@@ -63,8 +63,7 @@
     openSingleMove,
     moveEnabled,
     formatDate,
-    sizeLabel,
-    groupTotalGb,
+    groupTotalBytes,
   }: Props = $props();
 
   let infoOpen = $state(false);
@@ -83,7 +82,7 @@
     if (entry.version_audio_codec_family) {
       chips.push(entry.version_audio_codec_family.toUpperCase());
     }
-    chips.push(sizeLabel(entry.estimated_space_gb));
+    chips.push(formatFileSize(entry.estimated_space_bytes));
     return chips;
   };
 
@@ -269,7 +268,7 @@
                   </div>
                 </div>
                 <div class="text-xs text-muted-foreground">
-                  {sizeLabel(version.estimated_space_gb)}
+                  {formatFileSize(version.estimated_space_bytes)}
                 </div>
                 <div class="flex flex-wrap gap-1.5">
                   {#if parsedRules.length > 0}
@@ -403,7 +402,7 @@
               </div>
             </td>
             <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{sizeLabel(entry.estimated_space_gb)}</td
+              >{formatFileSize(entry.estimated_space_bytes)}</td
             >
             <td
               class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
@@ -484,7 +483,7 @@
               </div>
             </td>
             <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{groupTotalGb(row).toFixed(2)} GB</td
+              >{formatFileSize(groupTotalBytes(row))}</td
             >
             <td
               class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
@@ -557,7 +556,7 @@
                   </div>
                 </td>
                 <td class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
-                  >{sizeLabel(version.estimated_space_gb)}</td
+                  >{formatFileSize(version.estimated_space_bytes)}</td
                 >
                 <td
                   class="px-6 py-3 text-sm text-muted-foreground whitespace-nowrap"
