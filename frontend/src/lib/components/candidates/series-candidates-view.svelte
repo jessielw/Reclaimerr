@@ -6,6 +6,7 @@
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
+  import { formatFileSize } from "$lib/utils/formatters";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import X from "@lucide/svelte/icons/x";
 
@@ -41,8 +42,7 @@
     openSingleMove: (entry: ReclaimCandidateEntry) => void;
     moveEnabled: boolean;
     formatDate: (value: string) => string;
-    sizeLabel: (value: number | null) => string;
-    groupTotalGb: (row: SeriesGroupRow) => number;
+    groupTotalBytes: (row: SeriesGroupRow) => number;
   }
 
   let {
@@ -63,8 +63,7 @@
     openSingleMove,
     moveEnabled,
     formatDate,
-    sizeLabel,
-    groupTotalGb,
+    groupTotalBytes,
   }: Props = $props();
 
   let infoOpen = $state(false);
@@ -73,7 +72,7 @@
   const unknownValue = "Unknown";
 
   const groupSummary = (row: SeriesGroupRow): string =>
-    `Total: ${groupTotalGb(row).toFixed(2)} GB - Flagged: ${formatDate(row.seasons[0].created_at)}`;
+    `Total: ${formatFileSize(groupTotalBytes(row))} - Flagged: ${formatDate(row.seasons[0].created_at)}`;
 
   const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
     (tokens ?? []).map((token) => token.trim()).filter(Boolean);
@@ -143,7 +142,7 @@
                   <span
                     class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
                   >
-                    {sizeLabel(entry.estimated_space_gb)}
+                    {formatFileSize(entry.estimated_space_bytes)}
                   </span>
                 </div>
                 <div class="mt-2 text-xs text-muted-foreground">
@@ -244,7 +243,7 @@
                   <span
                     class="text-xs leading-5 px-2 rounded-full border border-border bg-card text-foreground"
                   >
-                    {sizeLabel(season.estimated_space_gb)}
+                    {formatFileSize(season.estimated_space_bytes)}
                   </span>
                 </div>
                 <div class="flex flex-wrap gap-1.5">
@@ -313,8 +312,8 @@
             {infoTarget.series_title ?? infoTarget.media_title} - Season {infoTarget.season_number}
           </div>
           <div class="text-xs text-muted-foreground truncate">
-            {seasonResolutionLabel(infoTarget)} - {sizeLabel(
-              infoTarget.estimated_space_gb,
+            {seasonResolutionLabel(infoTarget)} - {formatFileSize(
+              infoTarget.estimated_space_bytes,
             )}
           </div>
         </div>
@@ -422,12 +421,12 @@
                 <span
                   class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
                 >
-                  {sizeLabel(entry.estimated_space_gb)}
+                  {formatFileSize(entry.estimated_space_bytes)}
                 </span>
               </div>
             </td>
             <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{sizeLabel(entry.estimated_space_gb)}</td
+              >{formatFileSize(entry.estimated_space_bytes)}</td
             >
             <td
               class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
@@ -502,7 +501,7 @@
               <div class="text-xs">{groupSummary(row)}</div>
             </td>
             <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{groupTotalGb(row).toFixed(2)} GB</td
+              >{formatFileSize(groupTotalBytes(row))}</td
             >
             <td
               class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
@@ -581,7 +580,7 @@
                   </div>
                 </td>
                 <td class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
-                  >{sizeLabel(season.estimated_space_gb)}</td
+                  >{formatFileSize(season.estimated_space_bytes)}</td
                 >
                 <td
                   class="px-6 py-3 text-sm text-muted-foreground whitespace-nowrap"
