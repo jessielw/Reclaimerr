@@ -46,11 +46,11 @@
       tooltip: null,
     },
     {
-      path: "/protection-requests",
+      path: "/requests",
       label: "Requests",
       icon: Ticket,
       adminOnly: false,
-      tooltip: "View and manage media deletion requests submitted by users",
+      tooltip: "View and manage delete and protection requests",
     },
     {
       path: "/protected",
