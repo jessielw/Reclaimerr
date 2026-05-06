@@ -51,6 +51,19 @@ class CleanupRuleResponse(CleanupRuleBase):
     model_config = {"from_attributes": True}
 
 
+class RuleImportPayload(BaseModel):
+    """Payload for bulk rule import."""
+
+    rules: list[CleanupRuleCreate]
+
+
+class RuleImportResponse(BaseModel):
+    """Response for bulk rule import."""
+
+    imported: int
+    errors: list[str]
+
+
 @dataclass(slots=True)
 class MatchedCandidateRecord:
     """Represents a record of a media item that matched a cleanup rule."""

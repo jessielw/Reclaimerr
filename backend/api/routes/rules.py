@@ -34,6 +34,8 @@ from backend.models.cleanup import (
     CleanupRuleCreate,
     CleanupRuleResponse,
     CleanupRuleUpdate,
+    RuleImportPayload,
+    RuleImportResponse,
 )
 from backend.models.media import PaginatedRulePreviewResponse
 from backend.models.rules import (
@@ -455,6 +457,62 @@ async def preview_rule_matches(
         per_page=body.per_page,
         total_pages=total_pages,
     )
+
+
+@router.post("/rules/import", status_code=status.HTTP_200_OK)
+async def import_rules(
+    payload: RuleImportPayload,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> RuleImportResponse:
+    """Bulk import cleanup rules, we will auto rename duplicates."""
+    existing_names_result = await db.execute(select(ReclaimRule.name))
+    used_names: set[str] = set(existing_names_result.scalars().all())
+    imported = 0
+    errors: list[str] = []
+
+    for rule_data in payload.rules:
+        try:
+            if not rule_data.target_scope:
+                raise ValueError("Rules require target_scope")
+            try:
+                validate_rule_definition(rule_data.definition)
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+
+            name = rule_data.name
+            if name in used_names:
+                candidate = f"{name} (imported)"
+                n = 2
+                while candidate in used_names:
+                    candidate = f"{name} (imported {n})"
+                    n += 1
+                name = candidate
+
+            effective_media_type = _media_type_for_target(
+                rule_data.target_scope, rule_data.media_type
+            )
+            new_rule = ReclaimRule(
+                name=name,
+                media_type=effective_media_type,
+                enabled=rule_data.enabled,
+                target_scope=rule_data.target_scope,
+                definition=rule_data.definition,
+                action=_normalize_rule_action(
+                    rule_data.action, name, rule_data.target_scope
+                ),
+            )
+            db.add(new_rule)
+            used_names.add(name)
+            imported += 1
+        except Exception as e:
+            errors.append(f"{rule_data.name}: {e}")
+
+    if imported:
+        await db.commit()
+        LOG.info(f"Imported {imported} cleanup rule(s)")
+
+    return RuleImportResponse(imported=imported, errors=errors)
 
 
 @router.post("/rules/{rule_id}", response_model=CleanupRuleResponse)

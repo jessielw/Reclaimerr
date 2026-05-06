@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Rebuilt rule engine completely
   - Added support for complex logical rules via AND/OR and groups
   - Can now preview potential candidates based on the current rules selections
+- Added rule importing/exporting to share rules with the new rule engine
 - Now keeps history of reclaimed media (starting from **0.1.0-beta-14**)
 - Dashboard
   - Reclaim history

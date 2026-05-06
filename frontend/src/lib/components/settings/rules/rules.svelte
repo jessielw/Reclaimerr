@@ -9,6 +9,8 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Download from "@lucide/svelte/icons/download";
+  import Upload from "@lucide/svelte/icons/upload";
   import Clapperboard from "@lucide/svelte/icons/clapperboard";
   import Tv from "@lucide/svelte/icons/tv";
   import { toast } from "svelte-sonner";
@@ -36,6 +38,19 @@
   // delete dialog states
   let showDeleteDialog = $state(false);
   let ruleToDelete = $state<ReclaimRule | null>(null);
+
+  // import/export states
+  interface ImportPreviewItem {
+    originalName: string;
+    resolvedName: string;
+    isRenamed: boolean;
+  }
+  let fileInput = $state<HTMLInputElement>(null!);
+  let showImportDialog = $state(false);
+  let importLoading = $state(false);
+  let importPreviewItems = $state<ImportPreviewItem[]>([]);
+  let importRules = $state<any[]>([]);
+  let hasArrServiceConfigWarning = $state(false);
 
   // additional states
   let isSynced = $state(true); // assume synced until we check
@@ -236,6 +251,131 @@
     }
   };
 
+  // export rules to a JSON file (strips server assigned fields)
+  const exportRules = (rulesToExport: ReclaimRule[]) => {
+    const exportData = rulesToExport.map((rule) => ({
+      name: rule.name,
+      media_type: rule.media_type,
+      enabled: rule.enabled,
+      target_scope: rule.target_scope,
+      definition: rule.definition,
+      action: rule.action,
+    }));
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download =
+      rulesToExport.length === 1
+        ? `rule-${rulesToExport[0].name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.json`
+        : "reclaimerr-rules.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // handle file selection for import
+  const handleImportFile = async (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // reset so the same file can be re-selected
+    input.value = "";
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed: unknown = JSON.parse(text);
+      const rawRules: any[] = Array.isArray(parsed) ? parsed : [parsed];
+
+      if (rawRules.length === 0) {
+        toast.error("No rules found in file");
+        return;
+      }
+      for (const rule of rawRules) {
+        if (!rule.name || !rule.definition || !rule.target_scope) {
+          toast.error(
+            "Invalid rule format: each rule must have name, definition, and target_scope",
+          );
+          return;
+        }
+      }
+
+      const existingNames = new Set(rules.map((r) => r.name));
+      const usedNames = new Set(existingNames);
+      const previewItems: ImportPreviewItem[] = [];
+      const resolvedRules: any[] = [];
+      let hasArrWarning = false;
+
+      for (const rule of rawRules) {
+        // strip any server assigned fields that may have been included
+        const { id: _id, created_at: _ca, updated_at: _ua, ...ruleData } = rule;
+
+        let resolvedName: string = ruleData.name;
+        if (usedNames.has(resolvedName)) {
+          let candidate = `${ruleData.name} (imported)`;
+          let n = 2;
+          while (usedNames.has(candidate)) {
+            candidate = `${ruleData.name} (imported ${n})`;
+            n++;
+          }
+          resolvedName = candidate;
+        }
+        usedNames.add(resolvedName);
+
+        if (
+          rule.action?.radarr_service_config_id != null ||
+          rule.action?.sonarr_service_config_id != null
+        ) {
+          hasArrWarning = true;
+        }
+
+        previewItems.push({
+          originalName: rule.name,
+          resolvedName,
+          isRenamed: resolvedName !== rule.name,
+        });
+        resolvedRules.push({ ...ruleData, name: resolvedName });
+      }
+
+      importPreviewItems = previewItems;
+      importRules = resolvedRules;
+      hasArrServiceConfigWarning = hasArrWarning;
+      showImportDialog = true;
+    } catch (err: any) {
+      toast.error(`Failed to parse file: ${err.message}`);
+    }
+  };
+
+  // send the resolved rules to the backend
+  const confirmImport = async () => {
+    importLoading = true;
+    try {
+      const result = await post_api<{ imported: number; errors: string[] }>(
+        "/api/rules/import",
+        { rules: importRules },
+      );
+      showImportDialog = false;
+      importPreviewItems = [];
+      importRules = [];
+      await loadRules();
+      if (result.errors.length > 0) {
+        toast.warning(
+          `Imported ${result.imported} rule${result.imported === 1 ? "" : "s"} ` +
+            `with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+        );
+      } else {
+        toast.success(
+          `Imported ${result.imported} rule${result.imported === 1 ? "" : "s"}`,
+        );
+      }
+    } catch (err: any) {
+      toast.error(`Import failed: ${err.message}`);
+    } finally {
+      importLoading = false;
+    }
+  };
+
   onMount(async () => {
     await Promise.all([loadRules(), loadLibraries()]);
 
@@ -276,11 +416,42 @@
         <p class="text-sm text-muted-foreground mt-1">Manage cleanup rules</p>
       </div>
 
-      <!-- add new rule button -->
-      <Button size="sm" onclick={createNewRule} class="cursor-pointer gap-2">
-        <Plus class="size-4" />
-        New Rule
-      </Button>
+      <!-- action buttons -->
+      <div class="flex items-center gap-2">
+        <input
+          type="file"
+          accept=".json"
+          class="hidden"
+          bind:this={fileInput}
+          onchange={handleImportFile}
+        />
+        <!-- import rule button -->
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => fileInput.click()}
+          class="cursor-pointer gap-2"
+        >
+          <Upload class="size-4" />
+          Import
+        </Button>
+
+        <!-- export rule button -->
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => exportRules(rules)}
+          disabled={rules.length === 0}
+          class="cursor-pointer gap-2"
+        >
+          <Download class="size-4" />
+          Export All
+        </Button>
+        <Button size="sm" onclick={createNewRule} class="cursor-pointer gap-2">
+          <Plus class="size-4" />
+          New Rule
+        </Button>
+      </div>
     </div>
 
     <div class="max-w-7xl mx-auto space-y-4">
@@ -379,6 +550,15 @@
                   <Button
                     variant="ghost"
                     size="icon"
+                    onclick={() => exportRules([rule])}
+                    class="text-foreground cursor-pointer"
+                    title="Export rule"
+                  >
+                    <Download class="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onclick={() => openDeleteDialog(rule)}
                     class="cursor-pointer text-destructive hover:text-destructive"
                   >
@@ -394,7 +574,89 @@
   </div>
 {/if}
 
-<!-- confirm delete alert dialog -->
+<!-- import confirmation dialog -->
+{#if showImportDialog}
+  <AlertDialog.Root
+    open={showImportDialog}
+    onOpenChange={(v) => {
+      if (!importLoading) showImportDialog = v;
+    }}
+  >
+    <AlertDialog.Content
+      class="bg-card border border-border rounded-lg p-6 max-w-lg w-full"
+    >
+      <AlertDialog.Header>
+        <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2"
+          >Import Rules</AlertDialog.Title
+        >
+        <AlertDialog.Description class="text-muted-foreground">
+          The following {importPreviewItems.length}
+          {importPreviewItems.length === 1 ? "rule" : "rules"} will be imported.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+
+      {#if hasArrServiceConfigWarning}
+        <Notice type="warning" title="Arr Service Configuration">
+          One or more rules reference a Radarr or Sonarr service from the
+          original instance. Those IDs may not match your setup — review rule
+          actions after importing.
+        </Notice>
+      {/if}
+
+      <div class="mt-4 max-h-64 overflow-y-auto space-y-2">
+        {#each importPreviewItems as item}
+          <div
+            class="flex items-center gap-2 rounded-md border border-border p-3 text-sm"
+          >
+            <div class="flex-1 min-w-0">
+              {#if item.isRenamed}
+                <p class="text-muted-foreground line-through truncate">
+                  {item.originalName}
+                </p>
+                <p class="text-foreground font-medium truncate">
+                  {item.resolvedName}
+                </p>
+              {:else}
+                <p class="text-foreground truncate">{item.resolvedName}</p>
+              {/if}
+            </div>
+            {#if item.isRenamed}
+              <Badge variant="secondary" class="shrink-0 text-xs">Renamed</Badge
+              >
+            {/if}
+          </div>
+        {/each}
+      </div>
+
+      <AlertDialog.Footer class="flex justify-end gap-3 pt-4">
+        <Button
+          variant="secondary"
+          class="cursor-pointer"
+          disabled={importLoading}
+          onclick={() => {
+            showImportDialog = false;
+            importPreviewItems = [];
+            importRules = [];
+          }}
+        >
+          Cancel
+        </Button>
+        <Button
+          class="cursor-pointer gap-2"
+          disabled={importLoading}
+          onclick={confirmImport}
+        >
+          {#if importLoading}
+            <Spinner class="size-4" />
+          {/if}
+          Import {importPreviewItems.length}
+          {importPreviewItems.length === 1 ? "Rule" : "Rules"}
+        </Button>
+      </AlertDialog.Footer>
+    </AlertDialog.Content>
+  </AlertDialog.Root>
+{/if}
+
 <AlertDialog.Root
   open={showDeleteDialog}
   onOpenChange={(v) => (showDeleteDialog = v)}
