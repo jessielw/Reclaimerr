@@ -5,7 +5,7 @@
   import Shield from "@lucide/svelte/icons/shield";
   import { Button } from "$lib/components/ui/button/index.js";
 
-  type RequestTab = "delete" | "protection";
+  type RequestTab = "deletion" | "protection";
   let activeTab = $state<RequestTab>("protection");
 </script>
 
@@ -30,20 +30,20 @@
 
       <!-- delete tab -->
       <Button
-        onclick={() => (activeTab = "delete")}
+        onclick={() => (activeTab = "deletion")}
         class="cursor-pointer
-          {activeTab === 'delete'
+          {activeTab === 'deletion'
           ? 'bg-primary text-background dark:text-foreground'
           : 'text-foreground bg-transparent'}"
       >
         <Trash2 class="size-4" />
-        Delete Requests
+        Deletion Requests
       </Button>
     </div>
   </div>
 </div>
 
-{#if activeTab === "delete"}
+{#if activeTab === "deletion"}
   <DeleteRequests />
 {:else}
   <ProtectionRequests />
