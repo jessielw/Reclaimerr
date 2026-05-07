@@ -114,7 +114,7 @@
           <!-- we'll only add a trigger if tooltip exists -->
           {#if item.tooltip}
             <Tooltip.Root>
-              <Tooltip.Trigger>
+              <Tooltip.Trigger class="w-full">
                 <a
                   href={item.path}
                   use:link
