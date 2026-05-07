@@ -93,7 +93,7 @@ class TautulliClient:
         Args:
             media_type: ``"movie"`` or ``"episode"``.
             since: If provided, only fetch records on or after this datetime minus
-                a 1-day overlap buffer (date-granularity safety margin).
+                a 1 day overlap buffer (date granularity safety margin).
             page_size: Number of records to request per API page.
 
         Returns:
@@ -106,7 +106,7 @@ class TautulliClient:
         params: dict[str, Any] = {"media_type": media_type, "length": page_size}
 
         if since is not None:
-            # subtract 1 day buffer — Tautulli start_date is date-granularity only
+            # subtract 1 day buffer (tautulli start_date is date granularity only)
             cutoff = since - timedelta(days=1)
             params["start_date"] = cutoff.strftime("%Y-%m-%d")
 

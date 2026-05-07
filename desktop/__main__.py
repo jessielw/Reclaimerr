@@ -58,7 +58,7 @@ signal.signal(signal.SIGTERM, _handle_signal)
 
 # start the tray icon in a background thread (run_detached is non-blocking).
 # On platforms without a system tray (e.g. headless Linux, Wayland without
-# a compatible tray backend) pystray will raise — we catch it and continue
+# a compatible tray backend) pystray will raise - we catch it and continue
 # without a tray so the app is still usable via the web UI.
 try:
     icon.run_detached()
