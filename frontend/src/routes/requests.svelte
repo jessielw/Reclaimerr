@@ -7,10 +7,10 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import RequestsFilterBar from "$lib/components/requests/requests-filter-bar.svelte";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import RequestStatusBadge from "$lib/components/requests/request-status-badge.svelte";
-  import { Input } from "$lib/components/ui/input/index.js";
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";
   import {
@@ -19,9 +19,11 @@
     Permission,
   } from "$lib/types/shared";
   import { formatDate } from "$lib/utils/date";
+  import { formatFileSize } from "$lib/utils/formatters";
   import CheckCircle from "@lucide/svelte/icons/check-circle";
   import XCircle from "@lucide/svelte/icons/x-circle";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import { cleanResolutionString } from "$lib/utils/formatters";
 
   const TMDB_POSTER_WIDTH = 92;
 
@@ -722,103 +724,21 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<div class="p-2.5 md:p-8">
-  <div class="max-w-7xl mx-auto">
-    <!-- header -->
-    <div class="flex items-center justify-between mb-6">
-      <div>
-        <h1 class="text-3xl font-bold text-foreground mb-1">
-          Protection Requests
-        </h1>
-        <p class="text-muted-foreground text-sm">
-          {#if canManageRequests}
-            Review and manage requests to protect media from cleanup.
-          {:else}
-            Your requests to protect media from cleanup.
-          {/if}
-        </p>
-      </div>
-    </div>
-
+<div class="px-2.5 md:px-8 pt-6 pb-2.5 md:pb-8">
+  <div class="max-w-7xl mx-auto space-y-6">
     <!-- filter controls -->
-    <div class="mb-6 grid gap-2 sm:grid-cols-3">
-      <Input
-        type="text"
-        bind:value={searchQuery}
-        placeholder="Search title, reason, user..."
-        class="input-hover-el"
-      />
-
-      <!-- status filter -->
-      <Select.Root type="single" bind:value={statusFilter}>
-        <Select.Trigger
-          class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {(() => {
-            if (statusFilter === "all") return "All statuses";
-            if (statusFilter === ProtectionRequestStatus.Pending)
-              return "Pending";
-            if (statusFilter === ProtectionRequestStatus.Approved)
-              return "Approved";
-            if (statusFilter === ProtectionRequestStatus.Denied)
-              return "Denied";
-            return String(statusFilter);
-          })()}
-        </Select.Trigger>
-        <Select.Content class="bg-card border-ring">
-          <Select.Item value="all" label="All statuses" class="text-foreground"
-            >All statuses</Select.Item
-          >
-          <Select.Item
-            value={ProtectionRequestStatus.Pending}
-            label="Pending"
-            class="text-foreground">Pending</Select.Item
-          >
-          <Select.Item
-            value={ProtectionRequestStatus.Approved}
-            label="Approved"
-            class="text-foreground">Approved</Select.Item
-          >
-          <Select.Item
-            value={ProtectionRequestStatus.Denied}
-            label="Denied"
-            class="text-foreground">Denied</Select.Item
-          >
-        </Select.Content>
-      </Select.Root>
-
-      <!-- sort order -->
-      <Select.Root type="single" bind:value={sortOrder}>
-        <Select.Trigger
-          class="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {sortOrder === "desc" ? "Newest first" : "Oldest first"}
-        </Select.Trigger>
-        <Select.Content class="bg-card border-ring">
-          <Select.Item value="desc" label="Newest first" class="text-foreground"
-            >Newest first</Select.Item
-          >
-          <Select.Item value="asc" label="Oldest first" class="text-foreground"
-            >Oldest first</Select.Item
-          >
-        </Select.Content>
-      </Select.Root>
-    </div>
+    <RequestsFilterBar bind:searchQuery bind:statusFilter bind:sortOrder />
 
     <ErrorBox error={error ?? undefined} />
 
     {#if loading}
-      <div class="flex flex-col items-center gap-4 py-16 text-muted-foreground">
-        <Spinner size="lg" class="text-primary" />
-        <p>Loading requests…</p>
+      <div class="flex items-center justify-center py-20">
+        <Spinner class="size-10 text-primary" />
       </div>
     {:else if filteredRequests.length === 0}
-      <div class="flex flex-col items-center gap-2 py-16 text-muted-foreground">
-        <p class="text-lg font-medium">No requests found</p>
-        <p class="text-sm">
-          {statusFilter === "all"
-            ? "No protection requests have been submitted yet."
-            : `No ${statusFilter} requests.`}
+      <div class="rounded-xl border bg-card p-10 text-center">
+        <p class="text-lg font-medium text-foreground">
+          No protection requests found
         </p>
       </div>
     {:else if canManageRequests}
@@ -956,6 +876,75 @@
                 {/if}
               </div>
 
+              {#if selectedRequest.movie_version_id != null || selectedRequest.season_id != null}
+                <div class="text-foreground/75">
+                  <p class="mb-2 text-sm font-medium text-foreground">
+                    {selectedRequest.season_id != null
+                      ? "Season Details"
+                      : "Version Details"}
+                  </p>
+                  <div class="flex flex-wrap gap-1.5">
+                    <!-- filename -->
+                    {#if selectedRequest.version_file_name}
+                      <span
+                        class="break-all rounded-full border bg-muted px-2.5 py-0.5 font-mono text-xs"
+                        title={selectedRequest.version_file_name}
+                      >
+                        {selectedRequest.version_file_name}
+                      </span>
+                    {/if}
+                    <!-- resolution -->
+                    {#if selectedRequest.version_resolution ?? selectedRequest.season_resolution}
+                      <span
+                        class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                      >
+                        {cleanResolutionString(
+                          selectedRequest.version_resolution ??
+                            selectedRequest.season_resolution,
+                        )}
+                      </span>
+                    {/if}
+                    <!-- video codec -->
+                    {#if selectedRequest.version_video_codec}
+                      <span
+                        class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                      >
+                        {selectedRequest.version_video_codec.toUpperCase()}
+                      </span>
+                    {/if}
+                    <!-- season video codecs -->
+                    {#if selectedRequest.season_video_codecs?.length}
+                      {#each selectedRequest.season_video_codecs as codec}
+                        <span
+                          class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                        >
+                          {codec.toUpperCase()}
+                        </span>
+                      {/each}
+                    {/if}
+                    <!-- HDR flags -->
+                    {#if selectedRequest.version_hdr_flags ?? selectedRequest.season_hdr_flags}
+                      <span
+                        class="rounded-full border bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-500"
+                      >
+                        {selectedRequest.version_hdr_flags?.toUpperCase() ??
+                          selectedRequest.season_hdr_flags?.toUpperCase()}
+                      </span>
+                    {/if}
+                    {#if selectedRequest.version_size ?? selectedRequest.season_size}
+                      <span
+                        class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                      >
+                        {formatFileSize(
+                          selectedRequest.version_size ??
+                            selectedRequest.season_size,
+                        )}
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+
               <div class="space-y-1">
                 <p
                   class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
@@ -988,18 +977,17 @@
                 {#if selectedRequest.status === ProtectionRequestStatus.Pending}
                   <Button
                     size="sm"
-                    variant="outline"
                     onclick={() => openApprove(selectedRequest)}
-                    class="gap-1.5 text-green-600 border-green-600 hover:bg-green-600 hover:text-white"
+                    class="cursor-pointer"
                   >
                     <CheckCircle class="w-3.5 h-3.5" />
                     Approve
                   </Button>
                   <Button
                     size="sm"
-                    variant="outline"
+                    variant="destructive"
                     onclick={() => openDeny(selectedRequest)}
-                    class="gap-1.5 text-destructive border-destructive hover:bg-destructive hover:text-white"
+                    class="cursor-pointer"
                   >
                     <XCircle class="w-3.5 h-3.5" />
                     Deny
@@ -1047,6 +1035,52 @@
                   <MediaTypeBadge mediaType={req.media_type} />
                   <RequestStatusBadge status={req.status} />
                 </div>
+                {#if req.movie_version_id != null || req.season_id != null}
+                  <div class="mt-1.5 flex flex-wrap gap-1 text-foreground/75">
+                    <!-- resolution -->
+                    {#if req.version_resolution ?? req.season_resolution}
+                      <span
+                        class="rounded-full border bg-muted px-2 py-0 text-xs"
+                        >{cleanResolutionString(
+                          req.version_resolution ?? req.season_resolution,
+                        )}</span
+                      >
+                    {/if}
+                    <!-- video codec -->
+                    {#if req.version_video_codec}
+                      <span
+                        class="rounded-full border bg-muted px-2 py-0 text-xs"
+                        >{req.version_video_codec.toUpperCase()}</span
+                      >
+                    {/if}
+                    <!-- season video codecs -->
+                    {#if req.season_video_codecs?.length}
+                      {#each req.season_video_codecs as codec}
+                        <span
+                          class="rounded-full border bg-muted px-2 py-0 text-xs"
+                          >{codec.toUpperCase()}</span
+                        >
+                      {/each}
+                    {/if}
+                    <!-- HDR flags -->
+                    {#if req.version_hdr_flags ?? req.season_hdr_flags}
+                      <span
+                        class="rounded-full border bg-amber-500/20 px-2 py-0 text-xs text-amber-500"
+                        >{req.version_hdr_flags?.toUpperCase() ??
+                          req.season_hdr_flags?.toUpperCase()}</span
+                      >
+                    {/if}
+                    <!-- file size -->
+                    {#if req.version_size ?? req.season_size}
+                      <span
+                        class="rounded-full border bg-muted px-2 py-0 text-xs"
+                        >{formatFileSize(
+                          req.version_size ?? req.season_size,
+                        )}</span
+                      >
+                    {/if}
+                  </div>
+                {/if}
               </div>
             </div>
 
@@ -1073,11 +1107,11 @@
               <div class="mt-3 pt-3 border-t border-border">
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="destructive"
                   onclick={() => openCancel(req)}
-                  class="gap-1.5 text-destructive border-destructive hover:bg-destructive hover:text-white"
+                  class="cursor-pointer"
                 >
-                  <Trash2 class="w-3.5 h-3.5" />
+                  <Trash2 class="size-4" />
                   Cancel Request
                 </Button>
               </div>

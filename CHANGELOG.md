@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop
   - Added a **Shutdown** button that will work for desktop mode in the **Settings -> General**. This allows users to easily shut Reclaimerr down if they lack a system tray _(This will not be functional for anything other than desktop)_
   - Now writes a **process ID** file _(reclaimerr.pid)_ in the **data** directory so users can kill this easily via scripting/terminal if needed
+- Added useful information for each movie version/season that is requested to be protected in **Protected** requests for users such as filename, resolution, video codec, hdr flags, and file size
 
 ### Changed
 
@@ -74,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now deletes/un-monitors each season/series as all entries are removed
 - Numerous loading spinners was not styled properly
 - Username section in the side bar was not aligned properly
+- Button not styled properly for Cancel Request in protection request 
 
 ## [0.1.0-beta.13] - 2026-04-25
 
