@@ -80,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Numerous loading spinners was not styled properly
 - Username section in the side bar was not aligned properly
 - Button not styled properly for Cancel Request in protection request
+- A few nav items wasn't being styled for the full width correctly when selected
 
 ## [0.1.0-beta.13] - 2026-04-25
 
