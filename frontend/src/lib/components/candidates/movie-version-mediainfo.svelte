@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
+  import { formatFileSize } from "$lib/utils/formatters";
 
   type DetailField = { label: string; value: string };
 
@@ -22,9 +23,6 @@
     if (value == null) return unknownValue;
     return value ? "Yes" : "No";
   };
-
-  const bytesLabel = (bytes: number | null): string =>
-    bytes != null ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : unknownValue;
 
   const resolutionValue = (item: ReclaimCandidateEntry): string => {
     if (item.version_video_width && item.version_video_height) {
@@ -54,7 +52,7 @@
       label: "Name",
       value: fileNameFromPath(item.version_path, item.version_file_name),
     },
-    { label: "Size", value: bytesLabel(item.version_size) },
+    { label: "Size", value: formatFileSize(item.version_size) },
     { label: "Path", value: textValue(item.version_path) },
   ];
 

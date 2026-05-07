@@ -36,6 +36,7 @@
     type RuleNode,
     type RulePreviewEntry,
   } from "$lib/types/shared";
+  import { formatFileSize } from "$lib/utils/formatters";
 
   interface Props {
     rule: ReclaimRule | null;
@@ -546,7 +547,7 @@
 
   // --- preview helpers ----
   const previewSizeLabel = (value: number | null): string =>
-    value !== null ? `${value.toFixed(2)} GB` : "Unknown size";
+    formatFileSize(value);
 
   const fileNameFromPath = (
     path: string | null,
@@ -580,7 +581,7 @@
         badges.push(entry.version_video_codec_family.toUpperCase());
       }
     }
-    badges.push(previewSizeLabel(entry.estimated_space_gb));
+    badges.push(previewSizeLabel(entry.estimated_space_bytes));
     return badges;
   };
 

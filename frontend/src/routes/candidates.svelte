@@ -167,7 +167,7 @@
   const sortByOptions = [
     { value: "created_at", label: "Date Added" },
     { value: "media_title", label: "Title" },
-    { value: "estimated_space_gb", label: "Size" },
+    { value: "estimated_space_bytes", label: "Size" },
   ];
 
   const durationOptions = [

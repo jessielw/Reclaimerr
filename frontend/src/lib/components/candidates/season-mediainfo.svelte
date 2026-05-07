@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
+  import { formatFileSize } from "$lib/utils/formatters";
 
   type DetailField = { label: string; value: string };
 
@@ -22,9 +23,6 @@
     if (value == null) return unknownValue;
     return value ? "Yes" : "No";
   };
-
-  const gbValue = (value: number | null): string =>
-    value != null ? `${value.toFixed(2)} GB` : unknownValue;
 
   const resolutionValue = (item: ReclaimCandidateEntry): string => {
     if (item.season_max_video_width && item.season_max_video_height) {
@@ -77,7 +75,10 @@
   ];
 
   const sourceFields = (item: ReclaimCandidateEntry): DetailField[] => [
-    { label: "Estimated Size", value: gbValue(item.estimated_space_gb) },
+    {
+      label: "Estimated Size",
+      value: formatFileSize(item.estimated_space_bytes),
+    },
     { label: "Flagged", value: formatDate(item.created_at) },
     { label: "Season", value: textValue(item.season_number) },
   ];

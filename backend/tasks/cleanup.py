@@ -437,7 +437,7 @@ async def _collect_series_candidate_records(
                 matched_criteria=matched_criteria,
                 reason=_rule_reason_text(reasons),
                 reason_data=reasons,
-                estimated_space_gb=item.size / (1024**3) if item.size else None,
+                estimated_space_bytes=item.size if item.size else None,
             )
         )
 
@@ -476,7 +476,7 @@ async def _sync_series_candidates(
             existing.matched_criteria = record.matched_criteria
             existing.reason = record.reason
             existing.reason_data = record.reason_data
-            existing.estimated_space_gb = record.estimated_space_gb
+            existing.estimated_space_bytes = record.estimated_space_bytes
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
@@ -488,7 +488,7 @@ async def _sync_series_candidates(
                     matched_criteria=record.matched_criteria,
                     reason=record.reason,
                     reason_data=record.reason_data,
-                    estimated_space_gb=record.estimated_space_gb,
+                    estimated_space_bytes=record.estimated_space_bytes,
                 )
             )
             candidates_created += 1
@@ -593,9 +593,7 @@ async def _collect_movie_version_candidate_records(
                     matched_criteria=matched_criteria,
                     reason=_rule_reason_text(reasons),
                     reason_data=reasons,
-                    estimated_space_gb=candidate_size / (1024**3)
-                    if candidate_size
-                    else None,
+                    estimated_space_bytes=candidate_size if candidate_size else None,
                 )
             )
 
@@ -639,7 +637,7 @@ async def _sync_movie_version_candidates(
             existing.matched_criteria = record.matched_criteria
             existing.reason = record.reason
             existing.reason_data = record.reason_data
-            existing.estimated_space_gb = record.estimated_space_gb
+            existing.estimated_space_bytes = record.estimated_space_bytes
             existing.movie_id = record.movie_id
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
@@ -653,7 +651,7 @@ async def _sync_movie_version_candidates(
                     matched_criteria=record.matched_criteria,
                     reason=record.reason,
                     reason_data=record.reason_data,
-                    estimated_space_gb=record.estimated_space_gb,
+                    estimated_space_bytes=record.estimated_space_bytes,
                 )
             )
             candidates_created += 1
@@ -770,7 +768,7 @@ async def _collect_season_candidate_records(
                     matched_criteria=matched_criteria,
                     reason=_rule_reason_text(reasons),
                     reason_data=reasons,
-                    estimated_space_gb=season.size / (1024**3) if season.size else None,
+                    estimated_space_bytes=season.size if season.size else None,
                 )
             )
 
@@ -810,7 +808,7 @@ async def _sync_season_candidates(
             existing.matched_criteria = record.matched_criteria
             existing.reason = record.reason
             existing.reason_data = record.reason_data
-            existing.estimated_space_gb = record.estimated_space_gb
+            existing.estimated_space_bytes = record.estimated_space_bytes
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
@@ -821,7 +819,7 @@ async def _sync_season_candidates(
                     matched_criteria=record.matched_criteria,
                     reason=record.reason,
                     reason_data=record.reason_data,
-                    estimated_space_gb=record.estimated_space_gb,
+                    estimated_space_bytes=record.estimated_space_bytes,
                     series_id=record.series_id,
                     season_id=record.season_id,
                 )

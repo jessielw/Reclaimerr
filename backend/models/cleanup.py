@@ -73,7 +73,7 @@ class MatchedCandidateRecord:
     matched_criteria: dict[str, Any]
     reason: str
     reason_data: list[dict[str, Any]]
-    estimated_space_gb: float | None
+    estimated_space_bytes: int | None
     movie_id: int | None = None
     movie_version_id: int | None = None
     series_id: int | None = None
