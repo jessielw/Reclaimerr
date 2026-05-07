@@ -180,11 +180,7 @@
 
 <div class="px-2.5 md:px-8 pt-6 pb-2.5 md:pb-8">
   <div class="mx-auto max-w-7xl space-y-6">
-    <RequestsFilterBar
-      bind:searchQuery
-      bind:statusFilter
-      bind:sortOrder
-    />
+    <RequestsFilterBar bind:searchQuery bind:statusFilter bind:sortOrder />
 
     {#if loading}
       <div class="flex items-center justify-center py-20">
