@@ -371,11 +371,13 @@ export interface ProtectionRequest {
   version_file_name: string | null;
   version_size: number | null;
   version_video_codec: string | null;
-  version_hdr_flags: string | null;
+  version_hdr: boolean | null;
+  version_dolby_vision: boolean | null;
   season_size: number | null;
   season_resolution: string | null;
   season_video_codecs: string[] | null;
-  season_hdr_flags: string | null;
+  season_hdr: boolean | null;
+  season_dolby_vision: boolean | null;
 }
 
 // delete requests
@@ -405,11 +407,13 @@ export interface DeleteRequest {
   version_file_name: string | null;
   version_size: number | null;
   version_video_codec: string | null;
-  version_hdr_flags: string | null;
+  version_hdr: boolean | null;
+  version_dolby_vision: boolean | null;
   season_size: number | null;
   season_resolution: string | null;
   season_video_codecs: string[] | null;
-  season_hdr_flags: string | null;
+  season_hdr: boolean | null;
+  season_dolby_vision: boolean | null;
 }
 
 export interface ProtectedEntry {
