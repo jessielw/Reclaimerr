@@ -339,6 +339,25 @@ async def _upsert_series_service_ref(
         )
 
 
+def _make_fp(
+    svc: object,
+    width: int | None,
+    height: int | None,
+    codec: str | None,
+    hdr: bool | None,
+    dv: bool | None,
+    size: int,
+    container: str | None,
+) -> tuple | None:
+    """Build a fingerprint map of existing versions for rename resilient fallback matching.
+    Fingerprint covers fields that are stable across file renames but change on re-encode.
+    Entries with duplicate fingerprints are marked None (ambiguous - we skip to avoid a mis-match)
+    """
+    if not (size and width and height):
+        return None
+    return (svc, width, height, codec, hdr, dv, size, container)
+
+
 async def _upsert_movie_versions(
     session: AsyncSession,
     db_movie: Movie,
@@ -352,97 +371,142 @@ async def _upsert_movie_versions(
         (v.service, v.service_media_id): v for v in result.scalars().all()
     }
 
+    fp_map: dict[tuple, MovieVersion | None] = {}
+    for ev in existing.values():
+        fp = _make_fp(
+            ev.service,
+            ev.video_width,
+            ev.video_height,
+            ev.video_codec,
+            ev.video_hdr,
+            ev.video_dolby_vision,
+            ev.size,
+            ev.container,
+        )
+        if fp is None:
+            continue
+        # None = ambiguous, skip
+        fp_map[fp] = None if fp in fp_map else ev
+
     incoming_keys: set[tuple] = set()
     for ver in versions:
         key = (ver.service, ver.service_media_id)
         incoming_keys.add(key)
         if key in existing:
             ev = existing[key]
-            ev.service_item_id = ver.service_item_id
-            ev.library_id = ver.library_id
-            ev.library_name = ver.library_name
-            ev.path = ver.path
-            ev.size = ver.size
-            ev.file_name = ver.file_name
-            ev.container = ver.container
-            ev.duration = ver.duration
-            ev.video_track_count = ver.video_track_count
-            ev.video_codec = ver.video_codec
-            ev.video_codec_family = ver.video_codec_family
-            ev.video_hdr = ver.video_hdr
-            ev.video_dolby_vision = ver.video_dolby_vision
-            ev.video_dolby_vision_profile = ver.video_dolby_vision_profile
-            ev.video_bitrate = ver.video_bitrate
-            ev.video_bit_depth = ver.video_bit_depth
-            ev.video_width = ver.video_width
-            ev.video_height = ver.video_height
-            ev.video_resolution = ver.video_resolution
-            ev.video_color_primaries = ver.video_color_primaries
-            ev.video_color_space = ver.video_color_space
-            ev.video_color_transfer = ver.video_color_transfer
-            ev.video_fps = ver.video_fps
-            ev.audio_count = ver.audio_count
-            ev.audio_languages = ver.audio_languages
-            ev.audio_codec = ver.audio_codec
-            ev.audio_codec_family = ver.audio_codec_family
-            ev.audio_title = ver.audio_title
-            ev.audio_language = ver.audio_language
-            ev.audio_channels = ver.audio_channels
-            ev.audio_channel_layout = ver.audio_channel_layout
-            ev.audio_bitrate = ver.audio_bitrate
-            ev.audio_sample_rate = ver.audio_sample_rate
-            ev.subtitle_count = ver.subtitle_count
-            ev.subtitle_has_forced = ver.subtitle_has_forced
-            ev.subtitle_languages = ver.subtitle_languages
-            ev.has_chapters = ver.has_chapters
-            if ver.added_at and not ev.added_at:
-                ev.added_at = ver.added_at
         else:
-            session.add(
-                MovieVersion(
-                    movie_id=db_movie.id,
-                    service=ver.service,
-                    service_item_id=ver.service_item_id,
-                    service_media_id=ver.service_media_id,
-                    library_id=ver.library_id,
-                    library_name=ver.library_name,
-                    path=ver.path,
-                    size=ver.size,
-                    added_at=ver.added_at,
-                    file_name=ver.file_name,
-                    container=ver.container,
-                    duration=ver.duration,
-                    video_track_count=ver.video_track_count,
-                    video_codec=ver.video_codec,
-                    video_codec_family=ver.video_codec_family,
-                    video_hdr=ver.video_hdr,
-                    video_dolby_vision=ver.video_dolby_vision,
-                    video_dolby_vision_profile=ver.video_dolby_vision_profile,
-                    video_bitrate=ver.video_bitrate,
-                    video_bit_depth=ver.video_bit_depth,
-                    video_width=ver.video_width,
-                    video_height=ver.video_height,
-                    video_resolution=ver.video_resolution,
-                    video_color_primaries=ver.video_color_primaries,
-                    video_color_space=ver.video_color_space,
-                    video_color_transfer=ver.video_color_transfer,
-                    video_fps=ver.video_fps,
-                    audio_count=ver.audio_count,
-                    audio_languages=ver.audio_languages,
-                    audio_codec=ver.audio_codec,
-                    audio_codec_family=ver.audio_codec_family,
-                    audio_title=ver.audio_title,
-                    audio_language=ver.audio_language,
-                    audio_channels=ver.audio_channels,
-                    audio_channel_layout=ver.audio_channel_layout,
-                    audio_bitrate=ver.audio_bitrate,
-                    audio_sample_rate=ver.audio_sample_rate,
-                    subtitle_count=ver.subtitle_count,
-                    subtitle_has_forced=ver.subtitle_has_forced,
-                    subtitle_languages=ver.subtitle_languages,
-                    has_chapters=ver.has_chapters,
-                )
+            # Primary key miss (try fingerprint fallback before creating a new row).
+            # This handles Jellyfin/Emby renames where service_media_id changes but the
+            # physical file (and all its codec/resolution metadata) is identical.
+            fp = _make_fp(
+                ver.service,
+                ver.video_width,
+                ver.video_height,
+                ver.video_codec,
+                ver.video_hdr,
+                ver.video_dolby_vision,
+                ver.size,
+                ver.container,
             )
+            matched_ev = fp_map.get(fp) if fp else None
+            if fp is not None and matched_ev is not None:
+                # rename detected: update service IDs in place so all FK references
+                # (protections, requests, candidates) pointing at this row are preserved.
+                old_key = (matched_ev.service, matched_ev.service_media_id)
+                matched_ev.service_media_id = ver.service_media_id
+                matched_ev.service_item_id = ver.service_item_id
+                # prevent the prune step from deleting this row
+                incoming_keys.add(old_key)
+                # consumed (prevent re-matching another version to it)
+                fp_map[fp] = None
+                ev = matched_ev
+            else:
+                session.add(
+                    MovieVersion(
+                        movie_id=db_movie.id,
+                        service=ver.service,
+                        service_item_id=ver.service_item_id,
+                        service_media_id=ver.service_media_id,
+                        library_id=ver.library_id,
+                        library_name=ver.library_name,
+                        path=ver.path,
+                        size=ver.size,
+                        added_at=ver.added_at,
+                        file_name=ver.file_name,
+                        container=ver.container,
+                        duration=ver.duration,
+                        video_track_count=ver.video_track_count,
+                        video_codec=ver.video_codec,
+                        video_codec_family=ver.video_codec_family,
+                        video_hdr=ver.video_hdr,
+                        video_dolby_vision=ver.video_dolby_vision,
+                        video_dolby_vision_profile=ver.video_dolby_vision_profile,
+                        video_bitrate=ver.video_bitrate,
+                        video_bit_depth=ver.video_bit_depth,
+                        video_width=ver.video_width,
+                        video_height=ver.video_height,
+                        video_resolution=ver.video_resolution,
+                        video_color_primaries=ver.video_color_primaries,
+                        video_color_space=ver.video_color_space,
+                        video_color_transfer=ver.video_color_transfer,
+                        video_fps=ver.video_fps,
+                        audio_count=ver.audio_count,
+                        audio_languages=ver.audio_languages,
+                        audio_codec=ver.audio_codec,
+                        audio_codec_family=ver.audio_codec_family,
+                        audio_title=ver.audio_title,
+                        audio_language=ver.audio_language,
+                        audio_channels=ver.audio_channels,
+                        audio_channel_layout=ver.audio_channel_layout,
+                        audio_bitrate=ver.audio_bitrate,
+                        audio_sample_rate=ver.audio_sample_rate,
+                        subtitle_count=ver.subtitle_count,
+                        subtitle_has_forced=ver.subtitle_has_forced,
+                        subtitle_languages=ver.subtitle_languages,
+                        has_chapters=ver.has_chapters,
+                    )
+                )
+                continue
+
+        # update all fields on ev (reached for both primary-key match and fingerprint match)
+        ev.library_id = ver.library_id
+        ev.library_name = ver.library_name
+        ev.path = ver.path
+        ev.size = ver.size
+        ev.file_name = ver.file_name
+        ev.container = ver.container
+        ev.duration = ver.duration
+        ev.video_track_count = ver.video_track_count
+        ev.video_codec = ver.video_codec
+        ev.video_codec_family = ver.video_codec_family
+        ev.video_hdr = ver.video_hdr
+        ev.video_dolby_vision = ver.video_dolby_vision
+        ev.video_dolby_vision_profile = ver.video_dolby_vision_profile
+        ev.video_bitrate = ver.video_bitrate
+        ev.video_bit_depth = ver.video_bit_depth
+        ev.video_width = ver.video_width
+        ev.video_height = ver.video_height
+        ev.video_resolution = ver.video_resolution
+        ev.video_color_primaries = ver.video_color_primaries
+        ev.video_color_space = ver.video_color_space
+        ev.video_color_transfer = ver.video_color_transfer
+        ev.video_fps = ver.video_fps
+        ev.audio_count = ver.audio_count
+        ev.audio_languages = ver.audio_languages
+        ev.audio_codec = ver.audio_codec
+        ev.audio_codec_family = ver.audio_codec_family
+        ev.audio_title = ver.audio_title
+        ev.audio_language = ver.audio_language
+        ev.audio_channels = ver.audio_channels
+        ev.audio_channel_layout = ver.audio_channel_layout
+        ev.audio_bitrate = ver.audio_bitrate
+        ev.audio_sample_rate = ver.audio_sample_rate
+        ev.subtitle_count = ver.subtitle_count
+        ev.subtitle_has_forced = ver.subtitle_has_forced
+        ev.subtitle_languages = ver.subtitle_languages
+        ev.has_chapters = ver.has_chapters
+        if ver.added_at and not ev.added_at:
+            ev.added_at = ver.added_at
 
     # prune stale versions - all incoming versions come from the authoritative main server
     for key, ev in existing.items():

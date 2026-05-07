@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lock name for all services other than Sonarr/Radarr since we only will only have one instance for now
 - Entire frontend now shows cleaner formatted file sizes (i.e. MB, GB, etc.)
 - Info modal now sizes a bit better, cleaned up icons for buttons, changed 'Request' to 'Protect', and added 'Delete' request with hover tool tips
+- Built an efficient fingerprint system to keep file signatures the same during name changes
 
 ### Removed
 
@@ -78,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now deletes/un-monitors each season/series as all entries are removed
 - Numerous loading spinners was not styled properly
 - Username section in the side bar was not aligned properly
-- Button not styled properly for Cancel Request in protection request 
+- Button not styled properly for Cancel Request in protection request
 
 ## [0.1.0-beta.13] - 2026-04-25
 
