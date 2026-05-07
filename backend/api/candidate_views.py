@@ -293,7 +293,13 @@ async def build_rule_preview_items(
                 else None,
                 reason_parts=normalized_reasons,
                 reason_tokens=reason_tokens(normalized_reasons),
-                estimated_space_gb=record.estimated_space_gb,
+                estimated_space_bytes=(
+                    version.size
+                    if version
+                    else season.size
+                    if season
+                    else record.estimated_space_bytes
+                ),
                 season_id=record.season_id,
                 season_number=season.season_number if season else None,
                 series_title=series.title if season and series else None,
@@ -319,7 +325,7 @@ async def build_rule_preview_items(
 
     items.sort(
         key=lambda item: (
-            -(item.estimated_space_gb or 0),
+            -(item.estimated_space_bytes or 0),
             item.media_title.lower(),
             item.season_number or 0,
             item.movie_version_id or 0,
