@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from backend.core.auth import get_current_user, has_permission, require_permission
 from backend.core.logger import LOG
 from backend.core.utils.datetime_utils import to_utc_isoformat
+from backend.core.utils.misc import hdr_flags_label, resolution_from_dims
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -332,6 +333,24 @@ async def create_protection_request(
         effective_expires_at=to_utc_isoformat(bl_expires_at) if auto_approve else None,
         created_at=to_utc_isoformat(protection_request.created_at) or "",
         updated_at=to_utc_isoformat(protection_request.updated_at) or "",
+        version_resolution=movie_version.video_resolution if movie_version else None,
+        version_file_name=movie_version.file_name if movie_version else None,
+        version_size=movie_version.size if movie_version else None,
+        version_video_codec=movie_version.video_codec if movie_version else None,
+        version_hdr_flags=hdr_flags_label(
+            movie_version.video_hdr if movie_version else None,
+            movie_version.video_dolby_vision if movie_version else None,
+        ),
+        season_size=season.size if season else None,
+        season_resolution=resolution_from_dims(
+            season.max_video_width if season else None,
+            season.max_video_height if season else None,
+        ),
+        season_video_codecs=season.video_codec_families if season else None,
+        season_hdr_flags=hdr_flags_label(
+            season.has_hdr if season else None,
+            season.has_dolby_vision if season else None,
+        ),
     )
 
 
@@ -360,6 +379,15 @@ async def get_my_requests(
     result = await db.execute(query)
     requests = result.scalars().all()
 
+    version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
+    versions_by_id: dict[int, MovieVersion] = {}
+    if version_ids:
+        vr = await db.execute(
+            select(MovieVersion).where(MovieVersion.id.in_(version_ids))
+        )
+        for v in vr.scalars().all():
+            versions_by_id[v.id] = v
+
     # build responses
     responses = []
     for req in requests:
@@ -384,6 +412,10 @@ async def get_my_requests(
         effective_permanent, effective_expires_at = await resolve_effective_protection(
             db, req
         )
+        version = (
+            versions_by_id.get(req.movie_version_id) if req.movie_version_id else None
+        )
+        season = req.season
 
         responses.append(
             ProtectionRequestResponse(
@@ -399,7 +431,7 @@ async def get_my_requests(
                 candidate_id=req.candidate_id,
                 movie_version_id=req.movie_version_id,
                 season_id=req.season_id,
-                season_number=req.season.season_number if req.season else None,
+                season_number=season.season_number if season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=user.username,
                 reason=req.reason,
@@ -413,6 +445,24 @@ async def get_my_requests(
                 effective_expires_at=to_utc_isoformat(effective_expires_at),
                 created_at=to_utc_isoformat(req.created_at) or "",
                 updated_at=to_utc_isoformat(req.updated_at) or "",
+                version_resolution=version.video_resolution if version else None,
+                version_file_name=version.file_name if version else None,
+                version_size=version.size if version else None,
+                version_video_codec=version.video_codec if version else None,
+                version_hdr_flags=hdr_flags_label(
+                    version.video_hdr if version else None,
+                    version.video_dolby_vision if version else None,
+                ),
+                season_size=season.size if season else None,
+                season_resolution=resolution_from_dims(
+                    season.max_video_width if season else None,
+                    season.max_video_height if season else None,
+                ),
+                season_video_codecs=season.video_codec_families if season else None,
+                season_hdr_flags=hdr_flags_label(
+                    season.has_hdr if season else None,
+                    season.has_dolby_vision if season else None,
+                ),
             )
         )
 
@@ -442,6 +492,15 @@ async def get_all_requests(
     result = await db.execute(query)
     requests = result.scalars().all()
 
+    version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
+    versions_by_id: dict[int, MovieVersion] = {}
+    if version_ids:
+        vr = await db.execute(
+            select(MovieVersion).where(MovieVersion.id.in_(version_ids))
+        )
+        for v in vr.scalars().all():
+            versions_by_id[v.id] = v
+
     # build responses
     responses = []
     for req in requests:
@@ -457,6 +516,10 @@ async def get_all_requests(
         effective_permanent, effective_expires_at = await resolve_effective_protection(
             db, req
         )
+        version = (
+            versions_by_id.get(req.movie_version_id) if req.movie_version_id else None
+        )
+        season = req.season
 
         responses.append(
             ProtectionRequestResponse(
@@ -472,7 +535,7 @@ async def get_all_requests(
                 candidate_id=req.candidate_id,
                 movie_version_id=req.movie_version_id,
                 season_id=req.season_id,
-                season_number=req.season.season_number if req.season else None,
+                season_number=season.season_number if season else None,
                 requested_by_user_id=req.requested_by_user_id,
                 requested_by_username=req.requested_by.username,
                 reason=req.reason,
@@ -486,6 +549,24 @@ async def get_all_requests(
                 effective_expires_at=to_utc_isoformat(effective_expires_at),
                 created_at=to_utc_isoformat(req.created_at) or "",
                 updated_at=to_utc_isoformat(req.updated_at) or "",
+                version_resolution=version.video_resolution if version else None,
+                version_file_name=version.file_name if version else None,
+                version_size=version.size if version else None,
+                version_video_codec=version.video_codec if version else None,
+                version_hdr_flags=hdr_flags_label(
+                    version.video_hdr if version else None,
+                    version.video_dolby_vision if version else None,
+                ),
+                season_size=season.size if season else None,
+                season_resolution=resolution_from_dims(
+                    season.max_video_width if season else None,
+                    season.max_video_height if season else None,
+                ),
+                season_video_codecs=season.video_codec_families if season else None,
+                season_hdr_flags=hdr_flags_label(
+                    season.has_hdr if season else None,
+                    season.has_dolby_vision if season else None,
+                ),
             )
         )
 
@@ -629,13 +710,17 @@ async def approve_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
-    # load season_number for season-level requests
-    approve_season_number: int | None = None
+    # load season + version for metadata
+    approve_season: Season | None = None
     if request.season_id:
         sn_result = await db.execute(
-            select(Season.season_number).where(Season.id == request.season_id)
+            select(Season).where(Season.id == request.season_id)
         )
-        approve_season_number = sn_result.scalar_one_or_none()
+        approve_season = sn_result.scalar_one_or_none()
+    approve_version: MovieVersion | None = None
+    if request.movie_version_id:
+        approve_version = await db.get(MovieVersion, request.movie_version_id)
+
     return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -645,7 +730,7 @@ async def approve_request(
         candidate_id=request.candidate_id,
         movie_version_id=request.movie_version_id,
         season_id=request.season_id,
-        season_number=approve_season_number,
+        season_number=approve_season.season_number if approve_season else None,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
@@ -659,6 +744,28 @@ async def approve_request(
         effective_expires_at=to_utc_isoformat(approved_expires_at),
         created_at=to_utc_isoformat(request.created_at) or "",
         updated_at=to_utc_isoformat(request.updated_at) or "",
+        version_resolution=approve_version.video_resolution
+        if approve_version
+        else None,
+        version_file_name=approve_version.file_name if approve_version else None,
+        version_size=approve_version.size if approve_version else None,
+        version_video_codec=approve_version.video_codec if approve_version else None,
+        version_hdr_flags=hdr_flags_label(
+            approve_version.video_hdr if approve_version else None,
+            approve_version.video_dolby_vision if approve_version else None,
+        ),
+        season_size=approve_season.size if approve_season else None,
+        season_resolution=resolution_from_dims(
+            approve_season.max_video_width if approve_season else None,
+            approve_season.max_video_height if approve_season else None,
+        ),
+        season_video_codecs=approve_season.video_codec_families
+        if approve_season
+        else None,
+        season_hdr_flags=hdr_flags_label(
+            approve_season.has_hdr if approve_season else None,
+            approve_season.has_dolby_vision if approve_season else None,
+        ),
     )
 
 
@@ -749,13 +856,17 @@ async def deny_request(
         if isinstance(reviewed_at_value, datetime)
         else None
     )
-    # load season_number for season level requests
-    deny_season_number: int | None = None
+    # load season + version for metadata
+    deny_season: Season | None = None
     if request.season_id:
         sn_result = await db.execute(
-            select(Season.season_number).where(Season.id == request.season_id)
+            select(Season).where(Season.id == request.season_id)
         )
-        deny_season_number = sn_result.scalar_one_or_none()
+        deny_season = sn_result.scalar_one_or_none()
+    deny_version: MovieVersion | None = None
+    if request.movie_version_id:
+        deny_version = await db.get(MovieVersion, request.movie_version_id)
+
     return ProtectionRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -765,7 +876,7 @@ async def deny_request(
         candidate_id=request.candidate_id,
         movie_version_id=request.movie_version_id,
         season_id=request.season_id,
-        season_number=deny_season_number,
+        season_number=deny_season.season_number if deny_season else None,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username="N/A",  # would need another query (this is unused so we can return any str)
         reason=request.reason,
@@ -779,6 +890,24 @@ async def deny_request(
         effective_expires_at=None,
         created_at=to_utc_isoformat(request.created_at) or "",
         updated_at=to_utc_isoformat(request.updated_at) or "",
+        version_resolution=deny_version.video_resolution if deny_version else None,
+        version_file_name=deny_version.file_name if deny_version else None,
+        version_size=deny_version.size if deny_version else None,
+        version_video_codec=deny_version.video_codec if deny_version else None,
+        version_hdr_flags=hdr_flags_label(
+            deny_version.video_hdr if deny_version else None,
+            deny_version.video_dolby_vision if deny_version else None,
+        ),
+        season_size=deny_season.size if deny_season else None,
+        season_resolution=resolution_from_dims(
+            deny_season.max_video_width if deny_season else None,
+            deny_season.max_video_height if deny_season else None,
+        ),
+        season_video_codecs=deny_season.video_codec_families if deny_season else None,
+        season_hdr_flags=hdr_flags_label(
+            deny_season.has_hdr if deny_season else None,
+            deny_season.has_dolby_vision if deny_season else None,
+        ),
     )
 
 
