@@ -11,6 +11,7 @@ from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
+    DeleteRequest,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -157,18 +158,29 @@ async def get_movies(
     )
     requests = {r.movie_id: r for r in requests_result.scalars().all()}
 
+    delete_requests_result = await db.execute(
+        select(DeleteRequest).where(
+            DeleteRequest.movie_id.in_(movie_ids),
+            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    delete_requests = {r.movie_id: r for r in delete_requests_result.scalars().all()}
+
     # build response with status
     items = []
     for movie in movies:
         candidate = candidates.get(movie.id)
         protection_entry = protected.get(movie.id)
         request = requests.get(movie.id)
+        delete_request = delete_requests.get(movie.id)
 
         status = MediaStatusInfo(
             is_candidate=candidate is not None,
             candidate_id=candidate.id if candidate else None,
             candidate_reason=candidate.reason if candidate else None,
-            candidate_space_gb=candidate.estimated_space_gb if candidate else None,
+            candidate_space_bytes=candidate.estimated_space_bytes
+            if candidate
+            else None,
             is_protected=protection_entry is not None,
             protected_reason=protection_entry.reason if protection_entry else None,
             protected_permanent=protection_entry.permanent
@@ -178,6 +190,10 @@ async def get_movies(
             request_id=request.id if request else None,
             request_status=request.status if request else None,
             request_reason=request.reason if request else None,
+            has_pending_delete_request=delete_request is not None,
+            delete_request_id=delete_request.id if delete_request else None,
+            delete_request_status=delete_request.status if delete_request else None,
+            delete_request_reason=delete_request.reason if delete_request else None,
         )
 
         movie_arr_refs_result = await db.execute(
@@ -387,18 +403,29 @@ async def get_series(
     )
     requests = {r.series_id: r for r in requests_result.scalars().all()}
 
+    delete_requests_result = await db.execute(
+        select(DeleteRequest).where(
+            DeleteRequest.series_id.in_(series_ids),
+            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    delete_requests = {r.series_id: r for r in delete_requests_result.scalars().all()}
+
     # build response with status
     items = []
     for series in series_list:
         candidate = candidates.get(series.id)
         protection_entry = protected.get(series.id)
         request = requests.get(series.id)
+        delete_request = delete_requests.get(series.id)
 
         status = MediaStatusInfo(
             is_candidate=candidate is not None,
             candidate_id=candidate.id if candidate else None,
             candidate_reason=candidate.reason if candidate else None,
-            candidate_space_gb=candidate.estimated_space_gb if candidate else None,
+            candidate_space_bytes=candidate.estimated_space_bytes
+            if candidate
+            else None,
             is_protected=protection_entry is not None,
             protected_reason=protection_entry.reason if protection_entry else None,
             protected_permanent=protection_entry.permanent
@@ -408,6 +435,10 @@ async def get_series(
             request_id=request.id if request else None,
             request_status=request.status if request else None,
             request_reason=request.reason if request else None,
+            has_pending_delete_request=delete_request is not None,
+            delete_request_id=delete_request.id if delete_request else None,
+            delete_request_status=delete_request.status if delete_request else None,
+            delete_request_reason=delete_request.reason if delete_request else None,
         )
 
         series_arr_refs_result = await db.execute(
@@ -528,19 +559,31 @@ async def get_series_seasons(
         )
     )
     season_protected = {p.season_id: p for p in prot_result.scalars().all()}
+    delete_req_result = await db.execute(
+        select(DeleteRequest).where(
+            DeleteRequest.season_id.in_(season_ids),
+            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    season_delete_requests = {r.season_id: r for r in delete_req_result.scalars().all()}
 
     items: list[SeasonWithStatus] = []
     for season in seasons:
         cand = season_candidates.get(season.id)
         prot = season_protected.get(season.id)
+        delete_req = season_delete_requests.get(season.id)
         season_status = MediaStatusInfo(
             is_candidate=cand is not None,
             candidate_id=cand.id if cand else None,
             candidate_reason=cand.reason if cand else None,
-            candidate_space_gb=cand.estimated_space_gb if cand else None,
+            candidate_space_bytes=cand.estimated_space_bytes if cand else None,
             is_protected=prot is not None,
             protected_reason=prot.reason if prot else None,
             protected_permanent=prot.permanent if prot else True,
+            has_pending_delete_request=delete_req is not None,
+            delete_request_id=delete_req.id if delete_req else None,
+            delete_request_status=delete_req.status if delete_req else None,
+            delete_request_reason=delete_req.reason if delete_req else None,
         )
         items.append(
             SeasonWithStatus(
@@ -576,7 +619,7 @@ async def get_candidates(
     per_page: int = Query(25, ge=1, le=200),
     sort_by: str = Query(
         "created_at",
-        pattern="^(created_at|media_title|estimated_space_gb)$",
+        pattern="^(created_at|media_title|estimated_space_bytes)$",
     ),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
@@ -589,6 +632,7 @@ async def get_candidates(
             #### movies ####
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
+            Movie.size.label("movie_size"),
             # movie tmdb data
             Movie.tmdb_id.label("movie_tmdb_id"),
             Movie.poster_url.label("movie_poster_url"),
@@ -617,8 +661,10 @@ async def get_candidates(
             #### series ####
             Series.title.label("series_title"),
             Series.year.label("series_year"),
+            Series.size.label("series_size"),
             Series.poster_url.label("series_poster_url"),
             Season.season_number.label("season_number"),
+            Season.size.label("season_size"),
             Season.has_hdr.label("season_has_hdr"),
             Season.has_dolby_vision.label("season_has_dolby_vision"),
             Season.max_video_width.label("season_max_video_width"),
@@ -680,8 +726,8 @@ async def get_candidates(
     media_title_expr = func.coalesce(Movie.title, Series.title)
     if sort_by == "media_title":
         order_expr = media_title_expr
-    elif sort_by == "estimated_space_gb":
-        order_expr = ReclaimCandidate.estimated_space_gb
+    elif sort_by == "estimated_space_bytes":
+        order_expr = ReclaimCandidate.estimated_space_bytes
     else:
         order_expr = ReclaimCandidate.created_at
 
@@ -812,6 +858,18 @@ async def get_candidates(
         if media_id is None or media_title is None:
             continue
 
+        estimated_space_bytes = (
+            row.version_size
+            if row.version_size is not None
+            else row.season_size
+            if row.season_size is not None
+            else row.movie_size
+            if is_movie and row.movie_size is not None
+            else row.series_size
+            if (not is_movie and row.series_size is not None)
+            else c.estimated_space_bytes
+        )
+
         items_out.append(
             CandidateEntry(
                 id=c.id,
@@ -847,7 +905,7 @@ async def get_candidates(
                 version_subtitle_languages=row.version_subtitle_languages,
                 reason_parts=reason_parts,
                 reason_tokens=reason_tokens(reason_parts),
-                estimated_space_gb=c.estimated_space_gb,
+                estimated_space_bytes=estimated_space_bytes,
                 has_pending_request=has_pending,
                 created_at=to_utc_isoformat(c.created_at) or "",
                 season_id=c.season_id,
