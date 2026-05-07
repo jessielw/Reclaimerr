@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -268,6 +269,9 @@ class Movie(Base):
     protection_requests: Mapped[list[ProtectionRequest]] = relationship(
         back_populates="movie", default_factory=list, lazy="noload", repr=False
     )
+    delete_requests: Mapped[list[DeleteRequest]] = relationship(
+        back_populates="movie", default_factory=list, lazy="noload", repr=False
+    )
 
 
 class MovieVersion(Base):
@@ -486,6 +490,9 @@ class Series(Base):
     protection_requests: Mapped[list[ProtectionRequest]] = relationship(
         back_populates="series", default_factory=list, lazy="noload", repr=False
     )
+    delete_requests: Mapped[list[DeleteRequest]] = relationship(
+        back_populates="series", default_factory=list, lazy="noload", repr=False
+    )
 
 
 class Season(Base):
@@ -654,7 +661,7 @@ class ReclaimCandidate(Base):
     tagged_in_arr: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # space savings
-    estimated_space_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    estimated_space_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     delete_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_delete_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
@@ -690,7 +697,7 @@ class ProtectedMedia(Base):
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
     movie_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movie_versions.id"), default=None, index=True
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
     )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
@@ -738,7 +745,7 @@ class ProtectionRequest(Base):
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
     movie_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movie_versions.id"), default=None, index=True
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
     )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
@@ -789,6 +796,76 @@ class ProtectionRequest(Base):
     admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
 
     # timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class DeleteRequest(Base):
+    """User requests for media to be deleted."""
+
+    __tablename__ = "delete_requests"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+
+    requested_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
+    movie_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movie_versions.id"), default=None, index=True
+    )
+    series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id"), default=None, index=True
+    )
+
+    movie: Mapped[Movie | None] = relationship(
+        back_populates="delete_requests",
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    series: Mapped[Series | None] = relationship(
+        back_populates="delete_requests",
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    season: Mapped[Season | None] = relationship(
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+
+    requested_by: Mapped[User] = relationship(
+        foreign_keys=[requested_by_user_id], init=False, lazy="noload", repr=False
+    )
+
+    status: Mapped[ProtectionRequestStatus] = mapped_column(
+        Enum(ProtectionRequestStatus), default=ProtectionRequestStatus.PENDING
+    )
+
+    reviewed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    reviewed_by: Mapped[User | None] = relationship(
+        foreign_keys=[reviewed_by_user_id], init=False, lazy="noload", repr=False
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    execution_error: Mapped[str | None] = mapped_column(Text, default=None)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
