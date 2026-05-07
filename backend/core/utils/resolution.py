@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 __all__ = ["guesstimate_resolution", "infer_resolution", "ResolutionResult"]
 
@@ -103,6 +103,21 @@ def infer_resolution(width: int, height: int) -> ResolutionResult:
     )
 
 
-def guesstimate_resolution(width: int, height: int) -> str:
-    """Return the standard resolution label, e.g. ``'1080p'``."""
-    return infer_resolution(width, height).label
+def guesstimate_resolution(
+    width: Any,
+    height: Any,
+    unknown_label: str | None = "Unknown",
+    raise_on_error: bool = False,
+) -> str | None:
+    """Return the standard resolution label, e.g. ``'1080p'``.
+
+    If fails it'll return ``unknown_label``.
+    """
+    try:
+        width_int = int(width)
+        height_int = int(height)
+        return infer_resolution(width_int, height_int).label
+    except Exception:
+        if raise_on_error:
+            raise
+        return unknown_label
