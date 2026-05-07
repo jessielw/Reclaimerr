@@ -216,7 +216,7 @@ class MediaStatusInfo(BaseModel):
     is_candidate: bool = False
     candidate_id: int | None = None
     candidate_reason: str | None = None
-    candidate_space_gb: float | None = None
+    candidate_space_bytes: int | None = None
 
     is_protected: bool = False
     protected_reason: str | None = None
@@ -226,6 +226,11 @@ class MediaStatusInfo(BaseModel):
     request_id: int | None = None
     request_status: str | None = None
     request_reason: str | None = None
+
+    has_pending_delete_request: bool = False
+    delete_request_id: int | None = None
+    delete_request_status: str | None = None
+    delete_request_reason: str | None = None
 
 
 class ArrRefResponse(BaseModel):
@@ -437,7 +442,7 @@ class CandidateEntryBase(BaseModel):
     version_subtitle_languages: list[str] | None = None
     reason_parts: Sequence[CandidateReasonPart]
     reason_tokens: list[str]
-    estimated_space_gb: float | None
+    estimated_space_bytes: int | None = None
     # set for season level candidates
     season_id: int | None = None
     season_number: int | None = None
