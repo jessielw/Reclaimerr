@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved style of action buttons for candidates
 - Lock name for all services other than Sonarr/Radarr since we only will only have one instance for now
 - Candidates table now shows cleaner formatted file sizes (i.e. MB, GB, etc.)
+- Info modal now sizes a bit better, cleaned up icons for buttons, changed 'Request' to 'Protect', and added 'Delete' request with hover tool tips
 
 ### Removed
 
