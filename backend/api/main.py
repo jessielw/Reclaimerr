@@ -15,6 +15,7 @@ from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.background_jobs import router as background_jobs_router
 from backend.api.routes.dashboard import router as dashboard_router
+from backend.api.routes.delete_requests import router as delete_requests_router
 from backend.api.routes.info import router as info_router
 from backend.api.routes.media import router as media_router
 from backend.api.routes.protected import router as protected_router
@@ -140,6 +141,7 @@ app.include_router(tasks_router)
 app.include_router(background_jobs_router)
 app.include_router(media_router)
 app.include_router(requests_router)
+app.include_router(delete_requests_router)
 app.include_router(protected_router)
 app.include_router(system_router)
 
