@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from backend.core.auth import get_current_user, has_permission, require_permission
 from backend.core.logger import LOG
 from backend.core.utils.datetime_utils import to_utc_isoformat
-from backend.core.utils.misc import hdr_flags_label, resolution_from_dims
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -337,20 +337,18 @@ async def create_protection_request(
         version_file_name=movie_version.file_name if movie_version else None,
         version_size=movie_version.size if movie_version else None,
         version_video_codec=movie_version.video_codec if movie_version else None,
-        version_hdr_flags=hdr_flags_label(
-            movie_version.video_hdr if movie_version else None,
-            movie_version.video_dolby_vision if movie_version else None,
-        ),
+        version_hdr=movie_version.video_hdr if movie_version else None,
+        version_dolby_vision=movie_version.video_dolby_vision
+        if movie_version
+        else None,
+        season_dolby_vision=season.has_dolby_vision if season else None,
         season_size=season.size if season else None,
-        season_resolution=resolution_from_dims(
-            season.max_video_width if season else None,
-            season.max_video_height if season else None,
-        ),
+        season_resolution=guesstimate_resolution(
+            season.max_video_width, season.max_video_height, None
+        )
+        if season
+        else None,
         season_video_codecs=season.video_codec_families if season else None,
-        season_hdr_flags=hdr_flags_label(
-            season.has_hdr if season else None,
-            season.has_dolby_vision if season else None,
-        ),
     )
 
 
@@ -449,20 +447,15 @@ async def get_my_requests(
                 version_file_name=version.file_name if version else None,
                 version_size=version.size if version else None,
                 version_video_codec=version.video_codec if version else None,
-                version_hdr_flags=hdr_flags_label(
-                    version.video_hdr if version else None,
-                    version.video_dolby_vision if version else None,
-                ),
+                version_hdr=version.video_hdr if version else None,
+                version_dolby_vision=version.video_dolby_vision if version else None,
                 season_size=season.size if season else None,
-                season_resolution=resolution_from_dims(
-                    season.max_video_width if season else None,
-                    season.max_video_height if season else None,
-                ),
+                season_resolution=guesstimate_resolution(
+                    season.max_video_width, season.max_video_height, None
+                )
+                if season
+                else None,
                 season_video_codecs=season.video_codec_families if season else None,
-                season_hdr_flags=hdr_flags_label(
-                    season.has_hdr if season else None,
-                    season.has_dolby_vision if season else None,
-                ),
             )
         )
 
@@ -553,20 +546,15 @@ async def get_all_requests(
                 version_file_name=version.file_name if version else None,
                 version_size=version.size if version else None,
                 version_video_codec=version.video_codec if version else None,
-                version_hdr_flags=hdr_flags_label(
-                    version.video_hdr if version else None,
-                    version.video_dolby_vision if version else None,
-                ),
+                version_hdr=version.video_hdr if version else None,
+                version_dolby_vision=version.video_dolby_vision if version else None,
                 season_size=season.size if season else None,
-                season_resolution=resolution_from_dims(
-                    season.max_video_width if season else None,
-                    season.max_video_height if season else None,
-                ),
+                season_resolution=guesstimate_resolution(
+                    season.max_video_width, season.max_video_height, None
+                )
+                if season
+                else None,
                 season_video_codecs=season.video_codec_families if season else None,
-                season_hdr_flags=hdr_flags_label(
-                    season.has_hdr if season else None,
-                    season.has_dolby_vision if season else None,
-                ),
             )
         )
 
@@ -750,22 +738,19 @@ async def approve_request(
         version_file_name=approve_version.file_name if approve_version else None,
         version_size=approve_version.size if approve_version else None,
         version_video_codec=approve_version.video_codec if approve_version else None,
-        version_hdr_flags=hdr_flags_label(
-            approve_version.video_hdr if approve_version else None,
-            approve_version.video_dolby_vision if approve_version else None,
-        ),
+        version_hdr=approve_version.video_hdr if approve_version else None,
+        version_dolby_vision=approve_version.video_dolby_vision
+        if approve_version
+        else None,
         season_size=approve_season.size if approve_season else None,
-        season_resolution=resolution_from_dims(
-            approve_season.max_video_width if approve_season else None,
-            approve_season.max_video_height if approve_season else None,
-        ),
+        season_resolution=guesstimate_resolution(
+            approve_season.max_video_width, approve_season.max_video_height, None
+        )
+        if approve_season
+        else None,
         season_video_codecs=approve_season.video_codec_families
         if approve_season
         else None,
-        season_hdr_flags=hdr_flags_label(
-            approve_season.has_hdr if approve_season else None,
-            approve_season.has_dolby_vision if approve_season else None,
-        ),
     )
 
 
@@ -894,20 +879,17 @@ async def deny_request(
         version_file_name=deny_version.file_name if deny_version else None,
         version_size=deny_version.size if deny_version else None,
         version_video_codec=deny_version.video_codec if deny_version else None,
-        version_hdr_flags=hdr_flags_label(
-            deny_version.video_hdr if deny_version else None,
-            deny_version.video_dolby_vision if deny_version else None,
-        ),
+        version_hdr=deny_version.video_hdr if deny_version else None,
+        version_dolby_vision=deny_version.video_dolby_vision if deny_version else None,
         season_size=deny_season.size if deny_season else None,
-        season_resolution=resolution_from_dims(
-            deny_season.max_video_width if deny_season else None,
-            deny_season.max_video_height if deny_season else None,
-        ),
+        season_resolution=guesstimate_resolution(
+            deny_season.max_video_width, deny_season.max_video_height, None
+        )
+        if deny_season
+        else None,
         season_video_codecs=deny_season.video_codec_families if deny_season else None,
-        season_hdr_flags=hdr_flags_label(
-            deny_season.has_hdr if deny_season else None,
-            deny_season.has_dolby_vision if deny_season else None,
-        ),
+        season_hdr=deny_season.has_hdr if deny_season else None,
+        season_dolby_vision=deny_season.has_dolby_vision if deny_season else None,
     )
 
 
