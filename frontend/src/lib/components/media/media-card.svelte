@@ -23,6 +23,7 @@
     mediaType: MediaType;
     showMediaType?: boolean;
     onRequestException?: (media: MediaItem) => void;
+    onRequestDelete?: (media: MediaItem) => void;
     onViewDetails?: (media: MediaItem) => void;
   }
 
@@ -31,6 +32,7 @@
     mediaType,
     showMediaType = false,
     onRequestException,
+    onRequestDelete,
     onViewDetails,
   }: Props = $props();
 
@@ -56,6 +58,13 @@
     e.stopPropagation();
     if (onViewDetails) {
       onViewDetails(media);
+    }
+  };
+
+  const handleRequestDelete = (e: Event) => {
+    e.stopPropagation();
+    if (onRequestDelete) {
+      onRequestDelete(media);
     }
   };
 
@@ -153,14 +162,33 @@
           </Tooltip.Root>
         </div>
       {/if}
+
+      {#if media.status.has_pending_delete_request}
+        <div
+          class="w-7 h-7 rounded-full bg-red-500 flex items-center justify-center z-20"
+        >
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <ArrowDownToLine class="size-5 text-white cursor-help" />
+            </Tooltip.Trigger>
+            <Tooltip.Content>
+              <p>Pending Delete Request</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        </div>
+      {/if}
     </div>
 
     <!-- hover overlay -->
     {#if isHovered}
-      {@const canRequest =
+      {@const canRequestProtection =
         canRequestExceptions &&
         !media.status.is_protected &&
         !media.status.has_pending_request}
+      {@const canDeleteRequest =
+        canRequestExceptions &&
+        !media.status.is_protected &&
+        !media.status.has_pending_delete_request}
       <div
         class="absolute inset-0 bg-linear-to-t from-black/50 via-black/75
           to-black/50 flex flex-col justify-end p-4 transition-opacity duration-200"
@@ -175,23 +203,39 @@
 
         <!-- request button and info -->
         <div
-          class="flex gap-0.5 z-20 {canRequest
+          class="flex gap-0.5 z-20 {canRequestProtection || canDeleteRequest
             ? 'justify-center'
             : 'justify-end'}"
         >
-          <!-- request -->
-          {#if canRequest}
+          <!-- request protection -->
+          {#if canRequestProtection}
             <Button
               size="sm"
               class="cursor-pointer text-gray-200 bg-primary transition-colors rounded-tr-none 
                 rounded-br-none hover:scale-103
               {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}
-              {!canRequest ? '' : 'rounded-tr-none rounded-br-none'}"
+              {!canRequestProtection ? '' : 'rounded-tr-none rounded-br-none'}"
               onclick={handleRequestException}
             >
               <ArrowDownToLine class="size-5" />
               {#if cardWidth > REQUEST_TEXT_MIN_WIDTH}
                 Request
+              {/if}
+            </Button>
+          {/if}
+          
+          <!-- delete request -->
+          {#if canDeleteRequest}
+            <Button
+              size="sm"
+              variant="destructive"
+              class="cursor-pointer text-gray-200 transition-colors hover:scale-103
+              {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}"
+              onclick={handleRequestDelete}
+            >
+              <TicketMinus class="size-5" />
+              {#if cardWidth > REQUEST_TEXT_MIN_WIDTH}
+                Delete
               {/if}
             </Button>
           {/if}
@@ -201,7 +245,7 @@
             <Button
               size="sm"
               class="cursor-pointer text-gray-200 bg-primary transition-colors hover:scale-103
-              {!canRequest ? '' : 'rounded-tl-none rounded-bl-none'}"
+              {!canRequestProtection ? '' : 'rounded-tl-none rounded-bl-none'}"
               onclick={handleInfoClick}
             >
               <Info class="size-6" />
