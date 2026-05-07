@@ -215,7 +215,7 @@ export interface MediaStatusInfo {
   is_candidate: boolean;
   candidate_id: number | null;
   candidate_reason: string | null;
-  candidate_space_gb: number | null;
+  candidate_space_bytes: number | null;
   is_protected: boolean;
   protected_reason: string | null;
   protected_permanent: boolean;
@@ -223,6 +223,10 @@ export interface MediaStatusInfo {
   request_id: number | null;
   request_status: string | null;
   request_reason: string | null;
+  has_pending_delete_request: boolean;
+  delete_request_id: number | null;
+  delete_request_status: string | null;
+  delete_request_reason: string | null;
 }
 
 export interface MovieVersion {
@@ -363,6 +367,49 @@ export interface ProtectionRequest {
   season_number: number | null;
   created_at: string;
   updated_at: string;
+  version_resolution: string | null;
+  version_file_name: string | null;
+  version_size: number | null;
+  version_video_codec: string | null;
+  version_hdr_flags: string | null;
+  season_size: number | null;
+  season_resolution: string | null;
+  season_video_codecs: string[] | null;
+  season_hdr_flags: string | null;
+}
+
+// delete requests
+export interface DeleteRequest {
+  id: number;
+  media_type: MediaType;
+  poster_url: string | null;
+  media_id: number;
+  movie_version_id: number | null;
+  media_title: string;
+  media_year: number | null;
+  requested_by_user_id: number;
+  requested_by_username: string;
+  reason: string | null;
+  status: ProtectionRequestStatus;
+  reviewed_by_user_id: number | null;
+  reviewed_by_username: string | null;
+  reviewed_at: string | null;
+  admin_notes: string | null;
+  executed_at: string | null;
+  execution_error: string | null;
+  season_id: number | null;
+  season_number: number | null;
+  created_at: string;
+  updated_at: string;
+  version_resolution: string | null;
+  version_file_name: string | null;
+  version_size: number | null;
+  version_video_codec: string | null;
+  version_hdr_flags: string | null;
+  season_size: number | null;
+  season_resolution: string | null;
+  season_video_codecs: string[] | null;
+  season_hdr_flags: string | null;
 }
 
 export interface ProtectedEntry {
@@ -434,7 +481,7 @@ export interface ReclaimCandidateEntry {
     text: string;
   }[];
   reason_tokens: string[];
-  estimated_space_gb: number | null;
+  estimated_space_bytes: number | null;
   has_pending_request: boolean;
   created_at: string;
   // populated for season-level candidates
