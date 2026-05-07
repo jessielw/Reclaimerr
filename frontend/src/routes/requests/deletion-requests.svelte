@@ -184,7 +184,6 @@
       bind:searchQuery
       bind:statusFilter
       bind:sortOrder
-      searchPlaceholder="Search title, reason, user, error..."
     />
 
     {#if loading}
@@ -332,14 +331,19 @@
                         </span>
                       {/each}
                     {/if}
-                    <!-- HDR flags -->
-                    {#if selectedRequest.version_hdr_flags ?? selectedRequest.season_hdr_flags}
+                    <!-- HDR -->
+                    {#if selectedRequest.version_hdr ?? selectedRequest.season_hdr}
                       <span
-                        class="rounded-full border bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-500"
+                        class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                        >HDR</span
                       >
-                        {selectedRequest.version_hdr_flags?.toUpperCase() ??
-                          selectedRequest.season_hdr_flags?.toUpperCase()}
-                      </span>
+                    {/if}
+                    <!-- dolby vision -->
+                    {#if selectedRequest.version_dolby_vision ?? selectedRequest.season_dolby_vision}
+                      <span
+                        class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                        >Dolby Vision</span
+                      >
                     {/if}
                     <!-- file size -->
                     {#if selectedRequest.version_size ?? selectedRequest.season_size}
