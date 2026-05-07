@@ -598,7 +598,7 @@
       {#if hasArrServiceConfigWarning}
         <Notice type="warning" title="Arr Service Configuration">
           One or more rules reference a Radarr or Sonarr service from the
-          original instance. Those IDs may not match your setup — review rule
+          original instance. Those IDs may not match your setup - review rule
           actions after importing.
         </Notice>
       {/if}
