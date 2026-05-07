@@ -159,7 +159,7 @@
       <div>
         <div class="flex items-center gap-2">
           <div
-            class="flex flex-row flex-1 px-3 py-2 bg-secondary rounded-lg gap-3"
+            class="flex flex-row flex-1 px-3 pr-0 py-2 bg-secondary rounded-lg gap-3"
           >
             <!-- user avatar -->
             {#if $auth.user.avatar_url}
