@@ -94,12 +94,35 @@ export enum NotificationType {
 export interface PathMapping {
   source_prefix: string;
   local_prefix: string;
+  service_type?: string | null;
+  service_config_id?: number | null;
+}
+
+export interface PostActionWebhookHeader {
+  name: string;
+  value: string;
+}
+
+export interface PostActionWebhookConfig {
+  enabled: boolean;
+  name: string;
+  method: "GET" | "POST";
+  url_template: string;
+  headers: PostActionWebhookHeader[];
+  auth_username: string | null;
+  auth_password: string | null;
+  actions: ("deleted" | "moved")[];
+  media_types: MediaType[];
+  path_mode: "original" | "local" | "destination";
+  body_template: string | null;
+  timeout_seconds: number;
 }
 
 export interface GeneralSettings {
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
   path_mappings: PathMapping[];
+  post_action_webhooks: PostActionWebhookConfig[];
   move_enabled: boolean;
   move_destination_movies: string | null;
   move_destination_series: string | null;

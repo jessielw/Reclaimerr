@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added useful information for each movie version/season that is requested to be protected in **Protected** requests for users such as filename, resolution, video codec, hdr flags, and file size
 - Can now choose which version of files you'd like to protect for movies with multiple versions
 - Added api/frontend controls for delete requests for users
+- Add support for generic post action webhooks (Autopulse, etc.)
+  - Added API support
+  - Added frontend controls per arr instance (or all) in General Settings
 
 ### Changed
 
