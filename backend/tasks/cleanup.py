@@ -39,13 +39,12 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
-    SeriesServiceRef,
 )
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.cleanup import MatchedCandidateRecord
+from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.notifications import notify_all_users
 from backend.services.post_action_webhooks import (
-    PostActionWebhookEvent,
     dispatch_configured_post_action_webhooks,
 )
 
