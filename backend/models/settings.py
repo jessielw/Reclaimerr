@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import Service
+from backend.enums import MediaType, Service
 from backend.types import MEDIA_SERVERS, MediaServerType
 
 
@@ -92,6 +92,78 @@ class NotificationTestRequest(BaseModel):
 class PathMappingItem(BaseModel):
     source_prefix: str
     local_prefix: str
+    service_type: Service | None = None
+    service_config_id: int | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PathMappingItem:
+        self.source_prefix = self.source_prefix.strip()
+        self.local_prefix = self.local_prefix.strip()
+        return self
+
+
+class PostActionWebhookHeader(BaseModel):
+    name: str
+    value: str
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PostActionWebhookHeader:
+        self.name = self.name.strip()
+        self.value = self.value.strip()
+        if not self.name:
+            raise PydanticCustomError("webhook_header", "Header name is required")
+        return self
+
+
+class PostActionWebhookConfig(BaseModel):
+    enabled: bool = True
+    name: str
+    method: Literal["GET", "POST"] = "GET"
+    url_template: str
+    headers: list[PostActionWebhookHeader] = Field(default_factory=list)
+    auth_username: str | None = None
+    auth_password: str | None = None
+    actions: list[Literal["deleted", "moved"]] = Field(
+        default_factory=lambda: ["deleted", "moved"]
+    )
+    media_types: list[MediaType] = Field(
+        default_factory=lambda: [MediaType.MOVIE, MediaType.SERIES]
+    )
+    path_mode: Literal["original", "local", "destination"] = "original"
+    body_template: str | None = None
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PostActionWebhookConfig:
+        self.name = self.name.strip() or "Post-action webhook"
+        self.method = self.method.upper()  # type: ignore[assignment]
+        self.url_template = self.url_template.strip()
+        if not self.url_template:
+            raise PydanticCustomError("webhook_url", "Webhook URL is required")
+        if not (
+            self.url_template.startswith("http://")
+            or self.url_template.startswith("https://")
+        ):
+            raise PydanticCustomError(
+                "webhook_url", "Webhook URL must start with http:// or https://"
+            )
+        if self.auth_username is not None:
+            self.auth_username = self.auth_username.strip() or None
+        if self.auth_password is not None:
+            self.auth_password = self.auth_password.strip() or None
+        if self.body_template is not None:
+            self.body_template = self.body_template.strip() or None
+        return self
+
+
+class PostActionWebhookTestRequest(BaseModel):
+    webhook: PostActionWebhookConfig
+
+
+class PostActionWebhookTestResponse(BaseModel):
+    success: bool
+    status_code: int | None = None
+    error: str | None = None
 
 
 class GeneralSettingsResponse(BaseModel):
@@ -100,6 +172,9 @@ class GeneralSettingsResponse(BaseModel):
 
     # path mappings for resolving media-server paths to local paths
     path_mappings: list[PathMappingItem] = Field(default_factory=list)
+
+    # post action webhooks for delete/move integrations (Autopulse, scripts, etc.)
+    post_action_webhooks: list[PostActionWebhookConfig] = Field(default_factory=list)
 
     # move settings
     move_enabled: bool = False
