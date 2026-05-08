@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add support for generic post action webhooks (Autopulse, etc.)
   - Added API support
   - Added frontend controls per arr instance (or all) in General Settings
+- About
+  - Added changelog viewer to break down release notes per version
 
 ### Changed
 

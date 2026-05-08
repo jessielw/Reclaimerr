@@ -1,3 +1,6 @@
+import re
+import sys
+from pathlib import Path
 from random import sample as random_sample
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +14,56 @@ from backend.database.models import Movie, Series
 from .default_backdrops import TOP_RATED_BACKDROPS
 
 router = APIRouter(tags=["info"])
+
+# matches "## [Unreleased] - date" or "## [0.1.0-beta.13] - 2026-04-25"
+_RELEASE_HEADER = re.compile(
+    r"^## \[(?P<version>[^\]]+)\](?:\s*-\s*(?P<date>[^\n]+))?",
+    re.MULTILINE,
+)
+
+
+def _find_changelog() -> Path | None:
+    """Return the first readable CHANGELOG.md path."""
+    candidates: list[Path] = []
+    candidates.extend(
+        [
+            Path.cwd() / "CHANGELOG.md",
+            Path(sys.executable).resolve().parent / "CHANGELOG.md",
+            Path(__file__).resolve().parents[4] / "CHANGELOG.md",
+            Path(sys.argv[0]).resolve().parent / "CHANGELOG.md",
+            Path("/app/CHANGELOG.md"),
+        ]
+    )
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _parse_changelog(text: str) -> list[dict]:
+    """Split changelog text into per-release dicts sorted newest first."""
+    matches = list(_RELEASE_HEADER.finditer(text))
+    releases: list[dict] = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        releases.append(
+            {
+                "version": m.group("version"),
+                "date": (m.group("date") or "").strip() or None,
+                "body": body,
+            }
+        )
+    return releases
 
 
 @router.get("/health")
@@ -27,6 +80,22 @@ async def get_version() -> dict[str, str]:
         "program": __version__.program_name,
         "url": __version__.program_url,
     }
+
+
+@router.get("/changelog")
+async def get_changelog() -> list[dict]:
+    """Return bundled changelog split into per-release entries."""
+    path = _find_changelog()
+    if path is None:
+        raise HTTPException(status_code=404, detail="Changelog not found")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read changelog") from exc
+    releases = _parse_changelog(text)
+    if not releases:
+        raise HTTPException(status_code=404, detail="Changelog contains no releases")
+    return releases
 
 
 @router.get("/random-backdrop")

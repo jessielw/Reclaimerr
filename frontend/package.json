@@ -34,7 +34,9 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "pathe": "^2.0.3",
+    "svelte-exmarkdown": "^5.0.2",
     "svelte-spa-router": "^4.0.1"
   }
 }
