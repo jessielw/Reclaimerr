@@ -178,6 +178,9 @@ class GeneralSettings(Base):
     # path mapping (media-server paths -> local paths)
     path_mappings: Mapped[list] = mapped_column(JSON, default_factory=list)
 
+    # post action webhooks (generic hooks fired after successful delete/move)
+    post_action_webhooks: Mapped[list] = mapped_column(JSON, default_factory=list)
+
     # move settings
     move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     move_destination_movies: Mapped[str | None] = mapped_column(
