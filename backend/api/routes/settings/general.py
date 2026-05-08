@@ -15,9 +15,20 @@ from backend.database.models import (
     GeneralSettings,
     MovieVersion,
     SeriesServiceRef,
+    ServiceConfig,
     User,
 )
-from backend.models.settings import GeneralSettingsResponse
+from backend.enums import MediaType
+from backend.models.settings import (
+    GeneralSettingsResponse,
+    PostActionWebhookTestRequest,
+    PostActionWebhookTestResponse,
+)
+from backend.services.post_action_webhooks import (
+    PostActionWebhookEvent,
+    invalidate_webhook_config_cache,
+    send_post_action_webhook,
+)
 
 router = APIRouter(tags=["settings", "general"])
 
@@ -61,6 +72,9 @@ async def update_general_settings(
     settings.worker_poll_min_seconds = request.worker_poll_min_seconds
     settings.worker_poll_max_seconds = request.worker_poll_max_seconds
     settings.path_mappings = [m.model_dump() for m in request.path_mappings]
+    settings.post_action_webhooks = [
+        w.model_dump(mode="json") for w in request.post_action_webhooks
+    ]
     settings.move_enabled = request.move_enabled
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
@@ -72,7 +86,34 @@ async def update_general_settings(
     db.add(settings)
     await db.commit()
     await db.refresh(settings)
+    invalidate_webhook_config_cache()
     return GeneralSettingsResponse.model_validate(settings)
+
+
+@router.post(
+    "/general/webhooks/test",
+    response_model=PostActionWebhookTestResponse,
+)
+async def test_post_action_webhook(
+    request: PostActionWebhookTestRequest,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> PostActionWebhookTestResponse:
+    """Send a sample post action webhook without saving it."""
+    result = await send_post_action_webhook(
+        request.webhook.model_dump(mode="json"),
+        PostActionWebhookEvent(
+            action="deleted",
+            media_type=MediaType.MOVIE,
+            title="Reclaimerr Test Movie",
+            tmdb_id=550,
+            candidate_id=0,
+            path="/media/movies/Reclaimerr Test Movie (1999)/movie.mkv",
+            local_path="/mnt/media/movies/Reclaimerr Test Movie (1999)/movie.mkv",
+            service_type="plex",
+            movie_version_id=0,
+        ),
+    )
+    return PostActionWebhookTestResponse(**result)
 
 
 def _library_root(path: str) -> str | None:
@@ -139,3 +180,28 @@ async def get_path_suggestions(
             suggestions.add(root)
 
     return sorted(suggestions, key=lambda s: len(s))
+
+
+@router.get("/general/path-mapping-scopes")
+async def get_path_mapping_scopes(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[dict]:
+    """Return service configs that path mappings can be scoped to."""
+    result = await db.execute(
+        select(
+            ServiceConfig.id,
+            ServiceConfig.service_type,
+            ServiceConfig.name,
+            ServiceConfig.enabled,
+        ).order_by(ServiceConfig.service_type, ServiceConfig.name)
+    )
+    return [
+        {
+            "id": config_id,
+            "service_type": service_type,
+            "name": name,
+            "enabled": enabled,
+        }
+        for config_id, service_type, name, enabled in result.all()
+    ]
