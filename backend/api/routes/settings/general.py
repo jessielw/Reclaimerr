@@ -19,13 +19,13 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType
+from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
     GeneralSettingsResponse,
     PostActionWebhookTestRequest,
     PostActionWebhookTestResponse,
 )
 from backend.services.post_action_webhooks import (
-    PostActionWebhookEvent,
     invalidate_webhook_config_cache,
     send_post_action_webhook,
 )
