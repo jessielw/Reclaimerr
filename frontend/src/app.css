@@ -161,6 +161,12 @@
   body {
     @apply bg-background text-foreground;
   }
+  h2 {
+    @apply font-semibold text-muted-foreground;
+  }
+  h3 {
+    @apply font-bold text-xl;
+  }
 }
 
 .input-hover-el:hover {

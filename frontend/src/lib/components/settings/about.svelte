@@ -56,9 +56,11 @@
         {@const Icon = svgIcon}
         <Icon class="size-5" aria-hidden="true" />
       {/if}
-      <span class="align-middle">About</span>
+      <span class="align-middle">About Reclaimerr</span>
     </h2>
   </div>
+
+  <hr />
 
   {#if loading}
     <div class="flex items-center justify-center py-8">
@@ -69,6 +71,58 @@
       <p class="text-sm text-destructive">{error}</p>
     </div>
   {:else}
+    <!-- support section -->
+    <section class="flex flex-col gap-3">
+      <h3 class="text-foreground">Getting Support</h3>
+      <!-- docs -->
+      <article>
+        <h2>Documentation</h2>
+        <p class="text-sm">Coming soon™</p>
+      </article>
+
+      <!-- github discussions -->
+      <article>
+        <h2>GitHub Discussions</h2>
+        <p class="text-sm">
+          For questions, troubleshooting, or just to chat with the community,
+          check out our <a
+            href="https://github.com/jessielw/Reclaimerr/discussions"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary underline"
+          >
+            GitHub Discussions
+          </a>
+        </p>
+      </article>
+
+      <!-- matrix -->
+      <article>
+        <h2>Matrix Chat</h2>
+        <p class="text-sm">
+          Join our Matrix room for real time support and discussion:
+          <a
+            href="https://matrix.to/#/#reclaimerr:matrix.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary underline"
+          >
+            #reclaimerr:matrix.org
+          </a>
+        </p>
+      </article>
+
+      <!-- fluxer -->
+      <article>
+        <h2>Fluxer</h2>
+        <p class="text-sm">
+          Once Fluxer V2 is released, we'll have a Reclaimerr channel there as
+          well for real time chat. Stay tuned!
+        </p>
+      </article>
+    </section>
+    <hr />
+
     <!-- release notes section -->
     <section class="flex flex-col gap-3">
       <h3 class="text-foreground">Release Notes</h3>
