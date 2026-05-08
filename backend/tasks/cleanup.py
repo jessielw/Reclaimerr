@@ -44,6 +44,10 @@ from backend.database.models import (
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.services.notifications import notify_all_users
+from backend.services.post_action_webhooks import (
+    PostActionWebhookEvent,
+    dispatch_configured_post_action_webhooks,
+)
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -1318,6 +1322,76 @@ async def _load_path_mappings() -> list[dict]:
     return []
 
 
+def _service_value(service: Service | str | None) -> str | None:
+    if service is None:
+        return None
+    return service.value if isinstance(service, Service) else str(service)
+
+
+def _path_text(path: Path | None) -> str | None:
+    return str(path) if path is not None else None
+
+
+async def _resolve_event_local_path(
+    path: str | None,
+    service_type: Service | str | None = None,
+    service_config_id: int | None = None,
+) -> str | None:
+    if not path:
+        return None
+    mappings = await _load_path_mappings()
+    return _path_text(
+        resolve_path(
+            path,
+            mappings,
+            service_type=_service_value(service_type),
+            service_config_id=service_config_id,
+        )
+    )
+
+
+async def _dispatch_reclaim_event(
+    *,
+    action: str,
+    media_type: MediaType,
+    title: str | None = None,
+    tmdb_id: int | None = None,
+    candidate_id: int | None = None,
+    path: str | None = None,
+    destination_path: str | None = None,
+    service_type: Service | str | None = None,
+    service_config_id: int | None = None,
+    movie_version_id: int | None = None,
+    season_id: int | None = None,
+    season_number: int | None = None,
+    local_path: str | None = None,
+) -> None:
+    try:
+        await dispatch_configured_post_action_webhooks(
+            PostActionWebhookEvent(
+                action=action,
+                media_type=media_type,
+                title=title,
+                tmdb_id=tmdb_id,
+                candidate_id=candidate_id,
+                path=path,
+                local_path=local_path
+                if local_path is not None
+                else await _resolve_event_local_path(
+                    path, service_type=service_type, service_config_id=service_config_id
+                ),
+                destination_path=destination_path,
+                service_type=service_type,
+                service_config_id=service_config_id,
+                movie_version_id=movie_version_id,
+                season_id=season_id,
+                season_number=season_number,
+            )
+        )
+    except Exception as e:
+        LOG.warning(f"Post-action webhook dispatch failed: {e}")
+
+
 async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
@@ -1396,7 +1470,9 @@ async def _delete_movie_version_candidates(
 
             # attempt filesystem sibling cleanup (subtitle/nfo files + empty dirs)
             path_mappings = await _load_path_mappings()
-            local_path = resolve_path(version.path, path_mappings)
+            local_path = resolve_path(
+                version.path, path_mappings, service_type=main_service_type.value
+            )
             if local_path:
                 try:
                     sibling_cleanup(local_path)
@@ -1443,6 +1519,17 @@ async def _delete_movie_version_candidates(
             deleted_count += 1
             LOG.info(
                 f"Deleted movie version {version.id} for '{movie.title}' via {main_service_type.value}"
+            )
+            await _dispatch_reclaim_event(
+                action="deleted",
+                media_type=MediaType.MOVIE,
+                title=movie.title,
+                tmdb_id=movie.tmdb_id,
+                candidate_id=candidate.id,
+                path=version.path,
+                local_path=_path_text(local_path),
+                service_type=main_service_type,
+                movie_version_id=version.id,
             )
         except Exception as e:
             await _mark_candidate_delete_failure(
@@ -1533,6 +1620,7 @@ async def _delete_movie_candidates(
                             "candidate_id": candidate.id,
                             "movie_id": candidate.movie_id,
                             "radarr_id": arr_movie_id,
+                            "config_id": config_id,
                             "title": movie_info["title"],
                             "method": "radarr",
                             "tmdb_id": movie_info["tmdb_id"],
@@ -1557,16 +1645,33 @@ async def _delete_movie_candidates(
             )
 
     if movies_to_delete:
+        movie_events: list[dict[str, Any]] = []
         try:
             async with async_db() as db:
                 for movie_info in movies_to_delete:
                     # update movie record
                     result = await db.execute(
-                        select(Movie).where(Movie.id == movie_info["movie_id"])
+                        select(Movie)
+                        .where(Movie.id == movie_info["movie_id"])
+                        .options(selectinload(Movie.versions))
                     )
                     movie = result.scalar_one_or_none()
                     if movie:
                         movie.removed_at = datetime.now(UTC)
+                        event_versions = [v for v in movie.versions if v.path] or [None]
+                        for version in event_versions:
+                            movie_events.append(
+                                {
+                                    "title": movie.title,
+                                    "tmdb_id": movie.tmdb_id,
+                                    "candidate_id": movie_info["candidate_id"],
+                                    "path": version.path if version else None,
+                                    "service_type": version.service
+                                    if version
+                                    else Service.RADARR,
+                                    "movie_version_id": version.id if version else None,
+                                }
+                            )
 
                     # delete cleanup candidate
                     result = await db.execute(
@@ -1602,6 +1707,12 @@ async def _delete_movie_candidates(
 
             deleted_count = len(movies_to_delete)
             LOG.info(f"Successfully deleted {deleted_count} movies via Radarr")
+            for event in movie_events:
+                await _dispatch_reclaim_event(
+                    action="deleted",
+                    media_type=MediaType.MOVIE,
+                    **event,
+                )
         except Exception as e:
             LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
 
@@ -1706,16 +1817,34 @@ async def _delete_series_candidates(
             )
 
     if series_to_delete:
+        series_events: list[dict[str, Any]] = []
         try:
             async with async_db() as db:
                 for series_info in series_to_delete:
                     # update series record
                     result = await db.execute(
-                        select(Series).where(Series.id == series_info["series_id"])
+                        select(Series)
+                        .where(Series.id == series_info["series_id"])
+                        .options(selectinload(Series.service_refs))
                     )
                     series = result.scalar_one_or_none()
                     if series:
                         series.removed_at = datetime.now(UTC)
+                        event_refs = [r for r in series.service_refs if r.path] or [
+                            None
+                        ]
+                        for ref in event_refs:
+                            series_events.append(
+                                {
+                                    "title": series.title,
+                                    "tmdb_id": series.tmdb_id,
+                                    "candidate_id": series_info["candidate_id"],
+                                    "path": ref.path if ref else None,
+                                    "service_type": ref.service
+                                    if ref
+                                    else Service.SONARR,
+                                }
+                            )
 
                     # delete cleanup candidate
                     result = await db.execute(
@@ -1751,6 +1880,12 @@ async def _delete_series_candidates(
 
             deleted_count = len(series_to_delete)
             LOG.info(f"Successfully deleted {deleted_count} series via Sonarr")
+            for event in series_events:
+                await _dispatch_reclaim_event(
+                    action="deleted",
+                    media_type=MediaType.SERIES,
+                    **event,
+                )
         except Exception as e:
             LOG.error(f"Error finalizing series deletion state: {e}", exc_info=True)
 
@@ -1981,6 +2116,25 @@ async def _delete_season_candidates(
             await db.commit()
 
         deleted_count += 1
+        if service_manager.main_media_server is service_manager.jellyfin:
+            event_service_type = Service.JELLYFIN
+        elif service_manager.main_media_server is service_manager.emby:
+            event_service_type = Service.EMBY
+        else:
+            event_service_type = (
+                Service.PLEX if service_manager.main_media_server else None
+            )
+        await _dispatch_reclaim_event(
+            action="deleted",
+            media_type=MediaType.SERIES,
+            title=series_obj.title,
+            tmdb_id=series_obj.tmdb_id,
+            candidate_id=candidate.id,
+            path=season.path,
+            service_type=event_service_type,
+            season_id=season.id,
+            season_number=season_number,
+        )
 
     return deleted_count
 
@@ -2055,7 +2209,9 @@ async def _delete_movies_via_media_server(
             # attempt filesystem sibling cleanup for each deleted version
             path_mappings = await _load_path_mappings()
             for ver in service_versions:
-                local_path = resolve_path(ver.path, path_mappings)
+                local_path = resolve_path(
+                    ver.path, path_mappings, service_type=main_service_type.value
+                )
                 if local_path:
                     try:
                         sibling_cleanup(local_path)
@@ -2102,6 +2258,17 @@ async def _delete_movies_via_media_server(
 
             deleted_count += 1
             LOG.info(f"Deleted movie '{movie.title}' via {main_service_type}")
+            for ver in service_versions:
+                await _dispatch_reclaim_event(
+                    action="deleted",
+                    media_type=MediaType.MOVIE,
+                    title=movie.title,
+                    tmdb_id=movie.tmdb_id,
+                    candidate_id=candidate.id,
+                    path=ver.path,
+                    service_type=main_service_type,
+                    movie_version_id=ver.id,
+                )
 
         except Exception as e:
             LOG.error(
@@ -2213,6 +2380,15 @@ async def _delete_series_via_media_server(
 
             deleted_count += 1
             LOG.info(f"Deleted series '{series_obj.title}' via {main_service_type}")
+            await _dispatch_reclaim_event(
+                action="deleted",
+                media_type=MediaType.SERIES,
+                title=series_obj.title,
+                tmdb_id=series_obj.tmdb_id,
+                candidate_id=candidate.id,
+                path=ref.path,
+                service_type=main_service_type,
+            )
 
         except Exception as e:
             LOG.error(
@@ -2393,7 +2569,9 @@ async def move_specific_candidates(
                 continue
             destination_root = Path(dest_str)
 
-            local_path = resolve_path(version.path, path_mappings)
+            local_path = resolve_path(
+                version.path, path_mappings, service_type=version.service.value
+            )
             if local_path is None:
                 LOG.warning(
                     f"move_specific_candidates: cannot resolve path for '{version.path}' "
@@ -2457,6 +2635,18 @@ async def move_specific_candidates(
 
             moved += 1
             LOG.info(f"Moved '{movie.title}' version {version.id} to {dest}")
+            await _dispatch_reclaim_event(
+                action="moved",
+                media_type=MediaType.MOVIE,
+                title=movie.title,
+                tmdb_id=movie.tmdb_id,
+                candidate_id=candidate.id,
+                path=version.path,
+                local_path=str(local_path),
+                destination_path=str(dest),
+                service_type=version.service,
+                movie_version_id=version.id,
+            )
 
         except Exception as e:
             LOG.error(
@@ -2519,7 +2709,11 @@ async def move_specific_candidates(
                     failed += 1
                     continue
 
-                local_series_path = resolve_path(series_ref.path, path_mappings)
+                local_series_path = resolve_path(
+                    series_ref.path,
+                    path_mappings,
+                    service_type=series_ref.service.value,
+                )
                 if local_series_path is None:
                     LOG.warning(
                         f"move_specific_candidates: cannot resolve path for "
@@ -2534,6 +2728,7 @@ async def move_specific_candidates(
                     if is_season and candidate.season_id
                     else None
                 )
+                season_folder: Path | None = None
 
                 if is_season:
                     if season is None:
@@ -2544,7 +2739,11 @@ async def move_specific_candidates(
                         failed += 1
                         continue
                     resolved_season_path = (
-                        resolve_path(season.path, path_mappings)
+                        resolve_path(
+                            season.path,
+                            path_mappings,
+                            service_type=series_ref.service.value,
+                        )
                         if season.path
                         else None
                     )
@@ -2674,6 +2873,24 @@ async def move_specific_candidates(
 
                 moved += 1
                 LOG.info(f"Moved '{series_obj.title}' to {dest}")
+                event_local_path = (
+                    season_folder if is_season and season else local_series_path
+                )
+                await _dispatch_reclaim_event(
+                    action="moved",
+                    media_type=MediaType.SERIES,
+                    title=series_obj.title,
+                    tmdb_id=series_obj.tmdb_id,
+                    candidate_id=candidate.id,
+                    path=season.path if is_season and season else series_ref.path,
+                    local_path=str(event_local_path),
+                    destination_path=str(dest),
+                    service_type=series_ref.service,
+                    season_id=season.id if is_season and season else None,
+                    season_number=season.season_number
+                    if is_season and season
+                    else None,
+                )
 
             except Exception as e:
                 LOG.error(
