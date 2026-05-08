@@ -44,6 +44,8 @@ def normalize_fpath(
 def resolve_path(
     media_server_path: str | None,
     mappings: list[dict] | None,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
 ) -> Path | None:
     """Resolve a media server reported path to a local filesystem path.
 
@@ -55,7 +57,10 @@ def resolve_path(
         media_server_path: Path as reported by the media server (may use
             Docker/container paths like ``/movies/Title/file.mkv``).
         mappings: List of mapping dicts with ``source_prefix`` and
-            ``local_prefix`` keys (as stored in the DB).
+            ``local_prefix`` keys (as stored in the DB). Mappings may also
+            include optional ``service_type`` and ``service_config_id`` fields.
+            Exact service-config mappings are preferred over service-type and
+            global mappings.
 
     Returns:
         An existing ``Path`` object, or ``None`` if the file cannot be located.
@@ -63,7 +68,33 @@ def resolve_path(
     if not media_server_path:
         return None
 
-    for m in mappings or []:
+    sorted_mappings = sorted(
+        mappings or [],
+        key=lambda m: (
+            0
+            if service_config_id is not None
+            and m.get("service_config_id") == service_config_id
+            else 1
+            if service_type
+            and str(m.get("service_type") or "").lower() == service_type.lower()
+            and not m.get("service_config_id")
+            else 2
+            if not m.get("service_type") and not m.get("service_config_id")
+            else 3,
+            -len(str(m.get("source_prefix") or "")),
+        ),
+    )
+
+    for m in sorted_mappings:
+        mapping_service_type = str(m.get("service_type") or "").lower()
+        mapping_config_id = m.get("service_config_id")
+        if mapping_config_id is not None:
+            if service_config_id is None or mapping_config_id != service_config_id:
+                continue
+        elif mapping_service_type:
+            if not service_type or mapping_service_type != service_type.lower():
+                continue
+
         source = m.get("source_prefix", "")
         local = m.get("local_prefix", "")
         if source and media_server_path.startswith(source):
