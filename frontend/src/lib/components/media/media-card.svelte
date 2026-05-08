@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { Button } from "$lib/components/ui/button/index.js";
+  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import Info from "@lucide/svelte/icons/info";
   import ArrowDownToLine from "@lucide/svelte/icons/arrow-down-to-line";
+  import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
+  import Trash_2 from "@lucide/svelte/icons/trash-2";
   import Ticket from "@lucide/svelte/icons/ticket";
-  import TicketMinus from "@lucide/svelte/icons/ticket-minus";
   import Shield from "@lucide/svelte/icons/shield";
   import FileImage from "@lucide/svelte/icons/file-image";
   import { auth } from "$lib/stores/auth";
@@ -36,11 +38,14 @@
     onViewDetails,
   }: Props = $props();
 
+  // control buttons based on card size
+  const REQUEST_TEXT_MIN_WIDTH = 145;
   let cardEl: HTMLDivElement;
   let cardWidth = $state(0);
-  const REQUEST_TEXT_MIN_WIDTH = 160;
+  let badgeSize = $state("");
 
   let isHovered = $state(false);
+  let menuOpen = $state(false);
   const canRequestExceptions = $derived(
     $auth.user?.role === "admin" ||
       ($auth.user?.permissions ?? []).includes(Permission.Request) ||
@@ -71,6 +76,11 @@
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
       cardWidth = entry.contentRect.width;
+      if (cardWidth > REQUEST_TEXT_MIN_WIDTH) {
+        badgeSize = "size-5";
+      } else {
+        badgeSize = "size-3";
+      }
     });
     if (cardEl) observer.observe(cardEl);
     return () => observer.disconnect();
@@ -114,15 +124,15 @@
     {/if}
 
     <!-- status indicators (top right) -->
-    <div class="absolute top-2 right-2 flex gap-1">
+    <div class="absolute top-2 right-2 flex flex-col gap-1 items-end">
       <!-- protected -->
       {#if media.status.is_protected}
         <div
-          class="w-7 h-7 rounded-full bg-gray-500 flex items-center justify-center z-20"
+          class="rounded-full bg-gray-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Shield class="size-5 text-white cursor-help" />
+              <Shield class="{badgeSize} text-white cursor-help m-1" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Protected</p>
@@ -134,11 +144,11 @@
       <!-- deletion candidate -->
       {#if media.status.is_candidate}
         <div
-          class="w-7 h-7 rounded-full bg-yellow-500 flex items-center justify-center z-20"
+          class="rounded-full bg-yellow-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <TicketMinus class="size-5 text-white cursor-help" />
+              <Trash_2 class="{badgeSize} text-white cursor-help m-1" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Reclaim candidate</p>
@@ -150,11 +160,11 @@
       <!-- pending request -->
       {#if media.status.has_pending_request}
         <div
-          class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-20"
+          class="rounded-full bg-blue-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Ticket class="size-5 text-white cursor-help" />
+              <Ticket class="{badgeSize} text-white cursor-help m-1" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Pending Request</p>
@@ -165,11 +175,11 @@
 
       {#if media.status.has_pending_delete_request}
         <div
-          class="w-7 h-7 rounded-full bg-red-500 flex items-center justify-center z-20"
+          class="rounded-full bg-red-500 flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <ArrowDownToLine class="size-5 text-white cursor-help" />
+              <Trash_2 class="{badgeSize} text-white cursor-help m-1" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Pending Delete Request</p>
@@ -180,7 +190,7 @@
     </div>
 
     <!-- hover overlay -->
-    {#if isHovered}
+    {#if isHovered || menuOpen}
       {@const canRequestProtection =
         canRequestExceptions &&
         !media.status.is_protected &&
@@ -201,56 +211,54 @@
           <p class="text-sm text-gray-300">{media.year ?? "Unknown"}</p>
         </div>
 
-        <!-- request button and info -->
+        <!-- action buttons (we move them to the right if the card is wide enough) -->
         <div
-          class="flex gap-0.5 z-20 {canRequestProtection || canDeleteRequest
-            ? 'justify-center'
-            : 'justify-end'}"
+          class="flex gap-1.5 z-20 {cardWidth > REQUEST_TEXT_MIN_WIDTH
+            ? 'justify-end'
+            : 'justify-center'}"
         >
-          <!-- request protection -->
-          {#if canRequestProtection}
-            <Button
-              size="sm"
-              class="cursor-pointer text-gray-200 bg-primary transition-colors rounded-tr-none 
-                rounded-br-none hover:scale-103
-              {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}
-              {!canRequestProtection ? '' : 'rounded-tr-none rounded-br-none'}"
-              onclick={handleRequestException}
-            >
-              <ArrowDownToLine class="size-5" />
-              {#if cardWidth > REQUEST_TEXT_MIN_WIDTH}
-                Request
-              {/if}
-            </Button>
+          <!-- actions dropdown (only when actions are available) -->
+          {#if canRequestProtection || canDeleteRequest}
+            <DropdownMenu.Root bind:open={menuOpen}>
+              <DropdownMenu.Trigger>
+                {#snippet child({ props })}
+                  <Button
+                    {...props}
+                    size="icon-sm"
+                    class="cursor-pointer text-gray-200 bg-primary/75 hover:bg-primary transition-colors"
+                  >
+                    <EllipsisVertical class="size-4" />
+                  </Button>
+                {/snippet}
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Content align="end">
+                {#if canRequestProtection}
+                  <DropdownMenu.Item onclick={handleRequestException}>
+                    <ArrowDownToLine class="size-4 mr-2" />
+                    Request Protection
+                  </DropdownMenu.Item>
+                {/if}
+                {#if canDeleteRequest}
+                  <DropdownMenu.Item
+                    variant="destructive"
+                    onclick={handleRequestDelete}
+                  >
+                    <Trash_2 class="size-4 mr-2" />
+                    Request Delete
+                  </DropdownMenu.Item>
+                {/if}
+              </DropdownMenu.Content>
+            </DropdownMenu.Root>
           {/if}
 
-          <!-- delete request -->
-          {#if canDeleteRequest}
-            <Button
-              size="sm"
-              variant="destructive"
-              class="cursor-pointer text-gray-200 transition-colors hover:scale-103
-              {cardWidth > REQUEST_TEXT_MIN_WIDTH ? 'flex-1' : ''}"
-              onclick={handleRequestDelete}
-            >
-              <TicketMinus class="size-5" />
-              {#if cardWidth > REQUEST_TEXT_MIN_WIDTH}
-                Delete
-              {/if}
-            </Button>
-          {/if}
-
-          <!-- info -->
-          <div>
-            <Button
-              size="sm"
-              class="cursor-pointer text-gray-200 bg-primary transition-colors hover:scale-103
-              {!canRequestProtection ? '' : 'rounded-tl-none rounded-bl-none'}"
-              onclick={handleInfoClick}
-            >
-              <Info class="size-6" />
-            </Button>
-          </div>
+          <!-- info (always visible) -->
+          <Button
+            size="icon-sm"
+            class="cursor-pointer text-gray-200 bg-primary/75 hover:bg-primary transition-colors"
+            onclick={handleInfoClick}
+          >
+            <Info class="size-4" />
+          </Button>
         </div>
       </div>
     {/if}

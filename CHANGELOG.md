@@ -65,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Entire frontend now shows cleaner formatted file sizes (i.e. MB, GB, etc.)
 - Info modal now sizes a bit better, cleaned up icons for buttons, changed 'Request' to 'Protect', and added 'Delete' request with hover tool tips
 - Built an efficient fingerprint system to keep file signatures the same during name changes
+- Movies & Series cards are now improved
+  - Badges scale with the cards
+  - Drop down menu to select requests/deletes quickly
+  - Reworked lower buttons
 
 ### Removed
 
