@@ -20,7 +20,7 @@
   }
   let { svgIcon }: Props = $props();
 
-  const plugins = [gfmPlugin()];
+  const mdPlugins = [gfmPlugin()];
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -119,7 +119,7 @@
       {#if selected}
         <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
           <article class="prose prose-sm dark:prose-invert max-w-none">
-            <Markdown md={selected.body} {plugins} />
+            <Markdown md={selected.body} plugins={mdPlugins} />
           </article>
         </div>
       {/if}
