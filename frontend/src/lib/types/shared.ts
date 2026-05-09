@@ -571,6 +571,7 @@ export interface DashboardRequestsSummary {
 }
 
 export interface DashboardServiceSummary {
+  service_type: string;
   name: string;
   url: string;
   enabled: boolean;

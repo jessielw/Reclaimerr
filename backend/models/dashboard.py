@@ -25,6 +25,7 @@ class DashboardRequestsSummary(BaseModel):
 
 
 class DashboardServiceSummary(BaseModel):
+    service_type: str
     name: str
     url: str
     enabled: bool

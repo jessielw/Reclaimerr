@@ -153,10 +153,10 @@
 
   // determine if we should show last sync info for a service
   // (only for emby, plex, jellyfin for now since those are the only ones that uses the main sync)
-  const shouldShowServiceSync = (serviceName: string) =>
-    serviceName === "emby" ||
-    serviceName === "plex" ||
-    serviceName === "jellyfin";
+  const shouldShowServiceSync = (serviceType: string) =>
+    serviceType === "emby" ||
+    serviceType === "plex" ||
+    serviceType === "jellyfin";
 
   // fetch dashboard stats from API
   const fetchStats = async (showLoading = true) => {
@@ -462,11 +462,11 @@
                   <div
                     class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >
-                    {#each dashboard.services as service (service.name)}
+                    {#each dashboard.services as service (`${service.service_type}:${service.name}`)}
                       {#if service.enabled}
                         {@const ServiceIcon =
                           svgMap[
-                            service.name.toLowerCase() as keyof typeof svgMap
+                            service.service_type.toLowerCase() as keyof typeof svgMap
                           ]}
                         <div
                           class="rounded-md border border-border bg-secondary/20 p-3 min-w-0"
@@ -491,7 +491,7 @@
                           >
                             {service.url}
                           </span>
-                          {#if shouldShowServiceSync(service.name)}
+                          {#if shouldShowServiceSync(service.service_type)}
                             <p
                               class="text-xs text-muted-foreground mt-1 truncate"
                             >
