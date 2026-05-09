@@ -81,6 +81,32 @@ def _definition_from_overrides(overrides: dict[str, object]) -> dict[str, object
             "watch.days_since_last_watched",
             "less_than_or_equal",
         ),
+        "min_days_since_release": ("tmdb.days_since_release", "greater_than_or_equal"),
+        "max_days_since_release": ("tmdb.days_since_release", "less_than_or_equal"),
+        "min_days_since_first_air_date": (
+            "tmdb.days_since_first_air_date",
+            "greater_than_or_equal",
+        ),
+        "max_days_since_first_air_date": (
+            "tmdb.days_since_first_air_date",
+            "less_than_or_equal",
+        ),
+        "min_days_since_last_air_date": (
+            "tmdb.days_since_last_air_date",
+            "greater_than_or_equal",
+        ),
+        "max_days_since_last_air_date": (
+            "tmdb.days_since_last_air_date",
+            "less_than_or_equal",
+        ),
+        "min_days_since_season_air_date": (
+            "season.days_since_air_date",
+            "greater_than_or_equal",
+        ),
+        "max_days_since_season_air_date": (
+            "season.days_since_air_date",
+            "less_than_or_equal",
+        ),
         "min_size": ("media.size", "greater_than_or_equal"),
         "max_size": ("media.size", "less_than_or_equal"),
         "series_status": ("series.status", "contains_any"),
@@ -282,6 +308,77 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
 
+    def test_evaluate_movie_rule_days_since_release_passes_and_fails(self) -> None:
+        now = datetime.now(UTC)
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_release_date = now - timedelta(days=120)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        pass_rule = _make_rule(
+            MediaType.MOVIE,
+            min_days_since_release=90,
+            max_days_since_release=150,
+        )
+        fail_rule = _make_rule(MediaType.MOVIE, min_days_since_release=200)
+
+        self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
+
+    def test_evaluate_movie_rule_release_date_operator_passes_and_fails(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_release_date = datetime(2024, 1, 15)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        pass_rule = ReclaimRule(
+            name="rule",
+            media_type=MediaType.MOVIE,
+            enabled=True,
+            target_scope="movie_version",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "tmdb.release_date",
+                            "operator": "before",
+                            "value": "2024-02-01",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        fail_rule = ReclaimRule(
+            name="rule",
+            media_type=MediaType.MOVIE,
+            enabled=True,
+            target_scope="movie_version",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "tmdb.release_date",
+                            "operator": "after",
+                            "value": "2024-02-01",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
+
     def test_evaluate_movie_rule_size_criteria_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
@@ -308,6 +405,23 @@ class CleanupMediaRuleTests(unittest.TestCase):
             series_status=["Returning Series"],
         )
         fail_rule = _make_rule(MediaType.SERIES, series_status=["Ended"])
+
+        self.assertTrue(_evaluate_movie_rule(series, pass_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(series, fail_rule, {}, []))
+
+    def test_evaluate_series_rule_days_since_air_dates_passes_and_fails(self) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.status = "Returning Series"
+        series.tmdb_first_air_date = now - timedelta(days=365)
+        series.tmdb_last_air_date = now - timedelta(days=30)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        pass_rule = _make_rule(
+            MediaType.SERIES,
+            min_days_since_first_air_date=300,
+            max_days_since_last_air_date=60,
+        )
+        fail_rule = _make_rule(MediaType.SERIES, min_days_since_last_air_date=90)
 
         self.assertTrue(_evaluate_movie_rule(series, pass_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(series, fail_rule, {}, []))
@@ -348,6 +462,82 @@ class CleanupMediaRuleTests(unittest.TestCase):
             MediaType.SERIES,
             target_scope="season",
             min_days_since_last_watched=20,
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
+        self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
+
+    def test_evaluate_rule_for_season_days_since_air_date_passes_and_fails(self) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.air_date = now - timedelta(days=45)
+
+        pass_rule = _make_rule(
+            MediaType.SERIES,
+            target_scope="season",
+            min_days_since_season_air_date=30,
+            max_days_since_season_air_date=60,
+        )
+        fail_rule = _make_rule(
+            MediaType.SERIES,
+            target_scope="season",
+            min_days_since_season_air_date=90,
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
+        self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
+
+    def test_evaluate_rule_for_season_air_date_operator_passes_and_fails(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.air_date = datetime(2024, 3, 1)
+
+        pass_rule = ReclaimRule(
+            name="rule",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.air_date",
+                            "operator": "on_or_before",
+                            "value": "2024-03-01",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        fail_rule = ReclaimRule(
+            name="rule",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.air_date",
+                            "operator": "after",
+                            "value": "2024-04-01",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
         )
 
         self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))

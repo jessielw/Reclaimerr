@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- In docker you can now pass in variables for timezone, puid, pgid, and umask if desired
+- In docker you can now pass in variables for timezone, PUID, PGID, and UMASK if desired
+- New rules
+  - TMDB release date
+  - TMDB last air date
+  - Season air date
+  - Days since released
+  - Days since first aired
+  - Days since last aired
 
 ### Changed
 

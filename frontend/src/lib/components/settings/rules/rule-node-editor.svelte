@@ -54,6 +54,10 @@
     greater_than_or_equal: ">=",
     less_than: "less than",
     less_than_or_equal: "<=",
+    before: "before",
+    on_or_before: "on or before",
+    after: "after",
+    on_or_after: "on or after",
     in: "in any",
     not_in: "not in any",
     contains_any: "contains any",
@@ -123,7 +127,14 @@
     "not_exists",
   ];
 
-  const temporalOperators: RuleConditionOperator[] = ["exists", "not_exists"];
+  const temporalOperators: RuleConditionOperator[] = [
+    "exists",
+    "not_exists",
+    "before",
+    "on_or_before",
+    "after",
+    "on_or_after",
+  ];
 
   const fields: FieldConfig[] = [
     {
@@ -181,6 +192,62 @@
       kind: "temporal",
       operators: temporalOperators,
       defaultOperator: "exists",
+    },
+    {
+      value: "tmdb.release_date",
+      label: "TMDB release date",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "tmdb.first_air_date",
+      label: "TMDB first air date",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "tmdb.last_air_date",
+      label: "TMDB last air date",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "season.air_date",
+      label: "Season air date",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "tmdb.days_since_release",
+      label: "Days since released",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "tmdb.days_since_first_air_date",
+      label: "Days since first aired",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "tmdb.days_since_last_air_date",
+      label: "Days since last aired",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "season.days_since_air_date",
+      label: "Days since season aired",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
     },
     {
       value: "tmdb.popularity",
@@ -342,6 +409,9 @@
     operatorLabelMap[value] ?? value;
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
+  const isTemporalInput = (c: RuleCondition) =>
+    fieldConfig(c.field).kind === "temporal" &&
+    !valuelessOperators.has(c.operator);
   const valuePlaceholder = (c: RuleCondition) => {
     if (c.operator === "matches_any_regex") return "regex patterns…";
     if (listOperators.has(c.operator)) return "comma-separated…";
@@ -655,7 +725,11 @@
         <div class="flex items-center gap-2 w-full sm:flex-1 sm:min-w-40">
           <Input
             class="h-8 flex-1 min-w-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
-            type={isNumericInput(node) ? "number" : "text"}
+            type={isNumericInput(node)
+              ? "number"
+              : isTemporalInput(node)
+                ? "date"
+                : "text"}
             placeholder={valuePlaceholder(node)}
             value={valueText(node)}
             oninput={(e) => setConditionValue(node, e.currentTarget.value)}

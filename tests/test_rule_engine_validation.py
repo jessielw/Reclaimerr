@@ -49,6 +49,12 @@ class RuleDefinitionValidationTests(unittest.TestCase):
     def test_accepts_temporal_field_exists_operator(self) -> None:
         validate_rule_definition(_definition("watch.last_viewed_at", "exists"))
 
+    def test_accepts_tmdb_release_temporal_exists_operator(self) -> None:
+        validate_rule_definition(_definition("tmdb.release_date", "exists"))
+
+    def test_accepts_temporal_field_before_operator(self) -> None:
+        validate_rule_definition(_definition("tmdb.release_date", "before", "2026-01-01"))
+
     def test_rejects_temporal_field_equals_operator(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -56,6 +62,29 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(
                 _definition("watch.last_viewed_at", "equals", "2026-01-01T00:00:00Z"),
+            )
+
+    def test_accepts_tmdb_days_since_release_numeric_operator(self) -> None:
+        validate_rule_definition(
+            _definition("tmdb.days_since_release", "greater_than_or_equal", 30),
+        )
+
+    def test_rejects_tmdb_days_since_release_with_list_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'contains_any' for field 'tmdb.days_since_release'",
+        ):
+            validate_rule_definition(
+                _definition("tmdb.days_since_release", "contains_any", ["30"]),
+            )
+
+    def test_rejects_numeric_field_with_temporal_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'before' for field 'tmdb.days_since_release'",
+        ):
+            validate_rule_definition(
+                _definition("tmdb.days_since_release", "before", "2026-01-01"),
             )
 
     def test_accepts_library_contains_any_operator(self) -> None:
