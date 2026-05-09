@@ -25,6 +25,18 @@ is_valid_umask() {
 	esac
 }
 
+configure_timezone() {
+	target_tz="$1"
+	zoneinfo_path="/usr/share/zoneinfo/$target_tz"
+
+	if [ ! -e "$zoneinfo_path" ]; then
+		fail "TZ '$target_tz' is not a valid timezone in /usr/share/zoneinfo"
+	fi
+
+	ln -snf "$zoneinfo_path" /etc/localtime
+	echo "$target_tz" > /etc/timezone
+}
+
 ensure_group() {
 	target_gid="$1"
 	group_by_gid="$(getent group "$target_gid" | cut -d: -f1 || true)"
@@ -73,6 +85,10 @@ fi
 
 if [ -n "${UMASK:-}" ] && ! is_valid_umask "$UMASK"; then
 	fail "UMASK must be a 1-4 digit octal value such as 022 or 002"
+fi
+
+if [ -n "${TZ:-}" ]; then
+	configure_timezone "$TZ"
 fi
 
 mkdir -p /app/data/database /app/data/logs /app/data/static/avatars

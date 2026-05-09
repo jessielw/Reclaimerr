@@ -130,6 +130,11 @@ DATA_DIR=./data
 # common values: 022, 002
 # UMASK=022
 
+# optional container timezone used for cron-style task schedules and other
+# process-local time behavior
+# examples: America/New_York, Europe/London, UTC
+# TZ=America/New_York
+
 # API configuration
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -174,9 +179,9 @@ services:
       - "8000:8000"
 ```
 
-`PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr.
+`PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr. `TZ` controls the container timezone, which is what cron-style task schedules use.
 
-These settings affect the container process and files created under `/app/data`. They do not override host filesystem permissions on your bind mounts. Your mounted media paths still need to be owned by, or otherwise writable to, the same UID/GID you configure for the container.
+These settings affect the container process and files created under `/app/data`. They do not override host filesystem permissions on your bind mounts. Your mounted media paths still need to be owned by, or otherwise writable to, the same UID/GID you configure for the container. Reclaimerr still stores timestamps in UTC internally; `TZ` only affects container-local behavior such as what "3 AM" means for scheduled cron tasks.
 
 ## Reset Admin Password
 

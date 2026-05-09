@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 	FRONTEND_DIST=/app/frontend/dist
 WORKDIR /app
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends build-essential curl gosu \
+	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential curl gosu tzdata \
 	&& rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md CHANGELOG.md ./
 COPY backend ./backend

@@ -18,11 +18,12 @@ services:
     ports:
       - "8000:8000"
 
-    # optional LinuxServer container style permission controls for UnRaid/NAS users:
-    # set PUID/PGID/UMASK in your .env file, for example:
+    # optional LinuxServer container style runtime controls for UnRaid/NAS users:
+    # set PUID/PGID/UMASK/TZ in your .env file, for example:
     # PUID=1000
     # PGID=1000
     # UMASK=022
+    # TZ=America/New_York
 
     # optional healthcheck to monitor container health (adjust the URL and parameters as needed)
     # healthcheck:
