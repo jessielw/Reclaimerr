@@ -12,12 +12,13 @@
     DashboardResponse,
   } from "$lib/types/shared";
   import { capitalizeFirstLetter } from "$lib/utils/strings";
-  import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
-  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
-  import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
-  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
-  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
-  import SeerrSVG from "$lib/components/svgs/SeerrSVG.svelte";
+  import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
+  import EmbySVG from "$lib/components/svgs/emby-svg.svelte";
+  import PlexSVG from "$lib/components/svgs/plex-svg.svelte";
+  import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
+  import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
+  import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
+  import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
 
   // state
   let dashboard = $state<DashboardResponse | null>(null);
@@ -74,6 +75,7 @@
     seerr: SeerrSVG,
     sonarr: SonarrSVG,
     radarr: RadarrSVG,
+    tautulli: TautulliSVG,
   };
 
   // helpers
@@ -249,6 +251,35 @@
               in <strong>Tasks</strong> to populate your library.
             </Notice>
           {/if}
+
+          <!-- reclaimed totals banner -->
+          <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Space Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {formatSize(dashboard.kpis.reclaimed_total_gb)}
+              </p>
+            </article>
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Movies Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {dashboard.kpis.reclaimed_movies}
+              </p>
+            </article>
+            <article
+              class="bg-card rounded-lg border border-border p-5 min-h-24"
+            >
+              <p class="text-sm text-muted-foreground">Series Reclaimed</p>
+              <p class="text-3xl font-bold text-primary mt-2">
+                {dashboard.kpis.reclaimed_series}
+              </p>
+            </article>
+          </section>
+
           <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <!-- movies -->
             <article

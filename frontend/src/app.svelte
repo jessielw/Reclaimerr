@@ -6,7 +6,7 @@
   import Login from "./routes/login.svelte";
   import Setup from "./routes/setup.svelte";
   import Dashboard from "./routes/dashboard.svelte";
-  import Requests from "./routes/requests.svelte";
+  import Requests from "./routes/requests/requests-entry.svelte";
   import Movies from "./routes/movies.svelte";
   import Series from "./routes/series.svelte";
   import Protected from "./routes/protected.svelte";
@@ -25,7 +25,7 @@
     "/movies": Movies,
     "/series": Series,
     "/protected": Protected,
-    "/protection-requests": Requests,
+    "/requests": Requests,
     "/candidates": Candidates,
     "/settings": Settings,
     "/setup": Setup,

@@ -13,29 +13,27 @@ from backend.core.tmdb import AsyncTMDBClient
 from backend.database import async_db
 from backend.database.models import (
     Movie,
+    MovieArrRef,
     MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
-    ReclaimRule,
     Season,
     Series,
+    SeriesArrRef,
     SeriesServiceRef,
     ServiceConfig,
     ServiceMediaLibrary,
 )
-from backend.enums import MediaType, NotificationType, Service, Task
+from backend.enums import MediaType, Service, Task
 from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
     MovieVersionData,
 )
-from backend.models.services.radarr import RadarrMovie
-from backend.models.services.sonarr import SonarrSeries
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
-from backend.services.notifications import notify_admins
 from backend.services.plex import PlexService
 from backend.types import MEDIA_SERVERS, MediaServerType
 
@@ -44,6 +42,8 @@ __all__ = [
     "resync_media",
     "sync_media_libraries",
     "sync_linked_data",
+    "sync_emby_playback_reporting_data",
+    "sync_tautulli_playback_data",
 ]
 
 # number of records to process before committing to the database during sync tasks
@@ -136,6 +136,71 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     return False
 
 
+def _rollup_series_media_from_seasons(season_data: list[AggregatedSeasonData]) -> dict:
+    """Roll up minimal media aggregate signals from seasons to series-level values."""
+    if not season_data:
+        return {
+            "has_hdr": None,
+            "has_dolby_vision": None,
+            "max_video_width": None,
+            "max_video_height": None,
+            "video_codec_families": None,
+            "audio_codec_families": None,
+            "max_audio_channels": None,
+            "subtitle_languages": None,
+        }
+
+    video_families: set[str] = set()
+    audio_families: set[str] = set()
+    subtitle_langs: set[str] = set()
+    max_width: int | None = None
+    max_height: int | None = None
+    max_audio_channels: int | None = None
+    has_hdr = False
+    has_dolby_vision = False
+
+    for sd in season_data:
+        if sd.has_hdr:
+            has_hdr = True
+        if sd.has_dolby_vision:
+            has_dolby_vision = True
+        if sd.max_video_width is not None:
+            max_width = (
+                sd.max_video_width
+                if max_width is None
+                else max(max_width, sd.max_video_width)
+            )
+        if sd.max_video_height is not None:
+            max_height = (
+                sd.max_video_height
+                if max_height is None
+                else max(max_height, sd.max_video_height)
+            )
+        if sd.max_audio_channels is not None:
+            max_audio_channels = (
+                sd.max_audio_channels
+                if max_audio_channels is None
+                else max(max_audio_channels, sd.max_audio_channels)
+            )
+        if sd.video_codec_families:
+            video_families.update(sd.video_codec_families)
+        if sd.audio_codec_families:
+            audio_families.update(sd.audio_codec_families)
+        if sd.subtitle_languages:
+            subtitle_langs.update(sd.subtitle_languages)
+
+    return {
+        "has_hdr": True if has_hdr else None,
+        "has_dolby_vision": True if has_dolby_vision else None,
+        "max_video_width": max_width,
+        "max_video_height": max_height,
+        "video_codec_families": sorted(video_families) or None,
+        "audio_codec_families": sorted(audio_families) or None,
+        "max_audio_channels": max_audio_channels,
+        "subtitle_languages": sorted(subtitle_langs) or None,
+    }
+
+
 async def _sync_seasons(
     session: AsyncSession,
     series_id: int,
@@ -158,6 +223,19 @@ async def _sync_seasons(
             s.episode_count = sd.episode_count
             s.view_count = sd.view_count
             s.last_viewed_at = sd.last_viewed_at
+            s.air_date = sd.air_date
+            s.added_at = sd.added_at
+            s.has_hdr = sd.has_hdr
+            s.has_dolby_vision = sd.has_dolby_vision
+            s.max_video_width = sd.max_video_width
+            s.max_video_height = sd.max_video_height
+            s.video_codec_families = sd.video_codec_families
+            s.audio_codec_families = sd.audio_codec_families
+            s.audio_languages = sd.audio_languages
+            s.max_audio_channels = sd.max_audio_channels
+            s.subtitle_languages = sd.subtitle_languages
+            s.path = sd.path
+            s.episode_paths = sd.episode_paths
             if sd.service_season_id:
                 if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
@@ -176,19 +254,31 @@ async def _sync_seasons(
                     emby_id = sd.service_season_id
                 else:
                     plex_key = sd.service_season_id
-            session.add(
-                Season(
-                    series_id=series_id,
-                    season_number=sd.season_number,
-                    size=sd.size,
-                    episode_count=sd.episode_count,
-                    view_count=sd.view_count,
-                    last_viewed_at=sd.last_viewed_at,
-                    jellyfin_season_id=jellyfin_id,
-                    emby_season_id=emby_id,
-                    plex_season_rating_key=plex_key,
-                )
+            new_season = Season(
+                series_id=series_id,
+                season_number=sd.season_number,
+                size=sd.size,
+                episode_count=sd.episode_count,
+                view_count=sd.view_count,
+                last_viewed_at=sd.last_viewed_at,
+                air_date=sd.air_date,
+                has_hdr=sd.has_hdr,
+                has_dolby_vision=sd.has_dolby_vision,
+                max_video_width=sd.max_video_width,
+                max_video_height=sd.max_video_height,
+                video_codec_families=sd.video_codec_families,
+                audio_codec_families=sd.audio_codec_families,
+                audio_languages=sd.audio_languages,
+                max_audio_channels=sd.max_audio_channels,
+                subtitle_languages=sd.subtitle_languages,
+                jellyfin_season_id=jellyfin_id,
+                emby_season_id=emby_id,
+                plex_season_rating_key=plex_key,
             )
+            new_season.added_at = sd.added_at
+            new_season.path = sd.path
+            new_season.episode_paths = sd.episode_paths
+            session.add(new_season)
 
     # remove seasons no longer in the media server
     removed_season_ids = [
@@ -249,6 +339,25 @@ async def _upsert_series_service_ref(
         )
 
 
+def _make_fp(
+    svc: object,
+    width: int | None,
+    height: int | None,
+    codec: str | None,
+    hdr: bool | None,
+    dv: bool | None,
+    size: int,
+    container: str | None,
+) -> tuple | None:
+    """Build a fingerprint map of existing versions for rename resilient fallback matching.
+    Fingerprint covers fields that are stable across file renames but change on re-encode.
+    Entries with duplicate fingerprints are marked None (ambiguous - we skip to avoid a mis-match)
+    """
+    if not (size and width and height):
+        return None
+    return (svc, width, height, codec, hdr, dv, size, container)
+
+
 async def _upsert_movie_versions(
     session: AsyncSession,
     db_movie: Movie,
@@ -262,35 +371,142 @@ async def _upsert_movie_versions(
         (v.service, v.service_media_id): v for v in result.scalars().all()
     }
 
+    fp_map: dict[tuple, MovieVersion | None] = {}
+    for ev in existing.values():
+        fp = _make_fp(
+            ev.service,
+            ev.video_width,
+            ev.video_height,
+            ev.video_codec,
+            ev.video_hdr,
+            ev.video_dolby_vision,
+            ev.size,
+            ev.container,
+        )
+        if fp is None:
+            continue
+        # None = ambiguous, skip
+        fp_map[fp] = None if fp in fp_map else ev
+
     incoming_keys: set[tuple] = set()
     for ver in versions:
         key = (ver.service, ver.service_media_id)
         incoming_keys.add(key)
         if key in existing:
             ev = existing[key]
-            ev.service_item_id = ver.service_item_id
-            ev.library_id = ver.library_id
-            ev.library_name = ver.library_name
-            ev.path = ver.path
-            ev.size = ver.size
-            ev.container = ver.container
-            if ver.added_at and not ev.added_at:
-                ev.added_at = ver.added_at
         else:
-            session.add(
-                MovieVersion(
-                    movie_id=db_movie.id,
-                    service=ver.service,
-                    service_item_id=ver.service_item_id,
-                    service_media_id=ver.service_media_id,
-                    library_id=ver.library_id,
-                    library_name=ver.library_name,
-                    path=ver.path,
-                    size=ver.size,
-                    added_at=ver.added_at,
-                    container=ver.container,
-                )
+            # Primary key miss (try fingerprint fallback before creating a new row).
+            # This handles Jellyfin/Emby renames where service_media_id changes but the
+            # physical file (and all its codec/resolution metadata) is identical.
+            fp = _make_fp(
+                ver.service,
+                ver.video_width,
+                ver.video_height,
+                ver.video_codec,
+                ver.video_hdr,
+                ver.video_dolby_vision,
+                ver.size,
+                ver.container,
             )
+            matched_ev = fp_map.get(fp) if fp else None
+            if fp is not None and matched_ev is not None:
+                # rename detected: update service IDs in place so all FK references
+                # (protections, requests, candidates) pointing at this row are preserved.
+                old_key = (matched_ev.service, matched_ev.service_media_id)
+                matched_ev.service_media_id = ver.service_media_id
+                matched_ev.service_item_id = ver.service_item_id
+                # prevent the prune step from deleting this row
+                incoming_keys.add(old_key)
+                # consumed (prevent re-matching another version to it)
+                fp_map[fp] = None
+                ev = matched_ev
+            else:
+                session.add(
+                    MovieVersion(
+                        movie_id=db_movie.id,
+                        service=ver.service,
+                        service_item_id=ver.service_item_id,
+                        service_media_id=ver.service_media_id,
+                        library_id=ver.library_id,
+                        library_name=ver.library_name,
+                        path=ver.path,
+                        size=ver.size,
+                        added_at=ver.added_at,
+                        file_name=ver.file_name,
+                        container=ver.container,
+                        duration=ver.duration,
+                        video_track_count=ver.video_track_count,
+                        video_codec=ver.video_codec,
+                        video_codec_family=ver.video_codec_family,
+                        video_hdr=ver.video_hdr,
+                        video_dolby_vision=ver.video_dolby_vision,
+                        video_dolby_vision_profile=ver.video_dolby_vision_profile,
+                        video_bitrate=ver.video_bitrate,
+                        video_bit_depth=ver.video_bit_depth,
+                        video_width=ver.video_width,
+                        video_height=ver.video_height,
+                        video_resolution=ver.video_resolution,
+                        video_color_primaries=ver.video_color_primaries,
+                        video_color_space=ver.video_color_space,
+                        video_color_transfer=ver.video_color_transfer,
+                        video_fps=ver.video_fps,
+                        audio_count=ver.audio_count,
+                        audio_languages=ver.audio_languages,
+                        audio_codec=ver.audio_codec,
+                        audio_codec_family=ver.audio_codec_family,
+                        audio_title=ver.audio_title,
+                        audio_language=ver.audio_language,
+                        audio_channels=ver.audio_channels,
+                        audio_channel_layout=ver.audio_channel_layout,
+                        audio_bitrate=ver.audio_bitrate,
+                        audio_sample_rate=ver.audio_sample_rate,
+                        subtitle_count=ver.subtitle_count,
+                        subtitle_has_forced=ver.subtitle_has_forced,
+                        subtitle_languages=ver.subtitle_languages,
+                        has_chapters=ver.has_chapters,
+                    )
+                )
+                continue
+
+        # update all fields on ev (reached for both primary-key match and fingerprint match)
+        ev.library_id = ver.library_id
+        ev.library_name = ver.library_name
+        ev.path = ver.path
+        ev.size = ver.size
+        ev.file_name = ver.file_name
+        ev.container = ver.container
+        ev.duration = ver.duration
+        ev.video_track_count = ver.video_track_count
+        ev.video_codec = ver.video_codec
+        ev.video_codec_family = ver.video_codec_family
+        ev.video_hdr = ver.video_hdr
+        ev.video_dolby_vision = ver.video_dolby_vision
+        ev.video_dolby_vision_profile = ver.video_dolby_vision_profile
+        ev.video_bitrate = ver.video_bitrate
+        ev.video_bit_depth = ver.video_bit_depth
+        ev.video_width = ver.video_width
+        ev.video_height = ver.video_height
+        ev.video_resolution = ver.video_resolution
+        ev.video_color_primaries = ver.video_color_primaries
+        ev.video_color_space = ver.video_color_space
+        ev.video_color_transfer = ver.video_color_transfer
+        ev.video_fps = ver.video_fps
+        ev.audio_count = ver.audio_count
+        ev.audio_languages = ver.audio_languages
+        ev.audio_codec = ver.audio_codec
+        ev.audio_codec_family = ver.audio_codec_family
+        ev.audio_title = ver.audio_title
+        ev.audio_language = ver.audio_language
+        ev.audio_channels = ver.audio_channels
+        ev.audio_channel_layout = ver.audio_channel_layout
+        ev.audio_bitrate = ver.audio_bitrate
+        ev.audio_sample_rate = ver.audio_sample_rate
+        ev.subtitle_count = ver.subtitle_count
+        ev.subtitle_has_forced = ver.subtitle_has_forced
+        ev.subtitle_languages = ver.subtitle_languages
+        ev.has_chapters = ver.has_chapters
+        if ver.added_at and not ev.added_at:
+            ev.added_at = ver.added_at
 
     # prune stale versions - all incoming versions come from the authoritative main server
     for key, ev in existing.items():
@@ -460,6 +676,10 @@ async def sync_movies(
     service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
+    """Sync movies from media server to database, optionally filtered by service.
+
+    Returns set of synced TMDB IDs.
+    """
     # resolve main server
     async with async_db() as _cfg:
         main_server = await _get_main_media_server(_cfg)
@@ -511,12 +731,6 @@ async def sync_movies(
 
             parsed_tmdb_ids: set[int] = set()
 
-            # if radarr is enabled collect it's ids
-            radarr_movies: dict[int, RadarrMovie] = {}
-            if service_manager.radarr:
-                get_movies = await service_manager.radarr.get_all_movies()
-                radarr_movies = {m.tmdb_id: m for m in get_movies if m.tmdb_id}
-
             # iterate through aggregated movies
             batch_count = 0
             for idx, movie in enumerate[AggregatedMovieData](
@@ -524,10 +738,6 @@ async def sync_movies(
             ):
                 tmdb_id = int(movie.external_ids.tmdb)
                 parsed_tmdb_ids.add(tmdb_id)
-
-                radarr_obj = (
-                    radarr_movies.get(tmdb_id) if tmdb_id in radarr_movies else None
-                )
 
                 # earliest added_at across all versions
                 earliest_added = min(
@@ -538,9 +748,6 @@ async def sync_movies(
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
 
-                    existing_movie.radarr_id = (
-                        radarr_obj.id if radarr_obj else existing_movie.radarr_id
-                    )
                     # update added_at if available and not already set
                     if earliest_added and not existing_movie.added_at:
                         existing_movie.added_at = earliest_added
@@ -578,10 +785,7 @@ async def sync_movies(
                         existing_movie = existing_by_imdb[imdb_id]
                         LOG.info(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
-                            f"existing record by imdb_id ({imdb_id}) — updating instead of inserting"
-                        )
-                        existing_movie.radarr_id = (
-                            radarr_obj.id if radarr_obj else existing_movie.radarr_id
+                            f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
                         )
                         if earliest_added and not existing_movie.added_at:
                             existing_movie.added_at = earliest_added
@@ -601,18 +805,12 @@ async def sync_movies(
                         )
                     else:
                         LOG.info(f"Adding new movie: {movie.name} ({tmdb_id})")
-                        radarr_obj = (
-                            radarr_movies.get(tmdb_id)
-                            if tmdb_id in radarr_movies
-                            else None
-                        )
                         initial_size = sum(v.size for v in movie.versions)
                         new_movie = Movie(
                             title=movie.name,
                             year=movie.year,
                             tmdb_id=tmdb_id,
                             size=initial_size,
-                            radarr_id=radarr_obj.id if radarr_obj else None,
                             imdb_id=imdb_id,
                             last_viewed_at=movie.last_viewed_at,
                             view_count=movie.view_count,
@@ -643,7 +841,38 @@ async def sync_movies(
                                     path=ver.path,
                                     size=ver.size,
                                     added_at=ver.added_at,
+                                    file_name=ver.file_name,
                                     container=ver.container,
+                                    duration=ver.duration,
+                                    video_track_count=ver.video_track_count,
+                                    video_codec=ver.video_codec,
+                                    video_codec_family=ver.video_codec_family,
+                                    video_hdr=ver.video_hdr,
+                                    video_dolby_vision=ver.video_dolby_vision,
+                                    video_dolby_vision_profile=ver.video_dolby_vision_profile,
+                                    video_bitrate=ver.video_bitrate,
+                                    video_bit_depth=ver.video_bit_depth,
+                                    video_width=ver.video_width,
+                                    video_height=ver.video_height,
+                                    video_resolution=ver.video_resolution,
+                                    video_color_primaries=ver.video_color_primaries,
+                                    video_color_space=ver.video_color_space,
+                                    video_color_transfer=ver.video_color_transfer,
+                                    video_fps=ver.video_fps,
+                                    audio_count=ver.audio_count,
+                                    audio_languages=ver.audio_languages,
+                                    audio_codec=ver.audio_codec,
+                                    audio_codec_family=ver.audio_codec_family,
+                                    audio_title=ver.audio_title,
+                                    audio_language=ver.audio_language,
+                                    audio_channels=ver.audio_channels,
+                                    audio_channel_layout=ver.audio_channel_layout,
+                                    audio_bitrate=ver.audio_bitrate,
+                                    audio_sample_rate=ver.audio_sample_rate,
+                                    subtitle_count=ver.subtitle_count,
+                                    subtitle_has_forced=ver.subtitle_has_forced,
+                                    subtitle_languages=ver.subtitle_languages,
+                                    has_chapters=ver.has_chapters,
                                 )
                             )
 
@@ -657,6 +886,57 @@ async def sync_movies(
             LOG.debug(
                 f"Committed {len(aggregated_movies)} movies in {batch_count + 1} batches"
             )
+
+            # refresh per instance Radarr refs for active movies
+            radarr_clients = service_manager.radarr_clients()
+            if not radarr_clients and service_manager.radarr:
+                radarr_clients = {0: service_manager.radarr}
+            if radarr_clients:
+                movie_rows = await session.execute(
+                    select(Movie.id, Movie.tmdb_id).where(Movie.removed_at.is_(None))
+                )
+                movie_id_by_tmdb = {
+                    tmdb_id: movie_id for movie_id, tmdb_id in movie_rows
+                }
+
+                # accumulate resolved tag labels per movie across all Radarr instances
+                movie_tags: dict[int, set[str]] = {}
+                for config_id, client in radarr_clients.items():
+                    await session.execute(
+                        sql_delete(MovieArrRef).where(
+                            MovieArrRef.service_config_id == config_id
+                        )
+                    )
+                    all_movies = await client.get_all_movies()
+                    tag_list = await client.get_tags()
+                    id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
+                    for arr_movie in all_movies:
+                        if not arr_movie.tmdb_id:
+                            continue
+                        movie_id = movie_id_by_tmdb.get(arr_movie.tmdb_id)
+                        if movie_id is None:
+                            continue
+                        session.add(
+                            MovieArrRef(
+                                movie_id=movie_id,
+                                service_config_id=config_id,
+                                arr_movie_id=arr_movie.id,
+                                tmdb_id=arr_movie.tmdb_id,
+                            )
+                        )
+                        for tag_id in arr_movie.tags:
+                            label = id_to_label.get(tag_id)
+                            if label:
+                                movie_tags.setdefault(movie_id, set()).add(label)
+
+                # write resolved tags back to Movie rows
+                for movie_id in movie_id_by_tmdb.values():
+                    result_row = await session.get(Movie, movie_id)
+                    if result_row is not None:
+                        tags = movie_tags.get(movie_id)
+                        result_row.arr_tags = sorted(tags) if tags else []
+
+                await session.commit()
 
             if allow_soft_delete:
                 movies_to_delete = [
@@ -790,12 +1070,6 @@ async def sync_series(
             # track all tmdb_ids seen in this sync
             parsed_tmdb_ids = set[int]()
 
-            # if sonarr is enabled collect its ids
-            sonarr_series: dict[int, SonarrSeries] = {}
-            if service_manager.sonarr:
-                get_series = await service_manager.sonarr.get_all_series()
-                sonarr_series = {s.tmdb_id: s for s in get_series if s.tmdb_id}
-
             # iterate through aggregated series
             batch_count = 0
             for idx, series in enumerate[AggregatedSeriesData](
@@ -803,11 +1077,6 @@ async def sync_series(
             ):
                 tmdb_id = series.external_ids.tmdb
                 parsed_tmdb_ids.add(tmdb_id)
-
-                # match Sonarr by tmdb_id if available
-                sonarr_obj = (
-                    sonarr_series.get(tmdb_id) if tmdb_id in sonarr_series else None
-                )
 
                 # locate existing series: primary key is tmdb_id, fall back to
                 # tvdb_id / imdb_id to avoid UNIQUE constraint violations when two
@@ -822,15 +1091,35 @@ async def sync_series(
                 if existing_series_obj is not None:
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
+                    media_rollup = _rollup_series_media_from_seasons(series.season_data)
+                    existing_series_obj.has_hdr = media_rollup["has_hdr"]
+                    existing_series_obj.has_dolby_vision = media_rollup[
+                        "has_dolby_vision"
+                    ]
+                    existing_series_obj.max_video_width = media_rollup[
+                        "max_video_width"
+                    ]
+                    existing_series_obj.max_video_height = media_rollup[
+                        "max_video_height"
+                    ]
+                    existing_series_obj.video_codec_families = media_rollup[
+                        "video_codec_families"
+                    ]
+                    existing_series_obj.audio_codec_families = media_rollup[
+                        "audio_codec_families"
+                    ]
+                    existing_series_obj.max_audio_channels = media_rollup[
+                        "max_audio_channels"
+                    ]
+                    existing_series_obj.subtitle_languages = media_rollup[
+                        "subtitle_languages"
+                    ]
 
                     # update service-specific fields based on source
                     await _upsert_series_service_ref(
                         session, existing_series_obj.id, series
                     )
 
-                    existing_series_obj.sonarr_id = (
-                        sonarr_obj.id if sonarr_obj else existing_series_obj.sonarr_id
-                    )
                     # update added_at if available and not already set
                     if series.added_at and not existing_series_obj.added_at:
                         existing_series_obj.added_at = series.added_at
@@ -864,16 +1153,24 @@ async def sync_series(
                 # if series doesn't exist, create new entry
                 else:
                     LOG.info(f"Adding new series: {series.name} ({tmdb_id})")
+                    media_rollup = _rollup_series_media_from_seasons(series.season_data)
                     new_series = Series(
                         title=series.name,
                         year=series.year,
                         tmdb_id=tmdb_id,
                         size=series.size,
-                        sonarr_id=sonarr_obj.id if sonarr_obj else None,
                         imdb_id=series.external_ids.imdb,
                         tvdb_id=series.external_ids.tvdb,
                         last_viewed_at=series.last_viewed_at,
                         view_count=series.view_count,
+                        has_hdr=media_rollup["has_hdr"],
+                        has_dolby_vision=media_rollup["has_dolby_vision"],
+                        max_video_width=media_rollup["max_video_width"],
+                        max_video_height=media_rollup["max_video_height"],
+                        video_codec_families=media_rollup["video_codec_families"],
+                        audio_codec_families=media_rollup["audio_codec_families"],
+                        max_audio_channels=media_rollup["max_audio_channels"],
+                        subtitle_languages=media_rollup["subtitle_languages"],
                     )
 
                     # set service-specific fields based on source
@@ -910,6 +1207,57 @@ async def sync_series(
             LOG.debug(
                 f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
             )
+
+            # refresh per instance Sonarr refs for active series
+            sonarr_clients = service_manager.sonarr_clients()
+            if not sonarr_clients and service_manager.sonarr:
+                sonarr_clients = {0: service_manager.sonarr}
+            if sonarr_clients:
+                series_rows = await session.execute(
+                    select(Series.id, Series.tmdb_id).where(Series.removed_at.is_(None))
+                )
+                series_id_by_tmdb = {
+                    tmdb_id: series_id for series_id, tmdb_id in series_rows
+                }
+
+                # accumulate resolved tag labels per series across all Sonarr instances
+                series_tags: dict[int, set[str]] = {}
+                for config_id, client in sonarr_clients.items():
+                    await session.execute(
+                        sql_delete(SeriesArrRef).where(
+                            SeriesArrRef.service_config_id == config_id
+                        )
+                    )
+                    all_series = await client.get_all_series()
+                    tag_list = await client.get_tags()
+                    id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
+                    for arr_series in all_series:
+                        if not arr_series.tmdb_id:
+                            continue
+                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        if series_id is None:
+                            continue
+                        session.add(
+                            SeriesArrRef(
+                                series_id=series_id,
+                                service_config_id=config_id,
+                                arr_series_id=arr_series.id,
+                                tmdb_id=arr_series.tmdb_id,
+                            )
+                        )
+                        for tag_id in arr_series.tags:
+                            label = id_to_label.get(tag_id)
+                            if label:
+                                series_tags.setdefault(series_id, set()).add(label)
+
+                # write resolved tags back to Series rows
+                for series_id in series_id_by_tmdb.values():
+                    result_row = await session.get(Series, series_id)
+                    if result_row is not None:
+                        tags = series_tags.get(series_id)
+                        result_row.arr_tags = sorted(tags) if tags else []
+
+                await session.commit()
 
             if allow_soft_delete:
                 series_to_delete = [
@@ -967,6 +1315,333 @@ async def sync_series(
         await tmdb_service.session.close()
 
 
+async def _run_supplemental_syncs() -> None:
+    """Run all supplemental play-count sync steps (Emby plugin + Tautulli).
+    Called at the end of both sync_media() and resync_media().
+    """
+    # emby/jellyfin playback reporting plugin sync (if applicable)
+    await sync_emby_playback_reporting_data()
+    # tautulli play history sync (if applicable) for plex
+    await sync_tautulli_playback_data()
+
+
+async def sync_emby_playback_reporting_data() -> None:
+    """``Jellyfin/Emby only`` - supplement movie and series view counts using the
+    Playback Reporting plugin.
+
+    Supports both the original Emby plugin (faush01/playback_reporting,
+    ConfigurationFileName ``playback_reporting.xml``) and the Jellyfin fork
+    (jellyfin/jellyfin-plugin-playbackreporting,
+    ConfigurationFileName ``Jellyfin.Plugin.PlaybackReporting.xml``). Both expose
+    the same ``POST /user_usage_stats/submit_custom_query`` endpoint.
+
+    After the normal sync the plugin (if installed) provides play history filtered by
+    actual play duration, which eliminates brief scrubs that the native media server
+    play count API would otherwise count. The supplemental counts are applied as
+    ``max(existing, plugin_count)`` so existing data is never decreased.
+
+    Movies are linked via ``MovieVersion.service_item_id`` (where service matches the
+    main server).  Series are linked by aggregating episode level plugin data through
+    the Items API to resolve each episode's parent series, then joining against
+    ``SeriesServiceRef.service_id`` (where service matches the main server).
+
+    Does nothing if the main media server is not Jellyfin or Emby, or if the plugin
+    is not installed and active.
+    """
+    async with async_db() as session:
+        main = await _get_main_media_server(session)
+    if not main or main.service_type not in {Service.JELLYFIN, Service.EMBY}:
+        return
+
+    service_instance = await _get_media_service_instance(main.service_type)
+    if not isinstance(service_instance, (JellyfinService, EmbyService)):
+        return
+
+    server_service = main.service_type
+    LOG.info(f"Checking for Playback Reporting plugin on {server_service}...")
+    if not await service_instance.has_playback_reporting_plugin():
+        LOG.info("Playback Reporting plugin not found (skipping supplemental sync)")
+        return
+
+    LOG.info("Playback Reporting plugin found (syncing supplemental play data)")
+
+    #### movies ####
+    movie_stats = await service_instance.get_playback_reporting_stats(15, "Movie")
+    if movie_stats:
+        LOG.info(
+            f"Playback Reporting plugin returned play counts for {len(movie_stats)} movies"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(MovieVersion.service_item_id, Movie.id, Movie.view_count)
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == server_service,
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for item_id, movie_id, current_count in rows:
+                plugin_count = movie_stats.get(item_id)
+                if plugin_count and plugin_count > current_count:
+                    await session.execute(
+                        sql_update(Movie)
+                        .where(Movie.id == movie_id)
+                        .values(view_count=plugin_count)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(
+            f"Updated view_count for {updated} movies from Playback Reporting plugin"
+        )
+    else:
+        LOG.debug("No movie play data returned from Playback Reporting plugin")
+
+    #### series (aggregated from episode level data) ####
+    episode_stats = await service_instance.get_playback_reporting_stats(7, "Episode")
+    if not episode_stats:
+        LOG.debug("No episode play data returned from Playback Reporting plugin")
+        return
+
+    LOG.info(
+        f"Playback Reporting plugin returned play counts for {len(episode_stats)} episodes"
+    )
+
+    # resolve episode item IDs -> parent series item IDs via the Jellyfin Items API
+    episode_to_series = await service_instance.get_series_ids_for_episode_ids(
+        list(episode_stats.keys())
+    )
+    if not episode_to_series:
+        LOG.warning(
+            "Could not resolve any episode IDs to series IDs (skipping series update)"
+        )
+        return
+
+    # sum episode play counts per series item ID
+    series_play_counts: dict[str, int] = {}
+    for ep_id, ep_count in episode_stats.items():
+        parent_series_id = episode_to_series.get(ep_id)
+        if parent_series_id:
+            series_play_counts[parent_series_id] = (
+                series_play_counts.get(parent_series_id, 0) + ep_count
+            )
+
+    if not series_play_counts:
+        return
+
+    async with async_db() as session:
+        rows = (
+            await session.execute(
+                select(
+                    SeriesServiceRef.service_id,
+                    Series.id,
+                    Series.view_count,
+                )
+                .join(Series, SeriesServiceRef.series_id == Series.id)
+                .where(
+                    SeriesServiceRef.service == server_service,
+                    Series.removed_at.is_(None),
+                )
+            )
+        ).all()
+
+        updated = 0
+        for service_id, series_id, current_count in rows:
+            plugin_count = series_play_counts.get(service_id)
+            if plugin_count and plugin_count > current_count:
+                await session.execute(
+                    sql_update(Series)
+                    .where(Series.id == series_id)
+                    .values(view_count=plugin_count)
+                )
+                updated += 1
+
+        await session.commit()
+
+    LOG.info(f"Updated view_count for {updated} series from Playback Reporting plugin")
+
+
+async def sync_tautulli_playback_data() -> None:
+    """Supplement movie and series view counts / last-viewed timestamps using
+    Tautulli play history.
+
+    Tautulli stores complete per-user play history that Plex's own API may under-
+    report (e.g. plays from managed accounts, partially-counted plays).  The
+    supplemental counts are applied as ``max(existing, tautulli_count)`` so
+    existing data is never decreased.
+
+    Movies are linked via ``MovieVersion.service_item_id`` (where service == PLEX).
+    Series are linked via ``SeriesServiceRef.service_id`` (where service == PLEX)
+    using series-level aggregation of episode history records.
+
+    On first run a full history pull is performed.  On subsequent runs only
+    records on/after ``last_synced_at`` (minus a 1-day overlap buffer) are
+    fetched.  The timestamp is persisted in ``ServiceConfig.extra_settings``
+    on the Tautulli config row.
+
+    Does nothing if Tautulli is not configured/enabled.
+    """
+    if service_manager.tautulli is None:
+        return
+
+    # load Tautulli ServiceConfig to read/write last_synced_at
+    async with async_db() as session:
+        result = await session.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type == Service.TAUTULLI,
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+        tautulli_config = result.scalar_one_or_none()
+
+    if tautulli_config is None:
+        return
+
+    extra: dict[str, Any] = dict(tautulli_config.extra_settings or {})
+    raw_ts = extra.get("last_synced_at")
+    last_synced_at: datetime | None = None
+    if raw_ts:
+        try:
+            last_synced_at = datetime.fromisoformat(raw_ts)
+        except (ValueError, TypeError):
+            last_synced_at = None
+
+    LOG.info(
+        "Syncing Tautulli playback data"
+        + (f" (since {last_synced_at.date()})" if last_synced_at else " (full pull)")
+    )
+
+    try:
+        movie_counts = await service_manager.tautulli.get_play_counts(
+            "movie", since=last_synced_at
+        )
+        episode_counts = await service_manager.tautulli.get_play_counts(
+            "episode", since=last_synced_at
+        )
+    except Exception as e:
+        LOG.error(f"Failed to fetch Tautulli history: {e}")
+        return
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    #### movies ####
+    if movie_counts:
+        LOG.info(
+            f"Tautulli returned play data for {len(movie_counts)} unique movie rating keys"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        MovieVersion.service_item_id,
+                        Movie.id,
+                        Movie.view_count,
+                        Movie.last_viewed_at,
+                    )
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == Service.PLEX,
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for item_id, movie_id, current_count, current_lva in rows:
+                try:
+                    key = int(item_id)
+                except (ValueError, TypeError):
+                    continue
+                entry = movie_counts.get(key)
+                if not entry:
+                    continue
+                taut_count, taut_lva = entry
+                new_count = max(current_count or 0, taut_count)
+                new_lva = (
+                    max(filter(None, [current_lva, taut_lva]))
+                    if (current_lva or taut_lva)
+                    else None
+                )
+                if new_count != current_count or new_lva != current_lva:
+                    await session.execute(
+                        sql_update(Movie)
+                        .where(Movie.id == movie_id)
+                        .values(view_count=new_count, last_viewed_at=new_lva)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(f"Updated {updated} movies from Tautulli playback data")
+    else:
+        LOG.debug("No movie play data returned from Tautulli")
+
+    #### series (aggregated from episode-level data) ####
+    if episode_counts:
+        LOG.info(
+            f"Tautulli returned episode play data for {len(episode_counts)} unique series rating keys"
+        )
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        SeriesServiceRef.service_id,
+                        Series.id,
+                        Series.view_count,
+                        Series.last_viewed_at,
+                    )
+                    .join(Series, SeriesServiceRef.series_id == Series.id)
+                    .where(
+                        SeriesServiceRef.service == Service.PLEX,
+                        Series.removed_at.is_(None),
+                    )
+                )
+            ).all()
+
+            updated = 0
+            for service_id, series_id, current_count, current_lva in rows:
+                try:
+                    key = int(service_id)
+                except (ValueError, TypeError):
+                    continue
+                entry = episode_counts.get(key)
+                if not entry:
+                    continue
+                taut_count, taut_lva = entry
+                new_count = max(current_count or 0, taut_count)
+                new_lva = (
+                    max(filter(None, [current_lva, taut_lva]))
+                    if (current_lva or taut_lva)
+                    else None
+                )
+                if new_count != current_count or new_lva != current_lva:
+                    await session.execute(
+                        sql_update(Series)
+                        .where(Series.id == series_id)
+                        .values(view_count=new_count, last_viewed_at=new_lva)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(f"Updated {updated} series from Tautulli playback data")
+    else:
+        LOG.debug("No episode play data returned from Tautulli")
+
+    # persist the sync timestamp so next run is incremental
+    async with async_db() as session:
+        extra["last_synced_at"] = now.isoformat()
+        await session.execute(
+            sql_update(ServiceConfig)
+            .where(ServiceConfig.id == tautulli_config.id)
+            .values(extra_settings=extra)
+        )
+        await session.commit()
+    LOG.info("Tautulli playback sync complete")
+
+
 async def sync_media() -> dict[str, Any] | None:
     """
     Main sync tasks task.
@@ -1008,6 +1683,9 @@ async def sync_media() -> dict[str, Any] | None:
             if svr.service_type != main_server and svr.service_type in MEDIA_SERVERS:
                 LOG.debug(f"Linked watch sync from {svr.service_type}")
                 await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
+
+        # gather supplemental sync data
+        await _run_supplemental_syncs()
 
         return {"library_sync": library_sync_result}
 
@@ -1096,6 +1774,23 @@ async def resync_media() -> None:
     async with track_task_execution(Task.RESYNC_MEDIA):
         try:
             async with async_db() as session:
+                # movie_version scoped rows must be detached before deleting versions
+                # when switching main media server, old version IDs are invalid anyway
+                await session.execute(
+                    sql_update(ReclaimCandidate)
+                    .where(ReclaimCandidate.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
+                await session.execute(
+                    sql_update(ProtectedMedia)
+                    .where(ProtectedMedia.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
+                await session.execute(
+                    sql_update(ProtectionRequest)
+                    .where(ProtectionRequest.movie_version_id.is_not(None))
+                    .values(movie_version_id=None)
+                )
                 await session.execute(sql_delete(MovieVersion))
                 await session.execute(sql_delete(SeriesServiceRef))
                 await session.execute(sql_update(Movie).values(size=0))
@@ -1109,6 +1804,7 @@ async def resync_media() -> None:
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
             await sync_series(allow_soft_delete=False)
+            await _run_supplemental_syncs()
         except Exception as e:
             LOG.error(f"Error during main server resync: {e}", exc_info=True)
             raise
@@ -1221,51 +1917,12 @@ async def sync_media_libraries() -> dict[str, Any]:
                     await session.delete(lib)
                     removed_ids.add(lib_id)
 
-            # scrub removed library IDs from any rules that reference them
+            # Advanced rules now keep library scope inside the rule definition.
+            # We surface stale-library references through alerts instead of
+            # mutating rule definitions during sync.
             affected_rules: list[dict[str, Any]] = []
-            if removed_ids:
-                rules_result = await session.execute(
-                    select(ReclaimRule).where(ReclaimRule.library_ids.is_not(None))
-                )
-                for rule in rules_result.scalars().all():
-                    if rule.library_ids and any(
-                        lid in removed_ids for lid in rule.library_ids
-                    ):
-                        removed_from_rule = [
-                            lid for lid in rule.library_ids if lid in removed_ids
-                        ]
-                        cleaned = [
-                            lid for lid in rule.library_ids if lid not in removed_ids
-                        ]
-                        rule.library_ids = cleaned if cleaned else None
-                        affected_rules.append(
-                            {
-                                "id": rule.id,
-                                "name": rule.name,
-                                "removed_library_ids": removed_from_rule,
-                                "remaining_library_ids": cleaned,
-                            }
-                        )
-                        LOG.info(
-                            f"Removed stale library IDs {removed_ids} from rule '{rule.name}'"
-                        )
 
             await session.commit()
-
-            if affected_rules:
-                try:
-                    await notify_admins(
-                        notification_type=NotificationType.ADMIN_MESSAGE,
-                        title="Rules Updated After Library Sync",
-                        message=(
-                            f"Library sync removed missing libraries from {len(affected_rules)} rule(s): "
-                            + ", ".join(rule["name"] for rule in affected_rules)
-                        ),
-                    )
-                except Exception as notify_error:
-                    LOG.error(
-                        f"Failed to notify admins about rule library cleanup: {notify_error}"
-                    )
 
             LOG.info(
                 f"Updated service libraries: {len(current_ids)} total libraries "

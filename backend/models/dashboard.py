@@ -11,6 +11,9 @@ class DashboardKpis(BaseModel):
     reclaimable_movies_gb: float
     reclaimable_series_gb: float
     reclaimable_total_gb: float
+    reclaimed_movies: int
+    reclaimed_series: int
+    reclaimed_total_gb: float
 
 
 class DashboardRequestsSummary(BaseModel):

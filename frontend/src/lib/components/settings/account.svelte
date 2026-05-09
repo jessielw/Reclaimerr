@@ -253,7 +253,7 @@
                   : avatarInputEl && avatarInputEl.click()}
             >
               {#if avatarInputState === AVATAR_UPLOADING}
-                <Spinner size="sm" class="text-primary-foreground" />
+                <Spinner size="sm" class="text-primary" />
               {:else if avatarInputState === AVATAR_SAVE}
                 <Save class="size-3/5" />
               {:else}
@@ -360,7 +360,7 @@
             disabled={profileUpdating}
           >
             {#if profileUpdating}
-              <Spinner />
+              <Spinner class="text-primary" />
             {:else}
               <Save strokeWidth={1.5} class="size-3/5" />
             {/if}
@@ -450,7 +450,7 @@
             disabled={passwordUpdating}
           >
             {#if passwordUpdating}
-              <Spinner />
+              <Spinner class="text-primary" />
             {:else}
               <Save strokeWidth={1.5} class="size-3/5" />
             {/if}

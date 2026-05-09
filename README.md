@@ -51,19 +51,25 @@ As a result, this project will close pull requests that appear to be mostly or w
 - Configure rules to automatically reclaim disk space
 - Supports **Jellyfin**, **Plex**, and **Emby** _(all at once if needed)_
   - Designate **one** server as the **main** server; supplemental data (such as watch history) is gathered from the others if using more than one media server. **Note: All servers must manage the same physical media library**
+- Automatically supplements watch data for **Jellyfin/Emby** via **playback reporting plugin** if the plugin is installed
+- Supports **Tautulli** to supplement watch data for **Plex**
 - Configurable task scheduling (cron/time based)
 - Automatically scans media eligible for reclamation
 - Media library items **protection** system
   - This system adds "protection" that will prevent them from being considered for deletion
   - Users can request protection (to be approved or denied by users with appropriate permissions)
   - Time based control for protection duration
+- Users can request **deletions** for media
 - Multi-user support with a permission system
 - Notifications via [Apprise](https://appriseit.com/services/), supporting over **133** services at the time of writing
+- Supports multiple instances of Sonarr/Radarr
 - Remove or unmonitor media from Radarr and Sonarr (if configured)
 - Remove requests from Seerr
 - Delete files from disk
   - If Radarr or Sonarr are configured, Reclaimerr processes deletion through them, only falling back to the main server if needed
 - Very lightweight and efficient; avoids spinning up disks outside of deletions (all data is sourced directly from your media servers)
+- Can move instead of delete files if enabled for archival reasons
+- Supports generic post action webhooks (Autopulse, etc.)
 - Light and dark mode
 - Responsive UI (works great on mobile)
 
@@ -119,7 +125,7 @@ API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000
 
-# secrets — leave blank to auto-generate stable values on first launch (recommended),
+# secrets - leave blank to auto-generate stable values on first launch (recommended),
 # or set your own (min 32 characters, e.g. `openssl rand -hex 32`)
 # JWT_SECRET=
 # ENCRYPTION_KEY=
@@ -144,7 +150,16 @@ services:
     restart: unless-stopped
     env_file: ".env"
     volumes:
+      # persist app data
       - ./data:/app/data
+
+      # bind mount for media files (adjust the host path as needed) - this is needed for
+      # Reclaimerr to clean up additional files on delete when deleting via the main media server
+      # directly
+      - /media:/media
+
+      # optional volume for moved files (adjust the host path as needed)
+      # - /moved_files:/moved_files
     ports:
       - "8000:8000"
 ```
@@ -200,10 +215,14 @@ The backend is available at [http://localhost:8000](http://localhost:8000) and t
 ![image](public/movies.png)
 ![image](public/series.png)
 ![image](public/reclaim-candidates.png)
+![image](public/reclaim-candidates-series.png)
 ![image](public/settings-notifications.png)
 ![image](public/settings-servers.png)
 ![image](public/settings-tasks.png)
 ![image](public/settings-users.png)
+![image](public/settings-rules.png)
+![image](public/settings-rules-ext.png)
+![image](public/mobile1.png) ![image](public/mobile2.png) ![image](public/mobile3.png)
 
 ## Contributing
 

@@ -15,6 +15,7 @@
     error?: string;
     posterSize?: number;
     onRequestException?: (media: MediaItem) => void;
+    onRequestDelete?: (media: MediaItem) => void;
     onViewDetails?: (media: MediaItem) => void;
     onPageChange?: (page: number) => void;
   }
@@ -26,6 +27,7 @@
     error = "",
     posterSize = 150,
     onRequestException,
+    onRequestDelete,
     onViewDetails,
     onPageChange,
   }: Props = $props();
@@ -34,7 +36,7 @@
 <div class="w-full">
   {#if loading}
     <div class="flex justify-center items-center py-20">
-      <Spinner class="w-12 h-12" />
+      <Spinner class="w-12 h-12 text-primary" />
     </div>
   {:else if error}
     <div class="text-center py-20">
@@ -53,7 +55,13 @@
       style="grid-template-columns: repeat(auto-fill, minmax({posterSize}px, 1fr))"
     >
       {#each data.items as media (media.id)}
-        <MediaCard {media} {mediaType} {onRequestException} {onViewDetails} />
+        <MediaCard
+          {media}
+          {mediaType}
+          {onRequestException}
+          {onRequestDelete}
+          {onViewDetails}
+        />
       {/each}
     </div>
 

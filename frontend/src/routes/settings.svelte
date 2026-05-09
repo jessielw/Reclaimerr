@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { get_api, post_api } from "$lib/api";
+  import { delete_api, get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
+  import InstanceManagerBar from "$lib/components/settings/instance-manager-bar.svelte";
   import MediaServers from "$lib/components/settings/media-servers.svelte";
   import Notifications from "$lib/components/settings/notifications.svelte";
   import Tasks from "$lib/components/settings/tasks/tasks.svelte";
@@ -12,17 +13,25 @@
   import About from "$lib/components/settings/about.svelte";
   import General from "$lib/components/settings/general.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
+  import * as Select from "$lib/components/ui/select";
   import TestTube from "@lucide/svelte/icons/test-tube";
   import Save from "@lucide/svelte/icons/save";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
+  import Plus from "@lucide/svelte/icons/plus";
   import Wrench from "@lucide/svelte/icons/wrench";
   import Bell from "@lucide/svelte/icons/bell";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Boxes from "@lucide/svelte/icons/boxes";
   import Server from "@lucide/svelte/icons/server";
-  import RadarrSVG from "$lib/components/svgs/RadarrSVG.svelte";
-  import SonarrSVG from "$lib/components/svgs/SonarrSVG.svelte";
-  import SeerrSVG from "$lib/components/svgs/SeerrSVG.svelte";
+  import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
+  import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
+  import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
+  import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import Filter from "@lucide/svelte/icons/filter";
@@ -37,6 +46,7 @@
     icon: any;
     baseUrlPlaceholder?: string;
     adminOnly?: boolean;
+    lockName?: boolean;
   };
 
   type TabGroup = {
@@ -46,6 +56,8 @@
   };
 
   interface ServiceConfig {
+    id?: number | null;
+    name?: string;
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
@@ -57,11 +69,17 @@
     apiKeyIsSet: boolean;
   };
 
+  type ConfirmIntent =
+    | { kind: "switch-instance"; serviceId: string; targetId: number | null }
+    | { kind: "new-instance"; serviceId: string }
+    | { kind: "delete-instance"; serviceId: string };
+
   // non-media-server service tabs (jellyfin/plex managed by MediaServers component)
   const serviceTabs = [
     SettingsTab.Radarr,
     SettingsTab.Sonarr,
     SettingsTab.Seerr,
+    SettingsTab.Tautulli,
   ];
 
   // default extra settings for services (e.g. radarr/sonarr timeout) - these will be sent
@@ -104,6 +122,15 @@
           icon: SeerrSVG,
           baseUrlPlaceholder: "e.g. http://localhost:5055",
           adminOnly: true,
+          lockName: true,
+        },
+        {
+          id: SettingsTab.Tautulli,
+          label: "Tautulli",
+          icon: TautulliSVG,
+          baseUrlPlaceholder: "e.g. http://localhost:8181",
+          adminOnly: true,
+          lockName: true,
         },
       ],
     },
@@ -187,9 +214,11 @@
       : SettingsTab.Notifications,
   );
 
+  // empty state for a service
   const emptyServiceState = (serviceId?: string): ServiceState => ({
     config: {
       enabled: false,
+      name: serviceId ? toTitleCase(serviceId) : "",
       baseUrl: "",
       apiKey: "",
       extraSettings: serviceId ? (DEFAULT_EXTRA_SETTINGS[serviceId] ?? {}) : {},
@@ -201,12 +230,201 @@
     [SettingsTab.Radarr]: emptyServiceState(SettingsTab.Radarr),
     [SettingsTab.Sonarr]: emptyServiceState(SettingsTab.Sonarr),
     [SettingsTab.Seerr]: emptyServiceState(SettingsTab.Seerr),
+    [SettingsTab.Tautulli]: emptyServiceState(SettingsTab.Tautulli),
   });
+  let arrInstances = $state<Record<string, ServiceConfig[]>>({
+    [SettingsTab.Radarr]: [],
+    [SettingsTab.Sonarr]: [],
+  });
+  let showDisabledArrInstances = $state<Record<string, boolean>>({
+    [SettingsTab.Radarr]: false,
+    [SettingsTab.Sonarr]: false,
+  });
+  let showConfirmDialog = $state(false);
+  let confirmTitle = $state("");
+  let confirmDescription = $state("");
+  let confirmActionLabel = $state("Confirm");
+  let confirmActionClass = $state("cursor-pointer hover");
+  let confirmIntent = $state<ConfirmIntent | null>(null);
+
+  // helper to filter arr instances based on showDisabled toggle
+  const filteredArrInstances = (serviceId: string) => {
+    const all = arrInstances[serviceId] ?? [];
+    if (showDisabledArrInstances[serviceId]) return all;
+    return all.filter((instance) => instance.enabled);
+  };
+
+  // helper to get instance name for select trigger
+  const getArrInstanceName = (serviceId: string, id: number | null) => {
+    if (id === null) return null;
+    return (
+      (arrInstances[serviceId] ?? []).find((item) => item.id === id)?.name ??
+      null
+    );
+  };
+
+  // helper to check if current config has unsaved changes compared to loaded instances
+  const hasDirtyConfig = (serviceId: string) => {
+    const current = serviceState[serviceId as SettingsTab].config;
+    const saved = (arrInstances[serviceId] ?? []).find(
+      (x) => x.id === current.id,
+    );
+    if (!saved) {
+      return !!(
+        current.baseUrl.trim() ||
+        current.apiKey.trim() ||
+        (current.name ?? "").trim() !== toTitleCase(serviceId) ||
+        current.enabled
+      );
+    }
+    return (
+      current.name !== saved.name ||
+      current.enabled !== saved.enabled ||
+      current.baseUrl !== saved.baseUrl ||
+      JSON.stringify(current.extraSettings ?? {}) !==
+        JSON.stringify(saved.extraSettings ?? {}) ||
+      !!current.apiKey.trim()
+    );
+  };
+
+  // confirm dialog handlers
+  const openConfirmDialog = (
+    intent: ConfirmIntent,
+    options: {
+      title: string;
+      description: string;
+      actionLabel: string;
+      destructive?: boolean;
+    },
+  ) => {
+    confirmIntent = intent;
+    confirmTitle = options.title;
+    confirmDescription = options.description;
+    confirmActionLabel = options.actionLabel;
+    confirmActionClass = options.destructive
+      ? "cursor-pointer hover bg-destructive text-destructive-foreground hover:bg-destructive/90"
+      : "cursor-pointer hover";
+    showConfirmDialog = true;
+  };
+
+  const closeConfirmDialog = () => {
+    showConfirmDialog = false;
+    confirmIntent = null;
+  };
+
+  // handlers for arr instance selection/creation/deletion with confirm dialog if dirty config exists
+  const applyArrInstanceSelection = (serviceId: string, id: number | null) => {
+    const instance = arrInstances[serviceId]?.find((item) => item.id === id);
+    if (!instance) return;
+    serviceState[serviceId as SettingsTab].config = {
+      ...instance,
+      apiKey: "",
+      extraSettings: resolveExtraSettings(instance.extraSettings, serviceId),
+    };
+    serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
+  };
+
+  // create new instance draft with confirm if dirty
+  const createNewArrInstanceDraft = (serviceId: string) => {
+    serviceState[serviceId as SettingsTab] = emptyServiceState(serviceId);
+  };
+
+  // instance selection with confirm if dirty
+  const selectArrInstance = (serviceId: string, id: number | null) => {
+    if (hasDirtyConfig(serviceId)) {
+      openConfirmDialog(
+        { kind: "switch-instance", serviceId, targetId: id },
+        {
+          title: "Discard Unsaved Changes?",
+          description:
+            "You have unsaved changes. Switching instances will discard them.",
+          actionLabel: "Discard and Switch",
+        },
+      );
+      return;
+    }
+    applyArrInstanceSelection(serviceId, id);
+  };
+
+  // delete instance with confirm
+  const newArrInstance = (serviceId: string) => {
+    if (hasDirtyConfig(serviceId)) {
+      openConfirmDialog(
+        { kind: "new-instance", serviceId },
+        {
+          title: "Discard Unsaved Changes?",
+          description:
+            "You have unsaved changes. Creating a new draft will discard them.",
+          actionLabel: "Discard and Create",
+        },
+      );
+      return;
+    }
+    createNewArrInstanceDraft(serviceId);
+  };
+
+  // perform instance deletion
+  const performDeleteArrInstance = async (serviceId: string) => {
+    const current = serviceState[serviceId as SettingsTab].config;
+    if (!current.id) return;
+    try {
+      const response: { message: string } = await delete_api(
+        `/api/settings/service/${current.id}`,
+      );
+      arrInstances[serviceId] = (arrInstances[serviceId] ?? []).filter(
+        (x) => x.id !== current.id,
+      );
+      const next = filteredArrInstances(serviceId)[0];
+      if (next?.id) selectArrInstance(serviceId, next.id);
+      else
+        serviceState[serviceId as SettingsTab] = emptyServiceState(serviceId);
+      toast.success(response.message);
+    } catch (err: any) {
+      toast.error(
+        `Error deleting ${toTitleCase(serviceId)} instance: ${err.message}`,
+      );
+    }
+  };
+
+  // delete instance with confirm
+  const deleteArrInstance = (serviceId: string) => {
+    const current = serviceState[serviceId as SettingsTab].config;
+    if (!current.id) return;
+    openConfirmDialog(
+      { kind: "delete-instance", serviceId },
+      {
+        title: "Delete Instance",
+        description: `Permanently delete ${current.name ?? toTitleCase(serviceId)}? This cannot be undone.`,
+        actionLabel: "Delete",
+        destructive: true,
+      },
+    );
+  };
+
+  // handler for confirm dialog action button
+  const confirmPendingAction = async () => {
+    const intent = confirmIntent;
+    if (!intent) return;
+    closeConfirmDialog();
+
+    if (intent.kind === "switch-instance") {
+      applyArrInstanceSelection(intent.serviceId, intent.targetId);
+      return;
+    }
+
+    if (intent.kind === "new-instance") {
+      createNewArrInstanceDraft(intent.serviceId);
+      return;
+    }
+
+    await performDeleteArrInstance(intent.serviceId);
+  };
 
   // handler for service config changes (radarr/sonarr/seerr only)
   const handleServiceChange = (event: CustomEvent) => {
     const { field, value } = event.detail;
     if (field === "enabled") serviceState[activeTab].config.enabled = value;
+    else if (field === "name") serviceState[activeTab].config.name = value;
     else if (field === "baseUrl")
       serviceState[activeTab].config.baseUrl = value;
     else if (field === "apiKey") serviceState[activeTab].config.apiKey = value;
@@ -239,6 +457,8 @@
       // only send api_key if the user typed a new one (backend resolves existing key otherwise)
       const payload: Record<string, unknown> = {
         service_type: serviceId,
+        id: config.id,
+        name: config.name || toTitleCase(serviceId),
         enabled: config.enabled,
         base_url: config.baseUrl.replace(/\/+$/, ""),
       };
@@ -271,12 +491,16 @@
         message: string;
         data: {
           service_type: string;
+          id: number;
+          name: string;
           enabled: boolean;
           base_url: string;
           extra_settings?: Record<string, any>;
         };
       } = await post_api("/api/settings/save/service", {
         service_type: serviceId,
+        id: config.id,
+        name: config.name || toTitleCase(serviceId),
         base_url: config.baseUrl.replace(/\/+$/, ""),
         enabled: config.enabled,
         extra_settings: config.extraSettings,
@@ -285,6 +509,8 @@
       });
       // update state: clear the typed key, keep baseUrl/enabled from response
       serviceState[serviceId as SettingsTab].config = {
+        id: response.data.id,
+        name: response.data.name,
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
         extraSettings: resolveExtraSettings(
@@ -294,6 +520,17 @@
         apiKey: "",
       };
       serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
+      if (
+        serviceId === SettingsTab.Radarr ||
+        serviceId === SettingsTab.Sonarr
+      ) {
+        const saved = serviceState[serviceId as SettingsTab].config;
+        const existing = arrInstances[serviceId] ?? [];
+        arrInstances[serviceId] = [
+          ...existing.filter((item) => item.id !== saved.id),
+          { ...saved },
+        ].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+      }
       toast.success(response.message);
     } catch (err: any) {
       toast.error(
@@ -313,22 +550,60 @@
           string,
           {
             enabled: boolean;
+            id?: number;
+            name?: string;
             base_url: string;
             api_key: string;
             extra_settings?: Record<string, any>;
+            instances?: Array<{
+              id: number;
+              name: string;
+              enabled: boolean;
+              base_url: string;
+              api_key: string;
+              extra_settings?: Record<string, any>;
+            }>;
           }
         >
       >("/api/settings/services");
 
       for (const [serviceId, config] of Object.entries(rawServices)) {
         if ((MEDIA_SERVERS as readonly string[]).includes(serviceId)) continue;
+        const instance =
+          (serviceId === SettingsTab.Radarr ||
+            serviceId === SettingsTab.Sonarr) &&
+          config.instances?.length
+            ? config.instances[0]
+            : config;
+        if (
+          serviceId === SettingsTab.Radarr ||
+          serviceId === SettingsTab.Sonarr
+        ) {
+          arrInstances[serviceId] =
+            config.instances?.map((item) => ({
+              id: item.id,
+              name: item.name,
+              enabled: item.enabled,
+              baseUrl: item.base_url,
+              apiKey: "",
+              extraSettings: resolveExtraSettings(
+                item.extra_settings,
+                serviceId,
+              ),
+            })) ?? [];
+        }
         serviceState[serviceId as SettingsTab].config = {
-          enabled: config.enabled,
-          baseUrl: config.base_url,
+          id: instance.id ?? null,
+          name: instance.name ?? toTitleCase(serviceId),
+          enabled: instance.enabled,
+          baseUrl: instance.base_url,
           apiKey: "",
-          extraSettings: resolveExtraSettings(config.extra_settings, serviceId),
+          extraSettings: resolveExtraSettings(
+            instance.extra_settings,
+            serviceId,
+          ),
         };
-        serviceState[serviceId as SettingsTab].apiKeyIsSet = !!config.api_key;
+        serviceState[serviceId as SettingsTab].apiKeyIsSet = !!instance.api_key;
       }
     } catch (err: any) {
       toast.warning(`Error loading settings: ${err.message}`);
@@ -440,10 +715,101 @@
         <div class="flex-1 p-6 min-w-0">
           <!-- settings -->
           {#if serviceTabs.includes(activeTab)}
+            {#if activeTab === SettingsTab.Radarr || activeTab === SettingsTab.Sonarr}
+              {#snippet instanceSelector()}
+                <Label class="space-y-1">
+                  <span class="text-sm font-medium text-foreground"
+                    >Instance</span
+                  >
+                  <Select.Root
+                    type="single"
+                    value={serviceState[activeTab].config.id !== null
+                      ? String(serviceState[activeTab].config.id)
+                      : undefined}
+                    onValueChange={(value) =>
+                      selectArrInstance(
+                        activeTab,
+                        value ? Number(value) : null,
+                      )}
+                  >
+                    <Select.Trigger class="min-w-56 text-left">
+                      {#if serviceState[activeTab].config.id !== null}
+                        {getArrInstanceName(
+                          activeTab,
+                          serviceState[activeTab].config.id ?? null,
+                        ) ?? "Selected instance"}
+                      {:else}
+                        Select an instance...
+                      {/if}
+                    </Select.Trigger>
+                    <Select.Content>
+                      {#if filteredArrInstances(activeTab).length === 0}
+                        <Select.Item value="__empty" disabled>
+                          No instances available
+                        </Select.Item>
+                      {:else}
+                        {#each filteredArrInstances(activeTab) as instance}
+                          <Select.Item
+                            value={String(instance.id ?? "")}
+                            label={instance.name}
+                          >
+                            {instance.name}
+                          </Select.Item>
+                        {/each}
+                      {/if}
+                    </Select.Content>
+                  </Select.Root>
+                </Label>
+              {/snippet}
+              {#snippet instanceActions()}
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    class="cursor-pointer"
+                    onclick={() =>
+                      (showDisabledArrInstances[activeTab] =
+                        !showDisabledArrInstances[activeTab])}
+                  >
+                    {#if showDisabledArrInstances[activeTab]}
+                      <EyeOff class="size-3.5" />
+                      Hide Disabled
+                    {:else}
+                      <Eye class="size-3.5" />
+                      Show Disabled
+                    {/if}
+                  </Button>
+                  <Button
+                    size="sm"
+                    class="cursor-pointer bg-add/70 hover:bg-add/80"
+                    onclick={() => newArrInstance(activeTab)}
+                  >
+                    <Plus class="size-3.5" />
+                    New
+                  </Button>
+                  <Button
+                    size="sm"
+                    class="cursor-pointer bg-destructive/70 hover:bg-destructive/80"
+                    onclick={() => deleteArrInstance(activeTab)}
+                    disabled={!serviceState[activeTab].config.id}
+                  >
+                    <Trash2 class="size-3.5" />
+                    Delete
+                  </Button>
+                </div>
+              {/snippet}
+              <InstanceManagerBar
+                selector={instanceSelector}
+                actions={instanceActions}
+              />
+            {/if}
             <ServiceConfigForm
               tabLabel={tabs.find((t) => t.id === activeTab)?.label || ""}
               tabIcon={getTabIcon(activeTab)}
               enabled={serviceState[activeTab].config.enabled}
+              name={serviceState[activeTab].config.name}
+              lockedName={tabs.find((t) => t.id === activeTab)?.lockName
+                ? tabs.find((t) => t.id === activeTab)?.label
+                : undefined}
               baseUrl={serviceState[activeTab].config.baseUrl}
               apiKey={serviceState[activeTab].config.apiKey}
               apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
@@ -525,3 +891,38 @@
     {/if}
   </div>
 </div>
+
+<AlertDialog.Root
+  open={showConfirmDialog}
+  onOpenChange={(value) => {
+    showConfirmDialog = value;
+    if (!value) confirmIntent = null;
+  }}
+>
+  <AlertDialog.Content
+    class="bg-card border border-border rounded-lg p-6 max-w-md w-full"
+  >
+    <AlertDialog.Header>
+      <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2">
+        {confirmTitle}
+      </AlertDialog.Title>
+      <AlertDialog.Description class="text-muted-foreground">
+        {confirmDescription}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="flex justify-end gap-3 pt-4">
+      <AlertDialog.Cancel
+        class="cursor-pointer hover text-foreground bg-secondary"
+        onclick={closeConfirmDialog}
+      >
+        Cancel
+      </AlertDialog.Cancel>
+      <AlertDialog.Action
+        class={confirmActionClass}
+        onclick={confirmPendingAction}
+      >
+        {confirmActionLabel}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>

@@ -16,6 +16,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    ReclaimHistory,
     Series,
     ServiceConfig,
     TaskRun,
@@ -136,6 +137,20 @@ async def get_dashboard(
                 )
                 .scalar_subquery()
                 .label("media_server_count"),
+                select(func.count())
+                .select_from(ReclaimHistory)
+                .where(ReclaimHistory.media_type == MediaType.MOVIE)
+                .scalar_subquery()
+                .label("reclaimed_movies"),
+                select(func.count())
+                .select_from(ReclaimHistory)
+                .where(ReclaimHistory.media_type == MediaType.SERIES)
+                .scalar_subquery()
+                .label("reclaimed_series"),
+                select(func.coalesce(func.sum(ReclaimHistory.size), 0))
+                .select_from(ReclaimHistory)
+                .scalar_subquery()
+                .label("reclaimed_total_size"),
             )
         )
     ).one()
@@ -152,6 +167,9 @@ async def get_dashboard(
     mine_pending = summary_row.mine_pending or 0
     mine_active = summary_row.mine_active or 0
     media_server_configured = (summary_row.media_server_count or 0) > 0
+    reclaimed_movies = summary_row.reclaimed_movies or 0
+    reclaimed_series = summary_row.reclaimed_series or 0
+    reclaimed_total_size = summary_row.reclaimed_total_size or 0
 
     services: list[DashboardServiceSummary] = []
     if is_admin:
@@ -327,6 +345,9 @@ async def get_dashboard(
         reclaimable_total_gb=round(
             float(bytes_to_gb(movie_size_total + series_size_total)), 2
         ),
+        reclaimed_movies=reclaimed_movies,
+        reclaimed_series=reclaimed_series,
+        reclaimed_total_gb=round(float(bytes_to_gb(reclaimed_total_size)), 2),
     )
     request_summary = DashboardRequestsSummary(
         pending_count=pending_requests,

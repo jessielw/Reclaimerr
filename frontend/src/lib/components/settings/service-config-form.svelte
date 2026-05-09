@@ -7,6 +7,8 @@
     tabLabel: string;
     tabIcon: Component | null;
     enabled: boolean;
+    name?: string;
+    lockedName?: string;
     baseUrl: string;
     apiKey: string;
     apiKeyIsSet?: boolean;
@@ -21,6 +23,8 @@
     tabLabel,
     tabIcon,
     enabled,
+    name = "",
+    lockedName,
     baseUrl,
     apiKey,
     apiKeyIsSet = false,
@@ -56,6 +60,21 @@
         onCheckedChange={(checked) => dispatchChange("enabled", checked)}
       />
     </label>
+  </div>
+
+  <div>
+    <label for="name" class="block text-sm font-medium text-foreground mb-2"
+      >Name</label
+    >
+    <Input
+      type="text"
+      name="name"
+      value={name || lockedName || ""}
+      oninput={(e) => dispatchChange("name", e.currentTarget.value)}
+      placeholder={`${tabLabel} instance`}
+      class="input-hover-el text-foreground placeholder:text-muted-foreground"
+      disabled={lockedName != null}
+    />
   </div>
 
   <div>

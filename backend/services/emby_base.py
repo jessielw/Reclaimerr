@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from pathlib import PurePosixPath
+from typing import Any, Literal, TypeAlias
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -13,8 +14,15 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.codecs import (
+    normalize_audio_codec_family,
+    normalize_video_codec_family,
+)
 from backend.core.logger import LOG
+from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
     AggregatedMovieData,
@@ -29,6 +37,8 @@ from backend.models.services.emby_base import (
     EmbyUserBase,
     EmbyUserDataBase,
 )
+
+RawSQL: TypeAlias = str
 
 
 class EmbyServiceBase:
@@ -99,6 +109,14 @@ class EmbyServiceBase:
             raise ValueError(
                 f"Failed to delete {self.service_type} item {item_id}: {e}"
             )
+
+    async def delete_movie_version(self, item_id: str, _media_source_id: str) -> None:
+        """Deletes one movie version for Emby/Jellyfin.
+
+        Emby/Jellyfin libraries represented as separate items per version can delete
+        a single version by deleting that specific item id.
+        """
+        await self.delete_item(item_id)
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.
@@ -175,8 +193,8 @@ class EmbyServiceBase:
             "recursive": "true",
             "enableTotalRecordCount": "true",
             "Fields": (
-                "ProviderIds,MediaSources,DateCreated,Path,UserData,UserDataLastPlayedDate,"
-                "UserDataPlayCount,ProductionYear,PremiereDate"
+                "ProviderIds,MediaSources,MediaStreams,Chapters,DateCreated,Path,UserData,"
+                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate"
             ),
             "ParentId": library_id,
         }
@@ -222,21 +240,111 @@ class EmbyServiceBase:
                 if item.get("DateCreated")
                 else None
             )
-            versions = [
-                MovieVersionData(
-                    service=self.service_type,  # type: ignore[reportArgumentType]
-                    service_item_id=item["Id"],
-                    service_media_id=source["Id"],
-                    library_id=library_id,
-                    library_name=library_name,
-                    path=source.get("Path"),
-                    size=source.get("Size", 0),
-                    added_at=added_at,
-                    container=source.get("Container"),
+            versions: list[MovieVersionData] = []
+            for source in item.get("MediaSources", []):
+                if not source.get("Id"):
+                    continue
+                normalized_fpath = (
+                    PurePosixPath(normalize_fpath(source["Path"]))
+                    if source.get("Path")
+                    else None
                 )
-                for source in item.get("MediaSources", [])
-                if source.get("Id")
-            ]
+                video_streams, audio_streams, subtitle_streams = (
+                    self._media_streams_by_type(source)
+                )
+                first_video = video_streams[0] if video_streams else {}
+                first_audio = audio_streams[0] if audio_streams else {}
+                video_codec_raw = first_video.get("Codec")
+                audio_codec_raw = first_audio.get("Codec")
+                dv_profile = (
+                    first_video.get("DvProfile")
+                    or first_video.get("DolbyVisionProfile")
+                    or first_video.get("dv_profile")
+                )
+                dv_profile = (
+                    f"{dv_profile}.{first_video['DvBlSignalCompatibilityId']}"
+                    if dv_profile and first_video.get("DvBlSignalCompatibilityId")
+                    else str(dv_profile)
+                    if dv_profile
+                    else None
+                )
+
+                run_time_ticks = as_float(source.get("RunTimeTicks"))
+                width = as_int(first_video.get("Width"))
+                height = as_int(first_video.get("Height"))
+                versions.append(
+                    MovieVersionData(
+                        service=self.service_type,  # type: ignore[reportArgumentType]
+                        service_item_id=item["Id"],
+                        service_media_id=source["Id"],
+                        library_id=library_id,
+                        library_name=library_name,
+                        path=str(normalized_fpath) if normalized_fpath else None,
+                        size=source.get("Size", 0),
+                        added_at=added_at,
+                        file_name=normalized_fpath.name if normalized_fpath else None,
+                        container=source.get("Container"),
+                        duration=(run_time_ticks / 10000.0)
+                        if run_time_ticks is not None
+                        else None,
+                        video_track_count=len(video_streams) or None,
+                        video_codec=video_codec_raw,
+                        video_codec_family=normalize_video_codec_family(
+                            video_codec_raw
+                        ),
+                        video_hdr=self._is_hdr(first_video),
+                        video_dolby_vision=first_video.get("DvProfile") is not None,
+                        video_dolby_vision_profile=str(dv_profile)
+                        if dv_profile is not None
+                        else None,
+                        video_bitrate=as_int(first_video.get("BitRate")),
+                        video_bit_depth=as_int(first_video.get("BitDepth")),
+                        video_width=width,
+                        video_height=height,
+                        video_resolution=guesstimate_resolution(width, height)
+                        if width and height
+                        else None,
+                        video_color_primaries=first_video.get("ColorPrimaries"),
+                        video_color_space=first_video.get("ColorSpace"),
+                        video_color_transfer=first_video.get("ColorTransfer"),
+                        video_fps=as_float(
+                            first_video.get("RealFrameRate")
+                            or first_video.get("AverageFrameRate")
+                        ),
+                        audio_count=len(audio_streams) or None,
+                        audio_languages=self._unique_languages(audio_streams),
+                        audio_codec=audio_codec_raw,
+                        audio_codec_family=normalize_audio_codec_family(
+                            audio_codec_raw
+                        ),
+                        audio_title=first_audio.get("DisplayTitle"),
+                        audio_language=(
+                            str(first_audio.get("Language")).lower()
+                            if first_audio.get("Language")
+                            else None
+                        ),
+                        audio_channels=as_int(first_audio.get("Channels")),
+                        audio_channel_layout=first_audio.get("ChannelLayout"),
+                        audio_bitrate=as_int(first_audio.get("BitRate")),
+                        audio_sample_rate=as_int(first_audio.get("SampleRate")),
+                        subtitle_count=len(subtitle_streams) or None,
+                        subtitle_has_forced=(
+                            any(bool(s.get("IsForced")) for s in subtitle_streams)
+                            if subtitle_streams
+                            else None
+                        ),
+                        subtitle_languages=self._unique_languages(subtitle_streams),
+                        has_chapters=(
+                            bool(item.get("Chapters"))
+                            if item.get("Chapters") is not None
+                            else (
+                                bool(source.get("Chapters"))
+                                if source.get("Chapters") is not None
+                                else None
+                            )
+                        ),
+                    )
+                )
             movie = EmbyMovieBase(
                 id=item["Id"],
                 name=item["Name"],
@@ -327,7 +435,7 @@ class EmbyServiceBase:
                 date_created=datetime.fromisoformat(item.get("DateCreated")),
                 library_id=library_id,
                 library_name=library_name,
-                path=item.get("Path"),
+                path=str(normalize_fpath(item["Path"])) if item.get("Path") else None,
                 external_ids=external_ids,
                 size=total_size,
                 user_data=user_data,
@@ -356,6 +464,19 @@ class EmbyServiceBase:
         season_view_counts: dict[tuple[str, int], int] = {}
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
         season_ids: dict[tuple[str, int], str] = {}  # Emby/Jellyfin SeasonId
+        season_air_date: dict[tuple[str, int], datetime | None] = {}
+        season_added_at: dict[tuple[str, int], datetime | None] = {}
+        season_has_hdr: dict[tuple[str, int], bool] = {}
+        season_has_dv: dict[tuple[str, int], bool] = {}
+        season_max_width: dict[tuple[str, int], int] = {}
+        season_max_height: dict[tuple[str, int], int] = {}
+        season_video_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_families: dict[tuple[str, int], set[str]] = {}
+        season_audio_languages: dict[tuple[str, int], set[str]] = {}
+        season_max_audio_channels: dict[tuple[str, int], int] = {}
+        season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
+        season_paths: dict[tuple[str, int], str] = {}
+        season_episode_paths: dict[tuple[str, int], list[str]] = {}
 
         start_index = 0
         limit = 500
@@ -366,7 +487,7 @@ class EmbyServiceBase:
                 "includeItemTypes": "Episode",
                 "recursive": "true",
                 "Fields": (
-                    "MediaSources,SeriesId,DateCreated,ParentIndexNumber,SeasonId,UserData,"
+                    "MediaSources,MediaStreams,SeriesId,DateCreated,PremiereDate,ParentIndexNumber,SeasonId,UserData,"
                     "UserDataLastPlayedDate,UserDataPlayCount"
                 ),
                 "ParentId": library_id,
@@ -411,9 +532,52 @@ class EmbyServiceBase:
                 season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
                 season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
 
+                # season air date = earliest episode premiere date
+                premiere_date = episode.get("PremiereDate")
+                if premiere_date:
+                    try:
+                        dt = datetime.fromisoformat(
+                            premiere_date.replace("Z", "+00:00")
+                        )
+                        prev = season_air_date.get(sk)
+                        if prev is None or dt < prev:
+                            season_air_date[sk] = dt
+                    except (TypeError, ValueError):
+                        pass
+
+                # season added_at = earliest episode date created
+                created_date = episode.get("DateCreated")
+                if created_date:
+                    try:
+                        dt = datetime.fromisoformat(created_date.replace("Z", "+00:00"))
+                        prev = season_added_at.get(sk)
+                        if prev is None or dt < prev:
+                            season_added_at[sk] = dt
+                    except (TypeError, ValueError):
+                        pass
+
                 # store Emby/Jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
                     season_ids[sk] = episode["SeasonId"]
+
+                # season path (first episode of each season)
+                if sk not in season_paths:
+                    for _source in episode.get("MediaSources", []):
+                        _ep_path = _source.get("Path")
+                        if _ep_path:
+                            season_paths[sk] = str(
+                                PurePosixPath(normalize_fpath(_ep_path)).parent
+                            )
+                            break
+
+                # episode paths for this season
+                for _source in episode.get("MediaSources", []):
+                    _ep_path = _source.get("Path")
+                    if _ep_path:
+                        season_episode_paths.setdefault(sk, []).append(
+                            normalize_fpath(_ep_path)
+                        )
+                        break
 
                 # watch data
                 user_data = episode.get("UserData", {})
@@ -429,6 +593,80 @@ class EmbyServiceBase:
                         pass
                 elif sk not in season_last_viewed:
                     season_last_viewed[sk] = None
+
+                # media aggregate signals per season
+                for source in episode.get("MediaSources", []):
+                    media_width = as_int(source.get("Width"))
+                    if media_width is not None:
+                        season_max_width[sk] = max(
+                            season_max_width.get(sk, 0), media_width
+                        )
+                    media_height = as_int(source.get("Height"))
+                    if media_height is not None:
+                        season_max_height[sk] = max(
+                            season_max_height.get(sk, 0), media_height
+                        )
+                    streams = source.get("MediaStreams", []) or []
+                    for stream in streams:
+                        stream_type = str(stream.get("Type", "")).lower()
+                        if stream_type == "video":
+                            vcodec = stream.get("Codec")
+                            if vcodec:
+                                vf = normalize_video_codec_family(str(vcodec))
+                                if vf:
+                                    season_video_families.setdefault(sk, set()).add(vf)
+                            width = as_int(stream.get("Width"))
+                            if width is not None:
+                                season_max_width[sk] = max(
+                                    season_max_width.get(sk, 0), width
+                                )
+                            height = as_int(stream.get("Height"))
+                            if height is not None:
+                                season_max_height[sk] = max(
+                                    season_max_height.get(sk, 0), height
+                                )
+                            dv_profile = stream.get("DvProfile")
+                            video_range_type = str(
+                                stream.get("VideoRangeType", "")
+                            ).lower()
+                            is_hdr_range = (
+                                video_range_type.startswith("hdr")
+                                or "hlg" in video_range_type
+                                or "dovi" in video_range_type
+                                or "dolby" in video_range_type
+                            )
+                            has_dv = (
+                                dv_profile is not None or "dovi" in video_range_type
+                            )
+                            has_hdr = (
+                                has_dv or bool(stream.get("IsHdr")) or is_hdr_range
+                            )
+                            if has_dv:
+                                season_has_dv[sk] = True
+                            if has_hdr:
+                                season_has_hdr[sk] = True
+                        elif stream_type == "audio":
+                            acodec = stream.get("Codec")
+                            if acodec:
+                                af = normalize_audio_codec_family(str(acodec))
+                                if af:
+                                    season_audio_families.setdefault(sk, set()).add(af)
+                            alang = stream.get("Language")
+                            if alang:
+                                season_audio_languages.setdefault(sk, set()).add(
+                                    str(alang).lower()
+                                )
+                            channels = as_int(stream.get("Channels"))
+                            if channels is not None:
+                                season_max_audio_channels[sk] = max(
+                                    season_max_audio_channels.get(sk, 0), channels
+                                )
+                        elif stream_type == "subtitle":
+                            lang = stream.get("Language")
+                            if lang:
+                                season_subtitle_languages.setdefault(sk, set()).add(
+                                    str(lang).lower()
+                                )
 
             total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
             start_index += len(episodes)
@@ -448,7 +686,23 @@ class EmbyServiceBase:
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
                 last_viewed_at=lva,
+                added_at=season_added_at.get(sk),
+                air_date=season_air_date.get(sk),
                 service_season_id=season_ids.get(sk),
+                has_hdr=True if season_has_hdr.get(sk) else None,
+                has_dolby_vision=True if season_has_dv.get(sk) else None,
+                max_video_width=season_max_width.get(sk),
+                max_video_height=season_max_height.get(sk),
+                video_codec_families=sorted(season_video_families.get(sk, set()))
+                or None,
+                audio_codec_families=sorted(season_audio_families.get(sk, set()))
+                or None,
+                audio_languages=sorted(season_audio_languages.get(sk, set())) or None,
+                max_audio_channels=season_max_audio_channels.get(sk),
+                subtitle_languages=sorted(season_subtitle_languages.get(sk, set()))
+                or None,
+                path=season_paths.get(sk),
+                episode_paths=season_episode_paths.get(sk) or None,
             )
 
         return series_sizes, season_data
@@ -690,6 +944,198 @@ class EmbyServiceBase:
             )
             for data in series_data.values()
         ]
+
+    async def has_playback_reporting_plugin(self) -> bool:
+        """Return True if the Jellyfin Playback Reporting plugin is installed and active."""
+        try:
+            plugins = await self._make_request("Plugins")
+            STATUSES_TO_EXCLUDE = {
+                "Disabled",
+                "Deleted",
+                "NotSupported",
+                "Malfunctioned",
+            }
+            PLUGINS_TO_INCLUDE = {
+                "playback_reporting.xml",
+                "Jellyfin.Plugin.PlaybackReporting.xml",
+            }
+        except Exception:
+            return False
+        if not isinstance(plugins, list):
+            return False
+        for plugin in plugins:
+            cfg = plugin.get("ConfigurationFileName", "")
+            status = plugin.get("Status", "")
+            if cfg in PLUGINS_TO_INCLUDE and status not in STATUSES_TO_EXCLUDE:
+                return True
+        return False
+
+    async def get_playback_reporting_stats(
+        self, min_play_duration: int, media_type: Literal["Movie", "Episode"]
+    ) -> dict[str, int]:
+        """Query the Playback Reporting plugin for per movie play counts.
+
+        Filters by minimum play duration to exclude brief scrubs.
+
+        Args:
+            min_play_duration: Minimum play duration in seconds to count as a play.
+            media_type: Movie or Episode.
+
+        Returns:
+            Mapping of Jellyfin/Emby item ID to play count.
+        """
+        query = (
+            "SELECT ItemId, COUNT(*) AS total_plays FROM PlaybackActivity "
+            f"WHERE ItemType = '{media_type}' AND PlayDuration >= {min_play_duration} "
+            "GROUP BY ItemId"
+        )
+        return await self._submit_playback_custom_query(query)
+
+    async def _submit_playback_custom_query(self, query: RawSQL) -> dict[str, int]:
+        # cSpell: disable
+        """Submit a raw SQL query to the Playback Reporting plugin endpoint.
+
+        Note: The plugin response uses the key ``colums`` (not ``columns``), this is
+        a known typo in the upstream plugin source and is handled intentionally here.
+
+        Args:
+            query: Raw SQL string to execute against the plugin's PlaybackActivity table.
+
+        Returns:
+            Mapping of ItemId to total_plays derived from the query result set.
+        """
+        try:
+            response = await self.session.post(
+                f"{self.service_url}/user_usage_stats/submit_custom_query",
+                json={"CustomQueryString": query, "ReplaceUserId": False},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            LOG.error(f"Playback Reporting plugin query failed: {e}")
+            return {}
+
+        # "colums" is an intentional typo in the plugin source
+        columns: list[str] = data.get("colums", [])
+        # cSpell: enable
+        results: list[list] = data.get("results", [])
+
+        try:
+            item_id_idx = columns.index("ItemId")
+            play_count_idx = columns.index("total_plays")
+        except ValueError:
+            LOG.error(
+                f"Unexpected column schema from Playback Reporting plugin: {columns}"
+            )
+            return {}
+
+        return {
+            row[item_id_idx]: int(row[play_count_idx])
+            for row in results
+            if row[item_id_idx]
+        }
+
+    async def get_series_ids_for_episode_ids(
+        self, episode_item_ids: list[str]
+    ) -> dict[str, str]:
+        """Batch-resolve Jellyfin episode item IDs to their parent series item IDs.
+
+        Args:
+            episode_item_ids: List of Jellyfin episode item ID strings.
+
+        Returns:
+            Mapping of episode item ID to series item ID.
+        """
+        if not episode_item_ids:
+            return {}
+
+        try:
+            users = await self.get_users()
+            if not users:
+                return {}
+            user_id = users[0].id
+        except Exception as e:
+            LOG.error(f"Failed to fetch users for episode→series mapping: {e}")
+            return {}
+
+        _CHUNK = 200
+        mapping: dict[str, str] = {}
+        for i in range(0, len(episode_item_ids), _CHUNK):
+            chunk = episode_item_ids[i : i + _CHUNK]
+            try:
+                data = await self._make_request(
+                    f"Users/{user_id}/Items",
+                    params={
+                        "Ids": ",".join(chunk),
+                        "Fields": "SeriesId",
+                        "EnableUserData": "false",
+                        "Recursive": "true",
+                    },
+                )
+                items = data.get("Items", []) if isinstance(data, dict) else []
+                for item in items:
+                    item_id = item.get("Id")
+                    series_id = item.get("SeriesId")
+                    if item_id and series_id:
+                        mapping[item_id] = series_id
+            except Exception as e:
+                LOG.warning(f"Failed to resolve episode IDs chunk to series IDs: {e}")
+
+        return mapping
+
+    @staticmethod
+    def _media_streams_by_type(
+        media_source: dict[str, Any],
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        streams = media_source.get("MediaStreams", []) or []
+        video = [s for s in streams if str(s.get("Type", "")).lower() == "video"]
+        audio = [s for s in streams if str(s.get("Type", "")).lower() == "audio"]
+        subtitle = [s for s in streams if str(s.get("Type", "")).lower() == "subtitle"]
+        return video, audio, subtitle
+
+    @staticmethod
+    def _unique_languages(streams: list[dict]) -> list[str] | None:
+        langs: list[str] = []
+        seen: set[str] = set()
+        for stream in streams:
+            raw = stream.get("Language")
+            if not raw:
+                continue
+            value = str(raw).strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            langs.append(value)
+        return langs or None
+
+    @staticmethod
+    def _is_hdr(stream: dict) -> bool:
+        # bit depth (if less than 10 bits it's not hdr)
+        try:
+            if int(stream["BitDepth"]) < 10:
+                return False
+        except Exception:
+            pass
+        # dolby Vision
+        if stream.get("DvProfile") or stream.get("DvLevel"):
+            return True
+        # HDR10/HLG transfer functions
+        if str(stream.get("ColorTransfer", "")).lower() in (
+            "smpte2084",
+            "arib-std-b67",
+        ):
+            return True
+        # BT.2020 color primaries (common for HDR)
+        if str(stream.get("ColorSpace", "")).lower() in (
+            "bt2020",
+            "bt.2020",
+            "bt2020nc",
+        ):
+            return True
+        # title contains "hdr"
+        if "hdr" in str(stream.get("DisplayTitle", "")).lower():
+            return True
+        return False
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:

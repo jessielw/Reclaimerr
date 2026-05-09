@@ -64,7 +64,7 @@ Generate a migration after making your changes:
 uv run alembic revision --autogenerate -m "describe the change"
 ```
 
-Review the generated file in `backend/alembic/versions/` — autogenerate is not always perfect (it can't detect renamed columns, for instance). Commit the migration file with your PR.
+Review the generated file in `backend/alembic/versions/` - autogenerate is not always perfect (it can't detect renamed columns, for instance). Commit the migration file with your PR.
 
 ## Releasing a New Version
 

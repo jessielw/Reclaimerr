@@ -1,15 +1,24 @@
 import re
 from collections import defaultdict
-from pathlib import PurePath
+from os import PathLike
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.api.candidate_views import build_rule_preview_items
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
+from backend.core.rule_engine import (
+    TARGET_MOVIE_VERSION,
+    collect_rule_path_patterns,
+    derive_path_scope_library_ids,
+    normalize_rule_definition,
+    normalize_rule_target,
+    validate_rule_definition,
+)
+from backend.core.utils.filesystem import normalize_fpath
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -25,24 +34,96 @@ from backend.models.cleanup import (
     CleanupRuleCreate,
     CleanupRuleResponse,
     CleanupRuleUpdate,
+    RuleImportPayload,
+    RuleImportResponse,
 )
-
-
-class ValidateRegexRequest(BaseModel):
-    base_path: str = ""
-    suffix: str = ""
-
-
-class ValidateRegexResponse(BaseModel):
-    valid: bool
-    error: str | None = None
-    pattern: str | None = None
-
+from backend.models.media import PaginatedRulePreviewResponse
+from backend.models.rules import (
+    RulePreviewRequest,
+    ValidatePathsRequest,
+    ValidatePathsResponse,
+    ValidateRegexRequest,
+    ValidateRegexResponse,
+)
+from backend.tasks.cleanup import collect_rule_preview_matches
 
 router = APIRouter(prefix="/api", tags=["rules"])
 
 
-def _split_ancestors(path: str) -> list[str]:
+def _media_type_for_target(target_scope: str | None, fallback: MediaType) -> MediaType:
+    """Determine the media type based on the target scope."""
+    if target_scope == TARGET_MOVIE_VERSION:
+        return MediaType.MOVIE
+    if target_scope:
+        return MediaType.SERIES
+    return fallback
+
+
+def _action_or_default(action: dict | None) -> dict:
+    """Return the action dictionary with default values applied."""
+    return {
+        "candidate": True,
+        "tag_enabled": True,
+        "arr_tag": None,
+        "media_server_action": "delete",
+        "radarr_service_config_id": None,
+        "sonarr_service_config_id": None,
+        **(action or {}),
+    }
+
+
+def _slugify_rule_tag(value: str) -> str:
+    """We want *arr tags to be a slug (alphanumeric + dashes, max 50 chars, prefixed with 'rec-')
+    The character constraints are from the *arrs, the max length I couldn't find
+    documentation or in the code - so I chose 50 as a good max."""
+    slug = re.sub(r"[^a-zA-Z0-9-]", "", value.strip())
+    ensure_50 = slug[:50]
+    if ensure_50.startswith("rec-"):
+        return ensure_50
+    return f"rec-{slug or 'rule'}"
+
+
+def _normalize_rule_action(
+    action: dict | None, rule_name: str, target_scope: str | None
+) -> dict:
+    """Normalize the rule action dictionary."""
+    normalized = _action_or_default(action)
+    normalized["tag_enabled"] = bool(normalized.get("tag_enabled", True))
+    normalized["arr_tag"] = _slugify_rule_tag(
+        str(normalized.get("arr_tag") or rule_name)
+    )
+    if target_scope == TARGET_MOVIE_VERSION:
+        normalized["sonarr_service_config_id"] = None
+    else:
+        normalized["radarr_service_config_id"] = None
+    return normalized
+
+
+def _rule_response(rule: ReclaimRule) -> CleanupRuleResponse:
+    """Generate a CleanupRuleResponse from a ReclaimRule."""
+    definition = normalize_rule_definition(rule)
+    if definition is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Rule {rule.id} is missing a valid advanced definition",
+        )
+    target_scope = normalize_rule_target(rule)
+    return CleanupRuleResponse.model_validate(
+        {
+            "id": rule.id,
+            "name": rule.name,
+            "media_type": rule.media_type,
+            "enabled": rule.enabled,
+            "target_scope": target_scope,
+            "definition": definition,
+            "action": _normalize_rule_action(rule.action, rule.name, target_scope),
+            "created_at": rule.created_at,
+            "updated_at": rule.updated_at,
+        }
+    )
+
+
+def _split_ancestors(path: PathLike[str] | str) -> list[str]:
     """Return all ancestor directory paths for ``path`` (including the path itself).
 
     The returned list is ordered from the shallowest ancestor to the full path.
@@ -52,7 +133,7 @@ def _split_ancestors(path: str) -> list[str]:
     """
     if not path:
         return []
-    norm = PurePath(path).as_posix().rstrip("/")
+    norm = normalize_fpath(path, strip_ending_slash=True) if path else None
     if not norm:
         return []
     if norm.startswith("/"):
@@ -116,7 +197,7 @@ async def _validate_rule_paths(
             ),
         )
 
-    normalized_media = [PurePath(mp).as_posix().lower() for mp in media_paths if mp]
+    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
 
     cleaned: list[str] = []
     for pattern in paths:
@@ -124,7 +205,7 @@ async def _validate_rule_paths(
         if not pattern:
             continue
 
-        # Validate regex syntax (patterns should be pre-validated, but double-check)
+        # validate regex syntax (patterns should be pre-validated, but double-check)
         try:
             regex = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
@@ -133,7 +214,7 @@ async def _validate_rule_paths(
                 detail=f"Invalid regex pattern '{pattern}': {e}",
             )
 
-        # Check if pattern matches any media path
+        # check if pattern matches any media path
         if not any(regex.search(mp) for mp in normalized_media):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,6 +222,19 @@ async def _validate_rule_paths(
             )
         cleaned.append(pattern)
     return cleaned or None
+
+
+async def _validate_definition_paths(
+    db: AsyncSession,
+    definition: dict | None,
+    media_type: MediaType,
+) -> None:
+    await _validate_rule_paths(
+        db,
+        collect_rule_path_patterns(definition),
+        media_type,
+        derive_path_scope_library_ids(definition),
+    )
 
 
 @router.get("/rules/path-tree")
@@ -197,7 +291,7 @@ async def get_rules(
     """Get all cleanup rules."""
     result = await db.execute(select(ReclaimRule))
     rules = result.scalars().all()
-    return rules
+    return [_rule_response(rule) for rule in rules]
 
 
 @router.post(
@@ -209,31 +303,31 @@ async def create_rule(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new cleanup rule."""
-    cleaned_paths = await _validate_rule_paths(
-        db, rule_data.paths, rule_data.media_type, rule_data.library_ids
+    if not rule_data.target_scope:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Rules require target_scope",
+        )
+    try:
+        validate_rule_definition(rule_data.definition)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+
+    effective_media_type = _media_type_for_target(
+        rule_data.target_scope, rule_data.media_type
     )
+    await _validate_definition_paths(db, rule_data.definition, effective_media_type)
     new_rule = ReclaimRule(
         name=rule_data.name,
-        media_type=rule_data.media_type,
+        media_type=effective_media_type,
         enabled=rule_data.enabled,
-        library_ids=rule_data.library_ids,
-        min_popularity=rule_data.min_popularity,
-        max_popularity=rule_data.max_popularity,
-        min_vote_average=rule_data.min_vote_average,
-        max_vote_average=rule_data.max_vote_average,
-        min_vote_count=rule_data.min_vote_count,
-        max_vote_count=rule_data.max_vote_count,
-        min_view_count=rule_data.min_view_count,
-        max_view_count=rule_data.max_view_count,
-        include_never_watched=rule_data.include_never_watched,
-        min_days_since_added=rule_data.min_days_since_added,
-        max_days_since_added=rule_data.max_days_since_added,
-        min_days_since_last_watched=rule_data.min_days_since_last_watched,
-        max_days_since_last_watched=rule_data.max_days_since_last_watched,
-        min_size=rule_data.min_size,
-        max_size=rule_data.max_size,
-        paths=cleaned_paths,
-        series_status=rule_data.series_status,
+        target_scope=rule_data.target_scope,
+        definition=rule_data.definition,
+        action=_normalize_rule_action(
+            rule_data.action, rule_data.name, rule_data.target_scope
+        ),
     )
 
     db.add(new_rule)
@@ -241,7 +335,7 @@ async def create_rule(
     await db.refresh(new_rule)
 
     LOG.info(f"Created cleanup rule: {new_rule.name} (ID: {new_rule.id})")
-    return new_rule
+    return _rule_response(new_rule)
 
 
 @router.post("/rules/validate-regex", response_model=ValidateRegexResponse)
@@ -254,8 +348,12 @@ async def validate_regex_pattern(
     can contain regex patterns. Returns the valid/complete pattern on success.
     """
     # normalize both paths
-    normalized_base = PurePath(body.base_path or "").as_posix().lower().rstrip("/")
-    normalized_suffix = PurePath(body.suffix or "").as_posix().lower().rstrip("/")
+    normalized_base = normalize_fpath(
+        body.base_path, lower=True, strip_ending_slash=True
+    )
+    normalized_suffix = normalize_fpath(
+        body.suffix, lower=True, strip_ending_slash=True
+    )
 
     # escape the base path to treat it as a literal string
     escaped_base = re.escape(normalized_base)
@@ -269,6 +367,152 @@ async def validate_regex_pattern(
         return ValidateRegexResponse(valid=True, pattern=combined)
     except re.error as e:
         return ValidateRegexResponse(valid=False, error=str(e))
+
+
+@router.post("/rules/validate-paths", response_model=ValidatePathsResponse)
+async def validate_paths_against_scope(
+    body: ValidatePathsRequest,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> ValidatePathsResponse:
+    """Validate path patterns against indexed media paths for the given scope.
+
+    Returns split lists so callers can offer confirm/prune UX without mutating
+    backend state.
+    """
+    unique_paths: list[str] = []
+    seen: set[str] = set()
+    for raw in body.paths:
+        path = (raw or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+
+    if not unique_paths:
+        return ValidatePathsResponse(valid_paths=[], invalid_paths=[])
+
+    media_paths = await _collect_media_paths(db, body.media_type, body.library_ids)
+    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
+
+    valid_paths: list[str] = []
+    invalid_paths: list[str] = []
+    for pattern in unique_paths:
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            invalid_paths.append(pattern)
+            continue
+        if normalized_media and any(regex.search(mp) for mp in normalized_media):
+            valid_paths.append(pattern)
+        else:
+            invalid_paths.append(pattern)
+
+    return ValidatePathsResponse(valid_paths=valid_paths, invalid_paths=invalid_paths)
+
+
+@router.post("/rules/preview", response_model=PaginatedRulePreviewResponse)
+async def preview_rule_matches(
+    body: RulePreviewRequest,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedRulePreviewResponse:
+    """Dry-run an unsaved advanced rule without writing reclaim candidates."""
+    if not body.target_scope:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Rules require target_scope",
+        )
+    try:
+        validate_rule_definition(body.definition)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
+
+    effective_media_type = _media_type_for_target(body.target_scope, body.media_type)
+    await _validate_definition_paths(db, body.definition, effective_media_type)
+
+    preview_rule = ReclaimRule(
+        name=(body.name or "").strip() or "Preview Rule",
+        media_type=effective_media_type,
+        enabled=True,
+        target_scope=body.target_scope,
+        definition=body.definition,
+        action=_action_or_default(None),
+    )
+
+    matches = await collect_rule_preview_matches(db, [preview_rule])
+    items = await build_rule_preview_items(db, matches)
+    total = len(items)
+    total_pages = (total + body.per_page - 1) // body.per_page if total else 0
+    offset = (body.page - 1) * body.per_page
+    page_items = items[offset : offset + body.per_page]
+
+    return PaginatedRulePreviewResponse(
+        items=page_items,
+        total=total,
+        page=body.page,
+        per_page=body.per_page,
+        total_pages=total_pages,
+    )
+
+
+@router.post("/rules/import", status_code=status.HTTP_200_OK)
+async def import_rules(
+    payload: RuleImportPayload,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> RuleImportResponse:
+    """Bulk import cleanup rules, we will auto rename duplicates."""
+    existing_names_result = await db.execute(select(ReclaimRule.name))
+    used_names: set[str] = set(existing_names_result.scalars().all())
+    imported = 0
+    errors: list[str] = []
+
+    for rule_data in payload.rules:
+        try:
+            if not rule_data.target_scope:
+                raise ValueError("Rules require target_scope")
+            try:
+                validate_rule_definition(rule_data.definition)
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+
+            name = rule_data.name
+            if name in used_names:
+                candidate = f"{name} (imported)"
+                n = 2
+                while candidate in used_names:
+                    candidate = f"{name} (imported {n})"
+                    n += 1
+                name = candidate
+
+            effective_media_type = _media_type_for_target(
+                rule_data.target_scope, rule_data.media_type
+            )
+            new_rule = ReclaimRule(
+                name=name,
+                media_type=effective_media_type,
+                enabled=rule_data.enabled,
+                target_scope=rule_data.target_scope,
+                definition=rule_data.definition,
+                action=_normalize_rule_action(
+                    rule_data.action, name, rule_data.target_scope
+                ),
+            )
+            db.add(new_rule)
+            used_names.add(name)
+            imported += 1
+        except Exception as e:
+            errors.append(f"{rule_data.name}: {e}")
+
+    if imported:
+        await db.commit()
+        LOG.info(f"Imported {imported} cleanup rule(s)")
+
+    return RuleImportResponse(imported=imported, errors=errors)
 
 
 @router.post("/rules/{rule_id}", response_model=CleanupRuleResponse)
@@ -290,20 +534,53 @@ async def update_rule(
 
     # update only the fields that were provided
     update_data = rule_data.model_dump(exclude_unset=True)
-
-    # validate paths against the effective (post-update) media_type/library_ids
-    if "paths" in update_data:
-        effective_media_type = update_data.get("media_type", rule.media_type)
-        effective_library_ids = (
-            update_data["library_ids"]
-            if "library_ids" in update_data
-            else rule.library_ids
+    if "definition" in update_data and update_data["definition"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Rules require definition",
         )
-        update_data["paths"] = await _validate_rule_paths(
+    if "definition" in update_data and update_data["definition"] is not None:
+        try:
+            validate_rule_definition(update_data["definition"])
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            ) from e
+    if "target_scope" in update_data and not update_data["target_scope"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Rules require target_scope",
+        )
+
+    if "target_scope" in update_data:
+        update_data["media_type"] = _media_type_for_target(
+            update_data["target_scope"], update_data.get("media_type", rule.media_type)
+        )
+    if (
+        "action" in update_data
+        or "name" in update_data
+        or "target_scope" in update_data
+    ):
+        update_data["action"] = _normalize_rule_action(
+            update_data.get("action", rule.action),
+            update_data.get("name", rule.name),
+            update_data.get("target_scope", rule.target_scope),
+        )
+
+    if (
+        "definition" in update_data
+        or "target_scope" in update_data
+        or "media_type" in update_data
+    ):
+        effective_target_scope = update_data.get("target_scope", rule.target_scope)
+        effective_media_type = _media_type_for_target(
+            effective_target_scope,
+            update_data.get("media_type", rule.media_type),
+        )
+        await _validate_definition_paths(
             db,
-            update_data.get("paths"),
+            update_data.get("definition", rule.definition),
             effective_media_type,
-            effective_library_ids,
         )
 
     for field, value in update_data.items():
@@ -313,7 +590,7 @@ async def update_rule(
     await db.refresh(rule)
 
     LOG.info(f"Updated cleanup rule: {rule.name} (ID: {rule.id})")
-    return rule
+    return _rule_response(rule)
 
 
 @router.delete("/rules/{rule_id}")
@@ -355,35 +632,3 @@ async def check_synced_rules(
         "movies": movie_count or 0,
         "series": series_count or 0,
     }
-
-
-# @router.post("/rules/check-library-impact")
-# async def check_library_impact(
-#     library_ids: list[str],
-#     _admin: Annotated[User, Depends(require_admin)],
-#     db: AsyncSession = Depends(get_db),
-# ):
-#     """Check which rules would be affected by deselecting the given library IDs."""
-#     result = await db.execute(select(ReclaimRule))
-#     all_rules = result.scalars().all()
-
-#     affected_rules = []
-#     for rule in all_rules:
-#         if rule.library_ids:
-#             # Check if any of the rule's library_ids match the ones being deselected
-#             if any(lib_id in library_ids for lib_id in rule.library_ids):
-#                 affected_rules.append(
-#                     {
-#                         "id": rule.id,
-#                         "name": rule.name,
-#                         "media_type": rule.media_type,
-#                         "affected_library_ids": [
-#                             lib_id for lib_id in rule.library_ids if lib_id in library_ids
-#                         ],
-#                     }
-#                 )
-
-#     return {
-#         "affected_count": len(affected_rules),
-#         "rules": affected_rules,
-#     }

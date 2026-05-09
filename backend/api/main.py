@@ -15,6 +15,7 @@ from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.background_jobs import router as background_jobs_router
 from backend.api.routes.dashboard import router as dashboard_router
+from backend.api.routes.delete_requests import router as delete_requests_router
 from backend.api.routes.info import router as info_router
 from backend.api.routes.media import router as media_router
 from backend.api.routes.protected import router as protected_router
@@ -22,6 +23,7 @@ from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
 from backend.api.routes.settings import router as settings_router
 from backend.api.routes.setup import router as setup_router
+from backend.api.routes.system import router as system_router
 from backend.api.routes.tasks import router as tasks_router
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
@@ -139,7 +141,9 @@ app.include_router(tasks_router)
 app.include_router(background_jobs_router)
 app.include_router(media_router)
 app.include_router(requests_router)
+app.include_router(delete_requests_router)
 app.include_router(protected_router)
+app.include_router(system_router)
 
 
 # mount static files LAST

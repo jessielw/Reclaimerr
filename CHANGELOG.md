@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-0?-??
+
+### Added
+
+- Now parses detailed mediainfo from media servers for movies and lightly gets what makes sense for series
+- Candidates
+  - Movie/Series & Season level media info (movies are more detailed)
+  - Movie version control of deletions
+  - Added TMDb section for a quick view of stats/link to the media (series will show current status as well)
+- Multi \*arr multi instance
+  - Added ability to name \*arr instance in frontend
+  - Added ability to manage \*arr instances via API in backend
+  - Support in ServiceManager
+- Rule Engine
+  - Rebuilt rule engine completely
+  - Added support for complex logical rules via AND/OR and groups
+  - Can now preview potential candidates based on the current rules selections
+- Added rule importing/exporting to share rules with the new rule engine
+- Now keeps history of reclaimed media (starting from **0.1.0-beta-14**)
+- Dashboard
+  - Reclaim history
+    - Total space reclaimed
+    - Total movies reclaimed
+    - Total series reclaimed
+- Added a section to **Candidates** API to view reclaimed history in a paginated format with filters/search
+- Added path mapping toggle to General settings
+- Added path mapping destination for movies & series
+- Added api endpoint **/candidates/move** on the backend
+- Added option to enable to move files instead of deleting in General setting
+- Added move button that is visible _(when the option is enabled to move instead of delete)_ in settings to movies/series/seasons
+- Added backend support to handle moving files
+- Now cleans up related files and parent folder when deleting files where it makes sense (behaves similar to Sonarr/Radarr)
+- Added \*arr tag rules
+- **Jellyfin/Emby** will now pull watch data from the **Playback Reporting Plugin** if it's enabled/available for supplemental data
+- Now supports **Tautulli** to supplement **Plex's** playback data
+  - Added support in frontend to add it as service. If it's enabled it will automatically be used during all sync processes
+- Desktop
+  - Added a **Shutdown** button that will work for desktop mode in the **Settings -> General**. This allows users to easily shut Reclaimerr down if they lack a system tray _(This will not be functional for anything other than desktop)_
+  - Now writes a **process ID** file _(reclaimerr.pid)_ in the **data** directory so users can kill this easily via scripting/terminal if needed
+- Added useful information for each movie version/season that is requested to be protected in **Protected** requests for users such as filename, resolution, video codec, hdr flags, and file size
+- Can now choose which version of files you'd like to protect for movies with multiple versions
+- Added api/frontend controls for delete requests for users
+- Add support for generic post action webhooks (Autopulse, etc.)
+  - Added API support
+  - Added frontend controls per arr instance (or all) in General Settings
+- About
+  - Added changelog viewer to break down release notes per version
+  - Added a support section
+
+### Changed
+
+- When using Docker, see the compose example at `docker\compose.example.yml`. Add the media bind mount so Reclaimerr can remove extra files when items are deleted via your media server. Map the bind mount to the same path(s) your main media server uses to read media files; if you have multiple mounts, add them all and update the mappings in General Settings.
+- Greatly improved resolution detection for ingested movies
+- Upgraded niquests to 3.18.7
+- Auto tagging configuration/tag suffix in general settings is now moved to per rule
+- All switch elements should now use cursor-pointer
+- Polished **Candidates** tab a little bit
+- Candidates api endpoint **/candidates** now returns TMDB data
+- Normalize all paths to be forward slashes internally when parsing from media servers
+- Now parses season and episode paths on from the **main media server** _(episode granularity is still not in this update - but this is needed to ensure we're deleting/moving all the correct files)_
+- Improved normalization of paths
+- Improved style of action buttons for candidates
+- Lock name for all services other than Sonarr/Radarr since we only will only have one instance for now
+- Entire frontend now shows cleaner formatted file sizes (i.e. MB, GB, etc.)
+- Info modal now sizes a bit better, cleaned up icons for buttons, changed 'Request' to 'Protect', and added 'Delete' request with hover tool tips
+- Built an efficient fingerprint system to keep file signatures the same during name changes
+- Movies & Series cards are now improved
+  - Badges scale with the cards
+  - Drop down menu to select requests/deletes quickly
+  - Reworked lower buttons
+
+### Removed
+
+- \*Arr tagging in general settings (this is handled per rule now)
+
+### Fixed
+
+- Migration issue that could happen when jumping several version at once
+- Arr tag requirements are now correctly set (A-Za-z0-9-) with a max of 50 that includes **-rec** for internal uses
+- Media being parsed from other libraries that wasn't selected in the rule
+- In rare cases posters could stretch
+- Now deletes/un-monitors each season/series as all entries are removed
+- Numerous loading spinners was not styled properly
+- Username section in the side bar was not aligned properly
+- Button not styled properly for Cancel Request in protection request
+- A few nav items wasn't being styled for the full width correctly when selected
+
 ## [0.1.0-beta.13] - 2026-04-25
 
 ### Fixed

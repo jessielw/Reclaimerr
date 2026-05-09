@@ -4,9 +4,9 @@
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
-  import JellyfinSVG from "$lib/components/svgs/JellyfinSVG.svelte";
-  import EmbySVG from "$lib/components/svgs/EmbySVG.svelte";
-  import PlexSVG from "$lib/components/svgs/PlexSVG.svelte";
+  import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
+  import EmbySVG from "$lib/components/svgs/emby-svg.svelte";
+  import PlexSVG from "$lib/components/svgs/plex-svg.svelte";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import TestButton from "$lib/components/test-button.svelte";
   import Save from "@lucide/svelte/icons/save";
@@ -510,6 +510,7 @@
           <ServiceConfigForm
             tabLabel={SERVER_LABELS[mainServer]}
             tabIcon={SERVER_ICONS[mainServer]}
+            lockedName={SERVER_LABELS[mainServer]}
             enabled={servers[mainServer].config.enabled}
             baseUrl={servers[mainServer].config.baseUrl}
             apiKey={servers[mainServer].config.apiKey}
@@ -553,6 +554,7 @@
               <ServiceConfigForm
                 tabLabel={SERVER_LABELS[serverKey]}
                 tabIcon={SERVER_ICONS[serverKey]}
+                lockedName={SERVER_LABELS[serverKey]}
                 enabled={servers[serverKey].config.enabled}
                 baseUrl={servers[serverKey].config.baseUrl}
                 apiKey={servers[serverKey].config.apiKey}
