@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Linked media sync now refreshes supplemental matches for movies, series, and seasons using stable path tails.
+- Tautulli can now update movie, series, and season stats through mapped Plex IDs when Plex is a linked server instead of the main server
+- Jellyfin/Emby Playback Reporting can now update movie, series, and season stats through mapped IDs when Jellyfin/Emby is linked instead of main
+
+## [0.1.0-beta.15] - 2026-05-08
+
+### Fixed
+
+- Multiple arr instances not showing on dashboard (UI bug only)
+- Tautulli not enabling without a service restart
+
+## [0.1.0-beta.14] - 2026-05-08
+
+### Added
+
 - Now parses detailed mediainfo from media servers for movies and lightly gets what makes sense for series
 - Candidates
   - Movie/Series & Season level media info (movies are more detailed)
