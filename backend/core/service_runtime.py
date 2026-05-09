@@ -58,6 +58,13 @@ async def handle_service_toggle(
             await service_manager.clear_seerr()
             if data.enabled:
                 await service_manager.initialize_seerr(data.base_url, data.api_key)
+        elif data.service_type is Service.TAUTULLI:
+            await service_manager.clear_tautulli()
+            if data.enabled:
+                timeout = int((data.extra_settings or {}).get("timeout", 30))
+                await service_manager.initialize_tautulli(
+                    data.base_url, data.api_key, timeout
+                )
 
         if data.service_type in MEDIA_SERVERS:
             await refresh_main_server_tasks()
