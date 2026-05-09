@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Multiple arr instances not showing on dashboard (UI bug only)
 - Tautulli not enabling without a service restart
+- Sync issue that could happen in edge cases when a user still had old rules/candidates before the rule engine rework
 
 ## [0.1.0-beta.14] - 2026-05-08
 

@@ -489,7 +489,7 @@ def _evaluate_condition(
     actual = context.get(field)
     if not _matches_operator(actual, operator, expected):
         return False
-    matched[field] = actual
+    matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))
     return True
 
