@@ -17,17 +17,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 	FRONTEND_DIST=/app/frontend/dist
 WORKDIR /app
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends build-essential curl \
+	&& apt-get install -y --no-install-recommends build-essential curl gosu \
 	&& rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md CHANGELOG.md ./
 COPY backend ./backend
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN python -m pip install --upgrade pip \
 	&& python -m pip install .
-RUN mkdir -p /app/data/database /app/data/logs /app/data/static/avatars
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+	&& mkdir -p /app/data/database /app/data/logs /app/data/static/avatars
 EXPOSE 8000
 
 ## API image (includes frontend build)
 FROM backend-base AS api
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["sh", "-c", \
 	"granian --interface asgi --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000} backend.api.main:app"]

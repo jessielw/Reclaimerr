@@ -120,6 +120,16 @@ API_PORT=8049
 # directory to store application data (database, logs, static files, etc.)
 DATA_DIR=./data
 
+# optional LinuxServer container style runtime user/group remapping
+# useful on Unraid and NAS setups when you want the container to run as a
+# specific host UID/GID for volume permissions
+# PUID=1000
+# PGID=1000
+
+# optional umask for new files/directories created by the app process
+# common values: 022, 002
+# UMASK=022
+
 # API configuration
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -163,6 +173,10 @@ services:
     ports:
       - "8000:8000"
 ```
+
+`PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr.
+
+These settings affect the container process and files created under `/app/data`. They do not override host filesystem permissions on your bind mounts. Your mounted media paths still need to be owned by, or otherwise writable to, the same UID/GID you configure for the container.
 
 ## Reset Admin Password
 
