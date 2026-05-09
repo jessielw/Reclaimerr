@@ -20,8 +20,6 @@
   import TestTube from "@lucide/svelte/icons/test-tube";
   import Save from "@lucide/svelte/icons/save";
   import Trash2 from "@lucide/svelte/icons/trash-2";
-  import Eye from "@lucide/svelte/icons/eye";
-  import EyeOff from "@lucide/svelte/icons/eye-off";
   import Plus from "@lucide/svelte/icons/plus";
   import Wrench from "@lucide/svelte/icons/wrench";
   import Bell from "@lucide/svelte/icons/bell";
@@ -217,7 +215,7 @@
   // empty state for a service
   const emptyServiceState = (serviceId?: string): ServiceState => ({
     config: {
-      enabled: false,
+      enabled: true,
       name: serviceId ? toTitleCase(serviceId) : "",
       baseUrl: "",
       apiKey: "",
@@ -236,10 +234,6 @@
     [SettingsTab.Radarr]: [],
     [SettingsTab.Sonarr]: [],
   });
-  let showDisabledArrInstances = $state<Record<string, boolean>>({
-    [SettingsTab.Radarr]: false,
-    [SettingsTab.Sonarr]: false,
-  });
   let showConfirmDialog = $state(false);
   let confirmTitle = $state("");
   let confirmDescription = $state("");
@@ -247,20 +241,14 @@
   let confirmActionClass = $state("cursor-pointer hover");
   let confirmIntent = $state<ConfirmIntent | null>(null);
 
-  // helper to filter arr instances based on showDisabled toggle
-  const filteredArrInstances = (serviceId: string) => {
-    const all = arrInstances[serviceId] ?? [];
-    if (showDisabledArrInstances[serviceId]) return all;
-    return all.filter((instance) => instance.enabled);
-  };
-
   // helper to get instance name for select trigger
   const getArrInstanceName = (serviceId: string, id: number | null) => {
     if (id === null) return null;
-    return (
-      (arrInstances[serviceId] ?? []).find((item) => item.id === id)?.name ??
-      null
+    const instance = (arrInstances[serviceId] ?? []).find(
+      (item) => item.id === id,
     );
+    if (!instance) return null;
+    return `${instance.name}${instance.enabled ? "" : " (disabled)"}`;
   };
 
   // helper to check if current config has unsaved changes compared to loaded instances
@@ -374,7 +362,7 @@
       arrInstances[serviceId] = (arrInstances[serviceId] ?? []).filter(
         (x) => x.id !== current.id,
       );
-      const next = filteredArrInstances(serviceId)[0];
+      const next = (arrInstances[serviceId] ?? [])[0];
       if (next?.id) selectArrInstance(serviceId, next.id);
       else
         serviceState[serviceId as SettingsTab] = emptyServiceState(serviceId);
@@ -743,17 +731,19 @@
                       {/if}
                     </Select.Trigger>
                     <Select.Content>
-                      {#if filteredArrInstances(activeTab).length === 0}
+                      {#if (arrInstances[activeTab] ?? []).length === 0}
                         <Select.Item value="__empty" disabled>
                           No instances available
                         </Select.Item>
                       {:else}
-                        {#each filteredArrInstances(activeTab) as instance}
+                        {#each arrInstances[activeTab] ?? [] as instance}
                           <Select.Item
                             value={String(instance.id ?? "")}
-                            label={instance.name}
+                            label={`${instance.name}${instance.enabled ? "" : " (disabled)"}`}
                           >
-                            {instance.name}
+                            {instance.name}{instance.enabled
+                              ? ""
+                              : " (disabled)"}
                           </Select.Item>
                         {/each}
                       {/if}
@@ -763,21 +753,6 @@
               {/snippet}
               {#snippet instanceActions()}
                 <div class="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    class="cursor-pointer"
-                    onclick={() =>
-                      (showDisabledArrInstances[activeTab] =
-                        !showDisabledArrInstances[activeTab])}
-                  >
-                    {#if showDisabledArrInstances[activeTab]}
-                      <EyeOff class="size-3.5" />
-                      Hide Disabled
-                    {:else}
-                      <Eye class="size-3.5" />
-                      Show Disabled
-                    {/if}
-                  </Button>
                   <Button
                     size="sm"
                     class="cursor-pointer bg-add/70 hover:bg-add/80"
