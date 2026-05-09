@@ -187,27 +187,27 @@ async def get_dashboard(
             await db.execute(
                 select(
                     ServiceConfig.service_type,
+                    ServiceConfig.name,
                     ServiceConfig.enabled,
                     ServiceConfig.base_url,
                 )
             )
         ).all()
 
-        service_conf = {
-            service_type: {"enabled": enabled, "base_url": base_url or ""}
-            for service_type, enabled, base_url in service_config_rows
-        }
-
         services = [
             DashboardServiceSummary(
-                name=service.value,
-                url=service_conf.get(service, {}).get("base_url", ""),
-                enabled=service_conf.get(service, {}).get("enabled", False),
+                service_type=service_type.value,
+                name=name or service_type.value.title(),
+                url=base_url or "",
+                enabled=enabled,
                 last_sync_at=to_utc_isoformat(last_sync_at)
-                if service in MEDIA_SERVERS
+                if service_type in MEDIA_SERVERS
                 else None,
             )
-            for service in sorted(Service, key=lambda s: s.value)
+            for service_type, name, enabled, base_url in sorted(
+                service_config_rows,
+                key=lambda r: (r[0].value, (r[1] or "").lower()),
+            )
         ]
 
     request_activity = (
