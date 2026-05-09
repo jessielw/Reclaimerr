@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -31,6 +32,7 @@ from backend.enums import (
     TaskStatus,
     UserRole,
 )
+from backend.types.media import AudioCodecFamily, VideoCodecFamily
 
 
 class User(Base):
@@ -116,13 +118,17 @@ class ServiceConfig(Base):
     """
 
     __tablename__ = "service_configs"
+    __table_args__ = (
+        UniqueConstraint("service_type", "name", name="uq_service_config_type_name"),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
     )
-    service_type: Mapped[Service] = mapped_column(Enum(Service), unique=True)
+    service_type: Mapped[Service] = mapped_column(Enum(Service), index=True)
     base_url: Mapped[str] = mapped_column(String(255))
     api_key: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(100), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     extra_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     # designates this as the sole source-of-truth for physical file versions;
@@ -166,10 +172,23 @@ class GeneralSettings(Base):
     )
 
     # cleanup and tagging settings
-    auto_tag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    cleanup_tag_suffix: Mapped[str] = mapped_column(String(15), default="")
     worker_poll_min_seconds: Mapped[float | None] = mapped_column(Float, default=None)
     worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # path mapping (media-server paths -> local paths)
+    path_mappings: Mapped[list] = mapped_column(JSON, default_factory=list)
+
+    # post action webhooks (generic hooks fired after successful delete/move)
+    post_action_webhooks: Mapped[list] = mapped_column(JSON, default_factory=list)
+
+    # move settings
+    move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    move_destination_movies: Mapped[str | None] = mapped_column(
+        String(1024), default=None
+    )
+    move_destination_series: Mapped[str | None] = mapped_column(
+        String(1024), default=None
+    )
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -198,9 +217,6 @@ class Movie(Base):
     size: Mapped[int | None] = mapped_column(Integer, default=None)
 
     # external IDs
-    radarr_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, default=None
-    )
     imdb_id: Mapped[str | None] = mapped_column(
         String(20), unique=True, index=True, default=None
     )
@@ -225,6 +241,7 @@ class Movie(Base):
     runtime: Mapped[int | None] = mapped_column(Integer, default=None)
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
+    arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # watch tracking (from media server)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -253,6 +270,9 @@ class Movie(Base):
         cascade="all, delete-orphan",
     )
     protection_requests: Mapped[list[ProtectionRequest]] = relationship(
+        back_populates="movie", default_factory=list, lazy="noload", repr=False
+    )
+    delete_requests: Mapped[list[DeleteRequest]] = relationship(
         back_populates="movie", default_factory=list, lazy="noload", repr=False
     )
 
@@ -287,7 +307,52 @@ class MovieVersion(Base):
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     size: Mapped[int] = mapped_column(Integer, default=0)
     added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    file_name: Mapped[str | None] = mapped_column(String(255), default=None)
     container: Mapped[str | None] = mapped_column(String(20), default=None)
+    duration: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # video stream metadata
+    video_track_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec: Mapped[str | None] = mapped_column(String(80), default=None)
+    video_codec_family: Mapped[VideoCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    video_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_dolby_vision_profile: Mapped[str | None] = mapped_column(
+        String(50), default=None
+    )
+    video_bitrate: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_bit_depth: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_resolution: Mapped[str | None] = mapped_column(String(20), default=None)
+    video_color_primaries: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_color_space: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_color_transfer: Mapped[str | None] = mapped_column(String(50), default=None)
+    video_fps: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # audio stream metadata
+    audio_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    audio_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec: Mapped[str | None] = mapped_column(String(80), default=None)
+    audio_codec_family: Mapped[AudioCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    audio_title: Mapped[str | None] = mapped_column(String(255), default=None)
+    audio_language: Mapped[str | None] = mapped_column(String(20), default=None)
+    audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    audio_channel_layout: Mapped[str | None] = mapped_column(String(100), default=None)
+    audio_bitrate: Mapped[int | None] = mapped_column(Integer, default=None)
+    audio_sample_rate: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # subtitle stream metadata
+    subtitle_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    subtitle_has_forced: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+
+    # chapter metadata
+    has_chapters: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -352,9 +417,6 @@ class Series(Base):
     size: Mapped[int | None] = mapped_column(Integer, default=None)
 
     # external IDs
-    sonarr_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, default=None
-    )
     imdb_id: Mapped[str | None] = mapped_column(
         String(20), unique=True, index=True, default=None
     )
@@ -381,6 +443,7 @@ class Series(Base):
     vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
+    arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # series-specific info
     season_count: Mapped[int | None] = mapped_column(Integer, default=None, init=False)
@@ -388,6 +451,15 @@ class Series(Base):
     # watch tracking (from plex/jellyfin/emby)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    # aggregate media signals
+    has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    max_video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    max_audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
@@ -421,6 +493,9 @@ class Series(Base):
     protection_requests: Mapped[list[ProtectionRequest]] = relationship(
         back_populates="series", default_factory=list, lazy="noload", repr=False
     )
+    delete_requests: Mapped[list[DeleteRequest]] = relationship(
+        back_populates="series", default_factory=list, lazy="noload", repr=False
+    )
 
 
 class Season(Base):
@@ -443,6 +518,18 @@ class Season(Base):
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    episode_paths: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # aggregate media signals
+    has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    max_video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_codec_families: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    audio_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    max_audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    subtitle_languages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     # service-specific IDs for direct ops
     jellyfin_season_id: Mapped[str | None] = mapped_column(String(100), default=None)
@@ -464,8 +551,58 @@ class Season(Base):
     )
 
 
+class MovieArrRef(Base):
+    """Per *arr instance reference for a movie."""
+
+    __tablename__ = "movie_arr_refs"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_config_id", "arr_movie_id", name="uq_movie_arr_ref_service_arr_id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    movie_id: Mapped[int] = mapped_column(ForeignKey("movies.id"), index=True)
+    service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id"), index=True
+    )
+    arr_movie_id: Mapped[int] = mapped_column(Integer)
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class SeriesArrRef(Base):
+    """Per *arr instance reference for a series."""
+
+    __tablename__ = "series_arr_refs"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_config_id",
+            "arr_series_id",
+            name="uq_series_arr_ref_service_arr_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"), index=True)
+    service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id"), index=True
+    )
+    arr_series_id: Mapped[int] = mapped_column(Integer)
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class ReclaimRule(Base):
-    """User-defined reclaim rules for movies and series."""
+    """User-defined advanced reclaim rules for movies and series."""
 
     __tablename__ = "reclaim_rules"
 
@@ -476,53 +613,10 @@ class ReclaimRule(Base):
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # library filtering (stores ServiceMediaLibrary.library_id values)
-    # None or empty list = applies to all libraries
-    # Otherwise, item must have library_id in one of the listed IDs
-    library_ids: Mapped[list[str] | None] = mapped_column(JSON, default=None)
-
-    # TMDB popularity criteria
-    min_popularity: Mapped[float | None] = mapped_column(Float, default=None)
-    max_popularity: Mapped[float | None] = mapped_column(Float, default=None)
-
-    # TMDB vote average criteria
-    min_vote_average: Mapped[float | None] = mapped_column(Float, default=None)
-    max_vote_average: Mapped[float | None] = mapped_column(Float, default=None)
-
-    # TMDB vote count criteria
-    min_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    max_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # watch history criteria
-    min_view_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    max_view_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    include_never_watched: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    # age criteria (days since added)
-    min_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
-    max_days_since_added: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # watch recency criteria (days since last watched)
-    min_days_since_last_watched: Mapped[int | None] = mapped_column(
-        Integer, default=None
-    )
-    max_days_since_last_watched: Mapped[int | None] = mapped_column(
-        Integer, default=None
-    )
-
-    # size criteria (bytes)
-    min_size: Mapped[int | None] = mapped_column(Integer, default=None)
-    max_size: Mapped[int | None] = mapped_column(Integer, default=None)
-
-    # path criteria - list of glob patterns (fnmatch syntax). Each pattern must
-    # be rooted at one of the known library paths. None or empty list means no
-    # path restriction (the rule applies regardless of file location).
-    paths: Mapped[list[str] | None] = mapped_column(JSON, default=None)
-
-    # series status criteria - only applies when media_type is Series
-    # None or empty list = any status
-    # List of TMDB status values to match (e.g., "Returning Series", "Ended", "Canceled", etc.)
-    series_status: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # advanced rule engine fields
+    target_scope: Mapped[str | None] = mapped_column(String(32), default=None)
+    definition: Mapped[dict | None] = mapped_column(JSON, default=None)
+    action: Mapped[dict | None] = mapped_column(JSON, default=None)
 
     # metadata
     created_at: Mapped[datetime] = mapped_column(
@@ -551,9 +645,14 @@ class ReclaimCandidate(Base):
     matched_criteria: Mapped[dict] = mapped_column(JSON)
     # easily readable combined reasons from all matched rules
     reason: Mapped[str] = mapped_column(Text)
+    # structured reason payload produced by advanced rule engine
+    reason_data: Mapped[list[dict] | None] = mapped_column(JSON, default=None)
 
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
+    movie_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movie_versions.id"), default=None, index=True
+    )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
@@ -565,7 +664,12 @@ class ReclaimCandidate(Base):
     tagged_in_arr: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # space savings
-    estimated_space_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    estimated_space_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    delete_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_delete_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    last_delete_error: Mapped[str | None] = mapped_column(Text, default=None)
 
     # timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -595,6 +699,9 @@ class ProtectedMedia(Base):
 
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
+    movie_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
+    )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
@@ -640,6 +747,9 @@ class ProtectionRequest(Base):
 
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
+    movie_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
+    )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
@@ -694,6 +804,97 @@ class ProtectionRequest(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class DeleteRequest(Base):
+    """User requests for media to be deleted."""
+
+    __tablename__ = "delete_requests"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+
+    requested_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
+    movie_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movie_versions.id"), default=None, index=True
+    )
+    series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id"), default=None, index=True
+    )
+
+    movie: Mapped[Movie | None] = relationship(
+        back_populates="delete_requests",
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    series: Mapped[Series | None] = relationship(
+        back_populates="delete_requests",
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    season: Mapped[Season | None] = relationship(
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+
+    requested_by: Mapped[User] = relationship(
+        foreign_keys=[requested_by_user_id], init=False, lazy="noload", repr=False
+    )
+
+    status: Mapped[ProtectionRequestStatus] = mapped_column(
+        Enum(ProtectionRequestStatus), default=ProtectionRequestStatus.PENDING
+    )
+
+    reviewed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    reviewed_by: Mapped[User | None] = relationship(
+        foreign_keys=[reviewed_by_user_id], init=False, lazy="noload", repr=False
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    execution_error: Mapped[str | None] = mapped_column(Text, default=None)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class ReclaimHistory(Base):
+    """Historical record of reclaim actions taken on media items."""
+
+    __tablename__ = "reclaim_history"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(32))
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    name: Mapped[str | None] = mapped_column(String(255), default=None)
+    size: Mapped[int | None] = mapped_column(Integer, default=None)
+    action: Mapped[str] = mapped_column(String(20), default="deleted")
+    destination_path: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=func.now(), init=False
     )
 
 

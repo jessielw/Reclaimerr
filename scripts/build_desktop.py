@@ -105,6 +105,7 @@ datas += [
     ("{frontend_dist}", "frontend/dist"),
     ("{icon_dir}",      "frontend/static"),
     ("alembic.ini",     "."),
+    ("CHANGELOG.md",    "."),
 ]
 
 # Runtime-only imports that static analysis can never see:

@@ -21,8 +21,17 @@
     "Explain why this should be kept (e.g., 'Planning to watch " +
     "soon', 'Personal favorite', etc.)";
 
+  interface VersionLike {
+    id: number;
+    path: string | null;
+    size: number;
+    library_name: string;
+    container: string | null;
+  }
+
   interface MediaLike {
     id: number;
+    versions?: VersionLike[];
     title: string;
     year: number | null;
     poster_url: string | null;
@@ -61,6 +70,11 @@
     mediaType === MediaType.Series && seasonId == null,
   );
 
+  // show version picker for movies with 2+ versions
+  const showVersionPicker = $derived(
+    mediaType === MediaType.Movie && (media?.versions?.length ?? 0) >= 2,
+  );
+
   // form state
   let reason = $state("");
   let submitting = $state(false);
@@ -71,8 +85,12 @@
   let seasons = $state<SeasonWithStatus[]>([]);
   let loadingSeasons = $state(false);
   let scopeExpanded = $state(true);
+  let versionPickerExpanded = $state(true);
   let scopeWholeSeries = $state(false);
   let selectedSeasonIds = $state<Set<number>>(new Set());
+
+  // version selection: null = whole movie, number = specific version id
+  let selectedVersionId = $state<number | null>(null);
 
   $effect(() => {
     if (open) {
@@ -82,7 +100,11 @@
       scopeWholeSeries = false;
       selectedSeasonIds = new Set();
       scopeExpanded = true;
+      versionPickerExpanded = true;
       seasons = [];
+      // auto-pick when there's exactly one version; otherwise default to whole-movie (null)
+      const vers = media?.versions ?? [];
+      selectedVersionId = vers.length === 1 ? vers[0].id : null;
       if (showScopePicker && media) {
         fetchSeasons(media.id);
       }
@@ -149,6 +171,9 @@
       const basePayload = {
         media_type: mediaType,
         media_id: media.id,
+        ...(mediaType === MediaType.Movie && selectedVersionId != null
+          ? { movie_version_id: selectedVersionId }
+          : {}),
         reason: reason.trim() || null,
         duration_days: durationDays,
       };
@@ -228,7 +253,7 @@
 <Dialog.Root bind:open>
   <Dialog.Content
     showCloseButton={false}
-    class="media-dialog sm:max-w-175 max-h-[90vh] overflow-y-auto border-ring border-2"
+    class="sm:max-w-175 max-h-[90vh] overflow-y-auto border-ring border-2"
   >
     <Dialog.Header>
       <Dialog.Title class="text-foreground">
@@ -278,6 +303,73 @@
             {/if}
           </div>
         </div>
+
+        <!-- version picker (movie with 2+ versions) -->
+        {#if showVersionPicker}
+          <div class="border border-border rounded-md overflow-hidden">
+            <button
+              type="button"
+              class="w-full flex items-center justify-between px-4 py-2.5
+                bg-muted/40 hover:bg-muted/60 transition-colors
+                text-sm font-medium text-foreground"
+              onclick={() => (versionPickerExpanded = !versionPickerExpanded)}
+            >
+              <span>Version</span>
+              <ChevronRight
+                class="size-4 text-muted-foreground transition-transform duration-200
+                  {versionPickerExpanded ? 'rotate-90' : ''}"
+              />
+            </button>
+
+            {#if versionPickerExpanded}
+              <div class="px-4 py-3 space-y-1 bg-card">
+                <!-- whole movie option -->
+                <label
+                  class="flex items-center gap-3 py-1.5 px-1 cursor-pointer
+                    rounded hover:bg-muted/40"
+                >
+                  <input
+                    type="radio"
+                    name="version-pick"
+                    checked={selectedVersionId === null}
+                    onchange={() => (selectedVersionId = null)}
+                    class="accent-primary cursor-pointer"
+                  />
+                  <span class="text-sm text-foreground font-medium flex-1"
+                    >Whole Movie</span
+                  >
+                </label>
+
+                <div class="border-t border-border pt-1 space-y-0.5">
+                  {#each media.versions ?? [] as version (version.id)}
+                    <label
+                      class="flex items-center gap-3 py-1.5 px-1
+                        cursor-pointer rounded hover:bg-muted/40"
+                    >
+                      <input
+                        type="radio"
+                        name="version-pick"
+                        checked={selectedVersionId === version.id}
+                        onchange={() => (selectedVersionId = version.id)}
+                        class="accent-primary cursor-pointer"
+                      />
+                      <span class="text-sm text-foreground flex-1">
+                        {version.library_name}{version.path
+                          ? " · " + version.path.split(/[\\/]/).pop()
+                          : ""}
+                      </span>
+                      {#if formatSizeGb(version.size) != null}
+                        <span class="text-xs text-muted-foreground"
+                          >{formatSizeGb(version.size)}</span
+                        >
+                      {/if}
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
 
         <!-- scope section (series without a pre-selected season) -->
         {#if showScopePicker}

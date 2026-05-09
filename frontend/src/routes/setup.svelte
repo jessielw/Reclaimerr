@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ReclaimerrSVG from "$lib/components/svgs/ReclaimerrLogoSVG.svelte";
+  import ReclaimerrSVG from "$lib/components/svgs/reclaimerr-logo-svg.svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { onMount } from "svelte";

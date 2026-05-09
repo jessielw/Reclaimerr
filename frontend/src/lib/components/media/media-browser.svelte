@@ -7,11 +7,13 @@
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
   import MediaGrid from "$lib/components/media/media-grid.svelte";
   import MediaDetailDialog from "$lib/components/media/media-detail-dialog.svelte";
+  import DeleteRequestDialog from "$lib/components/media/delete-request-dialog.svelte";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
   import Search from "@lucide/svelte/icons/search";
   import {
     ProtectionRequestStatus,
     MediaType,
+    type DeleteRequest,
     type ProtectionRequest,
     type MovieWithStatus,
     type SeriesWithStatus,
@@ -78,6 +80,7 @@
   // dialogs
   let showDetailDialog = $state(false);
   let showExceptionDialog = $state(false);
+  let showDeleteDialog = $state(false);
   let selectedMedia = $state<MediaItem | null>(null);
 
   // debounce timer for search
@@ -200,52 +203,67 @@
     showExceptionDialog = true;
   };
 
-  // after successful exception request, update only the requested media card in local state
-  const handleExceptionSuccess = (request: ProtectionRequest) => {
-    if (!mediaData) return;
+  // when user clicks "Request Delete" from either media card or detail dialog
+  const handleRequestDelete = (media: MediaItem) => {
+    selectedMedia = media;
+    showDeleteDialog = true;
+  };
 
-    const isPending = request.status === ProtectionRequestStatus.Pending;
-    const isApproved = request.status === ProtectionRequestStatus.Approved;
+  // helper: update the matching item's status and selectedMedia consistently
+  const upsertStatus = (
+    media_id: number,
+    patchFn: (oldStatus: any) => Partial<any>,
+  ) => {
+    if (!mediaData) return;
 
     mediaData = {
       ...mediaData,
-      items: mediaData.items.map((item) => {
-        if (item.id !== request.media_id) return item;
-
-        return {
-          ...item,
-          status: {
-            ...item.status,
-            has_pending_request: isPending,
-            request_id: isPending ? request.id : null,
-            request_status: request.status,
-            request_reason: request.reason,
-            is_protected: isApproved ? true : item.status.is_protected,
-          },
-        };
-      }),
+      items: mediaData.items.map((item) =>
+        item.id !== media_id
+          ? item
+          : { ...item, status: { ...item.status, ...patchFn(item.status) } },
+      ),
     };
 
-    if (selectedMedia && selectedMedia.id === request.media_id) {
+    if (selectedMedia && selectedMedia.id === media_id) {
       selectedMedia = {
         ...selectedMedia,
-        status: {
-          ...selectedMedia.status,
-          has_pending_request: isPending,
-          request_id: isPending ? request.id : null,
-          request_status: request.status,
-          request_reason: request.reason,
-          is_protected: isApproved ? true : selectedMedia.status.is_protected,
-        },
+        status: { ...selectedMedia.status, ...patchFn(selectedMedia.status) },
       };
     }
   };
 
+  // after successful exception request, update only the requested media card in local state
+  const handleExceptionSuccess = (request: ProtectionRequest) => {
+    const isPending = request.status === ProtectionRequestStatus.Pending;
+    const isApproved = request.status === ProtectionRequestStatus.Approved;
+
+    upsertStatus(request.media_id, (old) => ({
+      has_pending_request: isPending,
+      request_id: isPending ? request.id : null,
+      request_status: request.status,
+      request_reason: request.reason,
+      is_protected: isApproved ? true : old.is_protected,
+    }));
+  };
+
+  // after successful delete request, update only the requested media card in local state
+  const handleDeleteSuccess = (request: DeleteRequest) => {
+    upsertStatus(request.media_id, () => ({
+      has_pending_delete_request: true,
+      delete_request_id: request.id,
+      delete_request_status: request.status,
+      delete_request_reason: request.reason,
+    }));
+  };
+
+  // initial load
   onMount(() => {
     mounted = true;
     loadMedia(currentPage);
   });
 
+  // cleanup on unmount
   onDestroy(() => {
     if (searchTimer) clearTimeout(searchTimer);
     if (abortController) abortController.abort();
@@ -378,6 +396,7 @@
       {posterSize}
       onViewDetails={handleViewDetails}
       onRequestException={handleRequestException}
+      onRequestDelete={handleRequestDelete}
       onPageChange={handlePageChange}
     />
   </div>
@@ -389,6 +408,7 @@
   media={selectedMedia}
   {mediaType}
   onRequestException={handleRequestException}
+  onRequestDelete={handleRequestDelete}
 />
 
 <ProtectionRequestDialog
@@ -396,4 +416,11 @@
   media={selectedMedia}
   {mediaType}
   onSuccess={handleExceptionSuccess}
+/>
+
+<DeleteRequestDialog
+  bind:open={showDeleteDialog}
+  media={selectedMedia}
+  {mediaType}
+  onSuccess={handleDeleteSuccess}
 />

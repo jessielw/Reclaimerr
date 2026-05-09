@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import Service
+from backend.enums import MediaType, Service
 from backend.types import MEDIA_SERVERS, MediaServerType
 
 
@@ -22,6 +21,8 @@ def _validate_notification_url(url: str) -> None:
 
 
 class ServiceConfigUpdate(BaseModel):
+    id: int | None = None
+    name: str | None = None
     service_type: Service
     base_url: str
     api_key: str | None = None  # None = keep existing key (used if frontend changes it)
@@ -34,6 +35,8 @@ class ServiceConfigUpdate(BaseModel):
     @model_validator(mode="after")
     def sanitize_fields(self) -> ServiceConfigUpdate:
         """Sanitize fields after model initialization."""
+        if self.name is not None:
+            self.name = self.name.strip()
         self.base_url = self.base_url.strip()
         if self.api_key is not None:
             self.api_key = self.api_key.strip() or None  # treat empty string as None
@@ -86,48 +89,101 @@ class NotificationTestRequest(BaseModel):
         return self
 
 
+class PathMappingItem(BaseModel):
+    source_prefix: str
+    local_prefix: str
+    service_type: Service | None = None
+    service_config_id: int | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PathMappingItem:
+        self.source_prefix = self.source_prefix.strip()
+        self.local_prefix = self.local_prefix.strip()
+        return self
+
+
+class PostActionWebhookHeader(BaseModel):
+    name: str
+    value: str
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PostActionWebhookHeader:
+        self.name = self.name.strip()
+        self.value = self.value.strip()
+        if not self.name:
+            raise PydanticCustomError("webhook_header", "Header name is required")
+        return self
+
+
+class PostActionWebhookConfig(BaseModel):
+    enabled: bool = True
+    name: str
+    method: Literal["GET", "POST"] = "GET"
+    url_template: str
+    headers: list[PostActionWebhookHeader] = Field(default_factory=list)
+    auth_username: str | None = None
+    auth_password: str | None = None
+    actions: list[Literal["deleted", "moved"]] = Field(
+        default_factory=lambda: ["deleted", "moved"]
+    )
+    media_types: list[MediaType] = Field(
+        default_factory=lambda: [MediaType.MOVIE, MediaType.SERIES]
+    )
+    path_mode: Literal["original", "local", "destination"] = "original"
+    body_template: str | None = None
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> PostActionWebhookConfig:
+        self.name = self.name.strip() or "Post-action webhook"
+        self.method = self.method.upper()  # type: ignore[assignment]
+        self.url_template = self.url_template.strip()
+        if not self.url_template:
+            raise PydanticCustomError("webhook_url", "Webhook URL is required")
+        if not (
+            self.url_template.startswith("http://")
+            or self.url_template.startswith("https://")
+        ):
+            raise PydanticCustomError(
+                "webhook_url", "Webhook URL must start with http:// or https://"
+            )
+        if self.auth_username is not None:
+            self.auth_username = self.auth_username.strip() or None
+        if self.auth_password is not None:
+            self.auth_password = self.auth_password.strip() or None
+        if self.body_template is not None:
+            self.body_template = self.body_template.strip() or None
+        return self
+
+
+class PostActionWebhookTestRequest(BaseModel):
+    webhook: PostActionWebhookConfig
+
+
+class PostActionWebhookTestResponse(BaseModel):
+    success: bool
+    status_code: int | None = None
+    error: str | None = None
+
+
 class GeneralSettingsResponse(BaseModel):
-    auto_tag_enabled: bool
-    cleanup_tag_suffix: str
     worker_poll_min_seconds: float | None = None
     worker_poll_max_seconds: float | None = None
+
+    # path mappings for resolving media-server paths to local paths
+    path_mappings: list[PathMappingItem] = Field(default_factory=list)
+
+    # post action webhooks for delete/move integrations (Autopulse, scripts, etc.)
+    post_action_webhooks: list[PostActionWebhookConfig] = Field(default_factory=list)
+
+    # move settings
+    move_enabled: bool = False
+    move_destination_movies: str | None = None
+    move_destination_series: str | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
     updated_by: User | None = None
-
-    @field_validator("cleanup_tag_suffix", mode="before")
-    @classmethod
-    def validate_cleanup_tag_suffix(cls, v: str) -> str:
-        """Ensure cleanup tag suffix is formatted correctly."""
-        if not v:
-            return ""
-
-        # remove leading/trailing whitespace + convert to lowercase
-        v = v.strip().lower()
-
-        # enforce max length of 15 characters
-        if len(v) > 15:
-            raise PydanticCustomError(
-                "cleanup_tag_suffix", "Cleanup tag suffix cannot exceed 15 characters"
-            )
-
-        # enforce starting with hyphen or underscore
-        if not v.startswith("-") and not v.startswith("_"):
-            raise PydanticCustomError(
-                "cleanup_tag_suffix",
-                "Cleanup tag suffix must start with a hyphen or an underscore (e.g. '-candidate')",
-            )
-
-        # if any whitespace or characters other than hyphen, underscore, and lowercase letters are found
-        # raise an error
-        if re.search(r"[^a-z-_]", v):
-            raise PydanticCustomError(
-                "cleanup_tag_suffix",
-                "Cleanup tag suffix can only contain lowercase letters, hyphens, and underscores",
-            )
-
-        return v
 
     @field_validator("worker_poll_min_seconds", "worker_poll_max_seconds")
     @classmethod

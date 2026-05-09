@@ -7,8 +7,9 @@
   import Calendar from "@lucide/svelte/icons/calendar";
   import ListX from "@lucide/svelte/icons/list-x";
   import Ticket from "@lucide/svelte/icons/ticket";
-  import TicketMinus from "@lucide/svelte/icons/ticket-minus";
-  import ArrowDownToLine from "@lucide/svelte/icons/arrow-down-to-line";
+  import Shield from "@lucide/svelte/icons/shield";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import X from "@lucide/svelte/icons/x";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { auth } from "$lib/stores/auth";
   import type {
@@ -18,7 +19,7 @@
     SeriesWithStatus,
   } from "$lib/types/shared";
   import { Permission } from "$lib/types/shared";
-  import { formatSizeToGB, formatRuntime } from "$lib/utils/formatters";
+  import { formatFileSize, formatRuntime } from "$lib/utils/formatters";
   import { formatDateToLocaleString } from "$lib/utils/date";
 
   const TMDB_POSTER_WIDTH = 342;
@@ -30,6 +31,7 @@
     mediaType: MediaType;
     onClose?: () => void;
     onRequestException?: (media: MediaItem) => void;
+    onRequestDelete?: (media: MediaItem) => void;
   }
 
   let {
@@ -38,11 +40,19 @@
     mediaType,
     onClose,
     onRequestException,
+    onRequestDelete,
   }: Props = $props();
 
   const handleRequestException = () => {
     if (media && onRequestException) {
       onRequestException(media);
+      open = false;
+    }
+  };
+
+  const handleRequestDelete = () => {
+    if (media && onRequestDelete) {
+      onRequestDelete(media);
       open = false;
     }
   };
@@ -72,7 +82,7 @@
 <Dialog.Root bind:open onOpenChange={(isOpen) => !isOpen && handleClose()}>
   <Dialog.Content
     showCloseButton={false}
-    class="media-dialog sm:max-w-175 max-h-[90vh] overflow-hidden border-ring border-2 p-0"
+    class="sm:max-w-175 h-[90vh] overflow-hidden border-ring border-2 p-0"
   >
     {#if media}
       <div class="media-dialog__body">
@@ -140,9 +150,7 @@
                           <Tooltip.Trigger>
                             {#snippet child({ props })}
                               <span {...props} tabindex="-1">
-                                <TicketMinus
-                                  class="size-5 text-white cursor-help"
-                                />
+                                <Trash2 class="size-5 text-white cursor-help" />
                               </span>
                             {/snippet}
                           </Tooltip.Trigger>
@@ -153,7 +161,7 @@
                       </div>
                     {/if}
 
-                    <!-- pending request -->
+                    <!-- pending protection request -->
                     {#if media.status.has_pending_request}
                       <div
                         class="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center z-40"
@@ -167,7 +175,27 @@
                             {/snippet}
                           </Tooltip.Trigger>
                           <Tooltip.Content>
-                            <p>Pending Request</p>
+                            <p>Pending Protection Request</p>
+                          </Tooltip.Content>
+                        </Tooltip.Root>
+                      </div>
+                    {/if}
+
+                    <!-- pending delete request -->
+                    {#if media.status.has_pending_delete_request}
+                      <div
+                        class="w-7 h-7 rounded-full bg-red-500 flex items-center justify-center z-40"
+                      >
+                        <Tooltip.Root>
+                          <Tooltip.Trigger>
+                            {#snippet child({ props })}
+                              <span {...props} tabindex="-1">
+                                <Shield class="size-5 text-white cursor-help" />
+                              </span>
+                            {/snippet}
+                          </Tooltip.Trigger>
+                          <Tooltip.Content>
+                            <p>Pending Delete Request</p>
                           </Tooltip.Content>
                         </Tooltip.Root>
                       </div>
@@ -248,7 +276,7 @@
                 <div>
                   <span class="text-muted-foreground">Size:</span>
                   <span class="text-foreground ml-2"
-                    >{formatSizeToGB(media.size)}</span
+                    >{formatFileSize(media.size)}</span
                   >
                 </div>
                 <div>
@@ -294,15 +322,47 @@
           </div>
 
           <Dialog.Footer class="mt-6 border-t border-border/60 pt-4">
+            <!-- close button -->
             <Button
               variant="secondary"
-              class="bg-primary hover:bg-primary-hover cursor-pointer"
-              onclick={handleClose}>Close</Button
+              class="cursor-pointer"
+              onclick={handleClose}
             >
+              <X class="size-5" />
+              Close
+            </Button>
+
+            <!-- request protection -->
             {#if canRequestExceptions && !media.status.is_protected && !media.status.has_pending_request}
-              <Button class="cursor-pointer" onclick={handleRequestException}
-                ><ArrowDownToLine class="size-5" />Request</Button
-              >
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    class="cursor-pointer"
+                    onclick={handleRequestException}
+                    ><Shield class="size-5" />Protect</Button
+                  >
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Request Protection</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+
+            <!-- request delete -->
+            {#if canRequestExceptions && !media.status.is_protected && !media.status.has_pending_delete_request}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    variant="destructive"
+                    class="cursor-pointer"
+                    onclick={handleRequestDelete}
+                    ><Trash2 class="size-5" />Delete</Button
+                  >
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Request Deletion</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
             {/if}
           </Dialog.Footer>
         </div>

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
-from backend.database.models import Movie, ProtectedMedia, Series, User
+from backend.database.models import Movie, MovieVersion, ProtectedMedia, Series, User
 from backend.enums import MediaType, Permission, UserRole
 from backend.models.protect import (
     CreateProtectedEntryRequest,
@@ -139,6 +139,7 @@ async def get_protected_entries(
                 id=entry.id,
                 media_type=entry.media_type,
                 media_id=media_id,
+                movie_version_id=entry.movie_version_id,
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
@@ -185,6 +186,18 @@ async def create_protection_entry(
 
     media = None
     if request_data.media_type is MediaType.MOVIE:
+        if request_data.movie_version_id is not None:
+            version_result = await db.execute(
+                select(MovieVersion).where(
+                    MovieVersion.id == request_data.movie_version_id,
+                    MovieVersion.movie_id == request_data.media_id,
+                )
+            )
+            if version_result.scalar_one_or_none() is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Movie version not found",
+                )
         media_result = await db.execute(
             select(Movie).where(
                 Movie.id == request_data.media_id,
@@ -195,8 +208,14 @@ async def create_protection_entry(
         existing_query = select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.MOVIE,
             ProtectedMedia.movie_id == request_data.media_id,
+            ProtectedMedia.movie_version_id == request_data.movie_version_id,
         )
     else:
+        if request_data.movie_version_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="movie_version_id is only valid for movies",
+            )
         media_result = await db.execute(
             select(Series).where(
                 Series.id == request_data.media_id,
@@ -232,6 +251,7 @@ async def create_protection_entry(
         movie_id=request_data.media_id
         if request_data.media_type is MediaType.MOVIE
         else None,
+        movie_version_id=request_data.movie_version_id,
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
@@ -249,6 +269,7 @@ async def create_protection_entry(
         id=new_entry.id,
         media_type=new_entry.media_type,
         media_id=request_data.media_id,
+        movie_version_id=new_entry.movie_version_id,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
@@ -335,6 +356,7 @@ async def update_protection_duration(
         id=entry.id,
         media_type=entry.media_type,
         media_id=media_id,
+        movie_version_id=entry.movie_version_id,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,

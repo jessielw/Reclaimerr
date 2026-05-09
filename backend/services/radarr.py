@@ -113,6 +113,22 @@ class RadarrClient:
             return []
         return [ArrTag(id=tag["id"], label=tag["label"]) for tag in data]
 
+    async def get_all_tag_details(self) -> dict[str, list[int]]:
+        """Get all tags with their associated movie IDs in a single call.
+
+        Returns a dict mapping lowercase tag label → list of Radarr movie IDs.
+        """
+        _, data = await self._make_request("GET", "tag/detail")
+        if not isinstance(data, list):
+            return {}
+        return {
+            str(tag.get("label", "")).lower(): [
+                int(i) for i in tag.get("movieIds", []) if i is not None
+            ]
+            for tag in data
+            if tag.get("label")
+        }
+
     async def create_tag(self, label: str) -> ArrTag:
         """Create a new tag.
 
@@ -231,18 +247,20 @@ class RadarrClient:
     async def delete_movies(
         self,
         movie_ids: list[int],
+        delete_files: bool = True,
     ) -> None:
         """Delete multiple movies at once.
 
         Args:
             movie_ids: List of movie IDs to delete
+            delete_files: Whether to delete the movie files from disk
         """
         status_code, _ = await self._make_request(
             "DELETE",
             "movie/editor",
             json={
                 "movieIds": movie_ids,
-                "deleteFiles": True,
+                "deleteFiles": delete_files,
             },
         )
         if status_code != 200:
