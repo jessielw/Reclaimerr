@@ -87,6 +87,7 @@ class TautulliClient:
         media_type: str,
         since: datetime | None = None,
         page_size: int = 10000,
+        episode_key: str = "grandparent_rating_key",
     ) -> dict[int, tuple[int, datetime | None]]:
         """Aggregate play counts and last-played timestamps from Tautulli history.
 
@@ -95,6 +96,9 @@ class TautulliClient:
             since: If provided, only fetch records on or after this datetime minus
                 a 1 day overlap buffer (date granularity safety margin).
             page_size: Number of records to request per API page.
+            episode_key: Tautulli record key used for episode roll-ups. Use
+                ``grandparent_rating_key`` for series or ``parent_rating_key`` for
+                seasons.
 
         Returns:
             For ``media_type="movie"``:
@@ -122,7 +126,7 @@ class TautulliClient:
 
             for record in records:
                 if media_type == "episode":
-                    key = record.get("grandparent_rating_key")
+                    key = record.get(episode_key)
                 else:
                     key = record.get("rating_key")
 

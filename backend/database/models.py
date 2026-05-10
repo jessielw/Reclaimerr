@@ -399,6 +399,46 @@ class SeriesServiceRef(Base):
     )
 
 
+class SupplementalMediaMatch(Base):
+    """High confidence identity map for supplemental same media services."""
+
+    __tablename__ = "supplemental_media_matches"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service",
+            "source_item_id",
+            "media_type",
+            name="uq_supplemental_media_match_source_item",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_item_id: Mapped[str] = mapped_column(String(100))
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+
+    movie_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movies.id"), index=True, default=None
+    )
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id"), index=True, default=None
+    )
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id"), index=True, default=None
+    )
+    source_media_id: Mapped[str | None] = mapped_column(String(100), default=None)
+    path_tail: Mapped[str | None] = mapped_column(String(1024), default=None)
+    confidence: Mapped[int] = mapped_column(SmallInteger, default=100)
+    signals: Mapped[dict | None] = mapped_column(JSON, default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class Series(Base):
     """Series availability and metadata."""
 

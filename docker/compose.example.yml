@@ -8,7 +8,7 @@ services:
       # persist app data
       - ./data:/app/data
 
-      # bind mount for media files (adjust the host path as needed) - this is needed for 
+      # bind mount for media files (adjust the host path as needed) - this is needed for
       # Reclaimerr to clean up additional files on delete when deleting via the main media server
       # directly
       - /media:/media
@@ -17,6 +17,13 @@ services:
       # - /moved_files:/moved_files
     ports:
       - "8000:8000"
+
+    # optional LinuxServer container style runtime controls for UnRaid/NAS users:
+    # set PUID/PGID/UMASK/TZ in your .env file, for example:
+    # PUID=1000
+    # PGID=1000
+    # UMASK=022
+    # TZ=America/New_York
 
     # optional healthcheck to monitor container health (adjust the URL and parameters as needed)
     # healthcheck:

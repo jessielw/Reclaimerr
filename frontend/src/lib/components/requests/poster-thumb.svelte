@@ -3,14 +3,25 @@
   import Tv from "@lucide/svelte/icons/tv";
   import { MediaType } from "$lib/types/shared";
 
+  type TMDBPosterSizeOption =
+    | "92"
+    | "154"
+    | "185"
+    | "342"
+    | "500"
+    | "780"
+    | "original";
+
   let {
     mediaType,
     posterUrl,
-    width = 92,
+    posterSize = "92",
+    tailWindElSize = "w-16",
   }: {
     mediaType: MediaType;
     posterUrl?: string | null;
-    width?: number;
+    posterSize?: TMDBPosterSizeOption | number;
+    tailWindElSize?: string;
   } = $props();
 
   // ensure posterUrl is normalized to start with a slash if it exists
@@ -21,13 +32,13 @@
 </script>
 
 <div
-  class="w-16 shrink-0 self-start rounded-md bg-muted/40 flex items-center justify-center aspect-2/3 border-2
-    transition-transform duration-150 border-gray-400 dark:border-gray-700 hover:scale-105
-    cursor-default"
+  class="{tailWindElSize} shrink-0 self-start rounded-md bg-muted/40 flex items-center justify-center
+    aspect-2/3 border-2 transition-transform duration-150 border-gray-400 dark:border-gray-700
+    hover:scale-105 cursor-default"
 >
   {#if normalizedPosterUrl}
     <img
-      src={`http://image.tmdb.org/t/p/w${width}${normalizedPosterUrl}`}
+      src={`http://image.tmdb.org/t/p/w${posterSize}${normalizedPosterUrl}`}
       alt="Poster"
       class="h-full w-full object-cover rounded-md"
     />

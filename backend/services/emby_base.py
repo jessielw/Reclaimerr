@@ -1046,6 +1046,17 @@ class EmbyServiceBase:
         Returns:
             Mapping of episode item ID to series item ID.
         """
+        parents = await self.get_parent_ids_for_episode_ids(episode_item_ids)
+        return {
+            episode_id: series_id
+            for episode_id, (series_id, _) in parents.items()
+            if series_id
+        }
+
+    async def get_parent_ids_for_episode_ids(
+        self, episode_item_ids: list[str]
+    ) -> dict[str, tuple[str | None, str | None]]:
+        """Batch-resolve episode item IDs to parent series and season IDs."""
         if not episode_item_ids:
             return {}
 
@@ -1059,7 +1070,7 @@ class EmbyServiceBase:
             return {}
 
         _CHUNK = 200
-        mapping: dict[str, str] = {}
+        mapping: dict[str, tuple[str | None, str | None]] = {}
         for i in range(0, len(episode_item_ids), _CHUNK):
             chunk = episode_item_ids[i : i + _CHUNK]
             try:
@@ -1067,7 +1078,7 @@ class EmbyServiceBase:
                     f"Users/{user_id}/Items",
                     params={
                         "Ids": ",".join(chunk),
-                        "Fields": "SeriesId",
+                        "Fields": "SeriesId,SeasonId",
                         "EnableUserData": "false",
                         "Recursive": "true",
                     },
@@ -1076,8 +1087,9 @@ class EmbyServiceBase:
                 for item in items:
                     item_id = item.get("Id")
                     series_id = item.get("SeriesId")
-                    if item_id and series_id:
-                        mapping[item_id] = series_id
+                    season_id = item.get("SeasonId")
+                    if item_id and (series_id or season_id):
+                        mapping[item_id] = (series_id, season_id)
             except Exception as e:
                 LOG.warning(f"Failed to resolve episode IDs chunk to series IDs: {e}")
 
