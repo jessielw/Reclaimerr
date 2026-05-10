@@ -52,7 +52,8 @@
   >
     {#if votePct || voteCountFmt || popularityFmt}
       <div
-        class="flex flex-col gap-1 relative rounded-md bg-muted/50 border border-border/50 px-2 py-1"
+        class="flex flex-col gap-1 relative rounded-md bg-muted/50 border border-border/50 px-2 py-1
+          text-foreground/90"
       >
         <!-- tmdb icon -->
         <span class="inline-flex max-w-fit items-center">
@@ -105,7 +106,7 @@
           <Tooltip.Root>
             <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
               <span class="inline-flex items-center gap-0.5 text-xs">
-                <Flame class="size-3 text-orange-400" />
+                <Flame class="size-3 text-orange-800 fill-orange-400" />
                 {popularityFmt}
               </span>
             </Tooltip.Trigger>
