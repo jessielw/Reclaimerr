@@ -28,7 +28,7 @@
   } from "$lib/utils/pagination";
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
-  import Trash from "@lucide/svelte/icons/trash";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import History from "@lucide/svelte/icons/history";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
@@ -1126,6 +1126,7 @@
             Clear
           </Button>
           {#if isAdmin}
+            <!-- protect -->
             <Tooltip.Root>
               <Tooltip.Trigger>
                 <Button
@@ -1142,6 +1143,27 @@
               </Tooltip.Content>
             </Tooltip.Root>
           {/if}
+
+          <!-- move -->
+          {#if moveEnabled}
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <Button
+                  size="sm"
+                  class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
+                  onclick={() => (bulkMoveDialogOpen = true)}
+                >
+                  <FolderOutput class="size-4" />
+                  Move {selectedIds.size}
+                </Button>
+              </Tooltip.Trigger>
+              <Tooltip.Content>
+                <p>Move to destination folder</p>
+              </Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
+
+          <!-- delete -->
           {#if canDelete}
             <Tooltip.Root>
               <Tooltip.Trigger>
@@ -1150,7 +1172,7 @@
                   class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
                   onclick={() => (bulkDeleteDialogOpen = true)}
                 >
-                  <Trash class="size-4" />
+                  <Trash2 class="size-4" />
                   Delete {selectedIds.size}
                 </Button>
               </Tooltip.Trigger>
@@ -1158,24 +1180,6 @@
                 <p>Delete</p>
               </Tooltip.Content>
             </Tooltip.Root>
-            {#if moveEnabled}
-              <Tooltip.Root>
-                <Tooltip.Trigger>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    class="cursor-pointer"
-                    onclick={() => (bulkMoveDialogOpen = true)}
-                  >
-                    <FolderOutput class="size-4" />
-                    Move {selectedIds.size}
-                  </Button>
-                </Tooltip.Trigger>
-                <Tooltip.Content>
-                  <p>Move to destination folder</p>
-                </Tooltip.Content>
-              </Tooltip.Root>
-            {/if}
           {/if}
         </div>
       </div>
