@@ -20,7 +20,7 @@
   }: {
     mediaType: MediaType;
     posterUrl?: string | null;
-    posterSize?: TMDBPosterSizeOption;
+    posterSize?: TMDBPosterSizeOption | number;
     tailWindElSize?: string;
   } = $props();
 

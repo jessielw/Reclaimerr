@@ -806,7 +806,7 @@
                   <PosterThumb
                     mediaType={req.media_type}
                     posterUrl={req.poster_url}
-                    width={TMDB_POSTER_WIDTH}
+                    posterSize={TMDB_POSTER_WIDTH}
                   />
                   <div class="flex-1 min-w-0">
                     <div class="min-w-0">
@@ -1016,7 +1016,7 @@
               <PosterThumb
                 mediaType={req.media_type}
                 posterUrl={req.poster_url}
-                width={TMDB_POSTER_WIDTH}
+                posterSize={TMDB_POSTER_WIDTH}
               />
               <div class="min-w-0 flex-1">
                 <h3
