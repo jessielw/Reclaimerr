@@ -8,7 +8,13 @@
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import VersionMediaInfoWidget from "$lib/components/candidates/movie-version-mediainfo.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
-  import { formatFileSize } from "$lib/utils/formatters";
+  import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
+  import {
+    rulePreview,
+    groupRuleNames,
+    extractPathNoFile,
+  } from "$lib/utils/candidate-rules";
+  import Badge from "$lib/components/ui/badge/badge.svelte";
 
   type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
   type MovieGroupRow = {
@@ -89,12 +95,10 @@
   const unknownValue = "Unknown";
 
   const resolutionLabel = (entry: ReclaimCandidateEntry): string => {
-    if (entry.version_video_resolution) {
-      return entry.version_video_resolution;
-    } else if (entry.version_video_height && entry.version_video_height > 0) {
-      return `${entry.version_video_height}p`;
-    }
-    return unknownValue;
+    const res =
+      entry.version_video_resolution ||
+      (entry.version_video_height ? String(entry.version_video_height) : null);
+    return cleanResolutionString(res) ?? unknownValue;
   };
 
   const fileNameFromPath = (
@@ -110,9 +114,6 @@
     return extractedFileName?.trim() ? extractedFileName : unknownValue;
   };
 
-  const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
-    (tokens ?? []).map((token) => token.trim()).filter(Boolean);
-
   const openInfo = (entry: ReclaimCandidateEntry) => {
     infoTarget = entry;
     infoOpen = true;
@@ -124,7 +125,7 @@
   };
 </script>
 
-<div class="md:hidden divide-y divide-border">
+<div class="divide-y divide-border">
   {#each rows as row (row.kind === "flat" ? `mobile-flat-${row.entry.id}` : `mobile-group-${row.media_id}`)}
     {#if row.kind === "flat"}
       {@const entry = row.entry}
@@ -188,6 +189,7 @@
       {@const expanded = expandedGroups.has(row.media_id)}
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
+      {@const allRules = groupRuleNames(row.versions)}
       <div class="p-4 space-y-3">
         <div class="flex gap-3">
           {#if canBulkSelect}
@@ -208,6 +210,8 @@
               <PosterThumb
                 mediaType={MediaType.Movie}
                 posterUrl={row.poster_url}
+                posterSize={"154"}
+                tailWindElSize="w-24"
               />
               <div class="min-w-0">
                 <div class="text-sm font-medium text-foreground">
@@ -237,6 +241,21 @@
                     </span>
                   {/each}
                 </div>
+                <div class="mt-2 flex flex-wrap gap-1.5">
+                  {#if allRules.length > 0}
+                    {#each allRules as rule}
+                      <Badge class="border-primary" variant="secondary"
+                        >{rule}</Badge
+                      >
+                    {/each}
+                    <!-- {:else}
+                    <span
+                      class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card text-muted-foreground"
+                    >
+                      {unknownValue}
+                    </span> -->
+                  {/if}
+                </div>
                 <CandidateTmdbMeta entry={row.versions[0]} />
               </div>
             </div>
@@ -244,326 +263,116 @@
         </div>
         {#if expanded}
           <div class="pl-7 space-y-2">
+            <h2>Versions</h2>
             {#each row.versions as version (version.id)}
-              {@const parsedRules = parseRuleTokens(version.reason_tokens)}
+              {@const previewRules = rulePreview(version)}
+              <!-- {@const extraCount = extraRuleCount(version)}
+              {@const reasons = detailReasons(version)} -->
+              <!-- {console.log(version)} -->
               <div
-                class="rounded-md border border-border bg-muted/30 p-3 space-y-2"
-              >
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <div class="text-sm font-medium text-foreground">
-                      {version.version_library_name ?? "Version"} - {resolutionLabel(
-                        version,
-                      )}
-                    </div>
-                    <div class="text-xs text-muted-foreground truncate">
-                      {fileNameFromPath(
-                        version.version_path,
-                        version.version_file_name,
-                      )}
-                    </div>
-                  </div>
-                  <div class="text-xs text-muted-foreground">
-                    {formatDate(version.created_at)}
-                  </div>
-                </div>
-                <div class="text-xs text-muted-foreground">
-                  {formatFileSize(version.estimated_space_bytes)}
-                </div>
-                <div class="flex flex-wrap gap-1.5">
-                  {#if parsedRules.length > 0}
-                    {#each parsedRules as rule}
-                      <span
-                        class="text-xs leading-5 px-2 rounded-full border border-border bg-card text-foreground"
-                      >
-                        {rule}
-                      </span>
-                    {/each}
-                  {:else}
-                    <span class="text-xs text-muted-foreground"
-                      >{unknownValue}</span
-                    >
-                  {/if}
-                </div>
-                <div class="flex justify-end gap-2">
-                  <CandidateActionButtons
-                    entry={version}
-                    {canDelete}
-                    {moveEnabled}
-                    {openSingleRequest}
-                    {openSingleDelete}
-                    {openSingleMove}
-                    onInfo={openInfo}
-                    compact
-                  />
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  {/each}
-</div>
-
-<div class="hidden md:block overflow-x-auto">
-  <table class="w-full">
-    <thead class="bg-muted/50">
-      <tr>
-        {#if canBulkSelect}
-          <th class="px-4 py-3 w-10">
-            <input
-              type="checkbox"
-              checked={allPageSelected}
-              onchange={toggleSelectAll}
-              class="cursor-pointer accent-primary"
-            />
-          </th>
-        {/if}
-        <th
-          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider w-88"
-        >
-          Media
-        </th>
-        <th
-          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-        >
-          Summary
-        </th>
-        <th
-          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-        >
-          Size
-        </th>
-        <th
-          class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-        >
-          Flagged
-        </th>
-        <th
-          class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
-        >
-          Actions
-        </th>
-      </tr>
-    </thead>
-    <tbody class="divide-y divide-border">
-      {#each rows as row (row.kind === "flat" ? `flat-${row.entry.id}` : `group-${row.media_id}`)}
-        {#if row.kind === "flat"}
-          {@const entry = row.entry}
-          <tr
-            class="hover:bg-muted/30 transition-colors {selectedIds.has(
-              entry.id,
-            )
-              ? 'bg-primary/5'
-              : ''}"
-          >
-            {#if canBulkSelect}
-              <td class="px-4 py-4 w-10">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(entry.id)}
-                  onchange={() => toggleSelect(entry.id)}
-                  class="cursor-pointer accent-primary"
-                />
-              </td>
-            {/if}
-            <td class="px-6 py-4">
-              <div class="flex gap-4 items-center min-w-88">
-                <div class="flex flex-col items-center w-max gap-1">
-                  <PosterThumb
-                    mediaType={entry.media_type}
-                    posterUrl={entry.poster_url}
-                  />
-                  <MediaTypeBadge mediaType={entry.media_type} />
-                </div>
-                <div class="min-w-0 flex-1 text-sm font-medium text-foreground">
-                  {entry.media_title}
-                  {#if entry.media_year}
-                    <span class="text-muted-foreground"
-                      >({entry.media_year})</span
-                    >
-                  {/if}
-                  <CandidateTmdbMeta {entry} />
-                </div>
-              </div>
-            </td>
-            <td
-              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
-            >
-              <div class="flex flex-wrap gap-1.5">
-                {#each movieSummaryChips(entry) as chip}
-                  <span
-                    class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
-                  >
-                    {chip}
-                  </span>
-                {/each}
-              </div>
-            </td>
-            <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{formatFileSize(entry.estimated_space_bytes)}</td
-            >
-            <td
-              class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
-              >{formatDate(entry.created_at)}</td
-            >
-            <td class="px-6 py-4 text-right whitespace-nowrap">
-              <div class="flex gap-2 justify-end items-center">
-                <CandidateActionButtons
-                  {entry}
-                  {canDelete}
-                  {moveEnabled}
-                  {openSingleRequest}
-                  {openSingleDelete}
-                  {openSingleMove}
-                  showTooltips
-                />
-              </div>
-            </td>
-          </tr>
-        {:else}
-          {@const expanded = expandedGroups.has(row.media_id)}
-          {@const allSel = isGroupAllSelected(row)}
-          {@const partSel = isGroupPartialSelected(row)}
-          <tr
-            class="hover:bg-muted/30 transition-colors cursor-pointer {allSel
-              ? 'bg-primary/5'
-              : ''}"
-            onclick={() => toggleExpand(row.media_id)}
-          >
-            {#if canBulkSelect}
-              <td class="px-4 py-4 w-10" onclick={(e) => e.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  checked={allSel}
-                  indeterminate={partSel}
-                  onchange={() => toggleGroupSelect(row)}
-                  class="cursor-pointer accent-primary"
-                />
-              </td>
-            {/if}
-            <td class="px-6 py-4">
-              <div class="flex gap-4 items-center min-w-88">
-                <div class="flex flex-col items-center w-max gap-1">
-                  <PosterThumb
-                    mediaType={MediaType.Movie}
-                    posterUrl={row.poster_url}
-                  />
-                  <MediaTypeBadge mediaType={MediaType.Movie} />
-                </div>
-                <div class="min-w-0 flex-1 text-sm font-medium text-foreground">
-                  {row.media_title}
-                  {#if row.media_year}
-                    <span class="text-muted-foreground">({row.media_year})</span
-                    >
-                  {/if}
-                  <div class="mt-0.5">
-                    <span class="text-xs text-amber-400 font-normal">
-                      {row.versions.length} version{row.versions.length !== 1
-                        ? "s"
-                        : ""} flagged
-                    </span>
-                  </div>
-                  <CandidateTmdbMeta entry={row.versions[0]} />
-                </div>
-              </div>
-            </td>
-            <td
-              class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
-            >
-              <div class="flex flex-wrap gap-1.5">
-                {#each movieSummaryChips(row.versions[0]) as chip}
-                  <span
-                    class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
-                  >
-                    {chip}
-                  </span>
-                {/each}
-              </div>
-            </td>
-            <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap"
-              >{formatFileSize(groupTotalBytes(row))}</td
-            >
-            <td
-              class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
-              >{formatDate(row.versions[0].created_at)}</td
-            >
-            <td class="px-6 py-4 text-right whitespace-nowrap">
-              <div class="flex gap-2 justify-end items-center">
-                <ChevronRight
-                  class="size-4 text-muted-foreground transition-transform duration-200 {expanded
-                    ? 'rotate-90'
-                    : ''}"
-                />
-              </div>
-            </td>
-          </tr>
-          {#if expanded}
-            {#each row.versions as version (version.id)}
-              {@const parsedRules = parseRuleTokens(version.reason_tokens)}
-              <tr
-                class="bg-muted/20 border-l-2 border-l-cyan-500/40 hover:bg-muted/40
-                  transition-colors {selectedIds.has(version.id)
-                  ? 'bg-primary/5'
-                  : ''}"
+                class="flex gap-3 rounded-md border border-border bg-muted/30 p-3"
               >
                 {#if canBulkSelect}
-                  <td class="px-4 py-3 w-10 pl-8">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(version.id)}
-                      onchange={() => toggleSelect(version.id)}
-                      class="cursor-pointer accent-primary"
-                    />
-                  </td>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(version.id)}
+                    onchange={() => toggleSelect(version.id)}
+                    class="mt-0.5 cursor-pointer accent-primary"
+                  />
                 {/if}
-                <td class="px-6 py-3 pl-14">
-                  <div class="min-w-0">
-                    <div class="text-sm font-medium text-foreground">
-                      {version.version_library_name ?? "Version"} - {resolutionLabel(
-                        version,
-                      )}
-                    </div>
-                    <div
-                      class="text-xs text-muted-foreground truncate max-w-72"
-                    >
-                      {fileNameFromPath(
-                        version.version_path,
-                        version.version_file_name,
-                      )}
-                    </div>
-                  </div>
-                </td>
-                <td
-                  class="px-6 py-3 text-sm text-muted-foreground whitespace-normal wrap-break-word"
-                >
-                  <div class="flex flex-wrap gap-1.5">
-                    {#if parsedRules.length > 0}
-                      {#each parsedRules as rule}
-                        <span
-                          class="text-xs leading-5 px-2 rounded-2xl border border-border
-                            bg-muted/50 text-foreground"
-                        >
-                          {rule}
-                        </span>
-                      {/each}
-                    {:else}
-                      <span class="text-xs text-muted-foreground"
-                        >{unknownValue}</span
+                <div class="flex-1 space-y-2">
+                  <!-- file name -->
+                  {#if version.version_file_name}
+                    <div class="space-y-1 text-xs">
+                      <div
+                        class="tracking-wide text-muted-foreground flex items-start justify-between gap-2"
                       >
-                    {/if}
+                        FILE NAME
+                        <div class="text-xs text-muted-foreground">
+                          {formatDate(version.created_at)}
+                        </div>
+                      </div>
+                      <div class="text-foreground break-all">
+                        {version.version_file_name}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- path without file -->
+                  {#if version.version_path}
+                    <div class="space-y-1 text-xs">
+                      <div class="tracking-wide text-muted-foreground">
+                        PATH
+                      </div>
+                      <div class="text-foreground break-all">
+                        {extractPathNoFile(version.version_path)}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- resolution -->
+                  {#if version.version_video_resolution}
+                    <div class="space-y-1 text-xs">
+                      <div class="tracking-wide text-muted-foreground">
+                        RESOLUTION
+                      </div>
+                      <div class="text-foreground">
+                        {cleanResolutionString(
+                          version.version_video_resolution,
+                        )}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- size -->
+                  {#if version.estimated_space_bytes}
+                    <div class="space-y-1 text-xs">
+                      <div class="tracking-wide text-muted-foreground">
+                        SIZE
+                      </div>
+                      <div class="text-foreground">
+                        {formatFileSize(version.estimated_space_bytes)}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- library -->
+                  {#if version.version_library_name}
+                    <div class="space-y-1 text-xs">
+                      <div class="tracking-wide text-muted-foreground">
+                        LIBRARY
+                      </div>
+                      <div class="text-foreground">
+                        {version.version_library_name}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- matched rules -->
+                  {#if previewRules.length > 0}
+                    <div class="space-y-1">
+                      <div
+                        class="text-[11px] uppercase tracking-wide text-muted-foreground"
+                      >
+                        Matched rules
+                      </div>
+                      <div class="flex flex-wrap gap-1.5">
+                        {#each previewRules as rule}
+                          <Badge class="border-primary" variant="secondary"
+                            >{rule}</Badge
+                          >
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- {#if reasons.length > 0}
+                  <div class="text-xs text-muted-foreground leading-5">
+                    {reasons[0]}
                   </div>
-                </td>
-                <td class="px-6 py-3 text-sm text-foreground whitespace-nowrap"
-                  >{formatFileSize(version.estimated_space_bytes)}</td
-                >
-                <td
-                  class="px-6 py-3 text-sm text-muted-foreground whitespace-nowrap"
-                  >{formatDate(version.created_at)}</td
-                >
-                <td class="px-6 py-3 text-right whitespace-nowrap">
-                  <div class="flex gap-2 justify-end items-center">
+                {/if} -->
+
+                  <div class="flex justify-end gap-2">
                     <CandidateActionButtons
                       entry={version}
                       {canDelete}
@@ -572,18 +381,17 @@
                       {openSingleDelete}
                       {openSingleMove}
                       onInfo={openInfo}
-                      showTooltips
                       compact
                     />
                   </div>
-                </td>
-              </tr>
+                </div>
+              </div>
             {/each}
-          {/if}
+          </div>
         {/if}
-      {/each}
-    </tbody>
-  </table>
+      </div>
+    {/if}
+  {/each}
 </div>
 
 {#if infoOpen && infoTarget}

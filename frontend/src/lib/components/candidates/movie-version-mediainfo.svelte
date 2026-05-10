@@ -1,8 +1,15 @@
 <script lang="ts">
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
   import { formatFileSize } from "$lib/utils/formatters";
+  import Badge from "$lib/components/ui/badge/badge.svelte";
+  import { toTitleCase } from "$lib/utils/strings";
+  import {
+    extractPathNoFile,
+    fileNameFromPath,
+  } from "$lib/utils/candidate-rules";
 
   type DetailField = { label: string; value: string };
+  type DetailSection = { title: string; fields: DetailField[] };
 
   interface Props {
     entry: ReclaimCandidateEntry;
@@ -31,21 +38,19 @@
     return unknownValue;
   };
 
-  const fileNameFromPath = (
-    path: string | null,
-    fallbackFileName: string | null = null,
-  ): string => {
-    if (fallbackFileName && fallbackFileName.trim()) {
-      return fallbackFileName.trim();
-    }
-    if (!path) return unknownValue;
-    const parts = path.split(/[/\\]/);
-    const extractedFileName = parts[parts.length - 1];
-    return extractedFileName?.trim() ? extractedFileName : unknownValue;
+  const parseRuleParts = (
+    tokens: { rule_name: string }[] | null | undefined,
+  ): string[] => {
+    if (!tokens) return [];
+    const parts: string[] = [];
+    tokens.forEach((token) => {
+      const name = token.rule_name?.trim();
+      if (name) {
+        parts.push(name);
+      }
+    });
+    return parts;
   };
-
-  const parseRuleTokens = (tokens: string[] | null | undefined): string[] =>
-    (tokens ?? []).map((token) => token.trim()).filter(Boolean);
 
   const fileFields = (item: ReclaimCandidateEntry): DetailField[] => [
     {
@@ -53,7 +58,10 @@
       value: fileNameFromPath(item.version_path, item.version_file_name),
     },
     { label: "Size", value: formatFileSize(item.version_size) },
-    { label: "Path", value: textValue(item.version_path) },
+    {
+      label: "Path",
+      value: textValue(extractPathNoFile(item.version_path || "")),
+    },
   ];
 
   const videoFields = (item: ReclaimCandidateEntry): DetailField[] => [
@@ -93,111 +101,65 @@
   ];
 
   const sourceFields = (item: ReclaimCandidateEntry): DetailField[] => [
-    { label: "Service", value: textValue(item.version_service) },
+    {
+      label: "Service",
+      value: textValue(toTitleCase(item.version_service || "")),
+    },
     { label: "Library", value: textValue(item.version_library_name) },
     { label: "Flagged", value: formatDate(item.created_at) },
   ];
 
-  const rules = $derived(parseRuleTokens(entry.reason_tokens));
+  const visibleFields = (fields: DetailField[]): DetailField[] =>
+    fields.filter((field) => field.value !== unknownValue);
+
+  const sections = $derived<DetailSection[]>([
+    { title: "File", fields: visibleFields(fileFields(entry)) },
+    { title: "Video", fields: visibleFields(videoFields(entry)) },
+    { title: "Audio", fields: visibleFields(audioFields(entry)) },
+    { title: "Languages", fields: visibleFields(languageFields(entry)) },
+    { title: "Source", fields: visibleFields(sourceFields(entry)) },
+  ]);
+
+  const visibleSections = $derived(
+    sections.filter((section) => section.fields.length > 0),
+  );
+
+  const ruleNames = $derived(parseRuleParts(entry.reason_parts));
 </script>
 
 <div class="space-y-3">
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      File
-    </h4>
-    <div class="space-y-1.5">
-      {#each fileFields(entry) as field}
-        <div class="min-w-0">
-          <div class="text-xs text-muted-foreground">{field.label}</div>
-          <div class="text-sm leading-6 text-foreground break-all">
-            {field.value}
+  {#each visibleSections as section}
+    <section class="rounded border border-border/70 bg-muted/20 p-3">
+      <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
+        {section.title}
+      </h4>
+      <div class="space-y-1.5">
+        {#each section.fields as field}
+          <div class="min-w-0">
+            <div class="text-xs text-muted-foreground">{field.label}</div>
+            <div class="text-sm leading-6 text-foreground break-all">
+              {field.value}
+            </div>
           </div>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      Video
-    </h4>
-    <div class="space-y-1.5">
-      {#each videoFields(entry) as field}
-        <div class="min-w-0">
-          <div class="text-xs text-muted-foreground">{field.label}</div>
-          <div class="text-sm leading-6 text-foreground break-all">
-            {field.value}
-          </div>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      Audio
-    </h4>
-    <div class="space-y-1.5">
-      {#each audioFields(entry) as field}
-        <div class="min-w-0">
-          <div class="text-xs text-muted-foreground">{field.label}</div>
-          <div class="text-sm leading-6 text-foreground break-all">
-            {field.value}
-          </div>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      Languages
-    </h4>
-    <div class="space-y-1.5">
-      {#each languageFields(entry) as field}
-        <div class="min-w-0">
-          <div class="text-xs text-muted-foreground">{field.label}</div>
-          <div class="text-sm leading-6 text-foreground break-all">
-            {field.value}
-          </div>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      Source
-    </h4>
-    <div class="space-y-1.5">
-      {#each sourceFields(entry) as field}
-        <div class="min-w-0">
-          <div class="text-xs text-muted-foreground">{field.label}</div>
-          <div class="text-sm leading-6 text-foreground break-all">
-            {field.value}
-          </div>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section class="rounded border border-border/70 bg-muted/20 p-3">
-    <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
-      Rules
-    </h4>
-    <div class="flex flex-wrap gap-1.5">
-      {#if rules.length > 0}
-        {#each rules as rule}
-          <span
-            class="text-xs leading-6 px-2.5 rounded-full border border-border bg-card text-foreground"
-          >
-            {rule}
-          </span>
         {/each}
-      {:else}
-        <span class="text-sm text-muted-foreground">{unknownValue}</span>
-      {/if}
-    </div>
-  </section>
+      </div>
+    </section>
+  {/each}
+
+  <!-- rules -->
+  {#if ruleNames.length > 0}
+    <section class="rounded border border-border/70 bg-muted/20 p-3">
+      <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
+        Rules
+      </h4>
+      <div class="flex flex-wrap gap-1.5">
+        {#each ruleNames as rule}
+          <Badge
+            class="border-primary break-all whitespace-normal"
+            variant="secondary">{rule}</Badge
+          >
+        {/each}
+      </div>
+    </section>
+  {/if}
 </div>

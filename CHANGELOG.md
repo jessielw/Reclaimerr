@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now shows all arr instances even disabled ones
 - TMDB fire icon is now filled/style a little better
 - Re-position buttons in candidates view for move/delete
+- Candidates view tables have been reworked to show more data at a glance
 
 ### Fixed
 
@@ -32,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In some setups it was possible for Radarr to still monitor deleted movies that was a candidate from Reclaimerr
 - TMDB section not visible in light mode
 - Move button not visible in light mode for bulk select in candidates view
+- Fixed candidates not showing the properly calculated resolution in some cases
 
 ## [0.1.0-beta.15] - 2026-05-08
 

@@ -44,17 +44,23 @@ const formatRuntime = (minutes: number | null): string => {
   return `${hours}h ${mins}m`;
 };
 
+const HEIGHT_ONLY_REGEX = /^[0-9]+$/;
+const RESOLUTION_REGEX = /^[0-9]+[×x][0-9]+$/i;
+
 /**
  * Utility function to clean a resolution string
  * @param res The resolution string to clean (e.g. "1080" -> "1080p")
  * @returns The cleaned resolution string, original string upper-cased, or null
  */
-const cleanResolutionString = (res: string | null): string | null => {
+const cleanResolutionString = (res: string | number | null): string | null => {
   if (!res) return null;
-  if (/^[0-9]+$/.test(res)) {
-    return res + "p";
+  if (HEIGHT_ONLY_REGEX.test(res.toString())) {
+    return res.toString() + "p";
   }
-  return res.toUpperCase();
+  if (RESOLUTION_REGEX.test(res.toString())) {
+    return res.toString().toLowerCase();
+  }
+  return res.toString().toUpperCase();
 };
 
 export { formatSizeToGB, formatRuntime, formatFileSize, cleanResolutionString };
