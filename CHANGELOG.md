@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-0?-??
+## [0.1.0-beta.16] - 2026-05-10
 
 ### Added
 
@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates view tables have been reworked to show more data at a glance
 - Rules now lives in the sidebar instead of settings
 - Reworked side bar visuals to be a bit more space efficient
+- Updated niquests
 
 ### Fixed
 
