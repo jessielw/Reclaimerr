@@ -7,7 +7,6 @@
   import Notifications from "$lib/components/settings/notifications.svelte";
   import Tasks from "$lib/components/settings/tasks/tasks.svelte";
   import BackgroundJobs from "$lib/components/settings/tasks/background-jobs.svelte";
-  import Rules from "$lib/components/settings/rules/rules.svelte";
   import Account from "$lib/components/settings/account.svelte";
   import Users from "$lib/components/settings/users.svelte";
   import About from "$lib/components/settings/about.svelte";
@@ -32,7 +31,6 @@
   import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
-  import Filter from "@lucide/svelte/icons/filter";
   import { toast } from "svelte-sonner";
   import { toTitleCase } from "$lib/utils/strings";
   import { SettingsTab, Permission, MEDIA_SERVERS } from "$lib/types/shared";
@@ -155,12 +153,6 @@
         },
         { id: SettingsTab.Notifications, label: "Notifications", icon: Bell },
         { id: SettingsTab.Account, label: "Account", icon: UserCog },
-        {
-          id: SettingsTab.Rules,
-          label: "Rules",
-          icon: Filter,
-          adminOnly: true,
-        },
         {
           id: SettingsTab.Users,
           label: "Users",
@@ -848,10 +840,6 @@
             <!-- account -->
           {:else if activeTab === SettingsTab.Account}
             <Account svgIcon={getTabIcon(activeTab)} />
-
-            <!-- rules -->
-          {:else if activeTab === SettingsTab.Rules}
-            <Rules svgIcon={getTabIcon(activeTab)} />
 
             <!-- users -->
           {:else if activeTab === SettingsTab.Users}

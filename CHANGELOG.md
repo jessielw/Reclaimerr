@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Days since released
   - Days since first aired
   - Days since last aired
+- Can now click the Reclaimerr logo/name to navigate to Dashboard
+- Added a customizable menu (opened via the menu icon) for the side bar to hide unused tabs
 
 ### Changed
 
@@ -25,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TMDB fire icon is now filled/style a little better
 - Re-position buttons in candidates view for move/delete
 - Candidates view tables have been reworked to show more data at a glance
+- Rules now lives in the sidebar instead of settings
+- Reworked side bar visuals to be a bit more space efficient
 
 ### Fixed
 

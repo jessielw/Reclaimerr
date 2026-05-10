@@ -11,6 +11,7 @@
   import Series from "./routes/series.svelte";
   import Protected from "./routes/protected.svelte";
   import Candidates from "./routes/candidates.svelte";
+  import Rules from "./routes/rules.svelte";
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import SystemAlerts from "$lib/components/system-alerts.svelte";
@@ -27,6 +28,7 @@
     "/protected": Protected,
     "/requests": Requests,
     "/candidates": Candidates,
+    "/rules": Rules,
     "/settings": Settings,
     "/setup": Setup,
   };
