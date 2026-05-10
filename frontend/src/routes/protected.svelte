@@ -26,7 +26,7 @@
   import { toast } from "svelte-sonner";
   import Search from "@lucide/svelte/icons/search";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Trash from "@lucide/svelte/icons/trash";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
 
@@ -606,7 +606,7 @@
                         bg-destructive text-destructive-foreground"
                       onclick={() => openRemoveDialog(entry)}
                     >
-                      <Trash class="w-4 h-4" />
+                      <Trash2 class="w-4 h-4" />
                     </Button>
                   </div>
                 </td>
