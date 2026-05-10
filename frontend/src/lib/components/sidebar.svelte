@@ -170,7 +170,6 @@
 
   <!-- navigation -->
   <nav class="flex-1 relative p-4 overflow-y-auto">
-  
     <!-- navigation customization -->
     <DropdownMenu.Root bind:open={menuOpen}>
       <DropdownMenu.Trigger>
