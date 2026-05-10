@@ -4,7 +4,7 @@
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import Info from "@lucide/svelte/icons/info";
   import Shield from "@lucide/svelte/icons/shield";
-  import Trash from "@lucide/svelte/icons/trash";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import { type ReclaimCandidateEntry } from "$lib/types/shared";
 
   interface Props {
@@ -91,7 +91,7 @@
           class="{btnBase} bg-destructive/80 hover:bg-destructive/60"
           onclick={() => openSingleDelete(entry)}
         >
-          <Trash class={iconCls} />
+          <Trash2 class={iconCls} />
         </Button>
       </Tooltip.Trigger>
       <Tooltip.Content><p>Delete</p></Tooltip.Content>
@@ -111,7 +111,7 @@
       class="{btnBase} bg-destructive/80 hover:bg-destructive/60"
       onclick={() => openSingleDelete(entry)}
     >
-      <Trash class={iconCls} />
+      <Trash2 class={iconCls} />
     </Button>
   {/if}
 {/if}
