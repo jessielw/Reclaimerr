@@ -1567,14 +1567,80 @@ async def _delete_movie_candidates(
     whole_movie_candidates = [c for c in candidates if c.movie_version_id is None]
     version_candidates = [c for c in candidates if c.movie_version_id is not None]
 
-    if version_candidates:
+    radarr_clients = service_manager.radarr_clients()
+    if not radarr_clients and service_manager.radarr:
+        radarr_clients = {0: service_manager.radarr}
+
+    # Rule generated movie candidates always have movie_version_id set (rules evaluate
+    # per version). For movies where ALL versions are in this deletion batch and the movie
+    # is tracked in Radarr, promote those version candidates to whole movie Radarr
+    # deletions so Radarr removes the movie and stops monitoring it. Otherwise they would
+    # go through the media server path only and Radarr would re download the deleted files.
+    promoted_movie_ids: set[int] = set()
+    # movie_id -> all candidate IDs
+    promoted_all_candidate_ids: dict[int, list[int]] = {}
+
+    if version_candidates and radarr_clients:
+        version_movie_ids = {c.movie_id for c in version_candidates if c.movie_id}
+        async with async_db() as db:
+            ver_rows = (
+                await db.execute(
+                    select(MovieVersion.movie_id, MovieVersion.id).where(
+                        MovieVersion.movie_id.in_(version_movie_ids)
+                    )
+                )
+            ).all()
+            all_db_versions_by_movie: dict[int, set[int]] = {}
+            for mv_id, ver_id in ver_rows:
+                all_db_versions_by_movie.setdefault(mv_id, set()).add(ver_id)
+
+            arr_ref_rows = (
+                await db.execute(
+                    select(MovieArrRef.movie_id).where(
+                        MovieArrRef.movie_id.in_(version_movie_ids)
+                    )
+                )
+            ).all()
+            movies_in_radarr: set[int] = {r[0] for r in arr_ref_rows}
+
+        batch_version_ids = {
+            c.movie_version_id for c in version_candidates if c.movie_version_id
+        }
+        for movie_id, all_ver_ids in all_db_versions_by_movie.items():
+            if movie_id in movies_in_radarr and all_ver_ids.issubset(batch_version_ids):
+                promoted_movie_ids.add(movie_id)
+
+        for movie_id in promoted_movie_ids:
+            promoted_all_candidate_ids[movie_id] = [
+                c.id for c in version_candidates if c.movie_id == movie_id
+            ]
+
+    # version candidates that are NOT promoted go through media server path
+    remaining_version_candidates = [
+        c for c in version_candidates if c.movie_id not in promoted_movie_ids
+    ]
+    if remaining_version_candidates:
         deleted_count += await _delete_movie_version_candidates(
-            version_candidates, approved_by
+            remaining_version_candidates, approved_by
         )
 
-    if not whole_movie_candidates:
+    # Build the full radarr eligible pool: explicit whole movie candidates + promoted ones
+    # Use one representative candidate per promoted movie (all get cleaned up in DB below)
+    radarr_eligible_extra: list[ReclaimCandidate] = []
+    for movie_id, cand_ids in promoted_all_candidate_ids.items():
+        representative = next(
+            (c for c in version_candidates if c.id == cand_ids[0]), None
+        )
+        if representative:
+            radarr_eligible_extra.append(representative)
+
+    all_radarr_candidates = whole_movie_candidates + radarr_eligible_extra
+
+    if not all_radarr_candidates:
         return deleted_count
 
+    # load movie + radarr ref data for all radarr eligible candidates
+    all_radarr_movie_ids = {c.movie_id for c in all_radarr_candidates if c.movie_id}
     async with async_db() as db:
         result = await db.execute(
             select(
@@ -1584,10 +1650,8 @@ async def _delete_movie_candidates(
                 MovieArrRef.service_config_id,
                 MovieArrRef.arr_movie_id,
             )
-            .join(ReclaimCandidate, Movie.id == ReclaimCandidate.movie_id)
             .outerjoin(MovieArrRef, MovieArrRef.movie_id == Movie.id)
-            .where(ReclaimCandidate.media_type == MediaType.MOVIE)
-            .where(ReclaimCandidate.movie_version_id.is_(None))
+            .where(Movie.id.in_(all_radarr_movie_ids))
             .where(Movie.removed_at.is_(None))
         )
         rows = result.all()
@@ -1600,23 +1664,24 @@ async def _delete_movie_candidates(
             if config_id is not None and arr_movie_id is not None:
                 info["refs"].append((config_id, arr_movie_id))
 
-    radarr_clients = service_manager.radarr_clients()
-    if not radarr_clients and service_manager.radarr:
-        radarr_clients = {0: service_manager.radarr}
-
     movies_to_delete_by_config: dict[int, list[dict]] = {}
     if radarr_clients:
-        for candidate in whole_movie_candidates:
+        for candidate in all_radarr_candidates:
             if candidate.movie_id is None:
                 continue
             movie_info = movie_data.get(candidate.movie_id)
             if not movie_info:
                 continue
+            # collect all candidate IDs to clean up (multiple for promoted version candidates)
+            all_cand_ids = promoted_all_candidate_ids.get(
+                candidate.movie_id, [candidate.id]
+            )
             for config_id, arr_movie_id in movie_info["refs"]:
                 if config_id in radarr_clients:
                     movies_to_delete_by_config.setdefault(config_id, []).append(
                         {
                             "candidate_id": candidate.id,
+                            "all_candidate_ids": all_cand_ids,
                             "movie_id": candidate.movie_id,
                             "radarr_id": arr_movie_id,
                             "config_id": config_id,
@@ -1672,15 +1737,17 @@ async def _delete_movie_candidates(
                                 }
                             )
 
-                    # delete cleanup candidate
-                    result = await db.execute(
-                        select(ReclaimCandidate).where(
-                            ReclaimCandidate.id == movie_info["candidate_id"]
+                    # delete all cleanup candidates for this movie (may be multiple for
+                    # promoted version candidates where one candidate exists per version)
+                    for cand_id in movie_info["all_candidate_ids"]:
+                        result = await db.execute(
+                            select(ReclaimCandidate).where(
+                                ReclaimCandidate.id == cand_id
+                            )
                         )
-                    )
-                    candidate = result.scalar_one_or_none()
-                    if candidate:
-                        await db.delete(candidate)
+                        cand = result.scalar_one_or_none()
+                        if cand:
+                            await db.delete(cand)
 
                     # reset seerr request if available
                     movie_tmdb_id = movie_info.get("tmdb_id")
@@ -1704,8 +1771,8 @@ async def _delete_movie_candidates(
 
                 await db.commit()
 
-            deleted_count = len(movies_to_delete)
-            LOG.info(f"Successfully deleted {deleted_count} movies via Radarr")
+            deleted_count += len(movies_to_delete)
+            LOG.info(f"Successfully deleted {len(movies_to_delete)} movies via Radarr")
             for event in movie_events:
                 await _dispatch_reclaim_event(
                     action="deleted",
@@ -1716,9 +1783,9 @@ async def _delete_movie_candidates(
             LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
 
     # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Radarr
-    if not movies_to_delete or (len(whole_movie_candidates) > len(movies_to_delete)):
+    if not movies_to_delete or (len(all_radarr_candidates) > len(movies_to_delete)):
         deleted_count += await _delete_movies_via_media_server(
-            whole_movie_candidates, movies_to_delete, approved_by
+            all_radarr_candidates, movies_to_delete, approved_by
         )
 
     return deleted_count

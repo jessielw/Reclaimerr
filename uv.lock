@@ -923,16 +923,16 @@ wheels = [
 
 [[package]]
 name = "niquests"
-version = "3.18.7"
+version = "3.18.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "charset-normalizer" },
     { name = "urllib3-future" },
     { name = "wassima", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/1d/b40f0c7d62e3543483a8be5c74f9235cf70540fb1ba3480a33a1e8d6cdd6/niquests-3.18.7.tar.gz", hash = "sha256:7587a20e5c0fba0f2474d06b1f95794310585ba3a90e509c9a41f817100011e4", size = 1025148, upload-time = "2026-04-28T05:29:46.076Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/3f/3cbfd81c507c4d58b57afc04d75b6feb00cbcdeba43852a7506100af2eae/niquests-3.18.8.tar.gz", hash = "sha256:06244ef4d1c93b067295b22c1d7a8938be948af1227d368c22acf531f61fdf57", size = 1028824, upload-time = "2026-05-10T05:29:15.663Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/0e/840094cf85a375533e0a25e7a6adb88eeb8dc557895f631a8938913c09bf/niquests-3.18.7-py3-none-any.whl", hash = "sha256:6126e20bd5b09d5deaa2c20634e4d9c1c0d0112aaa92cb24be56d6a858b22daa", size = 208486, upload-time = "2026-04-28T05:29:44.535Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/2c/01d6978e16536922baaafad903adbc55880b11f23595f90a3b52478ce234/niquests-3.18.8-py3-none-any.whl", hash = "sha256:9b1a3a378277bfca4b2438877d0954e989e4d3f3f75da7bb83bf7204dfa5f1cf", size = 208878, upload-time = "2026-05-10T05:29:14.003Z" },
 ]
 
 [package.optional-dependencies]
@@ -1504,7 +1504,7 @@ wheels = [
 
 [[package]]
 name = "reclaimerr"
-version = "0.1.0b15"
+version = "0.1.0b16"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1554,7 +1554,7 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.136.1" },
     { name = "filelock", marker = "extra == 'desktop'", specifier = ">=3.16.0" },
     { name = "granian", specifier = ">=2.7.4" },
-    { name = "niquests", extras = ["speedups"], specifier = ">=3.18.7" },
+    { name = "niquests", extras = ["speedups"], specifier = ">=3.18.8" },
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "platformdirs", marker = "extra == 'desktop'", specifier = ">=4.9.6" },
     { name = "pydantic-settings", specifier = ">=2.12.0" },

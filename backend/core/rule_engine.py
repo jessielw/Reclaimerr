@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
@@ -24,6 +24,14 @@ FIELD_LABELS: dict[str, str] = {
     "watch.view_count": "Views",
     "watch.days_since_last_watched": "Days since watched",
     "watch.last_viewed_at": "Last watched",
+    "tmdb.release_date": "TMDB release date",
+    "tmdb.first_air_date": "TMDB first air date",
+    "tmdb.last_air_date": "TMDB last air date",
+    "season.air_date": "Season air date",
+    "tmdb.days_since_release": "Days since released",
+    "tmdb.days_since_first_air_date": "Days since first aired",
+    "tmdb.days_since_last_air_date": "Days since last aired",
+    "season.days_since_air_date": "Days since season aired",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "Rating",
     "tmdb.vote_count": "Vote count",
@@ -53,6 +61,10 @@ OPERATOR_LABELS: dict[str, str] = {
     "greater_than_or_equal": ">=",
     "less_than": "<",
     "less_than_or_equal": "<=",
+    "before": "is before",
+    "on_or_before": "is on or before",
+    "after": "is after",
+    "on_or_after": "is on or after",
     "in": "in",
     "not_in": "not in",
     "contains_any": "contains",
@@ -77,6 +89,10 @@ NUMERIC_FIELDS = {
     "media.days_since_added",
     "watch.view_count",
     "watch.days_since_last_watched",
+    "tmdb.days_since_release",
+    "tmdb.days_since_first_air_date",
+    "tmdb.days_since_last_air_date",
+    "season.days_since_air_date",
     "tmdb.popularity",
     "tmdb.vote_average",
     "tmdb.vote_count",
@@ -100,7 +116,13 @@ TEXT_FIELDS = {
 }
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {"video.hdr", "video.dolby_vision"}
-TEMPORAL_FIELDS = {"watch.last_viewed_at"}
+TEMPORAL_FIELDS = {
+    "watch.last_viewed_at",
+    "tmdb.release_date",
+    "tmdb.first_air_date",
+    "tmdb.last_air_date",
+    "season.air_date",
+}
 PATH_FIELDS = {"media.path", "media.file_name"}
 NUMERIC_OPERATORS = {
     "equals",
@@ -131,7 +153,14 @@ LIBRARY_OPERATORS = {
     "not_exists",
 }
 BOOLEAN_OPERATORS = {"is_true", "is_false", "exists", "not_exists"}
-TEMPORAL_OPERATORS = {"exists", "not_exists"}
+TEMPORAL_OPERATORS = {
+    "exists",
+    "not_exists",
+    "before",
+    "on_or_before",
+    "after",
+    "on_or_after",
+}
 PATH_OPERATORS = TEXT_OPERATORS | {"matches_any_regex"}
 PATH_LIBRARY_INCLUSION_OPERATORS = {"contains_any", "in", "equals"}
 PATH_LIBRARY_UNSUPPORTED_OPERATORS = {
@@ -359,6 +388,8 @@ def _build_context(
             "watch.view_count": movie.view_count,
             "watch.last_viewed_at": movie.last_viewed_at,
             "watch.days_since_last_watched": _days_between(movie.last_viewed_at, now),
+            "tmdb.release_date": movie.tmdb_release_date,
+            "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
             "tmdb.vote_average": movie.vote_average,
             "tmdb.vote_count": movie.vote_count,
@@ -391,6 +422,14 @@ def _build_context(
             "watch.view_count": series.view_count,
             "watch.last_viewed_at": series.last_viewed_at,
             "watch.days_since_last_watched": _days_between(series.last_viewed_at, now),
+            "tmdb.first_air_date": series.tmdb_first_air_date,
+            "tmdb.last_air_date": series.tmdb_last_air_date,
+            "tmdb.days_since_first_air_date": _days_between(
+                series.tmdb_first_air_date, now
+            ),
+            "tmdb.days_since_last_air_date": _days_between(
+                series.tmdb_last_air_date, now
+            ),
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
@@ -417,6 +456,16 @@ def _build_context(
             "watch.view_count": season.view_count,
             "watch.last_viewed_at": season.last_viewed_at,
             "watch.days_since_last_watched": _days_between(season.last_viewed_at, now),
+            "season.air_date": season.air_date,
+            "season.days_since_air_date": _days_between(season.air_date, now),
+            "tmdb.first_air_date": series.tmdb_first_air_date,
+            "tmdb.last_air_date": series.tmdb_last_air_date,
+            "tmdb.days_since_first_air_date": _days_between(
+                series.tmdb_first_air_date, now
+            ),
+            "tmdb.days_since_last_air_date": _days_between(
+                series.tmdb_last_air_date, now
+            ),
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
@@ -489,7 +538,7 @@ def _evaluate_condition(
     actual = context.get(field)
     if not _matches_operator(actual, operator, expected):
         return False
-    matched[field] = actual
+    matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))
     return True
 
@@ -508,6 +557,20 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected)
+    if operator in {"before", "on_or_before", "after", "on_or_after"}:
+        left_date = _date_value(_first_scalar(actual))
+        right_date = _date_value(_first_scalar(expected))
+        if left_date is None or right_date is None:
+            return False
+        if operator == "before":
+            return left_date < right_date
+        if operator == "on_or_before":
+            return left_date <= right_date
+        if operator == "after":
+            return left_date > right_date
+        if operator == "on_or_after":
+            return left_date >= right_date
+        return False
 
     left = _first_scalar(actual)
     right = _first_scalar(expected)
@@ -607,6 +670,32 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _date_value(value: Any) -> date | None:
+    """Convert the provided value to a date for temporal rule comparisons."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        else:
+            value = value.astimezone(UTC)
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return date.fromisoformat(cleaned)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).date()
+            except ValueError:
+                return None
+    return None
 
 
 def _normalize(value: Any) -> str:

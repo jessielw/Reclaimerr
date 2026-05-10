@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.16] - 2026-05-10
+
+### Added
+
+- In docker you can now pass in variables for timezone, PUID, PGID, and UMASK if desired
+- New rules
+  - TMDB release date
+  - TMDB last air date
+  - Season air date
+  - Days since released
+  - Days since first aired
+  - Days since last aired
+- Can now click the Reclaimerr logo/name to navigate to Dashboard
+- Added a customizable menu (opened via the menu icon) for the side bar to hide unused tabs
+
+### Changed
+
+- arr instances are now enabled by default when creating new instances
+- Now shows all arr instances even disabled ones
+- TMDB fire icon is now filled/style a little better
+- Re-position buttons in candidates view for move/delete
+- Candidates view tables have been reworked to show more data at a glance
+- Rules now lives in the sidebar instead of settings
+- Reworked side bar visuals to be a bit more space efficient
+- Updated niquests
+
+### Fixed
+
+- Sync issue that could happen in edge cases when a user still had old rules/candidates before the rule engine rework
+- Edge case bug where count assignment would overwrite the version candidates count in very rare cases
+- In some setups it was possible for Radarr to still monitor deleted movies that was a candidate from Reclaimerr
+- TMDB section not visible in light mode
+- Move button not visible in light mode for bulk select in candidates view
+- Fixed candidates not showing the properly calculated resolution in some cases
+
+## [0.1.0-beta.15] - 2026-05-08
+
+### Fixed
+
+- Multiple arr instances not showing on dashboard (UI bug only)
+- Tautulli not enabling without a service restart
+
+## [0.1.0-beta.14] - 2026-05-08
+
+### Added
+
+- Linked media sync now refreshes supplemental matches for movies, series, and seasons using stable path tails.
+- Tautulli can now update movie, series, and season stats through mapped Plex IDs when Plex is a linked server instead of the main server
+- Jellyfin/Emby Playback Reporting can now update movie, series, and season stats through mapped IDs when Jellyfin/Emby is linked instead of main
+
 ## [0.1.0-beta.15] - 2026-05-08
 
 ### Fixed
