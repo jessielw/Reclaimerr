@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Inconsistent page widths/alignment on larger view ports
+- Inconsistent vertical spacing throughout the pages
 
 ## [0.1.0-beta.16] - 2026-05-10
 

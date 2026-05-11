@@ -372,8 +372,8 @@
 </AlertDialog.Root>
 
 <div class="p-2.5 md:p-8">
-  <div class="max-w-7xl mx-auto space-y-6">
-    <div class="space-y-2">
+  <div class="max-w-7xl mx-auto space-y-4">
+    <div>
       <h1 class="text-3xl font-bold text-foreground">Protected</h1>
       <p class="text-muted-foreground">
         Media items protected from cleanup and deletion.
