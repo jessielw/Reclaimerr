@@ -512,6 +512,18 @@
     };
   };
 
+  // After bulk move/request/delete, remove the affected candidates from the current list.
+  // If all candidates on the current page are removed and it's not the first page, load the previous page.
+  const applyBulkRemoval = async (idsToRemove: Set<number>) => {
+    if (!data || idsToRemove.size === 0) return;
+    const remaining = data.items.filter((i) => !idsToRemove.has(i.id));
+    if (remaining.length === 0 && currentPage > 1) {
+      await loadCandidates(currentPage - 1);
+      return;
+    }
+    removeCandidateIds(idsToRemove);
+  };
+
   const submitSingleDelete = async () => {
     if (!deleteTarget) return;
     deleteSubmitting = true;
@@ -550,10 +562,11 @@
   const submitBulkDelete = async () => {
     if (selectedEntries.length === 0) return;
     bulkDeleteSubmitting = true;
+    const selectedCandidateIds = selectedEntries.map((e) => e.id);
     try {
       const resp = await post_api<DeleteResponse>(
         "/api/media/candidates/delete",
-        { candidate_ids: selectedEntries.map((e) => e.id) },
+        { candidate_ids: selectedCandidateIds },
       );
       if (resp.deleted > 0)
         toast.success(
@@ -563,7 +576,12 @@
         toast.error(
           `${resp.failed} item${resp.failed !== 1 ? "s" : ""} could not be deleted.`,
         );
-      if (resp.deleted > 0) await loadCandidates(currentPage);
+      if (resp.deleted > 0) {
+        const idsToRemove = new Set(
+          selectedCandidateIds.slice(0, resp.deleted),
+        );
+        await applyBulkRemoval(idsToRemove);
+      }
     } catch (e: any) {
       toast.error(e.message ?? "Failed to delete candidates.");
     } finally {
@@ -641,9 +659,15 @@
     };
   };
 
+  // Submit bulk protection request for all selected candidates. Duration is determined by the
+  // bulkDuration state (either a preset duration, custom number of days, or permanent).
   const submitBulkRequest = async () => {
     if (selectedEntries.length === 0) return;
     bulkSubmitting = true;
+    const selectedWithIds = selectedEntries.map((entry) => ({
+      candidateId: entry.id,
+      entry,
+    }));
 
     let durationDays: number | null = null;
     if (bulkDuration === "permanent") {
@@ -661,7 +685,7 @@
     }
 
     const results = await Promise.allSettled(
-      selectedEntries.map((entry) =>
+      selectedWithIds.map(({ entry }) =>
         post_api<ProtectionRequest>("/api/protection-requests", {
           media_type: entry.media_type,
           media_id: entry.media_id,
@@ -673,7 +697,14 @@
       ),
     );
 
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    // All requests that were successfully submitted (regardless of auto-approval)
+    // should be removed from the candidate list, since they now have pending requests
+    // and can't be submitted again until those are resolved.
+    const succeededIds = selectedWithIds
+      .map((item, idx) => ({ item, result: results[idx] }))
+      .filter(({ result }) => result.status === "fulfilled")
+      .map(({ item }) => item.candidateId);
+    const succeeded = succeededIds.length;
     const failed = results.length - succeeded;
 
     if (succeeded > 0)
@@ -682,6 +713,10 @@
       );
     if (failed > 0)
       toast.error(`${failed} request${failed !== 1 ? "s" : ""} failed`);
+
+    if (succeededIds.length > 0) {
+      await applyBulkRemoval(new Set(succeededIds));
+    }
 
     selectedIds = new Set();
     bulkDialogOpen = false;
