@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Add +2 pixels to top margin for all routes in mobile
+- Nav bar customizations are now saved per user at the browser level (in case multiple users was to use the same browser)
 
 ### Fixed
 
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inconsistent vertical spacing throughout the pages
 - Deletes via media server instead of arr after multi arr update
 - Very rare edge case on determining the correct server during cleanup (wouldn't have actually caused any bugs on deletion)
+- Nav bar customization not saved on refreshes
 
 ## [0.1.0-beta.16] - 2026-05-10
 
