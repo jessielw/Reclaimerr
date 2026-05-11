@@ -15,6 +15,7 @@
   import { formatDistanceToNow } from "$lib/utils/date";
   import EditTaskScheduleDialog from "./edit-task-schedule-dialog.svelte";
   import { ScheduleType, TaskStatus } from "$lib/types/shared";
+  import { getStatusColor, getTaskStatusText } from "$lib/utils/tasks";
 
   interface Props {
     svgIcon: Component | null;
@@ -107,34 +108,6 @@
     return `Every ${seconds} second${seconds > 1 ? "s" : ""}`;
   };
 
-  // status colors
-  const getStatusColor = (status: TaskStatus): string => {
-    switch (status) {
-      case TaskStatus.Queued:
-        return "bg-amber-500";
-      case TaskStatus.Completed:
-        return "bg-green-500";
-      case TaskStatus.Error:
-        return "bg-red-500";
-      case TaskStatus.Running:
-        return "bg-blue-500";
-      case TaskStatus.Disabled:
-        return "bg-gray-500";
-      case TaskStatus.Scheduled:
-        return "bg-yellow-500";
-      default:
-        return "bg-gray-500";
-    }
-  };
-
-  // status text
-  const getStatusText = (status: TaskStatus): string => {
-    if (status === TaskStatus.Queued) {
-      return "Queued";
-    }
-    return status.charAt(0).toUpperCase() + status.slice(1);
-  };
-
   // status hint for queued/scheduled tasks
   const getStatusHint = (task: TaskDetails): string | null => {
     if (!task.enabled) {
@@ -163,7 +136,7 @@
 
     // trust backend status (which includes TTL for completed/failed)
     return {
-      text: getStatusText(task.status),
+      text: getTaskStatusText(task.status),
       color: getStatusColor(task.status),
     };
   };

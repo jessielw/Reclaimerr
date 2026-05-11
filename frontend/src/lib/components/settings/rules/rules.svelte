@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, type Component } from "svelte";
+  import { onDestroy, onMount, type Component } from "svelte";
   import { get_api, post_api, delete_api } from "$lib/api";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
@@ -11,6 +11,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Download from "@lucide/svelte/icons/download";
   import Upload from "@lucide/svelte/icons/upload";
+  import Play from "@lucide/svelte/icons/play";
   import Clapperboard from "@lucide/svelte/icons/clapperboard";
   import Tv from "@lucide/svelte/icons/tv";
   import { toast } from "svelte-sonner";
@@ -20,9 +21,11 @@
     type ReclaimRule,
     type LibraryType,
     type RuleNode,
+    TaskStatus,
   } from "$lib/types/shared";
   import AdvancedRuleEditor from "$lib/components/settings/rules/advanced-rule-editor.svelte";
   import Notice from "$lib/components/notice.svelte";
+  import { getTaskStatusText } from "$lib/utils/tasks";
 
   interface Props {
     svgIcon: Component | null;
@@ -52,8 +55,26 @@
   let importRules = $state<any[]>([]);
   let hasArrServiceConfigWarning = $state(false);
 
-  // additional states
+  // cleanup candidate sync states and misc
   let isSynced = $state(true); // assume synced until we check
+  const SCAN_TASK_ID = "scan_cleanup_candidates";
+  const SCAN_TASK_POLL_INTERVAL_MS = 8000;
+  let scanTaskStatus = $state<TaskStatus | null>(null);
+  let scanTaskError = $state<string | null>(null);
+  let scanTaskActionInProgress = $state(false);
+  let scanTaskPollInterval: number | null = null;
+
+  interface TaskStatusResponse {
+    id: string;
+    name: string;
+    status: TaskStatus;
+    error: string | null;
+  }
+
+  interface RunTaskResponse {
+    message: string;
+    already_active: boolean;
+  }
 
   const toPlainRule = (rule: ReclaimRule): ReclaimRule => {
     try {
@@ -251,6 +272,50 @@
     }
   };
 
+  // fetch status of cleanup candidates scan task
+  const fetchScanTaskStatus = async () => {
+    try {
+      const response = await get_api<TaskStatusResponse>(
+        `/api/tasks/tasks/${SCAN_TASK_ID}`,
+      );
+      scanTaskStatus = response.status;
+      scanTaskError = response.error;
+    } catch (err) {
+      console.error("Error checking scan task status:", err);
+    }
+  };
+
+  // manually trigger the cleanup candidates scan task
+  const runScanTaskNow = async () => {
+    scanTaskActionInProgress = true;
+    try {
+      const response = await post_api<RunTaskResponse>(
+        `/api/tasks/tasks/${SCAN_TASK_ID}/run`,
+      );
+      if (response.already_active) {
+        toast.message("Scan is already queued or running");
+      } else {
+        toast.success("Cleanup candidate scan queued");
+      }
+      await fetchScanTaskStatus();
+    } catch (err: any) {
+      toast.error(`Failed to start scan: ${err.message}`);
+    } finally {
+      scanTaskActionInProgress = false;
+    }
+  };
+
+  // start polling for scan task status every `SCAN_TASK_POLL_INTERVAL_MS` ms while component is mounted
+  const startScanTaskStatusPolling = () => {
+    if (scanTaskPollInterval) {
+      clearInterval(scanTaskPollInterval);
+    }
+    scanTaskPollInterval = window.setInterval(
+      fetchScanTaskStatus,
+      SCAN_TASK_POLL_INTERVAL_MS,
+    );
+  };
+
   // export rules to a JSON file (strips server assigned fields)
   const exportRules = (rulesToExport: ReclaimRule[]) => {
     const exportData = rulesToExport.map((rule) => ({
@@ -377,13 +442,20 @@
   };
 
   onMount(async () => {
-    await Promise.all([loadRules(), loadLibraries()]);
+    await Promise.all([loadRules(), loadLibraries(), fetchScanTaskStatus()]);
+    startScanTaskStatusPolling();
 
     // check to see if there are any media to display - if not, show a warning that rules may
     // not work correctly until initial sync is complete
     setTimeout(async () => {
       await checkIfServerSynced();
     }, 100);
+  });
+
+  onDestroy(() => {
+    if (scanTaskPollInterval) {
+      clearInterval(scanTaskPollInterval);
+    }
   });
 </script>
 
@@ -417,7 +489,7 @@
       </div>
 
       <!-- action buttons -->
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap justify-end items-center gap-2">
         <input
           type="file"
           accept=".json"
@@ -464,6 +536,30 @@
           later.
         </Notice>
       {/if}
+
+      <!-- scan candidate task control/status -->
+      <div class="flex items-center flex-wrap gap-3 text-sm">
+        <span class="text-muted-foreground">Scan task:</span>
+        <Button
+          size="sm"
+          onclick={runScanTaskNow}
+          disabled={scanTaskActionInProgress}
+          class="cursor-pointer gap-2"
+          title="Start cleanup candidate scan"
+        >
+          {#if scanTaskActionInProgress}
+            <Spinner class="size-4" />
+          {:else}
+            <Play class="size-4" />
+          {/if}
+          {getTaskStatusText(scanTaskStatus)}
+        </Button>
+        {#if scanTaskError}
+          <span class="text-destructive truncate" title={scanTaskError}
+            >{scanTaskError} Some test error</span
+          >
+        {/if}
+      </div>
 
       <!-- new rule info -->
       <!-- loading -->
