@@ -117,7 +117,7 @@
       </div>
 
       <!-- main content with top margin on mobile for fixed header -->
-      <main class="flex-1 overflow-y-auto mt-14 lg:mt-0">
+      <main class="flex-1 overflow-y-auto mt-16 lg:mt-0">
         <SystemAlerts />
         <Router {routes} />
       </main>

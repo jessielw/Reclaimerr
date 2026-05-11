@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Can now initiate control **Candidate Sync Task** from the rules page
 
+### Changed
+
+- Add +2 pixels to top margin for all routes in mobile
+
 ### Fixed
 
 - Inconsistent page widths/alignment on larger view ports
