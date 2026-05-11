@@ -187,6 +187,7 @@ export interface RuleAction {
   candidate: boolean;
   tag_enabled: boolean;
   arr_tag: string | null;
+  arr_action: "delete" | "unmonitor";
   media_server_action: "delete" | null;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;

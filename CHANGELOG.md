@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Can now initiate control **Candidate Sync Task** from the rules page
 - Added option in General settings to enable/disable media server deletion/move fallback (enabled by default)
+- Can now select **\*arr** action
+  - Can delete completely
+  - Can Unmonitor + Delete (i.e. removes the file but keeps the record in the arr unmonitored)
 
 ### Changed
 
@@ -21,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inconsistent page widths/alignment on larger view ports
 - Inconsistent vertical spacing throughout the pages
 - Deletes via media server instead of arr after multi arr update
+- Very rare edge case on determining the correct server during cleanup (wouldn't have actually caused any bugs on deletion)
 
 ## [0.1.0-beta.16] - 2026-05-10
 

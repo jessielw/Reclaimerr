@@ -96,6 +96,9 @@
   let definition = $state<RuleDefinition>(initial.definition);
   let tagEnabled = $state(initial.action?.tag_enabled ?? true);
   let arrTag = $state(initial.action?.arr_tag ?? "");
+  let arrAction = $state<"delete" | "unmonitor">(
+    initial.action?.arr_action ?? "delete",
+  );
   let radarrServiceConfigId = $state<number | null>(
     initial.action?.radarr_service_config_id ?? null,
   );
@@ -533,6 +536,7 @@
           candidate: true,
           tag_enabled: tagEnabled,
           arr_tag: normalizedTag,
+          arr_action: arrAction,
           media_server_action: "delete",
           radarr_service_config_id:
             targetScope === "movie_version" ? radarrServiceConfigId : null,
@@ -931,6 +935,43 @@
             Will be saved as {normalizedTag}
           </p>
         </div>
+      </div>
+    {/if}
+
+    {#if (targetScope === "movie_version" && radarrServiceConfigId !== null) || (targetScope !== "movie_version" && sonarrServiceConfigId !== null)}
+      <div class="space-y-2 mt-3">
+        <Label class="text-sm font-medium text-foreground">Arr Action</Label>
+        <Select.Root
+          type="single"
+          value={arrAction}
+          onValueChange={(value) => {
+            if (value === "delete" || value === "unmonitor") {
+              arrAction = value;
+            }
+          }}
+        >
+          <Select.Trigger
+            class="w-full bg-card text-card-foreground cursor-pointer"
+          >
+            {arrAction === "unmonitor" ? "Unmonitor + Delete File" : "Delete"}
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="delete" label="Delete">Delete</Select.Item>
+            <Select.Item value="unmonitor" label="Unmonitor + Delete File">
+              Unmonitor + Delete File
+            </Select.Item>
+          </Select.Content>
+        </Select.Root>
+        {#if arrAction === "unmonitor"}
+          <p class="text-xs text-muted-foreground">
+            Files are deleted from disk but the entry remains in {selectedArrName}
+            as unmonitored. Requires filesystem access on the Reclaimerr host.
+          </p>
+        {:else}
+          <p class="text-xs text-muted-foreground">
+            Files and the {selectedArrName} entry are fully removed.
+          </p>
+        {/if}
       </div>
     {/if}
   </div>

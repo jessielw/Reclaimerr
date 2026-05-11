@@ -65,6 +65,7 @@ def _action_or_default(action: dict | None) -> dict:
         "candidate": True,
         "tag_enabled": True,
         "arr_tag": None,
+        "arr_action": "delete",
         "media_server_action": "delete",
         "radarr_service_config_id": None,
         "sonarr_service_config_id": None,
