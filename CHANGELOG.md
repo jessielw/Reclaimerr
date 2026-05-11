@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Can now initiate control **Candidate Sync Task** from the rules page
+- Added option in General settings to enable/disable media server deletion/move fallback (enabled by default)
 
 ### Changed
 
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Inconsistent page widths/alignment on larger view ports
 - Inconsistent vertical spacing throughout the pages
+- Deletes via media server instead of arr after multi arr update
 
 ## [0.1.0-beta.16] - 2026-05-10
 

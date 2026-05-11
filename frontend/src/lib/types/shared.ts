@@ -126,6 +126,7 @@ export interface GeneralSettings {
   move_enabled: boolean;
   move_destination_movies: string | null;
   move_destination_series: string | null;
+  media_server_fallback_enabled: boolean;
 }
 
 export interface ReclaimRule {

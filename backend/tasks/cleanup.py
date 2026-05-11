@@ -27,6 +27,7 @@ from backend.core.utils.filesystem import (
 )
 from backend.database import async_db
 from backend.database.models import (
+    DeleteRequest,
     GeneralSettings,
     Movie,
     MovieArrRef,
@@ -1394,9 +1395,33 @@ async def _dispatch_reclaim_event(
 async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
+    media_server_fallback_enabled: bool = True,
 ) -> int:
-    """Delete movie-version candidates using service-aware targeted deletion."""
+    """Delete movie-version candidates using service-aware targeted deletion.
+
+    These are partial-version deletions (e.g. delete 1080p but keep 4K).  Radarr
+    cannot delete individual quality versions, so the media server is the only
+    authority here.  When *media_server_fallback_enabled* is False the deletion
+    is skipped and a warning is logged instead.
+    """
     if not version_candidates:
+        return 0
+
+    if not media_server_fallback_enabled:
+        for candidate in version_candidates:
+            async with async_db() as db:
+                result = await db.execute(
+                    select(MovieVersion)
+                    .where(MovieVersion.id == candidate.movie_version_id)
+                    .options(selectinload(MovieVersion.movie))
+                )
+                version = result.scalars().first()
+                title = version.movie.title if version and version.movie else "unknown"
+            LOG.warning(
+                f"Media server fallback disabled — skipping partial-version deletion "
+                f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
+                f"General Settings to delete individual quality versions."
+            )
         return 0
 
     main_service = service_manager.main_media_server
@@ -1546,6 +1571,13 @@ async def _delete_movie_candidates(
     """Delete movie candidates. Returns count of deleted candidates."""
     deleted_count = 0
 
+    # load fallback toggle from settings
+    async with async_db() as db:
+        settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+        media_server_fallback_enabled = (
+            settings_row.media_server_fallback_enabled if settings_row else True
+        )
+
     # get all movie candidates from database
     async with async_db() as db:
         query = (
@@ -1571,126 +1603,161 @@ async def _delete_movie_candidates(
     if not radarr_clients and service_manager.radarr:
         radarr_clients = {0: service_manager.radarr}
 
-    # Rule generated movie candidates always have movie_version_id set (rules evaluate
-    # per version). For movies where ALL versions are in this deletion batch and the movie
-    # is tracked in Radarr, promote those version candidates to whole movie Radarr
-    # deletions so Radarr removes the movie and stops monitoring it. Otherwise they would
-    # go through the media server path only and Radarr would re download the deleted files.
-    promoted_movie_ids: set[int] = set()
-    # movie_id -> all candidate IDs
-    promoted_all_candidate_ids: dict[int, list[int]] = {}
-
-    if version_candidates and radarr_clients:
-        version_movie_ids = {c.movie_id for c in version_candidates if c.movie_id}
-        async with async_db() as db:
-            ver_rows = (
-                await db.execute(
-                    select(MovieVersion.movie_id, MovieVersion.id).where(
-                        MovieVersion.movie_id.in_(version_movie_ids)
-                    )
-                )
-            ).all()
-            all_db_versions_by_movie: dict[int, set[int]] = {}
-            for mv_id, ver_id in ver_rows:
-                all_db_versions_by_movie.setdefault(mv_id, set()).add(ver_id)
-
-            arr_ref_rows = (
-                await db.execute(
-                    select(MovieArrRef.movie_id).where(
-                        MovieArrRef.movie_id.in_(version_movie_ids)
-                    )
-                )
-            ).all()
-            movies_in_radarr: set[int] = {r[0] for r in arr_ref_rows}
-
-        batch_version_ids = {
-            c.movie_version_id for c in version_candidates if c.movie_version_id
-        }
-        for movie_id, all_ver_ids in all_db_versions_by_movie.items():
-            if movie_id in movies_in_radarr and all_ver_ids.issubset(batch_version_ids):
-                promoted_movie_ids.add(movie_id)
-
-        for movie_id in promoted_movie_ids:
-            promoted_all_candidate_ids[movie_id] = [
-                c.id for c in version_candidates if c.movie_id == movie_id
-            ]
-
-    # version candidates that are NOT promoted go through media server path
-    remaining_version_candidates = [
-        c for c in version_candidates if c.movie_id not in promoted_movie_ids
-    ]
-    if remaining_version_candidates:
-        deleted_count += await _delete_movie_version_candidates(
-            remaining_version_candidates, approved_by
-        )
-
-    # Build the full radarr eligible pool: explicit whole movie candidates + promoted ones
-    # Use one representative candidate per promoted movie (all get cleaned up in DB below)
-    radarr_eligible_extra: list[ReclaimCandidate] = []
-    for movie_id, cand_ids in promoted_all_candidate_ids.items():
-        representative = next(
-            (c for c in version_candidates if c.id == cand_ids[0]), None
-        )
-        if representative:
-            radarr_eligible_extra.append(representative)
-
-    all_radarr_candidates = whole_movie_candidates + radarr_eligible_extra
-
-    if not all_radarr_candidates:
-        return deleted_count
-
-    # load movie + radarr ref data for all radarr eligible candidates
-    all_radarr_movie_ids = {c.movie_id for c in all_radarr_candidates if c.movie_id}
+    # Load movie data + all arr refs (with stored arr_movie_path for path-first routing).
+    # Path-first routing: match the media-server file path (MovieVersion.path) against
+    # the Radarr folder path (MovieArrRef.arr_movie_path) to find the correct Radarr
+    # instance for each version.  Falls back to service_config_id membership when
+    # arr_movie_path is not yet populated (e.g. before first sync after upgrade).
+    all_movie_ids = {c.movie_id for c in candidates if c.movie_id}
     async with async_db() as db:
-        result = await db.execute(
-            select(
-                Movie.id,
-                Movie.title,
-                Movie.tmdb_id,
-                MovieArrRef.service_config_id,
-                MovieArrRef.arr_movie_id,
+        rows = (
+            await db.execute(
+                select(
+                    Movie.id,
+                    Movie.title,
+                    Movie.tmdb_id,
+                    MovieArrRef.service_config_id,
+                    MovieArrRef.arr_movie_id,
+                    MovieArrRef.arr_movie_path,
+                )
+                .outerjoin(MovieArrRef, MovieArrRef.movie_id == Movie.id)
+                .where(Movie.id.in_(all_movie_ids))
+                .where(Movie.removed_at.is_(None))
             )
-            .outerjoin(MovieArrRef, MovieArrRef.movie_id == Movie.id)
-            .where(Movie.id.in_(all_radarr_movie_ids))
-            .where(Movie.removed_at.is_(None))
-        )
-        rows = result.all()
+        ).all()
         movie_data: dict[int, dict] = {}
-        for movie_id, title, tmdb_id, config_id, arr_movie_id in rows:
+        for movie_id, title, tmdb_id, config_id, arr_movie_id, arr_movie_path in rows:
             info = movie_data.setdefault(
                 movie_id,
                 {"title": title, "tmdb_id": tmdb_id, "refs": []},
             )
             if config_id is not None and arr_movie_id is not None:
-                info["refs"].append((config_id, arr_movie_id))
+                info["refs"].append((config_id, arr_movie_id, arr_movie_path))
 
-    movies_to_delete_by_config: dict[int, list[dict]] = {}
+        # load version paths needed for path-based routing
+        version_ids = [c.movie_version_id for c in version_candidates if c.movie_version_id]
+        version_path_by_id: dict[int, str | None] = {}
+        if version_ids:
+            ver_rows = (
+                await db.execute(
+                    select(MovieVersion.id, MovieVersion.path).where(
+                        MovieVersion.id.in_(version_ids)
+                    )
+                )
+            ).all()
+            version_path_by_id = {ver_id: ver_path for ver_id, ver_path in ver_rows}
+
+    def _match_version_to_arr(
+        version_path: str | None,
+        refs: list[tuple],
+    ) -> set[tuple[int, int]]:
+        """Return (config_id, arr_movie_id) pairs whose folder path contains this version.
+
+        Path prefix matching is tried first.  If no arr_movie_path is stored yet
+        (e.g. before first sync after upgrade), falls back to routing to all arr
+        instances that have this movie.
+        """
+        if not refs:
+            return set()
+        matched: set[tuple[int, int]] = set()
+        if version_path:
+            norm_ver = version_path.rstrip("/")
+            for config_id, arr_movie_id, arr_movie_path in refs:
+                if arr_movie_path and config_id in radarr_clients:
+                    if norm_ver.startswith(arr_movie_path.rstrip("/") + "/"):
+                        matched.add((config_id, arr_movie_id))
+        if not matched:
+            # no path match — use all known arr configs for this movie
+            for config_id, arr_movie_id, _ in refs:
+                if config_id in radarr_clients:
+                    matched.add((config_id, arr_movie_id))
+        return matched
+
+    # Route each candidate to the correct arr instance(s).
+    # movie_id -> set of (config_id, arr_movie_id)
+    movie_arr_routing: dict[int, set[tuple[int, int]]] = {}
+    # movie_id -> all candidate IDs that belong to it (for DB cleanup after deletion)
+    all_cand_ids_by_movie: dict[int, list[int]] = {}
+    # version candidates that could not be routed to any arr instance
+    unmatched_version_candidates: list[ReclaimCandidate] = []
+
     if radarr_clients:
-        for candidate in all_radarr_candidates:
-            if candidate.movie_id is None:
+        for cand in version_candidates:
+            if not cand.movie_id or not cand.movie_version_id:
+                unmatched_version_candidates.append(cand)
                 continue
-            movie_info = movie_data.get(candidate.movie_id)
+            movie_info = movie_data.get(cand.movie_id)
+            if not movie_info or not movie_info["refs"]:
+                unmatched_version_candidates.append(cand)
+                continue
+            ver_path = version_path_by_id.get(cand.movie_version_id)
+            matched = _match_version_to_arr(ver_path, movie_info["refs"])
+            if matched:
+                movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
+                all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+            else:
+                LOG.warning(
+                    f"No Radarr instance found for '{movie_info['title']}' "
+                    f"(path: {ver_path!r}) — routing to media server fallback"
+                )
+                unmatched_version_candidates.append(cand)
+
+        for cand in whole_movie_candidates:
+            if not cand.movie_id:
+                continue
+            movie_info = movie_data.get(cand.movie_id)
             if not movie_info:
                 continue
-            # collect all candidate IDs to clean up (multiple for promoted version candidates)
-            all_cand_ids = promoted_all_candidate_ids.get(
-                candidate.movie_id, [candidate.id]
-            )
-            for config_id, arr_movie_id in movie_info["refs"]:
+            # whole-movie candidates go to ALL arr instances that know this movie
+            for config_id, arr_movie_id, _ in movie_info["refs"]:
                 if config_id in radarr_clients:
-                    movies_to_delete_by_config.setdefault(config_id, []).append(
-                        {
-                            "candidate_id": candidate.id,
-                            "all_candidate_ids": all_cand_ids,
-                            "movie_id": candidate.movie_id,
-                            "radarr_id": arr_movie_id,
-                            "config_id": config_id,
-                            "title": movie_info["title"],
-                            "method": "radarr",
-                            "tmdb_id": movie_info["tmdb_id"],
-                        }
+                    movie_arr_routing.setdefault(cand.movie_id, set()).add(
+                        (config_id, arr_movie_id)
                     )
-                    break
+            all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+    else:
+        unmatched_version_candidates = list(version_candidates)
+
+    # Handle version candidates not routable to any arr instance via media server
+    if unmatched_version_candidates:
+        deleted_count += await _delete_movie_version_candidates(
+            unmatched_version_candidates, approved_by, media_server_fallback_enabled
+        )
+
+    if not movie_arr_routing:
+        # No arr deletions — route remaining whole-movie candidates to media server
+        if whole_movie_candidates:
+            if media_server_fallback_enabled:
+                deleted_count += await _delete_movies_via_media_server(
+                    whole_movie_candidates, [], approved_by
+                )
+            else:
+                for cand in whole_movie_candidates:
+                    title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
+                    LOG.warning(
+                        f"Media server fallback disabled — skipping deletion for "
+                        f"'{title}' (not found in any Radarr instance)"
+                    )
+        return deleted_count
+
+    # Build per-config deletion batches
+    movies_to_delete_by_config: dict[int, list[dict]] = {}
+    for movie_id, config_arr_set in movie_arr_routing.items():
+        movie_info = movie_data.get(movie_id, {})
+        all_cand_ids = all_cand_ids_by_movie.get(movie_id, [])
+        for config_id, arr_movie_id in config_arr_set:
+            movies_to_delete_by_config.setdefault(config_id, []).append(
+                {
+                    "candidate_id": all_cand_ids[0] if all_cand_ids else None,
+                    "all_candidate_ids": all_cand_ids,
+                    "movie_id": movie_id,
+                    "radarr_id": arr_movie_id,
+                    "config_id": config_id,
+                    "title": movie_info.get("title", ""),
+                    "method": "radarr",
+                    "tmdb_id": movie_info.get("tmdb_id"),
+                }
+            )
 
     movies_to_delete: list[dict] = []
     for config_id, batch in movies_to_delete_by_config.items():
@@ -1712,67 +1779,73 @@ async def _delete_movie_candidates(
         movie_events: list[dict[str, Any]] = []
         try:
             async with async_db() as db:
+                # use seen_movie_ids to avoid double writes when a movie appears in
+                # multiple arr configs (both Radarr_1080p and Radarr4K)
+                seen_movie_ids: set[int] = set()
                 for movie_info in movies_to_delete:
-                    # update movie record
+                    movie_id = movie_info["movie_id"]
+                    already_processed = movie_id in seen_movie_ids
+                    seen_movie_ids.add(movie_id)
+
                     result = await db.execute(
                         select(Movie)
-                        .where(Movie.id == movie_info["movie_id"])
+                        .where(Movie.id == movie_id)
                         .options(selectinload(Movie.versions))
                     )
                     movie = result.scalar_one_or_none()
-                    if movie:
-                        movie.removed_at = datetime.now(UTC)
-                        event_versions = [v for v in movie.versions if v.path] or [None]
-                        for version in event_versions:
-                            movie_events.append(
-                                {
-                                    "title": movie.title,
-                                    "tmdb_id": movie.tmdb_id,
-                                    "candidate_id": movie_info["candidate_id"],
-                                    "path": version.path if version else None,
-                                    "service_type": version.service
-                                    if version
-                                    else Service.RADARR,
-                                    "movie_version_id": version.id if version else None,
-                                }
-                            )
 
-                    # delete all cleanup candidates for this movie (may be multiple for
-                    # promoted version candidates where one candidate exists per version)
-                    for cand_id in movie_info["all_candidate_ids"]:
-                        result = await db.execute(
-                            select(ReclaimCandidate).where(
-                                ReclaimCandidate.id == cand_id
+                    if not already_processed:
+                        if movie:
+                            movie.removed_at = datetime.now(UTC)
+                            event_versions = [v for v in movie.versions if v.path] or [None]
+                            for version in event_versions:
+                                movie_events.append(
+                                    {
+                                        "title": movie.title,
+                                        "tmdb_id": movie.tmdb_id,
+                                        "candidate_id": movie_info["candidate_id"],
+                                        "path": version.path if version else None,
+                                        "service_type": version.service
+                                        if version
+                                        else Service.RADARR,
+                                        "movie_version_id": version.id if version else None,
+                                    }
+                                )
+
+                        for cand_id in movie_info["all_candidate_ids"]:
+                            result = await db.execute(
+                                select(ReclaimCandidate).where(
+                                    ReclaimCandidate.id == cand_id
+                                )
+                            )
+                            cand = result.scalar_one_or_none()
+                            if cand:
+                                await db.delete(cand)
+
+                        movie_tmdb_id = movie_info.get("tmdb_id")
+                        if service_manager.seerr and movie and movie_tmdb_id:
+                            try:
+                                await _reset_seerr_request(movie_tmdb_id, MediaType.MOVIE)
+                            except Exception as e:
+                                LOG.warning(
+                                    f"Failed to reset Seerr request for {movie_info['title']}: {e}"
+                                )
+
+                        db.add(
+                            ReclaimHistory(
+                                approved_by=approved_by,
+                                media_type=MediaType.MOVIE,
+                                tmdb_id=movie_info.get("tmdb_id"),
+                                name=movie_info.get("title"),
+                                size=movie.size if movie else None,
                             )
                         )
-                        cand = result.scalar_one_or_none()
-                        if cand:
-                            await db.delete(cand)
-
-                    # reset seerr request if available
-                    movie_tmdb_id = movie_info.get("tmdb_id")
-                    if service_manager.seerr and movie and movie_tmdb_id:
-                        try:
-                            await _reset_seerr_request(movie_tmdb_id, MediaType.MOVIE)
-                        except Exception as e:
-                            LOG.warning(
-                                f"Failed to reset Seerr request for {movie_info['title']}: {e}"
-                            )
-
-                    db.add(
-                        ReclaimHistory(
-                            approved_by=approved_by,
-                            media_type=MediaType.MOVIE,
-                            tmdb_id=movie_info.get("tmdb_id"),
-                            name=movie_info.get("title"),
-                            size=movie.size if movie else None,
-                        )
-                    )
 
                 await db.commit()
 
-            deleted_count += len(movies_to_delete)
-            LOG.info(f"Successfully deleted {len(movies_to_delete)} movies via Radarr")
+            unique_deleted = len({m["movie_id"] for m in movies_to_delete})
+            deleted_count += unique_deleted
+            LOG.info(f"Successfully deleted {unique_deleted} movies via Radarr")
             for event in movie_events:
                 await _dispatch_reclaim_event(
                     action="deleted",
@@ -1782,11 +1855,23 @@ async def _delete_movie_candidates(
         except Exception as e:
             LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
 
-    # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Radarr
-    if not movies_to_delete or (len(all_radarr_candidates) > len(movies_to_delete)):
-        deleted_count += await _delete_movies_via_media_server(
-            all_radarr_candidates, movies_to_delete, approved_by
-        )
+    # fallback to media server for whole-movie candidates not handled by any arr instance
+    if whole_movie_candidates:
+        if media_server_fallback_enabled:
+            deleted_count += await _delete_movies_via_media_server(
+                whole_movie_candidates, movies_to_delete, approved_by
+            )
+        else:
+            movies_deleted_ids = {m["movie_id"] for m in movies_to_delete}
+            unhandled = [
+                c for c in whole_movie_candidates if c.movie_id not in movies_deleted_ids
+            ]
+            for cand in unhandled:
+                title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
+                LOG.warning(
+                    f"Media server fallback disabled — skipping deletion for "
+                    f"'{title}' (not handled by any Radarr instance)"
+                )
 
     return deleted_count
 
@@ -1797,6 +1882,13 @@ async def _delete_series_candidates(
 ) -> int:
     """Delete series candidates. Returns count of deleted series."""
     deleted_count = 0
+
+    # load fallback toggle from settings
+    async with async_db() as db:
+        settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+        media_server_fallback_enabled = (
+            settings_row.media_server_fallback_enabled if settings_row else True
+        )
 
     # get all series candidates from database
     async with async_db() as db:
@@ -1817,6 +1909,7 @@ async def _delete_series_candidates(
 
         LOG.info(f"Found {len(candidates)} series candidates to evaluate for deletion")
 
+        # load series data + all arr refs (with stored arr_series_path for path routing)
         result = await db.execute(
             select(
                 Series.id,
@@ -1824,6 +1917,7 @@ async def _delete_series_candidates(
                 Series.tmdb_id,
                 SeriesArrRef.service_config_id,
                 SeriesArrRef.arr_series_id,
+                SeriesArrRef.arr_series_path,
             )
             .join(ReclaimCandidate, Series.id == ReclaimCandidate.series_id)
             .outerjoin(SeriesArrRef, SeriesArrRef.series_id == Series.id)
@@ -1832,19 +1926,25 @@ async def _delete_series_candidates(
         )
         rows = result.all()
         series_data: dict[int, dict] = {}
-        for series_id, title, tmdb_id, config_id, arr_series_id in rows:
+        for series_id, title, tmdb_id, config_id, arr_series_id, arr_series_path in rows:
             info = series_data.setdefault(
                 series_id,
                 {"title": title, "tmdb_id": tmdb_id, "refs": []},
             )
             if config_id is not None and arr_series_id is not None:
-                info["refs"].append((config_id, arr_series_id))
+                info["refs"].append((config_id, arr_series_id, arr_series_path))
 
     sonarr_clients = service_manager.sonarr_clients()
     if not sonarr_clients and service_manager.sonarr:
         sonarr_clients = {0: service_manager.sonarr}
 
-    series_to_delete_by_config: dict[int, list[dict]] = {}
+    # Route each candidate to ALL matching Sonarr instances.
+    # Series-level candidates don't have a per-version path, so we route to every
+    # Sonarr instance that tracks this series (arr_series_path used when available
+    # for disambiguation in multi-Sonarr setups; falls back to config_id membership).
+    # series_id -> set of (config_id, arr_series_id)
+    series_arr_routing: dict[int, set[tuple[int, int]]] = {}
+
     if sonarr_clients:
         for candidate in candidates:
             if candidate.series_id is None:
@@ -1852,19 +1952,29 @@ async def _delete_series_candidates(
             series_info = series_data.get(candidate.series_id)
             if not series_info:
                 continue
-            for config_id, arr_series_id in series_info["refs"]:
+            for config_id, arr_series_id, _ in series_info["refs"]:
                 if config_id in sonarr_clients:
-                    series_to_delete_by_config.setdefault(config_id, []).append(
-                        {
-                            "candidate_id": candidate.id,
-                            "series_id": candidate.series_id,
-                            "sonarr_id": arr_series_id,
-                            "title": series_info["title"],
-                            "method": "sonarr",
-                            "tmdb_id": series_info["tmdb_id"],
-                        }
+                    series_arr_routing.setdefault(candidate.series_id, set()).add(
+                        (config_id, arr_series_id)
                     )
-                    break
+
+    series_to_delete_by_config: dict[int, list[dict]] = {}
+    for series_id, config_arr_set in series_arr_routing.items():
+        series_info = series_data.get(series_id, {})
+        candidate_id = next(
+            (c.id for c in candidates if c.series_id == series_id), None
+        )
+        for config_id, arr_series_id in config_arr_set:
+            series_to_delete_by_config.setdefault(config_id, []).append(
+                {
+                    "candidate_id": candidate_id,
+                    "series_id": series_id,
+                    "sonarr_id": arr_series_id,
+                    "title": series_info.get("title", ""),
+                    "method": "sonarr",
+                    "tmdb_id": series_info.get("tmdb_id"),
+                }
+            )
 
     series_to_delete: list[dict] = []
     for config_id, batch in series_to_delete_by_config.items():
@@ -1886,11 +1996,19 @@ async def _delete_series_candidates(
         series_events: list[dict[str, Any]] = []
         try:
             async with async_db() as db:
+                # deduplicate: a series may appear in multiple Sonarr instances
+                seen_series_ids: set[int] = set()
                 for series_info in series_to_delete:
-                    # update series record
+                    series_id = series_info["series_id"]
+                    already_processed = series_id in seen_series_ids
+                    seen_series_ids.add(series_id)
+
+                    if already_processed:
+                        continue
+
                     result = await db.execute(
                         select(Series)
-                        .where(Series.id == series_info["series_id"])
+                        .where(Series.id == series_id)
                         .options(selectinload(Series.service_refs))
                     )
                     series = result.scalar_one_or_none()
@@ -1912,7 +2030,6 @@ async def _delete_series_candidates(
                                 }
                             )
 
-                    # delete cleanup candidate
                     result = await db.execute(
                         select(ReclaimCandidate).where(
                             ReclaimCandidate.id == series_info["candidate_id"]
@@ -1922,7 +2039,6 @@ async def _delete_series_candidates(
                     if candidate:
                         await db.delete(candidate)
 
-                    # reset seerr request if available
                     series_tmdb_id = series_info.get("tmdb_id")
                     if service_manager.seerr and series and series_tmdb_id:
                         try:
@@ -1944,8 +2060,9 @@ async def _delete_series_candidates(
 
                 await db.commit()
 
-            deleted_count = len(series_to_delete)
-            LOG.info(f"Successfully deleted {deleted_count} series via Sonarr")
+            unique_deleted = len({s["series_id"] for s in series_to_delete})
+            deleted_count += unique_deleted
+            LOG.info(f"Successfully deleted {unique_deleted} series via Sonarr")
             for event in series_events:
                 await _dispatch_reclaim_event(
                     action="deleted",
@@ -1955,11 +2072,20 @@ async def _delete_series_candidates(
         except Exception as e:
             LOG.error(f"Error finalizing series deletion state: {e}", exc_info=True)
 
-    # fallback to media server deletion (Jellyfin/Emby/Plex) for candidates not in Sonarr
-    if not series_to_delete or (len(candidates) > len(series_to_delete)):
+    # fallback to media server deletion for candidates not handled by any Sonarr instance
+    if media_server_fallback_enabled:
         deleted_count += await _delete_series_via_media_server(
             candidates, series_to_delete, approved_by
         )
+    else:
+        series_deleted_ids = {s["series_id"] for s in series_to_delete}
+        unhandled = [c for c in candidates if c.series_id not in series_deleted_ids]
+        for cand in unhandled:
+            title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
+            LOG.warning(
+                f"Media server fallback disabled — skipping deletion for "
+                f"'{title}' (not handled by any Sonarr instance)"
+            )
 
     return deleted_count
 
@@ -1973,6 +2099,13 @@ async def _delete_season_candidates(
     Returns count of seasons successfully deleted.
     """
     deleted_count = 0
+
+    # load fallback toggle from settings
+    async with async_db() as db:
+        settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+        media_server_fallback_enabled = (
+            settings_row.media_server_fallback_enabled if settings_row else True
+        )
 
     async with async_db() as db:
         query = (
@@ -2074,7 +2207,7 @@ async def _delete_season_candidates(
             except Exception as e:
                 LOG.warning(
                     f"Sonarr file deletion failed for '{series_obj.title}' "
-                    f"S{season_number:02d}: {e} - trying media server fallback"
+                    f"S{season_number:02d}: {e} - will attempt media server fallback"
                 )
 
             # if no files remain across all seasons, remove the series entry entirely
@@ -2101,6 +2234,13 @@ async def _delete_season_candidates(
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
+            if not media_server_fallback_enabled:
+                LOG.warning(
+                    f"Media server fallback disabled — skipping season deletion for "
+                    f"'{series_obj.title}' S{season_number:02d}. Enable 'Allow Media "
+                    f"Server Fallback Deletion' in General Settings."
+                )
+                continue
             media_service = service_manager.main_media_server
             if media_service is service_manager.jellyfin:
                 season_service_id = season.jellyfin_season_id
@@ -2649,7 +2789,45 @@ async def move_specific_candidates(
             # move the file + same stem siblings to destination
             dest = move_media(local_path, destination_root)
 
-            # remove the item from the arr/media server (no file deletion)
+            # unmonitor in Radarr so it doesn't re-queue a download
+            radarr_clients = service_manager.radarr_clients()
+            if not radarr_clients and service_manager.radarr:
+                radarr_clients = {0: service_manager.radarr}
+            if radarr_clients and movie.id:
+                try:
+                    async with async_db() as db:
+                        arr_refs = (
+                            await db.execute(
+                                select(
+                                    MovieArrRef.service_config_id,
+                                    MovieArrRef.arr_movie_id,
+                                    MovieArrRef.arr_movie_path,
+                                ).where(MovieArrRef.movie_id == movie.id)
+                            )
+                        ).all()
+                    norm_ver = version.path.rstrip("/") if version.path else None
+                    unmonitored: set[tuple[int, int]] = set()
+                    for config_id, arr_movie_id, arr_movie_path in arr_refs:
+                        if config_id not in radarr_clients or arr_movie_id is None:
+                            continue
+                        if norm_ver and arr_movie_path:
+                            if not norm_ver.startswith(arr_movie_path.rstrip("/") + "/"):
+                                continue
+                        pair = (config_id, arr_movie_id)
+                        if pair not in unmonitored:
+                            await radarr_clients[config_id].unmonitor_movies([arr_movie_id])
+                            unmonitored.add(pair)
+                            LOG.info(
+                                f"move: unmonitored '{movie.title}' in Radarr "
+                                f"(config_id={config_id}, arr_id={arr_movie_id})"
+                            )
+                except Exception as arr_err:
+                    LOG.warning(
+                        f"move_specific_candidates: Radarr unmonitor failed for "
+                        f"'{movie.title}': {arr_err}"
+                    )
+
+            # remove the item from the media server (no file deletion)
             try:
                 main_service = service_manager.main_media_server
                 if main_service:
@@ -2664,12 +2842,18 @@ async def move_specific_candidates(
 
             # update DB
             async with async_db() as db:
-                cand_result = await db.execute(
-                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                # bulk-delete all candidates and delete-requests referencing this
+                # version before removing the version row (no ondelete on their FKs)
+                await db.execute(
+                    delete(ReclaimCandidate).where(
+                        ReclaimCandidate.movie_version_id == version.id
+                    )
                 )
-                cand = cand_result.scalar_one_or_none()
-                if cand:
-                    await db.delete(cand)
+                await db.execute(
+                    delete(DeleteRequest).where(
+                        DeleteRequest.movie_version_id == version.id
+                    )
+                )
 
                 ver_result = await db.execute(
                     select(MovieVersion).where(MovieVersion.id == version.id)
@@ -2743,6 +2927,20 @@ async def move_specific_candidates(
                     select(Season).where(Season.id.in_(season_ids))
                 )
                 seasons_map = {s.id: s for s in seasons_result.scalars().all()}
+
+            # load arr refs for Sonarr unmonitor routing
+            arr_refs_result = await db.execute(
+                select(
+                    SeriesArrRef.series_id,
+                    SeriesArrRef.service_config_id,
+                    SeriesArrRef.arr_series_id,
+                    SeriesArrRef.arr_series_path,
+                ).where(SeriesArrRef.series_id.in_(series_ids))
+            )
+            # series_id -> list of (config_id, arr_series_id, arr_series_path)
+            series_arr_refs: dict[int, list[tuple]] = {}
+            for s_id, config_id, arr_s_id, arr_s_path in arr_refs_result.all():
+                series_arr_refs.setdefault(s_id, []).append((config_id, arr_s_id, arr_s_path))
 
         for candidate in series_candidates:
             try:
@@ -2841,6 +3039,37 @@ async def move_specific_candidates(
                         dest = move_directory(season_folder, series_dest_root)
                 else:
                     dest = move_directory(local_series_path, destination_root)
+
+                # unmonitor in Sonarr so it doesn't re-queue a download
+                sonarr_clients = service_manager.sonarr_clients()
+                if not sonarr_clients and service_manager.sonarr:
+                    sonarr_clients = {0: service_manager.sonarr}
+                if sonarr_clients and candidate.series_id:
+                    try:
+                        refs = series_arr_refs.get(candidate.series_id, [])
+                        for config_id, arr_s_id, _arr_s_path in refs:
+                            if config_id not in sonarr_clients or arr_s_id is None:
+                                continue
+                            if is_season and season:
+                                await sonarr_clients[config_id].update_season_monitoring(
+                                    arr_s_id, season.season_number, False
+                                )
+                                LOG.info(
+                                    f"move: unmonitored '{series_obj.title}' "
+                                    f"S{season.season_number:02d} in Sonarr "
+                                    f"(config_id={config_id}, arr_id={arr_s_id})"
+                                )
+                            else:
+                                await sonarr_clients[config_id].unmonitor_series([arr_s_id])
+                                LOG.info(
+                                    f"move: unmonitored '{series_obj.title}' in Sonarr "
+                                    f"(config_id={config_id}, arr_id={arr_s_id})"
+                                )
+                    except Exception as arr_err:
+                        LOG.warning(
+                            f"move_specific_candidates: Sonarr unmonitor failed for "
+                            f"'{series_obj.title}': {arr_err}"
+                        )
 
                 # remove from media server (no file deletion - already moved)
                 try:

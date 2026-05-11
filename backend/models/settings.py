@@ -181,6 +181,9 @@ class GeneralSettingsResponse(BaseModel):
     move_destination_movies: str | None = None
     move_destination_series: str | None = None
 
+    # deletion routing
+    media_server_fallback_enabled: bool = True
+
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
     updated_by: User | None = None
