@@ -945,7 +945,7 @@
 
 <div class="p-2.5 md:p-8">
   <div class="max-w-7xl mx-auto space-y-4">
-    <div class="space-y-2">
+    <div>
       <h1 class="text-3xl font-bold text-foreground">
         Reclaim Candidates {activeView === "candidates" ? "" : "(History)"}
       </h1>
