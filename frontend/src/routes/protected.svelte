@@ -371,270 +371,272 @@
   </AlertDialog.Content>
 </AlertDialog.Root>
 
-<div class="p-2.5 md:p-8 max-w-7xl mx-auto space-y-6">
-  <div class="space-y-2">
-    <h1 class="text-3xl font-bold text-foreground">Protected</h1>
-    <p class="text-muted-foreground">
-      Media items protected from cleanup and deletion.
-      {#if canManageProtection}
-        You can also remove protection from items here.
-      {/if}
-    </p>
-  </div>
-
-  <div class="mb-4 flex flex-col sm:flex-row gap-2">
-    <div class="relative flex-1">
-      <Search
-        class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
-      />
-      <Input
-        type="text"
-        placeholder="Search by media title, reason, or user"
-        value={searchQuery}
-        oninput={handleSearch}
-        class="pl-10 bg-card"
-      />
+<div class="p-2.5 md:p-8">
+  <div class="max-w-7xl mx-auto space-y-6">
+    <div class="space-y-2">
+      <h1 class="text-3xl font-bold text-foreground">Protected</h1>
+      <p class="text-muted-foreground">
+        Media items protected from cleanup and deletion.
+        {#if canManageProtection}
+          You can also remove protection from items here.
+        {/if}
+      </p>
     </div>
 
-    <div class="flex flex-1 flex-col gap-2 sm:flex-row">
-      <!-- row 1 on mobile: sort by + sort order -->
-      <div class="flex flex-1 gap-2">
-        <!-- sort by -->
-        <Select.Root type="single" bind:value={sortBy}>
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {sortByOptions.find((opt) => opt.value === sortBy)?.label}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            {#each sortByOptions as option}
-              <Select.Item
-                value={option.value}
-                label={option.label}
-                class="text-card-foreground"
-              >
-                {option.label}
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-
-        <!-- sort order -->
-        <Select.Root type="single" bind:value={sortOrder}>
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {sortOrder === "asc" ? "Ascending" : "Descending"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="asc"
-              label="Ascending"
-              class="text-card-foreground">Ascending</Select.Item
-            >
-            <Select.Item
-              value="desc"
-              label="Descending"
-              class="text-card-foreground">Descending</Select.Item
-            >
-          </Select.Content>
-        </Select.Root>
+    <div class="mb-4 flex flex-col sm:flex-row gap-2">
+      <div class="relative flex-1">
+        <Search
+          class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
+        />
+        <Input
+          type="text"
+          placeholder="Search by media title, reason, or user"
+          value={searchQuery}
+          oninput={handleSearch}
+          class="pl-10 bg-card"
+        />
       </div>
 
-      <!-- row 2 on mobile: media type + per page -->
-      <div class="flex flex-1 gap-2">
-        <!-- media type filter -->
-        <Select.Root type="single" bind:value={mediaTypeFilter}>
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {mediaTypeFilter === "all"
-              ? "All Media"
-              : mediaTypeFilter === MediaType.Movie
-                ? "Movies"
-                : "Series"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="all"
-              label="All Media"
-              class="text-card-foreground">All Media</Select.Item
-            >
-            <Select.Item
-              value={MediaType.Movie}
-              label="Movies"
-              class="text-card-foreground">Movies</Select.Item
-            >
-            <Select.Item
-              value={MediaType.Series}
-              label="Series"
-              class="text-card-foreground">Series</Select.Item
-            >
-          </Select.Content>
-        </Select.Root>
+      <div class="flex flex-1 flex-col gap-2 sm:flex-row">
+        <!-- row 1 on mobile: sort by + sort order -->
+        <div class="flex flex-1 gap-2">
+          <!-- sort by -->
+          <Select.Root type="single" bind:value={sortBy}>
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {sortByOptions.find((opt) => opt.value === sortBy)?.label}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              {#each sortByOptions as option}
+                <Select.Item
+                  value={option.value}
+                  label={option.label}
+                  class="text-card-foreground"
+                >
+                  {option.label}
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
 
-        <!-- per page -->
-        <Select.Root
-          type="single"
-          value={perPage.toString()}
-          onValueChange={(v) => {
-            const n = parseInt(v, 10);
-            if (!isNaN(n)) {
-              perPage = n;
-              _perPageStore.save(n);
-            }
-          }}
-        >
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {perPage} / page
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            {#each PER_PAGE_OPTIONS as opt}
+          <!-- sort order -->
+          <Select.Root type="single" bind:value={sortOrder}>
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {sortOrder === "asc" ? "Ascending" : "Descending"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
               <Select.Item
-                value={opt.toString()}
-                label={`${opt} / page`}
-                class="text-card-foreground"
+                value="asc"
+                label="Ascending"
+                class="text-card-foreground">Ascending</Select.Item
               >
-                {opt} / page
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+              <Select.Item
+                value="desc"
+                label="Descending"
+                class="text-card-foreground">Descending</Select.Item
+              >
+            </Select.Content>
+          </Select.Root>
+        </div>
+
+        <!-- row 2 on mobile: media type + per page -->
+        <div class="flex flex-1 gap-2">
+          <!-- media type filter -->
+          <Select.Root type="single" bind:value={mediaTypeFilter}>
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {mediaTypeFilter === "all"
+                ? "All Media"
+                : mediaTypeFilter === MediaType.Movie
+                  ? "Movies"
+                  : "Series"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="all"
+                label="All Media"
+                class="text-card-foreground">All Media</Select.Item
+              >
+              <Select.Item
+                value={MediaType.Movie}
+                label="Movies"
+                class="text-card-foreground">Movies</Select.Item
+              >
+              <Select.Item
+                value={MediaType.Series}
+                label="Series"
+                class="text-card-foreground">Series</Select.Item
+              >
+            </Select.Content>
+          </Select.Root>
+
+          <!-- per page -->
+          <Select.Root
+            type="single"
+            value={perPage.toString()}
+            onValueChange={(v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n)) {
+                perPage = n;
+                _perPageStore.save(n);
+              }
+            }}
+          >
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {perPage} / page
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              {#each PER_PAGE_OPTIONS as opt}
+                <Select.Item
+                  value={opt.toString()}
+                  label={`${opt} / page`}
+                  class="text-card-foreground"
+                >
+                  {opt} / page
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- error box -->
-  <ErrorBox {error} />
+    <!-- error box -->
+    <ErrorBox {error} />
 
-  <div class="bg-card rounded-lg border border-border overflow-x-auto">
-    {#if loading}
-      <div class="p-8 text-center text-muted-foreground">
-        <div
-          class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
+    <div class="bg-card rounded-lg border border-border overflow-x-auto">
+      {#if loading}
+        <div class="p-8 text-center text-muted-foreground">
+          <div
+            class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
             border-r-transparent"
-        ></div>
-        <p class="mt-4">Loading protected items...</p>
-      </div>
-    {:else if entries.length === 0}
-      <div class="p-8 text-center text-muted-foreground">
-        No protected items found.
-      </div>
-    {:else}
-      <table class="w-full">
-        <thead class="bg-muted/50">
-          <tr>
-            <th
-              class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >Media</th
-            >
-            <th
-              class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >Protected Until</th
-            >
-            <th
-              class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >Added By</th
-            >
-            <th
-              class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >Created</th
-            >
-            {#if canManageProtection}
+          ></div>
+          <p class="mt-4">Loading protected items...</p>
+        </div>
+      {:else if entries.length === 0}
+        <div class="p-8 text-center text-muted-foreground">
+          No protected items found.
+        </div>
+      {:else}
+        <table class="w-full">
+          <thead class="bg-muted/50">
+            <tr>
               <th
-                class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Actions</th
+                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >Media</th
               >
-            {/if}
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-border">
-          {#each entries as entry (entry.id)}
-            <tr class="hover:bg-muted/30 transition-colors">
-              <td class="px-6 py-4">
-                <div class="flex gap-4">
-                  <div class="flex flex-col items-center w-max gap-1">
-                    <PosterThumb
-                      mediaType={entry.media_type}
-                      posterUrl={entry.poster_url}
-                    />
-                    <MediaTypeBadge mediaType={entry.media_type} />
-                  </div>
-                  <div>
-                    <div class="text-sm font-medium text-foreground">
-                      {entry.media_title}{entry.media_year
-                        ? ` (${entry.media_year})`
-                        : ""}
-                    </div>
-                  </div>
-                </div>
-                {#if entry.reason}
-                  <div class="text-xs text-muted-foreground mt-1">
-                    {entry.reason}
-                  </div>
-                {/if}
-              </td>
-              <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
-                {#if entry.permanent}
-                  Permanent
-                {:else if entry.expires_at}
-                  <div>{formatDate(entry.expires_at)}</div>
-                  <div class="text-xs text-muted-foreground">
-                    {formatDistanceToNow(entry.expires_at)}
-                  </div>
-                {:else}
-                  Unknown
-                {/if}
-              </td>
-              <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
-                {entry.protected_by_username}
-              </td>
-              <td
-                class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
+              <th
+                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >Protected Until</th
               >
-                {formatDate(entry.created_at)}
-              </td>
+              <th
+                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >Added By</th
+              >
+              <th
+                class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >Created</th
+              >
               {#if canManageProtection}
-                <td class="px-6 py-4 text-right whitespace-nowrap">
-                  <div class="flex justify-end gap-2">
-                    <Button
-                      type="button"
-                      size="icon"
-                      class="rounded-full cursor-pointer"
-                      onclick={() => openEditDuration(entry)}
-                    >
-                      <Pencil class="w-4 h-4" />
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon"
-                      class="rounded-full cursor-pointer hover:bg-destructive-secondary 
-                        bg-destructive text-destructive-foreground"
-                      onclick={() => openRemoveDialog(entry)}
-                    >
-                      <Trash2 class="w-4 h-4" />
-                    </Button>
-                  </div>
-                </td>
+                <th
+                  class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                  >Actions</th
+                >
               {/if}
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody class="divide-y divide-border">
+            {#each entries as entry (entry.id)}
+              <tr class="hover:bg-muted/30 transition-colors">
+                <td class="px-6 py-4">
+                  <div class="flex gap-4">
+                    <div class="flex flex-col items-center w-max gap-1">
+                      <PosterThumb
+                        mediaType={entry.media_type}
+                        posterUrl={entry.poster_url}
+                      />
+                      <MediaTypeBadge mediaType={entry.media_type} />
+                    </div>
+                    <div>
+                      <div class="text-sm font-medium text-foreground">
+                        {entry.media_title}{entry.media_year
+                          ? ` (${entry.media_year})`
+                          : ""}
+                      </div>
+                    </div>
+                  </div>
+                  {#if entry.reason}
+                    <div class="text-xs text-muted-foreground mt-1">
+                      {entry.reason}
+                    </div>
+                  {/if}
+                </td>
+                <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
+                  {#if entry.permanent}
+                    Permanent
+                  {:else if entry.expires_at}
+                    <div>{formatDate(entry.expires_at)}</div>
+                    <div class="text-xs text-muted-foreground">
+                      {formatDistanceToNow(entry.expires_at)}
+                    </div>
+                  {:else}
+                    Unknown
+                  {/if}
+                </td>
+                <td class="px-6 py-4 text-sm text-foreground whitespace-nowrap">
+                  {entry.protected_by_username}
+                </td>
+                <td
+                  class="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap"
+                >
+                  {formatDate(entry.created_at)}
+                </td>
+                {#if canManageProtection}
+                  <td class="px-6 py-4 text-right whitespace-nowrap">
+                    <div class="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        size="icon"
+                        class="rounded-full cursor-pointer"
+                        onclick={() => openEditDuration(entry)}
+                      >
+                        <Pencil class="w-4 h-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        class="rounded-full cursor-pointer hover:bg-destructive-secondary 
+                        bg-destructive text-destructive-foreground"
+                        onclick={() => openRemoveDialog(entry)}
+                      >
+                        <Trash2 class="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </div>
+
+    {#if !loading && entries.length !== 0 && data && data.total_pages > 1}
+      <div
+        class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+      >
+        <p class="text-sm text-muted-foreground">
+          Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
+            data.page * data.per_page,
+            data.total,
+          )} of {data.total} entries
+        </p>
+
+        <CompactPagination
+          currentPage={data.page}
+          totalPages={data.total_pages}
+          maxVisiblePages={3}
+          onPageChange={loadProtectedEntries}
+        />
+      </div>
     {/if}
   </div>
-
-  {#if !loading && entries.length !== 0 && data && data.total_pages > 1}
-    <div
-      class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
-    >
-      <p class="text-sm text-muted-foreground">
-        Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
-          data.page * data.per_page,
-          data.total,
-        )} of {data.total} entries
-      </p>
-
-      <CompactPagination
-        currentPage={data.page}
-        totalPages={data.total_pages}
-        maxVisiblePages={3}
-        onPageChange={loadProtectedEntries}
-      />
-    </div>
-  {/if}
 </div>

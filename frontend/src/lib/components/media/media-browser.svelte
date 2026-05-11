@@ -271,7 +271,7 @@
 </script>
 
 <div class="p-2.5 md:p-8">
-  <div class="max-w-450 mx-auto">
+  <div class="max-w-7xl mx-auto">
     <!-- header -->
     <div class="mb-8">
       <h1 class="text-3xl font-bold text-foreground mb-2">{title}</h1>
