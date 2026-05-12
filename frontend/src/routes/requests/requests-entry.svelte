@@ -10,9 +10,12 @@
 </script>
 
 <div class="p-2.5 md:p-8 pb-0 md:pb-0">
-  <div class="mx-auto max-w-7xl">
-    <div class="mb-4">
-      <h1 class="text-3xl font-bold text-foreground mb-1">Requests</h1>
+  <div class="max-w-7xl mx-auto space-y-4">
+    <div>
+      <h1 class="text-3xl font-bold text-foreground">Requests</h1>
+      <p class="text-muted-foreground">
+        Manage media item {activeTab} requests
+      </p>
     </div>
 
     <div class="flex gap-1 rounded-lg border bg-muted/40 p-1 w-fit">

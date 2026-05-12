@@ -512,6 +512,18 @@
     };
   };
 
+  // After bulk move/request/delete, remove the affected candidates from the current list.
+  // If all candidates on the current page are removed and it's not the first page, load the previous page.
+  const applyBulkRemoval = async (idsToRemove: Set<number>) => {
+    if (!data || idsToRemove.size === 0) return;
+    const remaining = data.items.filter((i) => !idsToRemove.has(i.id));
+    if (remaining.length === 0 && currentPage > 1) {
+      await loadCandidates(currentPage - 1);
+      return;
+    }
+    removeCandidateIds(idsToRemove);
+  };
+
   const submitSingleDelete = async () => {
     if (!deleteTarget) return;
     deleteSubmitting = true;
@@ -550,10 +562,11 @@
   const submitBulkDelete = async () => {
     if (selectedEntries.length === 0) return;
     bulkDeleteSubmitting = true;
+    const selectedCandidateIds = selectedEntries.map((e) => e.id);
     try {
       const resp = await post_api<DeleteResponse>(
         "/api/media/candidates/delete",
-        { candidate_ids: selectedEntries.map((e) => e.id) },
+        { candidate_ids: selectedCandidateIds },
       );
       if (resp.deleted > 0)
         toast.success(
@@ -563,7 +576,12 @@
         toast.error(
           `${resp.failed} item${resp.failed !== 1 ? "s" : ""} could not be deleted.`,
         );
-      if (resp.deleted > 0) await loadCandidates(currentPage);
+      if (resp.deleted > 0) {
+        const idsToRemove = new Set(
+          selectedCandidateIds.slice(0, resp.deleted),
+        );
+        await applyBulkRemoval(idsToRemove);
+      }
     } catch (e: any) {
       toast.error(e.message ?? "Failed to delete candidates.");
     } finally {
@@ -641,9 +659,15 @@
     };
   };
 
+  // Submit bulk protection request for all selected candidates. Duration is determined by the
+  // bulkDuration state (either a preset duration, custom number of days, or permanent).
   const submitBulkRequest = async () => {
     if (selectedEntries.length === 0) return;
     bulkSubmitting = true;
+    const selectedWithIds = selectedEntries.map((entry) => ({
+      candidateId: entry.id,
+      entry,
+    }));
 
     let durationDays: number | null = null;
     if (bulkDuration === "permanent") {
@@ -661,7 +685,7 @@
     }
 
     const results = await Promise.allSettled(
-      selectedEntries.map((entry) =>
+      selectedWithIds.map(({ entry }) =>
         post_api<ProtectionRequest>("/api/protection-requests", {
           media_type: entry.media_type,
           media_id: entry.media_id,
@@ -673,7 +697,14 @@
       ),
     );
 
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    // All requests that were successfully submitted (regardless of auto-approval)
+    // should be removed from the candidate list, since they now have pending requests
+    // and can't be submitted again until those are resolved.
+    const succeededIds = selectedWithIds
+      .map((item, idx) => ({ item, result: results[idx] }))
+      .filter(({ result }) => result.status === "fulfilled")
+      .map(({ item }) => item.candidateId);
+    const succeeded = succeededIds.length;
     const failed = results.length - succeeded;
 
     if (succeeded > 0)
@@ -682,6 +713,10 @@
       );
     if (failed > 0)
       toast.error(`${failed} request${failed !== 1 ? "s" : ""} failed`);
+
+    if (succeededIds.length > 0) {
+      await applyBulkRemoval(new Set(succeededIds));
+    }
 
     selectedIds = new Set();
     bulkDialogOpen = false;
@@ -943,149 +978,414 @@
   onSuccess={handleRequestSuccess}
 />
 
-<div class="p-2.5 md:p-8 max-w-7xl mx-auto space-y-4">
-  <div class="space-y-2">
-    <h1 class="text-3xl font-bold text-foreground">
-      Reclaim Candidates {activeView === "candidates" ? "" : "(History)"}
-    </h1>
-    <p class="text-muted-foreground">
-      Media flagged for deletion based on your configured rules.
-      {#if canBulkSelect && activeView === "candidates"}
-        Select multiple items for bulk actions.
-      {/if}
-    </p>
-  </div>
+<div class="p-2.5 md:p-8">
+  <div class="max-w-7xl mx-auto space-y-4">
+    <div>
+      <h1 class="text-3xl font-bold text-foreground">
+        Reclaim Candidates {activeView === "candidates" ? "" : "(History)"}
+      </h1>
+      <p class="text-muted-foreground">
+        Media flagged for deletion based on your configured rules.
+        {#if canBulkSelect && activeView === "candidates"}
+          Select multiple items for bulk actions.
+        {/if}
+      </p>
+    </div>
 
-  <!-- top-level view switcher: Candidates | History -->
-  <div class="inline-flex rounded-md border border-border p-1 bg-card">
-    <Button
-      size="sm"
-      class="cursor-pointer {activeView === 'candidates'
-        ? 'bg-primary text-background dark:text-foreground'
-        : 'text-foreground bg-transparent'}"
-      onclick={() => {
-        activeView = "candidates";
-      }}
-    >
-      <TriangleAlert class="size-4 " />
-      Candidates
-    </Button>
-    <Button
-      size="sm"
-      class="cursor-pointer {activeView === 'history'
-        ? 'bg-primary text-background dark:text-foreground'
-        : 'text-foreground bg-transparent'}"
-      onclick={() => {
-        activeView = "history";
-        if (!historyData) loadHistory(1);
-      }}
-    >
-      <History class="size-4 " />
-      History
-    </Button>
-  </div>
-
-  {#if activeView === "candidates"}
+    <!-- top-level view switcher: Candidates | History -->
     <div class="inline-flex rounded-md border border-border p-1 bg-card">
       <Button
         size="sm"
-        class="cursor-pointer {activeTab === MediaType.Movie
+        class="cursor-pointer {activeView === 'candidates'
           ? 'bg-primary text-background dark:text-foreground'
           : 'text-foreground bg-transparent'}"
         onclick={() => {
-          activeTab = MediaType.Movie;
-          selectedIds = new Set();
-          expandedGroups = new Set();
+          activeView = "candidates";
         }}
       >
-        <ClapperBoard class="size-4 " />
-        Movies
+        <TriangleAlert class="size-4 " />
+        Candidates
       </Button>
       <Button
         size="sm"
-        class="cursor-pointer {activeTab === MediaType.Series
+        class="cursor-pointer {activeView === 'history'
           ? 'bg-primary text-background dark:text-foreground'
           : 'text-foreground bg-transparent'}"
         onclick={() => {
-          activeTab = MediaType.Series;
-          selectedIds = new Set();
-          expandedGroups = new Set();
+          activeView = "history";
+          if (!historyData) loadHistory(1);
         }}
       >
-        <Tv class="size-4 " />
-        Series
+        <History class="size-4 " />
+        History
       </Button>
     </div>
 
-    <!-- filters -->
-    <div class="flex flex-col sm:flex-row gap-2">
-      <div class="relative flex-1">
-        <Search
-          class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
-        />
-        <Input
-          type="text"
-          placeholder="Search by title or reason"
-          value={searchQuery}
-          oninput={handleSearch}
-          class="pl-10 bg-card"
-        />
+    {#if activeView === "candidates"}
+      <div class="inline-flex rounded-md border border-border p-1 bg-card">
+        <Button
+          size="sm"
+          class="cursor-pointer {activeTab === MediaType.Movie
+            ? 'bg-primary text-background dark:text-foreground'
+            : 'text-foreground bg-transparent'}"
+          onclick={() => {
+            activeTab = MediaType.Movie;
+            selectedIds = new Set();
+            expandedGroups = new Set();
+          }}
+        >
+          <ClapperBoard class="size-4 " />
+          Movies
+        </Button>
+        <Button
+          size="sm"
+          class="cursor-pointer {activeTab === MediaType.Series
+            ? 'bg-primary text-background dark:text-foreground'
+            : 'text-foreground bg-transparent'}"
+          onclick={() => {
+            activeTab = MediaType.Series;
+            selectedIds = new Set();
+            expandedGroups = new Set();
+          }}
+        >
+          <Tv class="size-4 " />
+          Series
+        </Button>
       </div>
 
-      <div class="flex flex-1 flex-col gap-2 sm:flex-row">
-        <!-- row 1 on mobile: sort by + sort order -->
-        <div class="flex flex-1 gap-2">
-          <Select.Root type="single" bind:value={sortBy}>
-            <Select.Trigger class="flex-1 bg-card text-card-foreground">
-              {sortByOptions.find((o) => o.value === sortBy)?.label}
-            </Select.Trigger>
-            <Select.Content class="bg-card">
-              {#each sortByOptions as opt}
-                <Select.Item
-                  value={opt.value}
-                  label={opt.label}
-                  class="text-card-foreground"
-                >
-                  {opt.label}
-                </Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-
-          <Select.Root type="single" bind:value={sortOrder}>
-            <Select.Trigger class="flex-1 bg-card text-card-foreground">
-              {sortOrder === "asc" ? "Ascending" : "Descending"}
-            </Select.Trigger>
-            <Select.Content class="bg-card">
-              <Select.Item
-                value="asc"
-                label="Ascending"
-                class="text-card-foreground">Ascending</Select.Item
-              >
-              <Select.Item
-                value="desc"
-                label="Descending"
-                class="text-card-foreground">Descending</Select.Item
-              >
-            </Select.Content>
-          </Select.Root>
+      <!-- filters -->
+      <div class="flex flex-col sm:flex-row gap-2">
+        <div class="relative flex-1">
+          <Search
+            class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
+          />
+          <Input
+            type="text"
+            placeholder="Search by title or reason"
+            value={searchQuery}
+            oninput={handleSearch}
+            class="pl-10 bg-card"
+          />
         </div>
 
-        <!-- row 2 on mobile: per page -->
-        <div class="flex flex-1 gap-2">
+        <div class="flex flex-1 flex-col gap-2 sm:flex-row">
+          <!-- row 1 on mobile: sort by + sort order -->
+          <div class="flex flex-1 gap-2">
+            <Select.Root type="single" bind:value={sortBy}>
+              <Select.Trigger class="flex-1 bg-card text-card-foreground">
+                {sortByOptions.find((o) => o.value === sortBy)?.label}
+              </Select.Trigger>
+              <Select.Content class="bg-card">
+                {#each sortByOptions as opt}
+                  <Select.Item
+                    value={opt.value}
+                    label={opt.label}
+                    class="text-card-foreground"
+                  >
+                    {opt.label}
+                  </Select.Item>
+                {/each}
+              </Select.Content>
+            </Select.Root>
+
+            <Select.Root type="single" bind:value={sortOrder}>
+              <Select.Trigger class="flex-1 bg-card text-card-foreground">
+                {sortOrder === "asc" ? "Ascending" : "Descending"}
+              </Select.Trigger>
+              <Select.Content class="bg-card">
+                <Select.Item
+                  value="asc"
+                  label="Ascending"
+                  class="text-card-foreground">Ascending</Select.Item
+                >
+                <Select.Item
+                  value="desc"
+                  label="Descending"
+                  class="text-card-foreground">Descending</Select.Item
+                >
+              </Select.Content>
+            </Select.Root>
+          </div>
+
+          <!-- row 2 on mobile: per page -->
+          <div class="flex flex-1 gap-2">
+            <Select.Root
+              type="single"
+              value={perPage.toString()}
+              onValueChange={(v) => {
+                const n = parseInt(v, 10);
+                if (!isNaN(n)) {
+                  perPage = n;
+                  _perPageStore.save(n);
+                }
+              }}
+            >
+              <Select.Trigger class="flex-1 bg-card text-card-foreground">
+                {perPage} / page
+              </Select.Trigger>
+              <Select.Content class="bg-card">
+                {#each PER_PAGE_OPTIONS as opt}
+                  <Select.Item
+                    value={opt.toString()}
+                    label={`${opt} / page`}
+                    class="text-card-foreground"
+                  >
+                    {opt} / page
+                  </Select.Item>
+                {/each}
+              </Select.Content>
+            </Select.Root>
+            <div class="flex-1"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- bulk action bar -->
+      {#if canBulkSelect && selectedIds.size > 0}
+        <div
+          class="flex items-center justify-between gap-4 px-4 py-3 bg-primary/10 border border-primary/30
+        rounded-lg"
+        >
+          <span class="text-sm text-foreground font-medium">
+            {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""} selected
+            <span class="text-muted-foreground font-normal">
+              - {formatFileSize(selectedTotalBytes)}
+            </span>
+          </span>
+          <div class="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
+              onclick={() => (selectedIds = new Set())}
+            >
+              Clear
+            </Button>
+            {#if isAdmin}
+              <!-- protect -->
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    size="sm"
+                    class="cursor-pointer"
+                    onclick={() => (bulkDialogOpen = true)}
+                  >
+                    <Shield class="size-4" />
+                    Protect {selectedIds.size}
+                  </Button>
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Protect</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+
+            <!-- move -->
+            {#if moveEnabled}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    size="sm"
+                    class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
+                    onclick={() => (bulkMoveDialogOpen = true)}
+                  >
+                    <FolderOutput class="size-4" />
+                    Move {selectedIds.size}
+                  </Button>
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Move to destination folder</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+
+            <!-- delete -->
+            {#if canDelete}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button
+                    size="sm"
+                    class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
+                    onclick={() => (bulkDeleteDialogOpen = true)}
+                  >
+                    <Trash2 class="size-4" />
+                    Delete {selectedIds.size}
+                  </Button>
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>Delete</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- error box -->
+      <ErrorBox {error} />
+
+      <div class="bg-card rounded-lg border border-border overflow-x-auto">
+        {#if loading}
+          <div class="p-8 text-center text-muted-foreground">
+            <div
+              class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
+            border-r-transparent"
+            ></div>
+            <p class="mt-4">Loading candidates...</p>
+          </div>
+        {:else if entries.length === 0}
+          <div class="p-8 text-center text-muted-foreground">
+            No reclaim candidates found.
+          </div>
+        {:else if activeTab === MediaType.Movie}
+          <MovieCandidatesView
+            rows={movieRows}
+            {canBulkSelect}
+            {canDelete}
+            {selectedIds}
+            {expandedGroups}
+            {allPageSelected}
+            {toggleSelect}
+            {toggleSelectAll}
+            toggleGroupSelect={toggleMovieGroupSelect}
+            isGroupAllSelected={isMovieGroupAllSelected}
+            isGroupPartialSelected={isMovieGroupPartialSelected}
+            {toggleExpand}
+            {openSingleRequest}
+            {openSingleDelete}
+            {openSingleMove}
+            {moveEnabled}
+            {formatDate}
+            groupTotalBytes={movieGroupTotalBytes}
+          />
+        {:else}
+          <SeriesCandidatesView
+            rows={seriesRows}
+            {canBulkSelect}
+            {canDelete}
+            {selectedIds}
+            {expandedGroups}
+            {allPageSelected}
+            {toggleSelect}
+            {toggleSelectAll}
+            toggleGroupSelect={toggleSeriesGroupSelect}
+            isGroupAllSelected={isSeriesGroupAllSelected}
+            isGroupPartialSelected={isSeriesGroupPartialSelected}
+            {toggleExpand}
+            {openSingleRequest}
+            {openSingleDelete}
+            {openSingleMove}
+            {moveEnabled}
+            {formatDate}
+            groupTotalBytes={seriesGroupTotalBytes}
+          />
+        {/if}
+      </div>
+
+      {#if !loading && entries.length !== 0 && data && data.total_pages > 1}
+        <div
+          class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+        >
+          <p class="text-sm text-muted-foreground">
+            Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
+              data.page * data.per_page,
+              data.total,
+            )} of {data.total} candidates
+          </p>
+          <CompactPagination
+            currentPage={data.page}
+            totalPages={data.total_pages}
+            maxVisiblePages={3}
+            onPageChange={loadCandidates}
+          />
+        </div>
+      {/if}
+    {:else}
+      <!-- history view -->
+      <div class="flex flex-col sm:flex-row gap-2">
+        <div class="relative flex-1">
+          <Search
+            class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
+          />
+          <Input
+            type="text"
+            placeholder="Search by title"
+            value={historySearch}
+            oninput={handleHistorySearch}
+            class="pl-10 bg-card"
+          />
+        </div>
+        <div class="flex gap-2">
           <Select.Root
             type="single"
-            value={perPage.toString()}
+            value={historyMediaType}
+            onValueChange={(v) => {
+              historyMediaType = v;
+            }}
+          >
+            <Select.Trigger class="w-36 bg-card text-card-foreground">
+              {historyMediaType === "all"
+                ? "All Types"
+                : historyMediaType === MediaType.Movie
+                  ? "Movies"
+                  : "Series"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="all"
+                label="All Types"
+                class="text-card-foreground">All Types</Select.Item
+              >
+              <Select.Item
+                value={MediaType.Movie}
+                label="Movies"
+                class="text-card-foreground">Movies</Select.Item
+              >
+              <Select.Item
+                value={MediaType.Series}
+                label="Series"
+                class="text-card-foreground">Series</Select.Item
+              >
+            </Select.Content>
+          </Select.Root>
+
+          <Select.Root
+            type="single"
+            value={historySortOrder}
+            onValueChange={(v) => {
+              historySortOrder = v as "asc" | "desc";
+            }}
+          >
+            <Select.Trigger class="w-32 bg-card text-card-foreground">
+              {historySortOrder === "asc" ? "Oldest first" : "Newest first"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="desc"
+                label="Newest first"
+                class="text-card-foreground">Newest first</Select.Item
+              >
+              <Select.Item
+                value="asc"
+                label="Oldest first"
+                class="text-card-foreground">Oldest first</Select.Item
+              >
+            </Select.Content>
+          </Select.Root>
+
+          <Select.Root
+            type="single"
+            value={historyPerPage.toString()}
             onValueChange={(v) => {
               const n = parseInt(v, 10);
               if (!isNaN(n)) {
-                perPage = n;
-                _perPageStore.save(n);
+                historyPerPage = n;
+                _historyPerPageStore.save(n);
               }
             }}
           >
-            <Select.Trigger class="flex-1 bg-card text-card-foreground">
-              {perPage} / page
+            <Select.Trigger class="w-28 bg-card text-card-foreground">
+              {historyPerPage} / page
             </Select.Trigger>
             <Select.Content class="bg-card">
               {#each PER_PAGE_OPTIONS as opt}
@@ -1099,361 +1399,102 @@
               {/each}
             </Select.Content>
           </Select.Root>
-          <div class="flex-1"></div>
         </div>
       </div>
-    </div>
 
-    <!-- bulk action bar -->
-    {#if canBulkSelect && selectedIds.size > 0}
-      <div
-        class="flex items-center justify-between gap-4 px-4 py-3 bg-primary/10 border border-primary/30
-        rounded-lg"
-      >
-        <span class="text-sm text-foreground font-medium">
-          {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""} selected
-          <span class="text-muted-foreground font-normal">
-            - {formatFileSize(selectedTotalBytes)}
-          </span>
-        </span>
-        <div class="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
-            onclick={() => (selectedIds = new Set())}
-          >
-            Clear
-          </Button>
-          {#if isAdmin}
-            <!-- protect -->
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                <Button
-                  size="sm"
-                  class="cursor-pointer"
-                  onclick={() => (bulkDialogOpen = true)}
-                >
-                  <Shield class="size-4" />
-                  Protect {selectedIds.size}
-                </Button>
-              </Tooltip.Trigger>
-              <Tooltip.Content>
-                <p>Protect</p>
-              </Tooltip.Content>
-            </Tooltip.Root>
-          {/if}
+      <ErrorBox error={historyError} />
 
-          <!-- move -->
-          {#if moveEnabled}
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                <Button
-                  size="sm"
-                  class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
-                  onclick={() => (bulkMoveDialogOpen = true)}
-                >
-                  <FolderOutput class="size-4" />
-                  Move {selectedIds.size}
-                </Button>
-              </Tooltip.Trigger>
-              <Tooltip.Content>
-                <p>Move to destination folder</p>
-              </Tooltip.Content>
-            </Tooltip.Root>
-          {/if}
-
-          <!-- delete -->
-          {#if canDelete}
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                <Button
-                  size="sm"
-                  class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
-                  onclick={() => (bulkDeleteDialogOpen = true)}
-                >
-                  <Trash2 class="size-4" />
-                  Delete {selectedIds.size}
-                </Button>
-              </Tooltip.Trigger>
-              <Tooltip.Content>
-                <p>Delete</p>
-              </Tooltip.Content>
-            </Tooltip.Root>
-          {/if}
-        </div>
-      </div>
-    {/if}
-
-    <!-- error box -->
-    <ErrorBox {error} />
-
-    <div class="bg-card rounded-lg border border-border overflow-x-auto">
-      {#if loading}
-        <div class="p-8 text-center text-muted-foreground">
-          <div
-            class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
+      <div class="bg-card rounded-lg border border-border overflow-x-auto">
+        {#if historyLoading}
+          <div class="p-8 text-center text-muted-foreground">
+            <div
+              class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
             border-r-transparent"
-          ></div>
-          <p class="mt-4">Loading candidates...</p>
-        </div>
-      {:else if entries.length === 0}
-        <div class="p-8 text-center text-muted-foreground">
-          No reclaim candidates found.
-        </div>
-      {:else if activeTab === MediaType.Movie}
-        <MovieCandidatesView
-          rows={movieRows}
-          {canBulkSelect}
-          {canDelete}
-          {selectedIds}
-          {expandedGroups}
-          {allPageSelected}
-          {toggleSelect}
-          {toggleSelectAll}
-          toggleGroupSelect={toggleMovieGroupSelect}
-          isGroupAllSelected={isMovieGroupAllSelected}
-          isGroupPartialSelected={isMovieGroupPartialSelected}
-          {toggleExpand}
-          {openSingleRequest}
-          {openSingleDelete}
-          {openSingleMove}
-          {moveEnabled}
-          {formatDate}
-          groupTotalBytes={movieGroupTotalBytes}
-        />
-      {:else}
-        <SeriesCandidatesView
-          rows={seriesRows}
-          {canBulkSelect}
-          {canDelete}
-          {selectedIds}
-          {expandedGroups}
-          {allPageSelected}
-          {toggleSelect}
-          {toggleSelectAll}
-          toggleGroupSelect={toggleSeriesGroupSelect}
-          isGroupAllSelected={isSeriesGroupAllSelected}
-          isGroupPartialSelected={isSeriesGroupPartialSelected}
-          {toggleExpand}
-          {openSingleRequest}
-          {openSingleDelete}
-          {openSingleMove}
-          {moveEnabled}
-          {formatDate}
-          groupTotalBytes={seriesGroupTotalBytes}
-        />
-      {/if}
-    </div>
-
-    {#if !loading && entries.length !== 0 && data && data.total_pages > 1}
-      <div
-        class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
-      >
-        <p class="text-sm text-muted-foreground">
-          Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
-            data.page * data.per_page,
-            data.total,
-          )} of {data.total} candidates
-        </p>
-        <CompactPagination
-          currentPage={data.page}
-          totalPages={data.total_pages}
-          maxVisiblePages={3}
-          onPageChange={loadCandidates}
-        />
-      </div>
-    {/if}
-  {:else}
-    <!-- history view -->
-    <div class="flex flex-col sm:flex-row gap-2">
-      <div class="relative flex-1">
-        <Search
-          class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground"
-        />
-        <Input
-          type="text"
-          placeholder="Search by title"
-          value={historySearch}
-          oninput={handleHistorySearch}
-          class="pl-10 bg-card"
-        />
-      </div>
-      <div class="flex gap-2">
-        <Select.Root
-          type="single"
-          value={historyMediaType}
-          onValueChange={(v) => {
-            historyMediaType = v;
-          }}
-        >
-          <Select.Trigger class="w-36 bg-card text-card-foreground">
-            {historyMediaType === "all"
-              ? "All Types"
-              : historyMediaType === MediaType.Movie
-                ? "Movies"
-                : "Series"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="all"
-              label="All Types"
-              class="text-card-foreground">All Types</Select.Item
-            >
-            <Select.Item
-              value={MediaType.Movie}
-              label="Movies"
-              class="text-card-foreground">Movies</Select.Item
-            >
-            <Select.Item
-              value={MediaType.Series}
-              label="Series"
-              class="text-card-foreground">Series</Select.Item
-            >
-          </Select.Content>
-        </Select.Root>
-
-        <Select.Root
-          type="single"
-          value={historySortOrder}
-          onValueChange={(v) => {
-            historySortOrder = v as "asc" | "desc";
-          }}
-        >
-          <Select.Trigger class="w-32 bg-card text-card-foreground">
-            {historySortOrder === "asc" ? "Oldest first" : "Newest first"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="desc"
-              label="Newest first"
-              class="text-card-foreground">Newest first</Select.Item
-            >
-            <Select.Item
-              value="asc"
-              label="Oldest first"
-              class="text-card-foreground">Oldest first</Select.Item
-            >
-          </Select.Content>
-        </Select.Root>
-
-        <Select.Root
-          type="single"
-          value={historyPerPage.toString()}
-          onValueChange={(v) => {
-            const n = parseInt(v, 10);
-            if (!isNaN(n)) {
-              historyPerPage = n;
-              _historyPerPageStore.save(n);
-            }
-          }}
-        >
-          <Select.Trigger class="w-28 bg-card text-card-foreground">
-            {historyPerPage} / page
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            {#each PER_PAGE_OPTIONS as opt}
-              <Select.Item
-                value={opt.toString()}
-                label={`${opt} / page`}
-                class="text-card-foreground"
-              >
-                {opt} / page
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-      </div>
-    </div>
-
-    <ErrorBox error={historyError} />
-
-    <div class="bg-card rounded-lg border border-border overflow-x-auto">
-      {#if historyLoading}
-        <div class="p-8 text-center text-muted-foreground">
-          <div
-            class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary
-            border-r-transparent"
-          ></div>
-          <p class="mt-4">Loading history...</p>
-        </div>
-      {:else if !historyData || historyData.items.length === 0}
-        <div class="p-8 text-center text-muted-foreground">
-          No reclaim history found.
-        </div>
-      {:else}
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-border text-muted-foreground text-left">
-              <th class="px-4 py-3 font-medium">Title</th>
-              <th class="px-4 py-3 font-medium">Type</th>
-              <th class="px-4 py-3 font-medium">Action</th>
-              <th class="px-4 py-3 font-medium">Size</th>
-              <th class="px-4 py-3 font-medium">Deleted By</th>
-              <th class="px-4 py-3 font-medium">Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each historyData.items as entry (entry.id)}
+            ></div>
+            <p class="mt-4">Loading history...</p>
+          </div>
+        {:else if !historyData || historyData.items.length === 0}
+          <div class="p-8 text-center text-muted-foreground">
+            No reclaim history found.
+          </div>
+        {:else}
+          <table class="w-full text-sm">
+            <thead>
               <tr
-                class="border-b border-border last:border-0 hover:bg-muted/30"
+                class="border-b border-border text-muted-foreground text-left"
               >
-                <td class="px-4 py-3 text-foreground">
-                  {entry.name ?? "Unknown"}
-                </td>
-                <td class="px-4 py-3">
-                  <span
-                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
-                    {entry.media_type === MediaType.Movie
-                      ? 'bg-blue-500/15 text-blue-400'
-                      : 'bg-purple-500/15 text-purple-400'}"
-                  >
-                    {entry.media_type === MediaType.Movie ? "Movie" : "Series"}
-                  </span>
-                </td>
-                <td class="px-4 py-3">
-                  <span
-                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
-                    {entry.action === 'moved'
-                      ? 'bg-amber-500/15 text-amber-400'
-                      : 'bg-red-500/15 text-red-400'}"
-                  >
-                    {entry.action === "moved" ? "Moved" : "Deleted"}
-                  </span>
-                </td>
-                <td class="px-4 py-3 text-muted-foreground">
-                  {entry.size != null ? formatFileSize(entry.size) : "-"}
-                </td>
-                <td class="px-4 py-3 text-muted-foreground">
-                  {entry.approved_by}
-                </td>
-                <td class="px-4 py-3 text-muted-foreground">
-                  {formatDate(entry.created_at)}
-                </td>
+                <th class="px-4 py-3 font-medium">Title</th>
+                <th class="px-4 py-3 font-medium">Type</th>
+                <th class="px-4 py-3 font-medium">Action</th>
+                <th class="px-4 py-3 font-medium">Size</th>
+                <th class="px-4 py-3 font-medium">Deleted By</th>
+                <th class="px-4 py-3 font-medium">Date</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </div>
-
-    {#if !historyLoading && historyData && historyData.total_pages > 1}
-      <div
-        class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
-      >
-        <p class="text-sm text-muted-foreground">
-          Showing {(historyData.page - 1) * historyData.per_page + 1} to {Math.min(
-            historyData.page * historyData.per_page,
-            historyData.total,
-          )} of {historyData.total} records
-        </p>
-        <CompactPagination
-          currentPage={historyData.page}
-          totalPages={historyData.total_pages}
-          maxVisiblePages={3}
-          onPageChange={loadHistory}
-        />
+            </thead>
+            <tbody>
+              {#each historyData.items as entry (entry.id)}
+                <tr
+                  class="border-b border-border last:border-0 hover:bg-muted/30"
+                >
+                  <td class="px-4 py-3 text-foreground">
+                    {entry.name ?? "Unknown"}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                    {entry.media_type === MediaType.Movie
+                        ? 'bg-blue-500/15 text-blue-400'
+                        : 'bg-purple-500/15 text-purple-400'}"
+                    >
+                      {entry.media_type === MediaType.Movie
+                        ? "Movie"
+                        : "Series"}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                    {entry.action === 'moved'
+                        ? 'bg-amber-500/15 text-amber-400'
+                        : 'bg-red-500/15 text-red-400'}"
+                    >
+                      {entry.action === "moved" ? "Moved" : "Deleted"}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-muted-foreground">
+                    {entry.size != null ? formatFileSize(entry.size) : "-"}
+                  </td>
+                  <td class="px-4 py-3 text-muted-foreground">
+                    {entry.approved_by}
+                  </td>
+                  <td class="px-4 py-3 text-muted-foreground">
+                    {formatDate(entry.created_at)}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
       </div>
+
+      {#if !historyLoading && historyData && historyData.total_pages > 1}
+        <div
+          class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+        >
+          <p class="text-sm text-muted-foreground">
+            Showing {(historyData.page - 1) * historyData.per_page + 1} to {Math.min(
+              historyData.page * historyData.per_page,
+              historyData.total,
+            )} of {historyData.total} records
+          </p>
+          <CompactPagination
+            currentPage={historyData.page}
+            totalPages={historyData.total_pages}
+            maxVisiblePages={3}
+            onPageChange={loadHistory}
+          />
+        </div>
+      {/if}
     {/if}
-  {/if}
+  </div>
 </div>

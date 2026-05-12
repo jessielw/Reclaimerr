@@ -724,7 +724,7 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<div class="px-2.5 md:px-8 pt-6 pb-2.5 md:pb-8">
+<div class="px-2.5 md:px-8 pb-2.5 md:pb-8 pt-4 md:pt-4">
   <div class="max-w-7xl mx-auto space-y-6">
     <!-- filter controls -->
     <RequestsFilterBar bind:searchQuery bind:statusFilter bind:sortOrder />

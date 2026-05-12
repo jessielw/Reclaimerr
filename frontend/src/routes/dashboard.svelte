@@ -205,9 +205,9 @@
 </script>
 
 <div class="p-2.5 md:p-8">
-  <div class="max-w-7xl mx-auto">
-    <div class="mb-8">
-      <h1 class="text-3xl font-bold text-foreground mb-2">Dashboard</h1>
+  <div class="max-w-7xl mx-auto space-y-4">
+    <div>
+      <h1 class="text-3xl font-bold text-foreground">Dashboard</h1>
       <p class="text-muted-foreground">
         Overview of your media library cleanup status
       </p>

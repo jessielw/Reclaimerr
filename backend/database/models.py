@@ -190,6 +190,11 @@ class GeneralSettings(Base):
         String(1024), default=None
     )
 
+    # deletion routing
+    media_server_fallback_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True
+    )
+
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -609,6 +614,7 @@ class MovieArrRef(Base):
         ForeignKey("service_configs.id"), index=True
     )
     arr_movie_id: Mapped[int] = mapped_column(Integer)
+    arr_movie_path: Mapped[str | None] = mapped_column(String(2048), default=None)
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -635,6 +641,7 @@ class SeriesArrRef(Base):
         ForeignKey("service_configs.id"), index=True
     )
     arr_series_id: Mapped[int] = mapped_column(Integer)
+    arr_series_path: Mapped[str | None] = mapped_column(String(2048), default=None)
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import delete as sql_delete
@@ -1189,6 +1190,11 @@ async def sync_movies(
             if not radarr_clients and service_manager.radarr:
                 radarr_clients = {0: service_manager.radarr}
             if radarr_clients:
+                # purge legacy rows written before multi-arr support (service_config_id=0)
+                await session.execute(
+                    sql_delete(MovieArrRef).where(MovieArrRef.service_config_id == 0)
+                )
+
                 movie_rows = await session.execute(
                     select(Movie.id, Movie.tmdb_id).where(Movie.removed_at.is_(None))
                 )
@@ -1213,11 +1219,17 @@ async def sync_movies(
                         movie_id = movie_id_by_tmdb.get(arr_movie.tmdb_id)
                         if movie_id is None:
                             continue
+                        arr_path = (
+                            str(PurePosixPath(normalize_fpath(arr_movie.path)))
+                            if arr_movie.path
+                            else None
+                        )
                         session.add(
                             MovieArrRef(
                                 movie_id=movie_id,
                                 service_config_id=config_id,
                                 arr_movie_id=arr_movie.id,
+                                arr_movie_path=arr_path,
                                 tmdb_id=arr_movie.tmdb_id,
                             )
                         )
@@ -1510,6 +1522,11 @@ async def sync_series(
             if not sonarr_clients and service_manager.sonarr:
                 sonarr_clients = {0: service_manager.sonarr}
             if sonarr_clients:
+                # purge legacy rows written before multi-arr support (service_config_id=0)
+                await session.execute(
+                    sql_delete(SeriesArrRef).where(SeriesArrRef.service_config_id == 0)
+                )
+
                 series_rows = await session.execute(
                     select(Series.id, Series.tmdb_id).where(Series.removed_at.is_(None))
                 )
@@ -1534,11 +1551,17 @@ async def sync_series(
                         series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
                         if series_id is None:
                             continue
+                        arr_path = (
+                            str(PurePosixPath(normalize_fpath(arr_series.path)))
+                            if arr_series.path
+                            else None
+                        )
                         session.add(
                             SeriesArrRef(
                                 series_id=series_id,
                                 service_config_id=config_id,
                                 arr_series_id=arr_series.id,
+                                arr_series_path=arr_path,
                                 tmdb_id=arr_series.tmdb_id,
                             )
                         )

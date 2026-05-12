@@ -295,13 +295,7 @@ class SonarrClient:
         delete_files: bool = True,
         add_import_exclusion: bool = False,
     ) -> None:
-        """Delete multiple series at once.
-
-        Args:
-            series_ids: List of series IDs to delete
-            delete_files: Whether to delete series files from disk
-            add_import_exclusion: Whether to add to import exclusion list
-        """
+        """Delete multiple series at once."""
         status_code, _ = await self._make_request(
             "DELETE",
             "series/editor",
@@ -316,6 +310,17 @@ class SonarrClient:
             raise ValueError(
                 f"Failed to delete series {series_ids} (status: {status_code})"
             )
+
+    async def unmonitor_series(self, series_ids: list[int]) -> None:
+        """Set multiple series to unmonitored so Sonarr won't queue re-downloads."""
+        if not series_ids:
+            return
+        await self._make_request(
+            "PUT",
+            "series/editor",
+            json={"seriesIds": series_ids, "monitored": False},
+            timeout=60,
+        )
 
     async def update_season_monitoring(
         self,

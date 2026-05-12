@@ -249,12 +249,7 @@ class RadarrClient:
         movie_ids: list[int],
         delete_files: bool = True,
     ) -> None:
-        """Delete multiple movies at once.
-
-        Args:
-            movie_ids: List of movie IDs to delete
-            delete_files: Whether to delete the movie files from disk
-        """
+        """Delete multiple movies at once."""
         status_code, _ = await self._make_request(
             "DELETE",
             "movie/editor",
@@ -267,6 +262,16 @@ class RadarrClient:
             raise ValueError(
                 f"Failed to delete movies {movie_ids} (status: {status_code})"
             )
+
+    async def unmonitor_movies(self, movie_ids: list[int]) -> None:
+        """Set multiple movies to unmonitored so Radarr won't queue re-downloads."""
+        if not movie_ids:
+            return
+        await self._make_request(
+            "PUT",
+            "movie/editor",
+            json={"movieIds": movie_ids, "monitored": False},
+        )
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
