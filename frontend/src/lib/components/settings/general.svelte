@@ -50,6 +50,7 @@
   let moveEnabled = $state(false);
   let moveDestinationMovies = $state("");
   let moveDestinationSeries = $state("");
+  let mediaServerFallbackEnabled = $state(true);
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   let testingWebhookIndex = $state<number | null>(null);
@@ -112,6 +113,7 @@
         move_enabled: moveEnabled,
         move_destination_movies: moveDestinationMovies,
         move_destination_series: moveDestinationSeries,
+        media_server_fallback_enabled: mediaServerFallbackEnabled,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -314,6 +316,8 @@
         moveEnabled = settings.move_enabled ?? false;
         moveDestinationMovies = settings.move_destination_movies ?? "";
         moveDestinationSeries = settings.move_destination_series ?? "";
+        mediaServerFallbackEnabled =
+          settings.media_server_fallback_enabled ?? true;
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -935,6 +939,25 @@
           Local paths where reclaimed files will be placed.
         </p>
       {/if}
+    </div>
+
+    <!-- media server fallback deletion -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-semibold text-foreground">
+          Allow Media Server Fallback Deletion
+        </h3>
+        <Switch
+          id="mediaServerFallbackEnabled"
+          bind:checked={mediaServerFallbackEnabled}
+        />
+      </div>
+      <p class="text-muted-foreground text-sm">
+        When Radarr/Sonarr cannot handle a deletion (e.g. a partial version
+        deletion, or the item is not tracked in any arr instance), fall back to
+        deleting via the media server (Jellyfin/Emby/Plex) directly. Disable
+        this if your media server has read only file access.
+      </p>
     </div>
 
     <!-- shutdown (desktop mode / admin only) -->

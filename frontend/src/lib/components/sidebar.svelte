@@ -1,5 +1,4 @@
 ﻿<script lang="ts">
-  import { onMount } from "svelte";
   import { link, location } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
@@ -95,12 +94,11 @@
   let logoutHovered = $state(false);
   let menuOpen = $state(false);
   let hiddenPaths = $state<string[]>([]);
+  let hydratedStorageKey = $state<string | null>(null);
 
-  const hiddenNavStore = createFilterState<string[]>(
-    "sidebar_hidden_paths",
-    [],
-  );
+  const SIDEBAR_HIDDEN_PATHS_KEY = "sidebar_hidden_paths";
   const lockedNavPaths = new Set(["/settings"]);
+  const allNavPaths = new Set(navItems.map((item) => item.path));
 
   const visibleNavItems = $derived(
     navItems.filter(
@@ -112,6 +110,15 @@
   const customizableNavItems = $derived(
     navItems.filter((item) => !lockedNavPaths.has(item.path)),
   );
+  const storageKey = $derived.by(() => {
+    const userId = $auth.user?.id;
+    const username = $auth.user?.username?.trim();
+    if (typeof userId === "number")
+      return `${SIDEBAR_HIDDEN_PATHS_KEY}:${userId}`;
+    if (username)
+      return `${SIDEBAR_HIDDEN_PATHS_KEY}:user:${username.toLowerCase()}`;
+    return `${SIDEBAR_HIDDEN_PATHS_KEY}:anon`;
+  });
 
   // function to check if a nav item is active
   const isActive = (path: string): boolean => {
@@ -138,13 +145,33 @@
     hiddenPaths = [];
   };
 
+  // ensure stored hidden paths are valid and normalized
+  const normalizeHiddenPaths = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    const valid = new Set<string>();
+    for (const path of value) {
+      if (typeof path !== "string") continue;
+      if (lockedNavPaths.has(path)) continue;
+      if (!allNavPaths.has(path)) continue;
+      valid.add(path);
+    }
+    return [...valid];
+  };
+
+  // persist hidden paths to storage whenever they change
   $effect(() => {
-    hiddenNavStore.save(hiddenPaths);
+    const key = storageKey;
+    if (hydratedStorageKey !== key) return;
+    const scopedStore = createFilterState<string[]>(key, []);
+    scopedStore.save(normalizeHiddenPaths(hiddenPaths));
   });
 
-  onMount(() => {
-    const stored = hiddenNavStore.getInitial();
-    hiddenPaths = Array.isArray(stored) ? stored : [];
+  // on component mount, load hidden paths from storage
+  $effect(() => {
+    const key = storageKey;
+    const scopedStore = createFilterState<string[]>(key, []);
+    hiddenPaths = normalizeHiddenPaths(scopedStore.getInitial());
+    hydratedStorageKey = key;
   });
 </script>
 
