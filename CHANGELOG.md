@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add +2 pixels to top margin for all routes in mobile
 - Nav bar customizations are now saved per user at the browser level (in case multiple users was to use the same browser)
+- Improve arr instance handing and set tag to Disabled by default
 
 ### Fixed
 

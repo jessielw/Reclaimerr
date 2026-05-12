@@ -94,10 +94,21 @@
     initial.targetScope,
   );
   let definition = $state<RuleDefinition>(initial.definition);
-  let tagEnabled = $state(initial.action?.tag_enabled ?? true);
+  let tagEnabled = $state(initial.action?.tag_enabled ?? false);
   let arrTag = $state(initial.action?.arr_tag ?? "");
-  let arrAction = $state<"delete" | "unmonitor">(
-    initial.action?.arr_action ?? "delete",
+
+  let radarrArrAction = $state<"delete" | "unmonitor">(
+    initial.targetScope === "movie_version"
+      ? (initial.action?.arr_action ?? "delete")
+      : "delete",
+  );
+  let sonarrArrAction = $state<"delete" | "unmonitor">(
+    initial.targetScope !== "movie_version"
+      ? (initial.action?.arr_action ?? "delete")
+      : "delete",
+  );
+  const arrAction = $derived(
+    targetScope === "movie_version" ? radarrArrAction : sonarrArrAction,
   );
   let radarrServiceConfigId = $state<number | null>(
     initial.action?.radarr_service_config_id ?? null,
@@ -734,7 +745,19 @@
       <!-- target -->
       <div class="space-y-2 w-full">
         <Label class="text-sm font-medium text-foreground">Target</Label>
-        <Select.Root type="single" bind:value={targetScope}>
+        <Select.Root
+          type="single"
+          value={targetScope}
+          onValueChange={(value) => {
+            if (
+              value === "movie_version" ||
+              value === "series" ||
+              value === "season"
+            ) {
+              targetScope = value;
+            }
+          }}
+        >
           <Select.Trigger
             class="w-full flex-10 bg-card text-card-foreground cursor-pointer"
           >
@@ -846,122 +869,100 @@
     </div>
   </div>
 
-  <div class="rounded-lg border border-border bg-card p-5">
-    <div class="flex items-center justify-between gap-3">
-      <div class="w-full">
-        <div class="flex justify-between w-full">
-          <h3 class="font-semibold text-foreground flex items-center gap-2">
-            {#if selectedArrName === "Radarr"}
-              <RadarrSVG class="size-4 inline" /> {selectedArrName}
-            {:else if selectedArrName === "Sonarr"}
-              <SonarrSVG class="size-4 inline" /> {selectedArrName}
-            {/if}
-          </h3>
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-medium text-foreground">Enabled</span>
-            <Switch
-              checked={tagEnabled}
-              onCheckedChange={(value) => (tagEnabled = value)}
-            />
-          </div>
-        </div>
-        <p class="mt-1 mb-3 text-sm text-muted-foreground">
-          Matching items become cleanup candidates and can be tagged in {selectedArrName}.
-        </p>
-      </div>
+  <div class="rounded-lg border border-border bg-card p-5 space-y-4">
+    <div>
+      <h3 class="font-semibold text-foreground flex items-center gap-2">
+        {#if selectedArrName === "Radarr"}
+          <RadarrSVG class="size-4 inline" /> Radarr Configuration
+        {:else if selectedArrName === "Sonarr"}
+          <SonarrSVG class="size-4 inline" /> Sonarr Configuration
+        {/if}
+      </h3>
+      <p class="mt-1 text-sm text-muted-foreground">
+        Select a {selectedArrName} instance to enable routing and actions for matched
+        items.
+      </p>
     </div>
 
-    {#if tagEnabled}
-      <div class="flex flex-col md:flex-row space-x-2 space-y-2">
-        <div class="space-y-2 w-full">
-          <Label class="space-y-2">
-            <span class="text-sm font-medium text-foreground">
-              {`${selectedArrName} Instance`}
-            </span>
-          </Label>
+    <!-- instance -->
+    <div class="space-y-2">
+      <Label class="text-sm font-medium text-foreground"
+        >{selectedArrName} Instance</Label
+      >
+      <Select.Root
+        type="single"
+        value={targetScope === "movie_version"
+          ? radarrServiceConfigId !== null
+            ? String(radarrServiceConfigId)
+            : undefined
+          : sonarrServiceConfigId !== null
+            ? String(sonarrServiceConfigId)
+            : undefined}
+        onValueChange={(value) => {
+          const nextValue = value ? Number(value) : null;
+          if (targetScope === "movie_version") {
+            radarrServiceConfigId = nextValue;
+          } else {
+            sonarrServiceConfigId = nextValue;
+          }
+        }}
+      >
+        <Select.Trigger
+          class="w-full bg-card text-card-foreground cursor-pointer"
+        >
+          {#if selectedArrInstanceName}
+            {selectedArrInstanceName}
+          {:else}
+            No instance selected
+          {/if}
+        </Select.Trigger>
+        <Select.Content>
+          <Select.Item value="__none" disabled label="No instance selected">
+            No instance selected
+          </Select.Item>
+          {#each selectedArrInstances as instance}
+            <Select.Item
+              value={String(instance.id)}
+              label={`${instance.name}${instance.enabled ? "" : " (disabled)"}`}
+            >
+              {instance.name}{instance.enabled ? "" : " (disabled)"}
+            </Select.Item>
+          {/each}
+        </Select.Content>
+      </Select.Root>
+    </div>
+
+    {#if (targetScope === "movie_version" && radarrServiceConfigId !== null) || (targetScope !== "movie_version" && sonarrServiceConfigId !== null)}
+      <!-- action: keyed on active instance so UI re-initializes when instance changes -->
+      <div class="space-y-2">
+        <Label class="text-sm font-medium text-foreground">Action</Label>
+        {#key `${targetScope}-${targetScope === "movie_version" ? radarrServiceConfigId : sonarrServiceConfigId}`}
           <Select.Root
             type="single"
-            value={targetScope === "movie_version"
-              ? radarrServiceConfigId !== null
-                ? String(radarrServiceConfigId)
-                : undefined
-              : sonarrServiceConfigId !== null
-                ? String(sonarrServiceConfigId)
-                : undefined}
+            value={arrAction}
             onValueChange={(value) => {
-              const nextValue = value ? Number(value) : null;
-              if (targetScope === "movie_version") {
-                radarrServiceConfigId = nextValue;
-              } else {
-                sonarrServiceConfigId = nextValue;
+              if (value === "delete" || value === "unmonitor") {
+                if (targetScope === "movie_version") {
+                  radarrArrAction = value;
+                } else {
+                  sonarrArrAction = value;
+                }
               }
             }}
           >
             <Select.Trigger
-              class="w-full flex-10 bg-card text-card-foreground cursor-pointer"
+              class="w-full bg-card text-card-foreground cursor-pointer"
             >
-              {#if selectedArrInstanceName}
-                {selectedArrInstanceName}
-              {:else}
-                No instance selected
-              {/if}
+              {arrAction === "unmonitor" ? "Unmonitor + Delete File" : "Delete"}
             </Select.Trigger>
             <Select.Content>
-              <Select.Item value="__none" disabled label="No instance selected">
-                No instance selected
+              <Select.Item value="delete" label="Delete">Delete</Select.Item>
+              <Select.Item value="unmonitor" label="Unmonitor + Delete File">
+                Unmonitor + Delete File
               </Select.Item>
-              {#each selectedArrInstances as instance}
-                <Select.Item
-                  value={String(instance.id)}
-                  label={`${instance.name}${instance.enabled ? "" : " (disabled)"}`}
-                >
-                  {instance.name}{instance.enabled ? "" : " (disabled)"}
-                </Select.Item>
-              {/each}
             </Select.Content>
           </Select.Root>
-        </div>
-
-        <div class="space-y-2 w-full">
-          <Label class="text-sm font-medium text-foreground">Managed Tag</Label>
-          <Input
-            class="input-hover-el text-foreground"
-            bind:value={arrTag}
-            placeholder="rec-custom-tag"
-            max={25}
-            oninput={handleTagInput}
-          />
-          <p class="text-xs text-muted-foreground">
-            Will be saved as {normalizedTag}
-          </p>
-        </div>
-      </div>
-    {/if}
-
-    {#if (targetScope === "movie_version" && radarrServiceConfigId !== null) || (targetScope !== "movie_version" && sonarrServiceConfigId !== null)}
-      <div class="space-y-2 mt-3">
-        <Label class="text-sm font-medium text-foreground">Arr Action</Label>
-        <Select.Root
-          type="single"
-          value={arrAction}
-          onValueChange={(value) => {
-            if (value === "delete" || value === "unmonitor") {
-              arrAction = value;
-            }
-          }}
-        >
-          <Select.Trigger
-            class="w-full bg-card text-card-foreground cursor-pointer"
-          >
-            {arrAction === "unmonitor" ? "Unmonitor + Delete File" : "Delete"}
-          </Select.Trigger>
-          <Select.Content>
-            <Select.Item value="delete" label="Delete">Delete</Select.Item>
-            <Select.Item value="unmonitor" label="Unmonitor + Delete File">
-              Unmonitor + Delete File
-            </Select.Item>
-          </Select.Content>
-        </Select.Root>
+        {/key}
         {#if arrAction === "unmonitor"}
           <p class="text-xs text-muted-foreground">
             Files are deleted from disk but the entry remains in {selectedArrName}
@@ -969,8 +970,39 @@
           </p>
         {:else}
           <p class="text-xs text-muted-foreground">
-            Files and the {selectedArrName} entry are fully removed.
+            The {selectedArrName} entry and its files are fully removed.
           </p>
+        {/if}
+      </div>
+
+      <!-- managed tag toggle -->
+      <div class="space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-medium text-foreground">Managed Tag</p>
+            <p class="text-xs text-muted-foreground">
+              Apply a tag in {selectedArrName} to matched items.
+            </p>
+          </div>
+          <Switch
+            checked={tagEnabled}
+            onCheckedChange={(value) => (tagEnabled = value)}
+          />
+        </div>
+
+        {#if tagEnabled}
+          <div class="space-y-1">
+            <Input
+              class="input-hover-el text-foreground"
+              bind:value={arrTag}
+              placeholder="rec-custom-tag"
+              max={25}
+              oninput={handleTagInput}
+            />
+            <p class="text-xs text-muted-foreground">
+              Will be saved as {normalizedTag}
+            </p>
+          </div>
         {/if}
       </div>
     {/if}
