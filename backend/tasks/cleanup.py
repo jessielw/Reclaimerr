@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.logger import LOG
 from backend.core.rule_engine import (
+    TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
@@ -29,6 +30,7 @@ from backend.core.utils.filesystem import (
 from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
+    Episode,
     GeneralSettings,
     Movie,
     MovieArrRef,
@@ -70,6 +72,7 @@ async def collect_rule_preview_matches(
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
     season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
+    episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
     matches: list[MatchedCandidateRecord] = []
     if movie_rules:
@@ -78,6 +81,8 @@ async def collect_rule_preview_matches(
         matches.extend(await _collect_series_candidate_records(db, series_rules))
     if season_rules:
         matches.extend(await _collect_season_candidate_records(db, season_rules))
+    if episode_rules:
+        matches.extend(await _collect_episode_candidate_records(db, episode_rules))
     return matches
 
 
@@ -130,7 +135,9 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
         r for r in rules if normalize_rule_target(r) in {TARGET_MOVIE_VERSION}
     ]
     series_rules = [
-        r for r in rules if normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON}
+        r
+        for r in rules
+        if normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON, TARGET_EPISODE}
     ]
 
     movie_tag_labels = _collect_arr_tag_labels(movie_rules)
@@ -287,6 +294,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         ]
         series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
         season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
+        episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
         if not rules:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
@@ -350,6 +358,22 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.SERIES,
                     ReclaimCandidate.season_id.isnot(None),
+                    ReclaimCandidate.episode_id.is_(None),
+                )
+            )
+            candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await db.commit()
+
+        if episode_rules:
+            e_cr, e_up, e_rm = await _process_series_episodes(db, episode_rules)
+            candidates_created += e_cr
+            candidates_updated += e_up
+            candidates_removed += e_rm
+        else:
+            del_result = await db.execute(
+                delete(ReclaimCandidate).where(
+                    ReclaimCandidate.media_type == MediaType.SERIES,
+                    ReclaimCandidate.episode_id.isnot(None),
                 )
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
@@ -689,6 +713,17 @@ async def _process_series_seasons(
     return await _sync_season_candidates(db, records)
 
 
+async def _process_series_episodes(
+    db: AsyncSession, rules: list[ReclaimRule]
+) -> tuple[int, int, int]:
+    """Evaluate each series' episodes against rules and create/update episode-level candidates.
+
+    Returns (created_count, updated_count, removed_count).
+    """
+    records = await _collect_episode_candidate_records(db, rules)
+    return await _sync_episode_candidates(db, records)
+
+
 async def _collect_season_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
@@ -846,6 +881,168 @@ async def _sync_season_candidates(
     return candidates_created, candidates_updated, candidates_removed
 
 
+async def _collect_episode_candidate_records(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> list[MatchedCandidateRecord]:
+    """Evaluate episode rules without mutating persisted candidates."""
+    result = await db.execute(
+        select(Series)
+        .where(Series.removed_at.is_(None))
+        .options(
+            selectinload(Series.service_refs),
+            selectinload(Series.seasons).selectinload(Season.episodes),
+        )
+    )
+    all_series = result.scalars().all()
+
+    if not all_series:
+        return []
+
+    now = datetime.now(UTC)
+    protected_series_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.series_id.isnot(None),
+            ProtectedMedia.season_id.is_(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_series_ids = {
+        b.series_id for b in protected_series_result.scalars().all()
+    }
+
+    protected_season_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            ProtectedMedia.season_id.isnot(None),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_season_ids = {
+        b.season_id for b in protected_season_result.scalars().all()
+    }
+
+    records: list[MatchedCandidateRecord] = []
+
+    for series in all_series:
+        if not series.seasons:
+            continue
+        if series.id in protected_series_ids:
+            continue
+
+        for season in series.seasons:
+            if season.id in protected_season_ids:
+                continue
+            if not season.episodes:
+                continue
+
+            for episode in season.episodes:
+                matched_rules: list[int] = []
+                matched_criteria: dict = {}
+                reasons: list[dict[str, Any]] = []
+
+                for rule in rules:
+                    if _evaluate_rule_for_episode(
+                        series, season, episode, rule, matched_criteria, reasons
+                    ):
+                        matched_rules.append(rule.id)
+
+                if not matched_rules:
+                    continue
+
+                records.append(
+                    MatchedCandidateRecord(
+                        media_type=MediaType.SERIES,
+                        series_id=series.id,
+                        season_id=season.id,
+                        episode_id=episode.id,
+                        matched_rule_ids=matched_rules,
+                        matched_criteria=matched_criteria,
+                        reason=_rule_reason_text(reasons),
+                        reason_data=reasons,
+                        estimated_space_bytes=episode.size if episode.size else None,
+                    )
+                )
+
+    return records
+
+
+async def _sync_episode_candidates(
+    db: AsyncSession,
+    records: list[MatchedCandidateRecord],
+) -> tuple[int, int, int]:
+    """Synchronize episode candidates with the database."""
+    existing_result = await db.execute(
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.media_type == MediaType.SERIES,
+            ReclaimCandidate.episode_id.isnot(None),
+        )
+    )
+    episode_candidate_lookup: dict[int, ReclaimCandidate] = {
+        candidate.episode_id: candidate
+        for candidate in existing_result.scalars().all()
+        if candidate.episode_id is not None
+    }
+
+    matched_episode_ids = {
+        record.episode_id for record in records if record.episode_id is not None
+    }
+
+    candidates_created = 0
+    candidates_updated = 0
+    for record in records:
+        if record.episode_id is None or record.series_id is None:
+            continue
+        existing = episode_candidate_lookup.get(record.episode_id)
+
+        if existing:
+            existing.matched_rule_ids = record.matched_rule_ids
+            existing.matched_criteria = record.matched_criteria
+            existing.reason = record.reason
+            existing.reason_data = record.reason_data
+            existing.estimated_space_bytes = record.estimated_space_bytes
+            existing.updated_at = datetime.now(UTC)
+            candidates_updated += 1
+        else:
+            db.add(
+                ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    matched_rule_ids=record.matched_rule_ids,
+                    matched_criteria=record.matched_criteria,
+                    reason=record.reason,
+                    reason_data=record.reason_data,
+                    estimated_space_bytes=record.estimated_space_bytes,
+                    series_id=record.series_id,
+                    season_id=record.season_id,
+                    episode_id=record.episode_id,
+                )
+            )
+            candidates_created += 1
+
+    stale_candidates = [
+        candidate
+        for episode_id, candidate in episode_candidate_lookup.items()
+        if episode_id not in matched_episode_ids
+    ]
+    candidates_removed = len(stale_candidates)
+    for candidate in stale_candidates:
+        await db.delete(candidate)
+
+    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+        await db.commit()
+
+    return candidates_created, candidates_updated, candidates_removed
+
+
 def _append_rule_reason(
     reasons: list[dict[str, Any]],
     *,
@@ -978,6 +1175,39 @@ def _evaluate_rule_for_season(
         reasons,
         rule=rule,
         target_scope=TARGET_SEASON,
+        conditions=rule_reasons,
+        season_label=label,
+    )
+    return True
+
+
+def _evaluate_rule_for_episode(
+    series: Series,
+    season: Season,
+    episode: Episode,
+    rule: ReclaimRule,
+    matched_criteria: dict,
+    reasons: list[dict[str, Any]],
+) -> bool:
+    """Evaluate a rule against a specific episode of a series."""
+    if normalize_rule_target(rule) != TARGET_EPISODE:
+        return False
+
+    label = f"S{season.season_number:02d}E{episode.episode_number:02d}"
+    matched, criteria, rule_reasons = evaluate_advanced_rule(
+        rule,
+        target_scope=TARGET_EPISODE,
+        series=series,
+        season=season,
+        episode=episode,
+    )
+    if not matched:
+        return False
+    matched_criteria.update(criteria)
+    _append_rule_reason(
+        reasons,
+        rule=rule,
+        target_scope=TARGET_EPISODE,
         conditions=rule_reasons,
         season_label=label,
     )
@@ -1669,7 +1899,9 @@ async def _delete_movie_candidates(
                 info["refs"].append((config_id, arr_movie_id, arr_movie_path))
 
         # load version paths needed for path-based routing
-        version_ids = [c.movie_version_id for c in version_candidates if c.movie_version_id]
+        version_ids = [
+            c.movie_version_id for c in version_candidates if c.movie_version_id
+        ]
         version_path_by_id: dict[int, str | None] = {}
         if version_ids:
             ver_rows = (
@@ -1767,7 +1999,9 @@ async def _delete_movie_candidates(
                 )
             else:
                 for cand in whole_movie_candidates:
-                    title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
+                    title = movie_data.get(cand.movie_id or 0, {}).get(
+                        "title", "unknown"
+                    )
                     LOG.warning(
                         f"Media server fallback disabled — skipping deletion for "
                         f"'{title}' (not found in any Radarr instance)"
@@ -1837,7 +2071,9 @@ async def _delete_movie_candidates(
                     if not already_processed:
                         if movie:
                             movie.removed_at = datetime.now(UTC)
-                            event_versions = [v for v in movie.versions if v.path] or [None]
+                            event_versions = [v for v in movie.versions if v.path] or [
+                                None
+                            ]
                             for version in event_versions:
                                 movie_events.append(
                                     {
@@ -1848,7 +2084,9 @@ async def _delete_movie_candidates(
                                         "service_type": version.service
                                         if version
                                         else Service.RADARR,
-                                        "movie_version_id": version.id if version else None,
+                                        "movie_version_id": version.id
+                                        if version
+                                        else None,
                                     }
                                 )
 
@@ -1865,7 +2103,9 @@ async def _delete_movie_candidates(
                         movie_tmdb_id = movie_info.get("tmdb_id")
                         if service_manager.seerr and movie and movie_tmdb_id:
                             try:
-                                await _reset_seerr_request(movie_tmdb_id, MediaType.MOVIE)
+                                await _reset_seerr_request(
+                                    movie_tmdb_id, MediaType.MOVIE
+                                )
                             except Exception as e:
                                 LOG.warning(
                                     f"Failed to reset Seerr request for {movie_info['title']}: {e}"
@@ -1961,7 +2201,10 @@ async def _delete_movie_candidates(
                                         )
 
                             # remove from media server
-                            if main_service is not None and unmonitor_service_type is not None:
+                            if (
+                                main_service is not None
+                                and unmonitor_service_type is not None
+                            ):
                                 service_versions = [
                                     v
                                     for v in movie.versions
@@ -1982,9 +2225,9 @@ async def _delete_movie_candidates(
                                             )
 
                             movie.removed_at = datetime.now(UTC)
-                            event_versions = (
-                                [v for v in movie.versions if v.path] or [None]
-                            )
+                            event_versions = [v for v in movie.versions if v.path] or [
+                                None
+                            ]
                             for version in event_versions:
                                 unmonitor_events.append(
                                     {
@@ -2014,7 +2257,9 @@ async def _delete_movie_candidates(
                         movie_tmdb_id = movie_info.get("tmdb_id")
                         if service_manager.seerr and movie and movie_tmdb_id:
                             try:
-                                await _reset_seerr_request(movie_tmdb_id, MediaType.MOVIE)
+                                await _reset_seerr_request(
+                                    movie_tmdb_id, MediaType.MOVIE
+                                )
                             except Exception as e:
                                 LOG.warning(
                                     f"Failed to reset Seerr request for {movie_info['title']}: {e}"
@@ -2052,12 +2297,18 @@ async def _delete_movie_candidates(
     if whole_movie_candidates:
         if media_server_fallback_enabled:
             deleted_count += await _delete_movies_via_media_server(
-                whole_movie_candidates, movies_to_delete + movies_to_unmonitor, approved_by
+                whole_movie_candidates,
+                movies_to_delete + movies_to_unmonitor,
+                approved_by,
             )
         else:
-            movies_handled_ids = {m["movie_id"] for m in movies_to_delete + movies_to_unmonitor}
+            movies_handled_ids = {
+                m["movie_id"] for m in movies_to_delete + movies_to_unmonitor
+            }
             unhandled = [
-                c for c in whole_movie_candidates if c.movie_id not in movies_handled_ids
+                c
+                for c in whole_movie_candidates
+                if c.movie_id not in movies_handled_ids
             ]
             for cand in unhandled:
                 title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
@@ -2144,7 +2395,14 @@ async def _delete_series_candidates(
         )
         rows = result.all()
         series_data: dict[int, dict] = {}
-        for series_id, title, tmdb_id, config_id, arr_series_id, arr_series_path in rows:
+        for (
+            series_id,
+            title,
+            tmdb_id,
+            config_id,
+            arr_series_id,
+            arr_series_path,
+        ) in rows:
             info = series_data.setdefault(
                 series_id,
                 {"title": title, "tmdb_id": tmdb_id, "refs": []},
@@ -2357,9 +2615,7 @@ async def _delete_series_candidates(
                             if local_path and local_path.exists():
                                 try:
                                     shutil.rmtree(str(local_path))
-                                    LOG.info(
-                                        f"Removed series folder: {local_path}"
-                                    )
+                                    LOG.info(f"Removed series folder: {local_path}")
                                 except Exception as fs_err:
                                     LOG.warning(
                                         f"shutil.rmtree failed for series '{series.title}' "
@@ -2368,7 +2624,10 @@ async def _delete_series_candidates(
                                 break  # only delete the matched folder once
 
                         # remove from media server
-                        if main_service_s is not None and unmonitor_svc_type is not None:
+                        if (
+                            main_service_s is not None
+                            and unmonitor_svc_type is not None
+                        ):
                             ref = next(
                                 (
                                     r
@@ -2451,7 +2710,9 @@ async def _delete_series_candidates(
             candidates, series_to_delete + series_to_unmonitor, approved_by
         )
     else:
-        series_handled_ids = {s["series_id"] for s in series_to_delete + series_to_unmonitor}
+        series_handled_ids = {
+            s["series_id"] for s in series_to_delete + series_to_unmonitor
+        }
         unhandled = [c for c in candidates if c.series_id not in series_handled_ids]
         for cand in unhandled:
             title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
@@ -2647,7 +2908,9 @@ async def _delete_season_candidates(
                             )
             else:
                 try:
-                    await sonarr_client.delete_season_files(sonarr_ref_id, season_number)
+                    await sonarr_client.delete_season_files(
+                        sonarr_ref_id, season_number
+                    )
                     deleted_via_sonarr = True
                     LOG.info(
                         f"Deleted '{series_obj.title}' S{season_number:02d} "
@@ -2766,7 +3029,9 @@ async def _delete_season_candidates(
                     tmdb_id=series_obj.tmdb_id,
                     name=f"{series_obj.title} S{season_number:02d}",
                     size=season.size,
-                    action="unmonitored" if cand_arr_action == "unmonitor" else "deleted",
+                    action="unmonitored"
+                    if cand_arr_action == "unmonitor"
+                    else "deleted",
                 )
             )
             await db.commit()
@@ -2791,6 +3056,229 @@ async def _delete_season_candidates(
             season_id=season.id,
             season_number=season_number,
         )
+
+    return deleted_count
+
+
+async def _delete_episode_candidates(
+    restrict_to_ids: frozenset[int] | None = None,
+    approved_by: str = "system",
+) -> int:
+    """Delete episode level candidates via Sonarr (delete_episode_file / unmonitor_episode).
+
+    Returns count of episodes successfully processed.
+    """
+    deleted_count = 0
+
+    async with async_db() as db:
+        query = (
+            select(ReclaimCandidate)
+            .join(Episode, ReclaimCandidate.episode_id == Episode.id)
+            .join(Season, ReclaimCandidate.season_id == Season.id)
+            .join(Series, ReclaimCandidate.series_id == Series.id)
+            .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            .where(ReclaimCandidate.episode_id.isnot(None))
+            .where(Series.removed_at.is_(None))
+        )
+        if restrict_to_ids:
+            query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
+        candidates = (await db.execute(query)).scalars().all()
+
+    if not candidates:
+        LOG.debug("No episode candidates to delete")
+        return 0
+
+    LOG.info(f"Found {len(candidates)} episode candidates to evaluate for deletion")
+
+    episode_rule_ids = {rid for c in candidates for rid in (c.matched_rule_ids or [])}
+    async with async_db() as db:
+        episode_rules_by_id: dict[int, ReclaimRule] = {}
+        if episode_rule_ids:
+            episode_rules_by_id = {
+                r.id: r
+                for r in (
+                    await db.execute(
+                        select(ReclaimRule).where(ReclaimRule.id.in_(episode_rule_ids))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+    async with async_db() as db:
+        episode_ids = [c.episode_id for c in candidates if c.episode_id]
+        season_ids_needed = list({c.season_id for c in candidates if c.season_id})
+        series_ids_needed = list({c.series_id for c in candidates if c.series_id})
+
+        eps_result = await db.execute(
+            select(Episode).where(Episode.id.in_(episode_ids))
+        )
+        episodes_map: dict[int, Episode] = {e.id: e for e in eps_result.scalars().all()}
+
+        seasons_result = await db.execute(
+            select(Season).where(Season.id.in_(season_ids_needed))
+        )
+        seasons_map: dict[int, Season] = {
+            s.id: s for s in seasons_result.scalars().all()
+        }
+
+        series_result = await db.execute(
+            select(Series)
+            .where(Series.id.in_(series_ids_needed))
+            .options(selectinload(Series.service_refs))
+        )
+        series_map: dict[int, Series] = {s.id: s for s in series_result.scalars().all()}
+
+    for candidate in candidates:
+        if (
+            not candidate.episode_id
+            or not candidate.season_id
+            or not candidate.series_id
+        ):
+            continue
+        episode = episodes_map.get(candidate.episode_id)
+        season = seasons_map.get(candidate.season_id)
+        series_obj = series_map.get(candidate.series_id)
+        if not episode or not season or not series_obj:
+            continue
+
+        cand_arr_action = _get_arr_action(candidate, episode_rules_by_id)
+        ep_label = f"S{season.season_number:02d}E{episode.episode_number:02d}"
+
+        sonarr_ref_id: int | None = None
+        sonarr_ref_config_id: int | None = None
+        async with async_db() as db:
+            ref = (
+                (
+                    await db.execute(
+                        select(SeriesArrRef)
+                        .where(SeriesArrRef.series_id == series_obj.id)
+                        .order_by(SeriesArrRef.id.asc())
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if ref:
+                sonarr_ref_id = ref.arr_series_id
+                sonarr_ref_config_id = ref.service_config_id
+
+        sonarr_client = None
+        if sonarr_ref_config_id is not None:
+            sonarr_client = service_manager.get_sonarr(sonarr_ref_config_id)
+        if sonarr_client is None:
+            sonarr_client = service_manager.sonarr
+
+        deleted_via_sonarr = False
+        if sonarr_client and sonarr_ref_id:
+            try:
+                sonarr_episodes = await sonarr_client.get_episodes(sonarr_ref_id)
+            except Exception as e:
+                LOG.warning(
+                    f"Failed to fetch episodes from Sonarr for "
+                    f"'{series_obj.title}' {ep_label}: {e}"
+                )
+                continue
+
+            matching = [
+                ep
+                for ep in sonarr_episodes
+                if ep.get("seasonNumber") == season.season_number
+                and ep.get("episodeNumber") == episode.episode_number
+            ]
+            if not matching:
+                LOG.warning(
+                    f"No Sonarr episode found for '{series_obj.title}' {ep_label} - skipping"
+                )
+                continue
+
+            sonarr_ep = matching[0]
+            sonarr_ep_id: int | None = sonarr_ep.get("id")
+            sonarr_ep_file_id: int | None = sonarr_ep.get("episodeFileId")
+
+            if not sonarr_ep_file_id:
+                LOG.debug(
+                    f"No episode file in Sonarr for '{series_obj.title}' {ep_label} - skipping"
+                )
+                # still remove candidate since there's nothing to delete
+                async with async_db() as db:
+                    cand_obj = (
+                        await db.execute(
+                            select(ReclaimCandidate).where(
+                                ReclaimCandidate.id == candidate.id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if cand_obj:
+                        await db.delete(cand_obj)
+                    await db.commit()
+                continue
+
+            try:
+                if cand_arr_action == "unmonitor" and sonarr_ep_id:
+                    await sonarr_client.unmonitor_episode(sonarr_ep_id)
+                    LOG.debug(f"Unmonitored '{series_obj.title}' {ep_label} in Sonarr")
+                await sonarr_client.delete_episode_file(sonarr_ep_file_id)
+                deleted_via_sonarr = True
+                LOG.info(
+                    f"Deleted '{series_obj.title}' {ep_label} via Sonarr"
+                    f" (file_id={sonarr_ep_file_id})"
+                )
+            except Exception as e:
+                LOG.warning(
+                    f"Sonarr episode file deletion failed for "
+                    f"'{series_obj.title}' {ep_label}: {e}"
+                )
+
+        if deleted_via_sonarr:
+            # remove from media server to keep library in sync
+            media_svc = service_manager.main_media_server
+            ep_svc_id: str | None = None
+            if media_svc is service_manager.jellyfin:
+                ep_svc_id = episode.jellyfin_episode_id
+            elif media_svc is service_manager.emby:
+                ep_svc_id = episode.emby_episode_id
+            elif media_svc is not None:
+                ep_svc_id = episode.plex_rating_key
+            if media_svc is not None and ep_svc_id:
+                try:
+                    await media_svc.delete_item(ep_svc_id)
+                except Exception as ms_err:
+                    LOG.warning(
+                        f"Media server delete_item failed for "
+                        f"'{series_obj.title}' {ep_label}: {ms_err}"
+                    )
+
+        if not deleted_via_sonarr:
+            LOG.warning(
+                f"No deletion method available for '{series_obj.title}' {ep_label} - skipping"
+            )
+            continue
+
+        async with async_db() as db:
+            cand_obj = (
+                await db.execute(
+                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                )
+            ).scalar_one_or_none()
+            if cand_obj:
+                await db.delete(cand_obj)
+
+            db.add(
+                ReclaimHistory(
+                    approved_by=approved_by,
+                    media_type=MediaType.SERIES,
+                    tmdb_id=series_obj.tmdb_id,
+                    name=f"{series_obj.title} {ep_label}",
+                    size=episode.size,
+                    action="unmonitored"
+                    if cand_arr_action == "unmonitor"
+                    else "deleted",
+                )
+            )
+            await db.commit()
+
+        deleted_count += 1
 
     return deleted_count
 
@@ -3134,6 +3622,9 @@ async def delete_specific_candidates(
         deleted += await _delete_season_candidates(
             restrict_to_ids=restrict, approved_by=approved_by
         )
+        deleted += await _delete_episode_candidates(
+            restrict_to_ids=restrict, approved_by=approved_by
+        )
 
     failed = max(0, len(found_ids) - deleted)
     LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
@@ -3261,11 +3752,15 @@ async def move_specific_candidates(
                         if config_id not in radarr_clients or arr_movie_id is None:
                             continue
                         if norm_ver and arr_movie_path:
-                            if not norm_ver.startswith(arr_movie_path.rstrip("/") + "/"):
+                            if not norm_ver.startswith(
+                                arr_movie_path.rstrip("/") + "/"
+                            ):
                                 continue
                         pair = (config_id, arr_movie_id)
                         if pair not in unmonitored:
-                            await radarr_clients[config_id].unmonitor_movies([arr_movie_id])
+                            await radarr_clients[config_id].unmonitor_movies(
+                                [arr_movie_id]
+                            )
                             unmonitored.add(pair)
                             LOG.info(
                                 f"move: unmonitored '{movie.title}' in Radarr "
@@ -3390,7 +3885,9 @@ async def move_specific_candidates(
             # series_id -> list of (config_id, arr_series_id, arr_series_path)
             series_arr_refs: dict[int, list[tuple]] = {}
             for s_id, config_id, arr_s_id, arr_s_path in arr_refs_result.all():
-                series_arr_refs.setdefault(s_id, []).append((config_id, arr_s_id, arr_s_path))
+                series_arr_refs.setdefault(s_id, []).append(
+                    (config_id, arr_s_id, arr_s_path)
+                )
 
         for candidate in series_candidates:
             try:
@@ -3501,7 +3998,9 @@ async def move_specific_candidates(
                             if config_id not in sonarr_clients or arr_s_id is None:
                                 continue
                             if is_season and season:
-                                await sonarr_clients[config_id].update_season_monitoring(
+                                await sonarr_clients[
+                                    config_id
+                                ].update_season_monitoring(
                                     arr_s_id, season.season_number, False
                                 )
                                 LOG.info(
@@ -3510,7 +4009,9 @@ async def move_specific_candidates(
                                     f"(config_id={config_id}, arr_id={arr_s_id})"
                                 )
                             else:
-                                await sonarr_clients[config_id].unmonitor_series([arr_s_id])
+                                await sonarr_clients[config_id].unmonitor_series(
+                                    [arr_s_id]
+                                )
                                 LOG.info(
                                     f"move: unmonitored '{series_obj.title}' in Sonarr "
                                     f"(config_id={config_id}, arr_id={arr_s_id})"
