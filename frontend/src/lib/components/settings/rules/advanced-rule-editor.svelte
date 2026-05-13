@@ -90,7 +90,7 @@
 
   let name = $state(initial.name);
   let enabled = $state(initial.enabled);
-  let targetScope = $state<"movie_version" | "series" | "season">(
+  let targetScope = $state<"movie_version" | "series" | "season" | "episode">(
     initial.targetScope,
   );
   let definition = $state<RuleDefinition>(initial.definition);
@@ -133,7 +133,7 @@
   let previewSnapshot = $state<{
     name: string | null;
     media_type: MediaType;
-    target_scope: "movie_version" | "series" | "season";
+    target_scope: "movie_version" | "series" | "season" | "episode";
     definition: RuleDefinition;
     per_page: number;
   } | null>(null);
@@ -752,7 +752,8 @@
             if (
               value === "movie_version" ||
               value === "series" ||
-              value === "season"
+              value === "season" ||
+              value === "episode"
             ) {
               targetScope = value;
             }
@@ -765,7 +766,9 @@
               ? "Movie version"
               : targetScope === "series"
                 ? "Series"
-                : "Season"}
+                : targetScope === "season"
+                  ? "Season"
+                  : "Episode"}
           </Select.Trigger>
           <Select.Content>
             <Select.Item value="movie_version" label="Movie version">
@@ -773,6 +776,7 @@
             </Select.Item>
             <Select.Item value="series" label="Series">Series</Select.Item>
             <Select.Item value="season" label="Season">Season</Select.Item>
+            <Select.Item value="episode" label="Episode">Episode</Select.Item>
           </Select.Content>
         </Select.Root>
       </div>

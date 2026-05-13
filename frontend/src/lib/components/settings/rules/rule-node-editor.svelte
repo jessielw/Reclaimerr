@@ -250,6 +250,69 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "season.season_number",
+      label: "Season number",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "equals",
+    },
+    {
+      value: "season.episode_count",
+      label: "Episode count",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "less_than",
+    },
+    {
+      value: "season.is_latest_season",
+      label: "Is latest season",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "season.seasons_from_latest",
+      label: "Seasons from latest",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "episode.number",
+      label: "Episode number",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "equals",
+    },
+    {
+      value: "episode.season_number",
+      label: "Episode season number",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "equals",
+    },
+    {
+      value: "episode.air_date",
+      label: "Episode air date",
+      kind: "date",
+      operators: temporalOperators,
+      defaultOperator: "before",
+    },
+    {
+      value: "episode.days_since_air_date",
+      label: "Days since episode aired",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "watch.never_watched",
+      label: "Never watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "tmdb.popularity",
       label: "TMDB popularity",
       kind: "number",
@@ -392,6 +455,15 @@
   ];
 
   const MAX_TOTAL_GROUPS = 5;
+
+  const TMDB_SERIES_STATUSES = [
+    "Returning Series",
+    "Ended",
+    "Canceled",
+    "In Production",
+    "Planned",
+    "Pilot",
+  ];
 
   // helpers
   const fieldConfig = (fieldValue: string) =>
@@ -723,27 +795,50 @@
         screen by the selects above -->
       {#if !valuelessOperators.has(node.operator)}
         <div class="flex items-center gap-2 w-full sm:flex-1 sm:min-w-40">
-          <Input
-            class="h-8 flex-1 min-w-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
-            type={isNumericInput(node)
-              ? "number"
-              : isTemporalInput(node)
-                ? "date"
-                : "text"}
-            placeholder={valuePlaceholder(node)}
-            value={valueText(node)}
-            oninput={(e) => setConditionValue(node, e.currentTarget.value)}
-          />
-          {#if node.field === "media.path" && pathPickerMediaType}
-            <Button
-              size="sm"
-              variant="secondary"
-              class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
-              onclick={() => (pathPickerOpen = true)}
+          {#if node.field === "series.status" && !listOperators.has(node.operator)}
+            <Select.Root
+              type="single"
+              value={typeof node.value === "string" ? node.value : ""}
+              onValueChange={(v) => setConditionValue(node, v)}
             >
-              <FolderSearch class="size-3.5" />
-              <span class="hidden sm:inline">Browse</span>
-            </Button>
+              <Select.Trigger
+                class="h-8 flex-1 text-sm text-foreground cursor-pointer bg-background"
+              >
+                {typeof node.value === "string" && node.value
+                  ? node.value
+                  : "Select status…"}
+              </Select.Trigger>
+              <Select.Content>
+                {#each TMDB_SERIES_STATUSES as status}
+                  <Select.Item value={status} label={status}
+                    >{status}</Select.Item
+                  >
+                {/each}
+              </Select.Content>
+            </Select.Root>
+          {:else}
+            <Input
+              class="h-8 flex-1 min-w-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+              type={isNumericInput(node)
+                ? "number"
+                : isTemporalInput(node)
+                  ? "date"
+                  : "text"}
+              placeholder={valuePlaceholder(node)}
+              value={valueText(node)}
+              oninput={(e) => setConditionValue(node, e.currentTarget.value)}
+            />
+            {#if node.field === "media.path" && pathPickerMediaType}
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (pathPickerOpen = true)}
+              >
+                <FolderSearch class="size-3.5" />
+                <span class="hidden sm:inline">Browse</span>
+              </Button>
+            {/if}
           {/if}
         </div>
       {:else}
