@@ -531,6 +531,8 @@ def _build_context(
         _disk = (
             _resolver.resolve(version.path) if (_resolver and version.path) else None
         )
+        _added = version.added_at or movie.added_at
+        _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
@@ -540,8 +542,8 @@ def _build_context(
                 version.added_at or movie.added_at, now
             ),
             "watch.view_count": movie.view_count,
-            "watch.last_viewed_at": movie.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(movie.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
@@ -574,6 +576,7 @@ def _build_context(
         _disk = (
             _resolver.resolve(_series_path) if (_resolver and _series_path) else None
         )
+        _last_viewed = _effective_last_viewed(series.last_viewed_at, series.added_at)
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -581,8 +584,8 @@ def _build_context(
             "media.size": series.size,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
-            "watch.last_viewed_at": series.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(series.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -624,6 +627,7 @@ def _build_context(
             seasons_from_latest = None
             is_latest_season = False
         _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
+        _last_viewed = _effective_last_viewed(season.last_viewed_at, season.added_at)
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -631,8 +635,8 @@ def _build_context(
             "media.size": season.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
-            "watch.last_viewed_at": season.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(season.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
@@ -685,6 +689,9 @@ def _build_context(
         _disk = (
             _resolver.resolve(episode.path) if (_resolver and episode.path) else None
         )
+        _last_viewed_ep = _effective_last_viewed(
+            episode.last_viewed_at, season.added_at
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [episode.path] if episode.path else [],
@@ -694,9 +701,9 @@ def _build_context(
             "media.size": episode.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": episode.view_count,
-            "watch.last_viewed_at": episode.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(episode.last_viewed_at, now),
-            "watch.never_watched": episode.view_count == 0,
+            "watch.last_viewed_at": _last_viewed_ep,
+            "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
+            "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
             "episode.number": episode.episode_number,
             "episode.season_number": season.season_number,
             "episode.air_date": episode.air_date,
@@ -868,6 +875,22 @@ def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
         if any(regex.search(value) for value in normalized_values):
             return True
     return False
+
+
+def _effective_last_viewed(
+    last_viewed_at: datetime | None,
+    added_at: datetime | None,
+) -> datetime | None:
+    """Return None if the item was re added after its last watch.
+
+    When a file is deleted and re added the media server preserves the old
+    watch timestamp, making days_since_last_watched appear artificially low
+    for the current copy. Returning None causes the date based watch fields
+    to evaluate as if the current copy was never watched, which is correct.
+    """
+    if last_viewed_at and added_at and added_at > last_viewed_at:
+        return None
+    return last_viewed_at
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

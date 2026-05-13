@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Improved pulling from Tautulli and Jellyfin/Emby play back reporting plugin
 
+### Fixed
+
+- Last viewed was in-accurate if a file was removed and re-added to a media server
+
 ## [0.1.0-beta.17] - 2026-05-11
 
 ### Added
