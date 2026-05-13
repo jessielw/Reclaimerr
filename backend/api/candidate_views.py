@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database.models import (
+    Episode,
     Movie,
     MovieVersion,
     Season,
@@ -163,6 +164,9 @@ async def build_rule_preview_items(
     season_ids = {
         record.season_id for record in records if record.season_id is not None
     }
+    episode_ids = {
+        record.episode_id for record in records if record.episode_id is not None
+    }
 
     movies_by_id: dict[int, Movie] = {}
     if movie_ids:
@@ -191,6 +195,13 @@ async def build_rule_preview_items(
             select(Season).where(Season.id.in_(season_ids))
         )
         seasons_by_id = {season.id: season for season in seasons_result.scalars().all()}
+
+    episodes_by_id: dict[int, Episode] = {}
+    if episode_ids:
+        episodes_result = await db.execute(
+            select(Episode).where(Episode.id.in_(episode_ids))
+        )
+        episodes_by_id = {ep.id: ep for ep in episodes_result.scalars().all()}
 
     global_library_name_by_id: dict[str, str] = {}
     libraries_result = await db.execute(
@@ -231,6 +242,7 @@ async def build_rule_preview_items(
         version = versions_by_id.get(record.movie_version_id or -1)
         series = series_by_id.get(record.series_id or -1)
         season = seasons_by_id.get(record.season_id or -1)
+        episode = episodes_by_id.get(record.episode_id or -1)
 
         media_id = record.movie_id if is_movie else record.series_id
         media_title = (
@@ -296,13 +308,15 @@ async def build_rule_preview_items(
                 estimated_space_bytes=(
                     version.size
                     if version
+                    else episode.size
+                    if episode
                     else season.size
                     if season
                     else record.estimated_space_bytes
                 ),
                 season_id=record.season_id,
                 season_number=season.season_number if season else None,
-                series_title=series.title if season and series else None,
+                series_title=series.title if (season or episode) and series else None,
                 season_has_hdr=season.has_hdr if season else None,
                 season_has_dolby_vision=season.has_dolby_vision if season else None,
                 season_max_video_width=season.max_video_width if season else None,
@@ -318,8 +332,11 @@ async def build_rule_preview_items(
                 series_library_refs=series_library_refs_by_id.get(
                     record.series_id or -1
                 )
-                if season
+                if season or episode
                 else None,
+                episode_id=record.episode_id,
+                episode_number=episode.episode_number if episode else None,
+                episode_name=episode.name if episode else None,
             )
         )
 
@@ -328,6 +345,7 @@ async def build_rule_preview_items(
             -(item.estimated_space_bytes or 0),
             item.media_title.lower(),
             item.season_number or 0,
+            item.episode_number or 0,
             item.movie_version_id or 0,
         )
     )
