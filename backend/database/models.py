@@ -191,9 +191,7 @@ class GeneralSettings(Base):
     )
 
     # deletion routing
-    media_server_fallback_enabled: Mapped[bool] = mapped_column(
-        Boolean, default=True
-    )
+    media_server_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -594,6 +592,56 @@ class Season(Base):
     series: Mapped[Series] = relationship(
         back_populates="seasons", init=False, lazy="noload", repr=False
     )
+    episodes: Mapped[list[Episode]] = relationship(
+        back_populates="season",
+        default_factory=list,
+        lazy="noload",
+        repr=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class Episode(Base):
+    """Episode data for a season (watch stats, air date, file path)."""
+
+    __tablename__ = "episodes"
+    __table_args__ = (
+        UniqueConstraint(
+            "season_id", "episode_number", name="uq_episode_season_number"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    season_id: Mapped[int] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"), index=True
+    )
+    episode_number: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str | None] = mapped_column(String(500), default=None)
+
+    # file info
+    air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    size: Mapped[int | None] = mapped_column(Integer, default=None)
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+
+    # watch tracking
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    # service specific IDs
+    plex_rating_key: Mapped[str | None] = mapped_column(String(100), default=None)
+    jellyfin_episode_id: Mapped[str | None] = mapped_column(String(100), default=None)
+    emby_episode_id: Mapped[str | None] = mapped_column(String(100), default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    # relationships
+    season: Mapped[Season] = relationship(
+        back_populates="episodes", init=False, lazy="noload", repr=False
+    )
 
 
 class MovieArrRef(Base):
@@ -703,6 +751,9 @@ class ReclaimCandidate(Base):
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="SET NULL"), default=None, index=True
     )
 
     # workflow status
