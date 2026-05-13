@@ -410,6 +410,55 @@ class SonarrClient:
                 f"Failed to delete season {season_number} files for series {series_id} (status: {status_code})"
             )
 
+    async def get_episodes(self, series_id: int) -> list[dict]:
+        """Get all episodes for a series from Sonarr.
+
+        Args:
+            series_id: Sonarr series ID
+
+        Returns:
+            List of episode dicts
+        """
+        status_code, data = await self._make_request(
+            "GET", "episode", params={"seriesId": series_id}, timeout=60
+        )
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response getting episodes for series {series_id} (status: {status_code})"
+            )
+        return data
+
+    async def delete_episode_file(self, episode_file_id: int) -> None:
+        """Delete a single episode file by its episode file ID.
+
+        Args:
+            episode_file_id: Sonarr episode file ID
+        """
+        status_code, _ = await self._make_request(
+            "DELETE", f"episodefile/{episode_file_id}", timeout=60
+        )
+        if status_code not in {200, 204}:
+            raise ValueError(
+                f"Failed to delete episode file {episode_file_id} (status: {status_code})"
+            )
+
+    async def unmonitor_episode(self, episode_id: int) -> None:
+        """Set a single episode to unmonitored in Sonarr.
+
+        Args:
+            episode_id: Sonarr episode ID
+        """
+        status_code, _ = await self._make_request(
+            "PUT",
+            "episode/monitor",
+            json={"episodeIds": [episode_id], "monitored": False},
+            timeout=60,
+        )
+        if status_code not in {200, 202}:
+            raise ValueError(
+                f"Failed to unmonitor episode {episode_id} (status: {status_code})"
+            )
+
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         """Test Sonarr service connection without full initialization."""
