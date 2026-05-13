@@ -5,13 +5,26 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
-from backend.database.models import Movie, MovieVersion, ReclaimRule, Season, Series
+from backend.database.models import (
+    Episode,
+    Movie,
+    MovieVersion,
+    ReclaimRule,
+    Season,
+    Series,
+)
 from backend.enums import MediaType
 
 TARGET_MOVIE_VERSION = "movie_version"
 TARGET_SERIES = "series"
 TARGET_SEASON = "season"
-VALID_TARGET_SCOPES = {TARGET_MOVIE_VERSION, TARGET_SERIES, TARGET_SEASON}
+TARGET_EPISODE = "episode"
+VALID_TARGET_SCOPES = {
+    TARGET_MOVIE_VERSION,
+    TARGET_SERIES,
+    TARGET_SEASON,
+    TARGET_EPISODE,
+}
 
 RuleDefinition = dict[str, Any]
 
@@ -32,6 +45,15 @@ FIELD_LABELS: dict[str, str] = {
     "tmdb.days_since_first_air_date": "Days since first aired",
     "tmdb.days_since_last_air_date": "Days since last aired",
     "season.days_since_air_date": "Days since season aired",
+    "season.season_number": "Season number",
+    "season.episode_count": "Episode count",
+    "season.is_latest_season": "Is latest season",
+    "season.seasons_from_latest": "Seasons from latest",
+    "episode.number": "Episode number",
+    "episode.season_number": "Episode season number",
+    "episode.air_date": "Episode air date",
+    "episode.days_since_air_date": "Days since episode aired",
+    "watch.never_watched": "Never watched",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "Rating",
     "tmdb.vote_count": "Vote count",
@@ -93,6 +115,12 @@ NUMERIC_FIELDS = {
     "tmdb.days_since_first_air_date",
     "tmdb.days_since_last_air_date",
     "season.days_since_air_date",
+    "season.season_number",
+    "season.episode_count",
+    "season.seasons_from_latest",
+    "episode.number",
+    "episode.season_number",
+    "episode.days_since_air_date",
     "tmdb.popularity",
     "tmdb.vote_average",
     "tmdb.vote_count",
@@ -115,13 +143,19 @@ TEXT_FIELDS = {
     "arr.tags",
 }
 LIBRARY_FIELDS = {"library.id"}
-BOOLEAN_FIELDS = {"video.hdr", "video.dolby_vision"}
+BOOLEAN_FIELDS = {
+    "video.hdr",
+    "video.dolby_vision",
+    "season.is_latest_season",
+    "watch.never_watched",
+}
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
     "tmdb.release_date",
     "tmdb.first_air_date",
     "tmdb.last_air_date",
     "season.air_date",
+    "episode.air_date",
 }
 PATH_FIELDS = {"media.path", "media.file_name"}
 NUMERIC_OPERATORS = {
@@ -281,6 +315,7 @@ def evaluate_advanced_rule(
     version: MovieVersion | None = None,
     series: Series | None = None,
     season: Season | None = None,
+    episode: Episode | None = None,
 ) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
     """Evaluate an advanced rule against the provided media context, returning whether it
     matches, the matched field values, and the reasons for the match or failure."""
@@ -291,7 +326,7 @@ def evaluate_advanced_rule(
     if not isinstance(root, dict):
         return False, {}, []
 
-    context = _build_context(target_scope, movie, version, series, season)
+    context = _build_context(target_scope, movie, version, series, season, episode)
     matched: dict[str, Any] = {}
     reasons: list[dict[str, Any]] = []
     if not _evaluate_node(root, context, matched, reasons):
@@ -372,6 +407,7 @@ def _build_context(
     version: MovieVersion | None,
     series: Series | None,
     season: Season | None,
+    episode: Episode | None = None,
 ) -> dict[str, Any]:
     """Build the context dictionary for evaluating a rule against a specific target scope."""
     now = datetime.now(UTC)
@@ -447,6 +483,18 @@ def _build_context(
 
     if target_scope == TARGET_SEASON and series and season:
         refs = series.service_refs or []
+        non_special_nums = sorted(
+            s.season_number for s in (series.seasons or []) if s.season_number > 0
+        )
+        max_season = non_special_nums[-1] if non_special_nums else 0
+        if season.season_number > 0 and season.season_number in non_special_nums:
+            seasons_from_latest: int | None = (
+                len(non_special_nums) - 1 - non_special_nums.index(season.season_number)
+            )
+            is_latest_season = season.season_number == max_season
+        else:
+            seasons_from_latest = None
+            is_latest_season = False
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -458,6 +506,10 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(season.last_viewed_at, now),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
+            "season.season_number": season.season_number,
+            "season.episode_count": season.episode_count,
+            "season.is_latest_season": is_latest_season,
+            "season.seasons_from_latest": seasons_from_latest,
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -479,6 +531,59 @@ def _build_context(
             "audio.channels": season.max_audio_channels,
             "audio.languages": season.audio_languages,
             "subtitle.languages": season.subtitle_languages,
+            "arr.tags": series.arr_tags or [],
+        }
+
+    if target_scope == TARGET_EPISODE and series and season and episode:
+        refs = series.service_refs or []
+        non_special_nums_ep = sorted(
+            s.season_number for s in (series.seasons or []) if s.season_number > 0
+        )
+        max_season_ep = non_special_nums_ep[-1] if non_special_nums_ep else 0
+        if season.season_number > 0 and season.season_number in non_special_nums_ep:
+            seasons_from_latest_ep: int | None = (
+                len(non_special_nums_ep)
+                - 1
+                - non_special_nums_ep.index(season.season_number)
+            )
+            is_latest_season_ep = season.season_number == max_season_ep
+        else:
+            seasons_from_latest_ep = None
+            is_latest_season_ep = False
+        return {
+            "library.id": [ref.library_id for ref in refs if ref.library_id],
+            "media.path": [episode.path] if episode.path else [],
+            "media.file_name": [episode.path.rsplit("/", 1)[-1]]
+            if episode.path
+            else [],
+            "media.size": episode.size,
+            "media.days_since_added": _days_between(season.added_at, now),
+            "watch.view_count": episode.view_count,
+            "watch.last_viewed_at": episode.last_viewed_at,
+            "watch.days_since_last_watched": _days_between(episode.last_viewed_at, now),
+            "watch.never_watched": episode.view_count == 0,
+            "episode.number": episode.episode_number,
+            "episode.season_number": season.season_number,
+            "episode.air_date": episode.air_date,
+            "episode.days_since_air_date": _days_between(episode.air_date, now),
+            "season.season_number": season.season_number,
+            "season.episode_count": season.episode_count,
+            "season.is_latest_season": is_latest_season_ep,
+            "season.seasons_from_latest": seasons_from_latest_ep,
+            "season.air_date": season.air_date,
+            "season.days_since_air_date": _days_between(season.air_date, now),
+            "tmdb.first_air_date": series.tmdb_first_air_date,
+            "tmdb.last_air_date": series.tmdb_last_air_date,
+            "tmdb.days_since_first_air_date": _days_between(
+                series.tmdb_first_air_date, now
+            ),
+            "tmdb.days_since_last_air_date": _days_between(
+                series.tmdb_last_air_date, now
+            ),
+            "tmdb.popularity": series.popularity,
+            "tmdb.vote_average": series.vote_average,
+            "tmdb.vote_count": series.vote_count,
+            "series.status": series.status,
             "arr.tags": series.arr_tags or [],
         }
 
