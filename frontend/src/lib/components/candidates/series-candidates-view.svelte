@@ -174,8 +174,12 @@
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.seasons)}
-      {@const seasonCount = row.seasons.filter((s) => s.episode_number == null).length}
-      {@const episodeCount = row.seasons.filter((s) => s.episode_number != null).length}
+      {@const seasonCount = row.seasons.filter(
+        (s) => s.episode_number == null,
+      ).length}
+      {@const episodeCount = row.seasons.filter(
+        (s) => s.episode_number != null,
+      ).length}
       {@const groupCountLabel = [
         seasonCount > 0
           ? `${seasonCount} season${seasonCount !== 1 ? "s" : ""}`
@@ -242,8 +246,12 @@
           </button>
         </div>
         {#if expanded}
-          {@const seasonItems = row.seasons.filter((s) => s.episode_number == null)}
-          {@const episodeItems = row.seasons.filter((s) => s.episode_number != null)}
+          {@const seasonItems = row.seasons.filter(
+            (s) => s.episode_number == null,
+          )}
+          {@const episodeItems = row.seasons.filter(
+            (s) => s.episode_number != null,
+          )}
           {@const episodesBySeason = (() => {
             const m = new Map<number, typeof row.seasons>();
             for (const ep of episodeItems) {
@@ -370,7 +378,8 @@
 
             {#if episodesBySeason.length > 0}
               <h2
-                class="text-xs uppercase tracking-wide text-muted-foreground {seasonItems.length > 0
+                class="text-xs uppercase tracking-wide text-muted-foreground {seasonItems.length >
+                0
                   ? 'mt-2'
                   : ''}"
               >
