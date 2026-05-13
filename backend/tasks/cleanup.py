@@ -68,6 +68,7 @@ async def collect_rule_preview_matches(
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
     await _refresh_arr_tags_for_rules(list(rules))
+    await _refresh_arr_monitoring_for_rules(list(rules))
 
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
@@ -276,6 +277,163 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
             )
 
 
+def _rules_use_monitoring_field(rules: list[ReclaimRule]) -> bool:
+    """Return True if any rule condition references the arr.monitored field."""
+    for rule in rules:
+        for _ in collect_rule_conditions(rule.definition, field="arr.monitored"):
+            return True
+    return False
+
+
+async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
+    """Sync arr monitoring status (series + season for Sonarr, movie for Radarr) into the DB.
+
+    Only runs if at least one active rule uses arr.monitored.
+    Multi arr semantics: OR across instances - monitored=True wins.
+    """
+    if not _rules_use_monitoring_field(rules):
+        return
+
+    movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
+    series_rules = [
+        r
+        for r in rules
+        if normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON, TARGET_EPISODE}
+    ]
+
+    #### radarr: refresh movie monitoring ####
+    if movie_rules:
+        radarr_clients = service_manager.radarr_clients()
+        if not radarr_clients and service_manager.radarr:
+            radarr_clients = {0: service_manager.radarr}
+
+        if radarr_clients:
+            async with async_db() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            MovieArrRef.arr_movie_id,
+                            MovieArrRef.movie_id,
+                            MovieArrRef.service_config_id,
+                        )
+                    )
+                ).all()
+
+            arr_to_db_by_config: dict[int, dict[int, int]] = {}
+            for arr_movie_id, db_movie_id, config_id in rows:
+                arr_to_db_by_config.setdefault(config_id, {})[arr_movie_id] = (
+                    db_movie_id
+                )
+
+            # OR (accumulate monitoring across all instances)
+            movie_monitored: dict[int, bool] = {}
+            for config_id, client in radarr_clients.items():
+                try:
+                    all_movies = await client.get_all_movies()
+                except Exception as e:
+                    LOG.warning(
+                        f"Failed to fetch Radarr movies for monitoring (config {config_id}): {e}"
+                    )
+                    continue
+
+                arr_to_db = arr_to_db_by_config.get(config_id, {})
+                for radarr_movie in all_movies:
+                    db_id = arr_to_db.get(radarr_movie.id)
+                    if db_id is not None:
+                        movie_monitored[db_id] = (
+                            movie_monitored.get(db_id, False) or radarr_movie.monitored
+                        )
+
+            if movie_monitored:
+                async with async_db() as db:
+                    result = await db.execute(
+                        select(Movie).where(Movie.id.in_(movie_monitored.keys()))
+                    )
+                    for movie in result.scalars().all():
+                        movie.is_monitored = movie_monitored[movie.id]
+                    await db.commit()
+                LOG.debug(f"Refreshed arr monitoring for {len(movie_monitored)} movies")
+
+    #### sonarr: refresh series + season monitoring ####
+    if series_rules:
+        sonarr_clients = service_manager.sonarr_clients()
+        if not sonarr_clients and service_manager.sonarr:
+            sonarr_clients = {0: service_manager.sonarr}
+
+        if sonarr_clients:
+            async with async_db() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            SeriesArrRef.arr_series_id,
+                            SeriesArrRef.series_id,
+                            SeriesArrRef.service_config_id,
+                        )
+                    )
+                ).all()
+
+            sonarr_arr_to_db_by_config: dict[int, dict[int, int]] = {}
+            for arr_series_id, db_series_id, config_id in rows:
+                sonarr_arr_to_db_by_config.setdefault(config_id, {})[arr_series_id] = (
+                    db_series_id
+                )
+
+            # OR (accumulate series monitoring and per-season monitoring across instances)
+            series_monitored: dict[int, bool] = {}
+            # (db_series_id, season_number) -> monitored
+            season_monitored: dict[tuple[int, int], bool] = {}
+
+            for config_id, client in sonarr_clients.items():
+                try:
+                    all_sonarr_series = await client.get_all_series()
+                except Exception as e:
+                    LOG.warning(
+                        f"Failed to fetch Sonarr series for monitoring (config {config_id}): {e}"
+                    )
+                    continue
+
+                arr_to_db = sonarr_arr_to_db_by_config.get(config_id, {})
+                for sonarr_series in all_sonarr_series:
+                    db_id = arr_to_db.get(sonarr_series.id)
+                    if db_id is None:
+                        continue
+                    series_monitored[db_id] = (
+                        series_monitored.get(db_id, False) or sonarr_series.monitored
+                    )
+                    for sonarr_season in sonarr_series.seasons:
+                        key = (db_id, sonarr_season.season_number)
+                        season_monitored[key] = (
+                            season_monitored.get(key, False) or sonarr_season.monitored
+                        )
+
+            if series_monitored:
+                async with async_db() as db:
+                    # update series monitoring
+                    series_result = await db.execute(
+                        select(Series).where(Series.id.in_(series_monitored.keys()))
+                    )
+                    for series in series_result.scalars().all():
+                        series.is_monitored = series_monitored[series.id]
+
+                    # update season monitoring (load all seasons for tracked series)
+                    if season_monitored:
+                        season_result = await db.execute(
+                            select(Season).where(
+                                Season.series_id.in_(series_monitored.keys())
+                            )
+                        )
+                        for season in season_result.scalars().all():
+                            key = (season.series_id, season.season_number)
+                            if key in season_monitored:
+                                season.is_monitored = season_monitored[key]
+
+                    await db.commit()
+                LOG.debug(
+                    f"Refreshed arr monitoring for {len(series_monitored)} series "
+                    f"and {len(season_monitored)} season entries"
+                )
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -307,6 +465,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         # refresh arr_tags from Radarr/Sonarr for any labels referenced in active rules
         # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
         await _refresh_arr_tags_for_rules(list(rules))
+        await _refresh_arr_monitoring_for_rules(list(rules))
 
         candidates_created = 0
         candidates_updated = 0
@@ -1658,7 +1817,7 @@ async def _delete_movie_version_candidates(
                 version = result.scalars().first()
                 title = version.movie.title if version and version.movie else "unknown"
             LOG.warning(
-                f"Media server fallback disabled — skipping partial-version deletion "
+                f"Media server fallback disabled - skipping partial-version deletion "
                 f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
                 f"General Settings to delete individual quality versions."
             )
@@ -1933,7 +2092,7 @@ async def _delete_movie_candidates(
                     if norm_ver.startswith(arr_movie_path.rstrip("/") + "/"):
                         matched.add((config_id, arr_movie_id))
         if not matched:
-            # no path match — use all known arr configs for this movie
+            # no path match - use all known arr configs for this movie
             for config_id, arr_movie_id, _ in refs:
                 if config_id in radarr_clients:
                     matched.add((config_id, arr_movie_id))
@@ -1964,7 +2123,7 @@ async def _delete_movie_candidates(
             else:
                 LOG.warning(
                     f"No Radarr instance found for '{movie_info['title']}' "
-                    f"(path: {ver_path!r}) — routing to media server fallback"
+                    f"(path: {ver_path!r}) - routing to media server fallback"
                 )
                 unmatched_version_candidates.append(cand)
 
@@ -1991,7 +2150,7 @@ async def _delete_movie_candidates(
         )
 
     if not movie_arr_routing:
-        # No arr deletions — route remaining whole-movie candidates to media server
+        # No arr deletions - route remaining whole-movie candidates to media server
         if whole_movie_candidates:
             if media_server_fallback_enabled:
                 deleted_count += await _delete_movies_via_media_server(
@@ -2003,7 +2162,7 @@ async def _delete_movie_candidates(
                         "title", "unknown"
                     )
                     LOG.warning(
-                        f"Media server fallback disabled — skipping deletion for "
+                        f"Media server fallback disabled - skipping deletion for "
                         f"'{title}' (not found in any Radarr instance)"
                     )
         return deleted_count
@@ -2313,7 +2472,7 @@ async def _delete_movie_candidates(
             for cand in unhandled:
                 title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
                 LOG.warning(
-                    f"Media server fallback disabled — skipping deletion for "
+                    f"Media server fallback disabled - skipping deletion for "
                     f"'{title}' (not handled by any Radarr instance)"
                 )
 
@@ -2717,7 +2876,7 @@ async def _delete_series_candidates(
         for cand in unhandled:
             title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
             LOG.warning(
-                f"Media server fallback disabled — skipping deletion for "
+                f"Media server fallback disabled - skipping deletion for "
                 f"'{title}' (not handled by any Sonarr instance)"
             )
 
@@ -2948,7 +3107,7 @@ async def _delete_season_candidates(
         if not deleted_via_sonarr:
             if not media_server_fallback_enabled:
                 LOG.warning(
-                    f"Media server fallback disabled — skipping season deletion for "
+                    f"Media server fallback disabled - skipping season deletion for "
                     f"'{series_obj.title}' S{season_number:02d}. Enable 'Allow Media "
                     f"Server Fallback Deletion' in General Settings."
                 )

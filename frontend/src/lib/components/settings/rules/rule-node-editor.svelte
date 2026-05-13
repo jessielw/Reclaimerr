@@ -452,6 +452,13 @@
       operators: textOperators,
       defaultOperator: "contains_any",
     },
+    {
+      value: "arr.monitored",
+      label: "Arr monitored",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
   ];
 
   const MAX_TOTAL_GROUPS = 5;

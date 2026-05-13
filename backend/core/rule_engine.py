@@ -74,6 +74,7 @@ FIELD_LABELS: dict[str, str] = {
     "video.color_primaries": "Color primaries",
     "media.duration": "Duration",
     "arr.tags": "Arr tags",
+    "arr.monitored": "Arr monitored",
 }
 
 OPERATOR_LABELS: dict[str, str] = {
@@ -148,6 +149,7 @@ BOOLEAN_FIELDS = {
     "video.dolby_vision",
     "season.is_latest_season",
     "watch.never_watched",
+    "arr.monitored",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -445,6 +447,7 @@ def _build_context(
             "video.color_primaries": version.video_color_primaries,
             "media.duration": version.duration,
             "arr.tags": movie.arr_tags or [],
+            "arr.monitored": movie.is_monitored,
         }
 
     if target_scope == TARGET_SERIES and series:
@@ -479,6 +482,7 @@ def _build_context(
             "audio.channels": series.max_audio_channels,
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.monitored": series.is_monitored,
         }
 
     if target_scope == TARGET_SEASON and series and season:
@@ -532,6 +536,7 @@ def _build_context(
             "audio.languages": season.audio_languages,
             "subtitle.languages": season.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.monitored": season.is_monitored,
         }
 
     if target_scope == TARGET_EPISODE and series and season and episode:
@@ -585,6 +590,7 @@ def _build_context(
             "tmdb.vote_count": series.vote_count,
             "series.status": series.status,
             "arr.tags": series.arr_tags or [],
+            "arr.monitored": season.is_monitored,
         }
 
     return {}

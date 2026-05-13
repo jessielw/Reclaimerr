@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added episode granularity
 - Series candidates view now has collapsible season and episode level control
 - Rules for series status (ended, continuing, etc.)
+- Rules based on **\*arr** monitored status
 
 ### Changed
 

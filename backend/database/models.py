@@ -245,6 +245,8 @@ class Movie(Base):
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
     arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # monitoring status synced from Radarr (OR across multiple instances)
+    is_monitored: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     # watch tracking (from media server)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -487,6 +489,8 @@ class Series(Base):
     status: Mapped[str | None] = mapped_column(String(50), default=None)
     tagline: Mapped[str | None] = mapped_column(String(255), default=None)
     arr_tags: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    # monitoring status synced from Sonarr (OR across multiple instances)
+    is_monitored: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     # series-specific info
     season_count: Mapped[int | None] = mapped_column(Integer, default=None, init=False)
@@ -580,6 +584,9 @@ class Season(Base):
     plex_season_rating_key: Mapped[str | None] = mapped_column(
         String(100), default=None
     )
+
+    # monitoring status synced from Sonarr (OR across multiple instances)
+    is_monitored: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
