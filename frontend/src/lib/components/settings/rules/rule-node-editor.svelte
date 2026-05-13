@@ -459,6 +459,20 @@
       operators: booleanOperators,
       defaultOperator: "is_true",
     },
+    {
+      value: "disk.free_bytes",
+      label: "Disk free (bytes)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "less_than",
+    },
+    {
+      value: "disk.free_percent",
+      label: "Disk free (%)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "less_than",
+    },
   ];
 
   const MAX_TOTAL_GROUPS = 5;
