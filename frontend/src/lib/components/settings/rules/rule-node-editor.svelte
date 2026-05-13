@@ -294,7 +294,7 @@
     {
       value: "episode.air_date",
       label: "Episode air date",
-      kind: "date",
+      kind: "temporal",
       operators: temporalOperators,
       defaultOperator: "before",
     },
