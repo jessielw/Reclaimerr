@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-05-??
+
+### Added
+
+- Added episode granularity
+- Series candidates view now has collapsible season and episode level control
+
+### Changed
+
+- Improved pulling from Tautulli and Jellyfin/Emby play back reporting plugin
+
 ## [0.1.0-beta.17] - 2026-05-11
 
 ### Added

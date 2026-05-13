@@ -218,9 +218,12 @@
     const result: DisplayRow[] = [...flatRows];
 
     for (const [mid, seasons] of seasonGroups) {
-      const sorted = [...seasons].sort(
-        (a, b) => (a.season_number ?? 0) - (b.season_number ?? 0),
-      );
+      const sorted = [...seasons].sort((a, b) => {
+        const sA = a.season_number ?? 0;
+        const sB = b.season_number ?? 0;
+        if (sA !== sB) return sA - sB;
+        return (a.episode_number ?? 0) - (b.episode_number ?? 0);
+      });
       const first = sorted[0];
       result.push({
         kind: "group",
@@ -533,13 +536,19 @@
         { candidate_ids: [deleteTarget.id] },
       );
       if (resp.deleted > 0) {
+        const episodePart =
+          deleteTarget.episode_number != null
+            ? `S${String(deleteTarget.season_number ?? 0).padStart(2, "0")}E${String(deleteTarget.episode_number).padStart(2, "0")}${deleteTarget.episode_name ? ` "${deleteTarget.episode_name}"` : ""}`
+            : null;
         const label =
-          deleteTarget.season_number != null
-            ? `S${String(deleteTarget.season_number).padStart(2, "0")} of ` +
-              `${deleteTarget.series_title ?? deleteTarget.media_title}`
-            : deleteTarget.movie_version_id != null
-              ? `${deleteTarget.media_title} (${deleteTarget.version_library_name ?? "version"})`
-              : deleteTarget.media_title;
+          episodePart != null
+            ? `${episodePart} of ${deleteTarget.series_title ?? deleteTarget.media_title}`
+            : deleteTarget.season_number != null
+              ? `S${String(deleteTarget.season_number).padStart(2, "0")} of ` +
+                `${deleteTarget.series_title ?? deleteTarget.media_title}`
+              : deleteTarget.movie_version_id != null
+                ? `${deleteTarget.media_title} (${deleteTarget.version_library_name ?? "version"})`
+                : deleteTarget.media_title;
         toast.success(`Deleted ${label}.`);
         const remaining = data?.items.filter((i) => i.id !== deleteTarget!.id);
         if (!remaining || (remaining.length === 0 && currentPage > 1)) {
@@ -820,7 +829,19 @@
       <AlertDialog.Title>Delete Permanently?</AlertDialog.Title>
       <AlertDialog.Description>
         {#if deleteTarget}
-          {#if deleteTarget.season_number != null}
+          {#if deleteTarget.episode_number != null}
+            Permanently delete episode <strong
+              >S{String(deleteTarget.season_number ?? 0).padStart(
+                2,
+                "0",
+              )}E{String(deleteTarget.episode_number).padStart(
+                2,
+                "0",
+              )}{#if deleteTarget.episode_name}&nbsp;&quot;{deleteTarget.episode_name}&quot;{/if}
+              of {deleteTarget.series_title ?? deleteTarget.media_title}</strong
+            > and remove the file from disk. Only this episode is affected — the series
+            and season remain monitored. This cannot be undone.
+          {:else if deleteTarget.season_number != null}
             Permanently delete <strong
               >Season {deleteTarget.season_number} of {deleteTarget.series_title ??
                 deleteTarget.media_title}</strong
