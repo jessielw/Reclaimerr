@@ -13,6 +13,7 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    DiskStatsResolver,
     collect_rule_conditions,
     evaluate_advanced_rule,
     normalize_rule_target,
@@ -67,6 +68,10 @@ async def collect_rule_preview_matches(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
+    DiskStatsResolver(
+        arr_entries=await _load_arr_disk_space(),
+        path_mappings=await _load_path_mappings(),
+    ).activate()
     await _refresh_arr_tags_for_rules(list(rules))
     await _refresh_arr_monitoring_for_rules(list(rules))
 
@@ -462,8 +467,12 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
 
-        # refresh arr_tags from Radarr/Sonarr for any labels referenced in active rules
+        # refresh arr data from Radarr/Sonarr for any labels/fields referenced in active rules
         # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
+        DiskStatsResolver(
+            arr_entries=await _load_arr_disk_space(),
+            path_mappings=await _load_path_mappings(),
+        ).activate()
         await _refresh_arr_tags_for_rules(list(rules))
         await _refresh_arr_monitoring_for_rules(list(rules))
 
@@ -1719,6 +1728,38 @@ async def _load_path_mappings() -> list[dict]:
         if settings and settings.path_mappings:
             return settings.path_mappings
     return []
+
+
+async def _load_arr_disk_space() -> list[dict]:
+    """Fetch disk space from all configured Radarr/Sonarr instances.
+
+    Returns a merged, deduplicated list of disk entries (path, free_space,
+    total_space) reported by each arr server.  Entries from different instances
+    that share the same path are de-duplicated (first writer wins).  The list
+    is sorted longest path first so rule_engine prefix matching finds the most
+    specific mount point first.
+    """
+    radarr_clients = service_manager.radarr_clients()
+    if not radarr_clients and service_manager.radarr:
+        radarr_clients = {0: service_manager.radarr}
+    sonarr_clients = service_manager.sonarr_clients()
+    if not sonarr_clients and service_manager.sonarr:
+        sonarr_clients = {0: service_manager.sonarr}
+
+    seen: set[str] = set()
+    result: list[dict] = []
+
+    for client in list(radarr_clients.values()) + list(sonarr_clients.values()):
+        try:
+            for entry in await client.get_disk_space():
+                p = entry.get("path", "")
+                if p and p not in seen:
+                    seen.add(p)
+                    result.append(entry)
+        except Exception:
+            pass
+
+    return sorted(result, key=lambda e: -len(str(e.get("path") or "")))
 
 
 def _service_value(service: Service | str | None) -> str | None:

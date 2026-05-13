@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -75,6 +77,8 @@ FIELD_LABELS: dict[str, str] = {
     "media.duration": "Duration",
     "arr.tags": "Arr tags",
     "arr.monitored": "Arr monitored",
+    "disk.free_bytes": "Disk free (bytes)",
+    "disk.free_percent": "Disk free (%)",
 }
 
 OPERATOR_LABELS: dict[str, str] = {
@@ -130,6 +134,8 @@ NUMERIC_FIELDS = {
     "audio.channels",
     "audio.track_count",
     "media.duration",
+    "disk.free_bytes",
+    "disk.free_percent",
 }
 TEXT_FIELDS = {
     "series.status",
@@ -214,6 +220,100 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
 }
+
+
+class DiskStatsResolver:
+    """Holds pre fetched disk stats for one scan run.
+
+    Instantiate once at scan start and call ``activate()`` to install it for
+    the current async context.  All rule engine code running in the same
+    asyncio Task (or its sub tasks) can then call ``DiskStatsResolver.current()``
+    to obtain the active instance.
+
+    No lock is required (each scan creates its own instance with its own
+    snapshot of arr data. The instance level dict cache avoids redundant
+    lookups across the hundreds of media items evaluated in a single scan).
+    """
+
+    _ctx: ContextVar[DiskStatsResolver | None] = ContextVar(
+        "disk_stats_resolver", default=None
+    )
+
+    __slots__ = ("_arr_entries", "_path_mappings", "_cache")
+
+    def __init__(
+        self,
+        arr_entries: list[dict] | None = None,
+        path_mappings: list[dict] | None = None,
+    ) -> None:
+        self._arr_entries: list[dict] = sorted(
+            arr_entries or [], key=lambda e: -len(str(e.get("path") or ""))
+        )
+        self._path_mappings: list[dict] = sorted(
+            path_mappings or [], key=lambda m: -len(str(m.get("source_prefix") or ""))
+        )
+        self._cache: dict[str, tuple[int, float] | None] = {}
+
+    def activate(self) -> None:
+        """Install this resolver for the current async context."""
+        DiskStatsResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> DiskStatsResolver | None:
+        """Return the resolver active in the current async context, or None."""
+        return cls._ctx.get()
+
+    def resolve(self, path: str) -> tuple[int, float] | None:
+        """Return ``(free_bytes, free_percent)`` for the filesystem containing *path*.
+
+        Results are cached for the lifetime of this instance (one scan run).
+        Primary source: pre fetched arr /disk space entries.
+        Fallback: shutil.disk_usage with path-mapping translation.
+        """
+        if path in self._cache:
+            return self._cache[path]
+        result = self._resolve_arr(path) or self._resolve_local(path)
+        self._cache[path] = result
+        return result
+
+    def _resolve_arr(self, path: str) -> tuple[int, float] | None:
+        """Look up disk stats in the pre fetched Radarr/Sonarr /disk space entries."""
+        norm = path.replace("\\", "/")
+        for entry in self._arr_entries:  # sorted longest first
+            raw = (entry.get("path") or "").replace("\\", "/")
+            if not raw:
+                continue
+            ep = raw.rstrip("/") or "/"  # preserve "/" (never collapse to "")
+            if ep == "/":
+                if not norm.startswith("/"):
+                    continue
+            elif norm != ep and not norm.startswith(ep + "/"):
+                continue
+            free = entry.get("free_space", 0) or 0
+            total = entry.get("total_space", 0) or 0
+            return free, (free / total * 100.0 if total else 0.0)
+        return None
+
+    def _resolve_local(self, path: str) -> tuple[int, float] | None:
+        """Fall back to shutil.disk_usage with path mapping translation."""
+        for m in self._path_mappings:  # sorted longest source first
+            source = m.get("source_prefix") or ""
+            if source and path.startswith(source):
+                local = (m.get("local_prefix") or "") + path[len(source) :]
+                try:
+                    usage = shutil.disk_usage(local)
+                    return usage.free, (
+                        usage.free / usage.total * 100.0 if usage.total else 0.0
+                    )
+                except Exception:
+                    return None
+        try:
+            usage = shutil.disk_usage(path)
+            return usage.free, (
+                usage.free / usage.total * 100.0 if usage.total else 0.0
+            )
+        except Exception:
+            return None
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -328,12 +428,23 @@ def evaluate_advanced_rule(
     if not isinstance(root, dict):
         return False, {}, []
 
-    context = _build_context(target_scope, movie, version, series, season, episode)
+    compute_disk = _rule_uses_disk_fields(definition)
+    context = _build_context(
+        target_scope, movie, version, series, season, episode, compute_disk
+    )
     matched: dict[str, Any] = {}
     reasons: list[dict[str, Any]] = []
     if not _evaluate_node(root, context, matched, reasons):
         return False, {}, []
     return True, matched, reasons
+
+
+def _rule_uses_disk_fields(definition: RuleDefinition | None) -> bool:
+    """Return True if the rule definition references any disk.* fields."""
+    return bool(
+        collect_rule_conditions(definition, field="disk.free_bytes")
+        or collect_rule_conditions(definition, field="disk.free_percent")
+    )
 
 
 def _has_valid_definition(definition: RuleDefinition | None) -> bool:
@@ -410,11 +521,16 @@ def _build_context(
     series: Series | None,
     season: Season | None,
     episode: Episode | None = None,
+    compute_disk: bool = True,
 ) -> dict[str, Any]:
     """Build the context dictionary for evaluating a rule against a specific target scope."""
     now = datetime.now(UTC)
+    _resolver = DiskStatsResolver.current() if compute_disk else None
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
+        _disk = (
+            _resolver.resolve(version.path) if (_resolver and version.path) else None
+        )
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
@@ -448,10 +564,16 @@ def _build_context(
             "media.duration": version.duration,
             "arr.tags": movie.arr_tags or [],
             "arr.monitored": movie.is_monitored,
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
+        _series_path = next((ref.path for ref in refs if ref.path), None)
+        _disk = (
+            _resolver.resolve(_series_path) if (_resolver and _series_path) else None
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -483,6 +605,8 @@ def _build_context(
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": series.is_monitored,
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_SEASON and series and season:
@@ -499,6 +623,7 @@ def _build_context(
         else:
             seasons_from_latest = None
             is_latest_season = False
+        _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -537,6 +662,8 @@ def _build_context(
             "subtitle.languages": season.subtitle_languages,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": season.is_monitored,
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_EPISODE and series and season and episode:
@@ -555,6 +682,9 @@ def _build_context(
         else:
             seasons_from_latest_ep = None
             is_latest_season_ep = False
+        _disk = (
+            _resolver.resolve(episode.path) if (_resolver and episode.path) else None
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [episode.path] if episode.path else [],
@@ -591,6 +721,8 @@ def _build_context(
             "series.status": series.status,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": season.is_monitored,
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     return {}

@@ -131,6 +131,26 @@ class SonarrClient:
             return []
         return [build_sonarr_series_from_dict(series) for series in data]
 
+    async def get_disk_space(self) -> list[dict]:
+        """Get disk space stats from Sonarr (GET /diskspace).
+
+        Returns a list of dicts with keys: path, free_space, total_space.
+        These are reported by the Sonarr server itself, so they work correctly
+        regardless of where Reclaimerr is running (Docker, remote machine, etc.).
+        """
+        _, data = await self._make_request("GET", "diskspace")
+        if not isinstance(data, list):
+            return []
+        return [
+            {
+                "path": entry.get("path", ""),
+                "free_space": entry.get("freeSpace", 0) or 0,
+                "total_space": entry.get("totalSpace", 0) or 0,
+            }
+            for entry in data
+            if entry.get("path")
+        ]
+
     async def get_tags(self) -> list[ArrTag]:
         """Get all tags from Sonarr.
 
