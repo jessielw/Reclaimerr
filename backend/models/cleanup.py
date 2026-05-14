@@ -78,3 +78,4 @@ class MatchedCandidateRecord:
     movie_version_id: int | None = None
     series_id: int | None = None
     season_id: int | None = None
+    episode_id: int | None = None

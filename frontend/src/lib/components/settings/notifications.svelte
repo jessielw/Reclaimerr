@@ -19,6 +19,7 @@
   import { toast } from "svelte-sonner";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
 
   interface Props {
     userRole: string;
@@ -36,6 +37,7 @@
     requestDeclined: boolean;
     adminMessage: boolean;
     taskFailure: boolean;
+    preferences: Record<string, { detail: string; max_items?: number }>;
   }
 
   let loading = $state(false);
@@ -50,7 +52,7 @@
   // map enum values to camelCase property keys
   type NotificationKey = keyof Omit<
     NotificationConfig,
-    "id" | "enabled" | "name" | "url"
+    "id" | "enabled" | "name" | "url" | "preferences"
   >;
 
   const notificationTypeMap: Record<NotificationType, NotificationKey> = {
@@ -59,6 +61,32 @@
     [NotificationType.RequestDeclined]: "requestDeclined",
     [NotificationType.AdminMessage]: "adminMessage",
     [NotificationType.TaskFailure]: "taskFailure",
+  };
+
+  const defaultPreferences = () => ({
+    [NotificationType.NewCleanupCandidates]: {
+      detail: "top_n_summary",
+      max_items: 5,
+    },
+    [NotificationType.RequestApproved]: { detail: "standard" },
+    [NotificationType.RequestDeclined]: { detail: "standard" },
+    [NotificationType.AdminMessage]: { detail: "standard" },
+    [NotificationType.TaskFailure]: { detail: "standard" },
+  });
+
+  const normalizedPreferences = (
+    raw: Record<string, { detail?: string; max_items?: number }> | undefined,
+  ) => {
+    const defaults = defaultPreferences();
+    if (!raw) return defaults;
+    return {
+      ...defaults,
+      ...raw,
+      [NotificationType.NewCleanupCandidates]: {
+        ...defaults[NotificationType.NewCleanupCandidates],
+        ...(raw[NotificationType.NewCleanupCandidates] ?? {}),
+      },
+    };
   };
 
   // notification type metadata
@@ -110,6 +138,7 @@
           request_declined: boolean;
           admin_message: boolean;
           task_failure: boolean;
+          preferences?: Record<string, { detail?: string; max_items?: number }>;
         }>
       >("/api/settings/notifications");
 
@@ -123,6 +152,7 @@
         requestDeclined: n.request_declined,
         adminMessage: n.admin_message,
         taskFailure: n.task_failure,
+        preferences: normalizedPreferences(n.preferences),
       }));
     } catch (err: any) {
       toast.error(`Failed to load notifications: ${err.message}`);
@@ -138,7 +168,7 @@
       ...notifications,
       {
         id: newId,
-        enabled: false,
+        enabled: true,
         name: "",
         url: "",
         newCleanupCandidates: false,
@@ -146,6 +176,7 @@
         requestDeclined: false,
         adminMessage: false,
         taskFailure: false,
+        preferences: defaultPreferences(),
       },
     ];
     expandedStates[newId] = true; // auto-expand new notification
@@ -171,6 +202,7 @@
         request_declined: notification.requestDeclined,
         admin_message: notification.adminMessage,
         task_failure: notification.taskFailure,
+        preferences: notification.preferences,
       };
 
       const response = await post_api<{
@@ -185,6 +217,7 @@
           request_declined: boolean;
           admin_message: boolean;
           task_failure: boolean;
+          preferences?: Record<string, { detail?: string; max_items?: number }>;
         };
       }>("/api/settings/notifications", payload);
 
@@ -200,6 +233,7 @@
         requestDeclined: response.data.request_declined,
         adminMessage: response.data.admin_message,
         taskFailure: response.data.task_failure,
+        preferences: normalizedPreferences(response.data.preferences),
       };
 
       // update expanded state if ID changed (new notification saved)
@@ -588,8 +622,8 @@
                     {#each notificationTypes as notifType}
                       {#if !notifType.adminOnly || isAdmin}
                         <label
-                          class="flex items-start gap-3 p-3 border border-border rounded-lg cursor-pointer
-                                 hover:bg-muted/50 transition-colors"
+                          class="flex items-start flex-wrap gap-3 p-3 border border-border rounded-lg
+                            cursor-pointer hover:bg-muted/50 transition-colors"
                         >
                           <Switch
                             checked={notification[
@@ -613,6 +647,129 @@
                             <p class="text-xs text-muted-foreground mt-0.5">
                               {notifType.description}
                             </p>
+                            {#if notifType.type === NotificationType.NewCleanupCandidates}
+                              <div
+                                class="mt-2 flex flex-wrap items-center gap-2"
+                              >
+                                <Select.Root
+                                  type="single"
+                                  value={notification.preferences[
+                                    NotificationType.NewCleanupCandidates
+                                  ]?.detail ?? "top_n_summary"}
+                                  onValueChange={(value) => {
+                                    notification.preferences[
+                                      NotificationType.NewCleanupCandidates
+                                    ] = {
+                                      ...notification.preferences[
+                                        NotificationType.NewCleanupCandidates
+                                      ],
+                                      detail: value,
+                                    };
+                                  }}
+                                >
+                                  <Select.Trigger
+                                    class="h-8 min-w-40 text-xs cursor-pointer"
+                                  >
+                                    {#if notification.preferences[NotificationType.NewCleanupCandidates]?.detail === "count_only"}
+                                      Count only
+                                    {:else if notification.preferences[NotificationType.NewCleanupCandidates]?.detail === "top_n_with_reasons"}
+                                      Top N with reasons
+                                    {:else}
+                                      Top N summary
+                                    {/if}
+                                  </Select.Trigger>
+                                  <Select.Content>
+                                    <Select.Item
+                                      value="count_only"
+                                      class="cursor-pointer"
+                                    >
+                                      Count only
+                                    </Select.Item>
+                                    <Select.Item
+                                      value="top_n_summary"
+                                      class="cursor-pointer"
+                                    >
+                                      Top N summary
+                                    </Select.Item>
+                                    <Select.Item
+                                      value="top_n_with_reasons"
+                                      class="cursor-pointer"
+                                    >
+                                      Top N with reasons
+                                    </Select.Item>
+                                  </Select.Content>
+                                </Select.Root>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={20}
+                                  class="h-8 w-24 text-xs"
+                                  value={String(
+                                    notification.preferences[
+                                      NotificationType.NewCleanupCandidates
+                                    ]?.max_items ?? 5,
+                                  )}
+                                  oninput={(e) => {
+                                    const parsed = Number(
+                                      e.currentTarget.value || "5",
+                                    );
+                                    notification.preferences[
+                                      NotificationType.NewCleanupCandidates
+                                    ] = {
+                                      ...notification.preferences[
+                                        NotificationType.NewCleanupCandidates
+                                      ],
+                                      max_items: Number.isFinite(parsed)
+                                        ? Math.min(Math.max(parsed, 1), 20)
+                                        : 5,
+                                    };
+                                  }}
+                                />
+                                <span class="text-xs text-muted-foreground">
+                                  max items
+                                </span>
+                              </div>
+                            {:else}
+                              <div class="mt-2">
+                                <Select.Root
+                                  type="single"
+                                  value={notification.preferences[
+                                    notifType.type
+                                  ]?.detail ?? "standard"}
+                                  onValueChange={(value) => {
+                                    notification.preferences[notifType.type] = {
+                                      ...notification.preferences[
+                                        notifType.type
+                                      ],
+                                      detail: value,
+                                    };
+                                  }}
+                                >
+                                  <Select.Trigger
+                                    class="h-8 min-w-28 text-xs cursor-pointer"
+                                  >
+                                    {notification.preferences[notifType.type]
+                                      ?.detail === "compact"
+                                      ? "Compact"
+                                      : "Standard"}
+                                  </Select.Trigger>
+                                  <Select.Content>
+                                    <Select.Item
+                                      value="compact"
+                                      class="cursor-pointer"
+                                    >
+                                      Compact
+                                    </Select.Item>
+                                    <Select.Item
+                                      value="standard"
+                                      class="cursor-pointer"
+                                    >
+                                      Standard
+                                    </Select.Item>
+                                  </Select.Content>
+                                </Select.Root>
+                              </div>
+                            {/if}
                           </div>
                         </label>
                       {/if}

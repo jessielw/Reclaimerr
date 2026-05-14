@@ -24,6 +24,7 @@ def build_radarr_movie_from_dict(data: dict) -> RadarrMovie:
         year=data.get("year"),
         path=data.get("path", ""),
         has_file=data.get("hasFile", False),
+        monitored=data.get("monitored", False),
         tags=data.get("tags", []),
         raw=data,
     )
@@ -105,6 +106,26 @@ class RadarrClient:
         if not isinstance(data, list):
             return []
         return [build_radarr_movie_from_dict(movie) for movie in data]
+
+    async def get_disk_space(self) -> list[dict]:
+        """Get disk space stats from Radarr (GET /diskspace).
+
+        Returns a list of dicts with keys: path, free_space, total_space.
+        These are reported by the Radarr server itself, so they work correctly
+        regardless of where Reclaimerr is running (Docker, remote machine, etc.).
+        """
+        _, data = await self._make_request("GET", "diskspace")
+        if not isinstance(data, list):
+            return []
+        return [
+            {
+                "path": entry.get("path", ""),
+                "free_space": entry.get("freeSpace", 0) or 0,
+                "total_space": entry.get("totalSpace", 0) or 0,
+            }
+            for entry in data
+            if entry.get("path")
+        ]
 
     async def get_tags(self) -> list[ArrTag]:
         """Get all tags from Radarr."""

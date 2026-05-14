@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 import re
+import shutil
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
-from backend.database.models import Movie, MovieVersion, ReclaimRule, Season, Series
+from backend.database.models import (
+    Episode,
+    Movie,
+    MovieVersion,
+    ReclaimRule,
+    Season,
+    Series,
+)
 from backend.enums import MediaType
 
 TARGET_MOVIE_VERSION = "movie_version"
 TARGET_SERIES = "series"
 TARGET_SEASON = "season"
-VALID_TARGET_SCOPES = {TARGET_MOVIE_VERSION, TARGET_SERIES, TARGET_SEASON}
+TARGET_EPISODE = "episode"
+VALID_TARGET_SCOPES = {
+    TARGET_MOVIE_VERSION,
+    TARGET_SERIES,
+    TARGET_SEASON,
+    TARGET_EPISODE,
+}
 
 RuleDefinition = dict[str, Any]
 
@@ -32,6 +47,15 @@ FIELD_LABELS: dict[str, str] = {
     "tmdb.days_since_first_air_date": "Days since first aired",
     "tmdb.days_since_last_air_date": "Days since last aired",
     "season.days_since_air_date": "Days since season aired",
+    "season.season_number": "Season number",
+    "season.episode_count": "Episode count",
+    "season.is_latest_season": "Is latest season",
+    "season.seasons_from_latest": "Seasons from latest",
+    "episode.number": "Episode number",
+    "episode.season_number": "Episode season number",
+    "episode.air_date": "Episode air date",
+    "episode.days_since_air_date": "Days since episode aired",
+    "watch.never_watched": "Never watched",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "Rating",
     "tmdb.vote_count": "Vote count",
@@ -52,6 +76,10 @@ FIELD_LABELS: dict[str, str] = {
     "video.color_primaries": "Color primaries",
     "media.duration": "Duration",
     "arr.tags": "Arr tags",
+    "arr.monitored": "Arr monitored",
+    "seerr.requested": "Seerr requested",
+    "disk.free_bytes": "Disk free (bytes)",
+    "disk.free_percent": "Disk free (%)",
 }
 
 OPERATOR_LABELS: dict[str, str] = {
@@ -93,6 +121,12 @@ NUMERIC_FIELDS = {
     "tmdb.days_since_first_air_date",
     "tmdb.days_since_last_air_date",
     "season.days_since_air_date",
+    "season.season_number",
+    "season.episode_count",
+    "season.seasons_from_latest",
+    "episode.number",
+    "episode.season_number",
+    "episode.days_since_air_date",
     "tmdb.popularity",
     "tmdb.vote_average",
     "tmdb.vote_count",
@@ -101,6 +135,8 @@ NUMERIC_FIELDS = {
     "audio.channels",
     "audio.track_count",
     "media.duration",
+    "disk.free_bytes",
+    "disk.free_percent",
 }
 TEXT_FIELDS = {
     "series.status",
@@ -115,13 +151,21 @@ TEXT_FIELDS = {
     "arr.tags",
 }
 LIBRARY_FIELDS = {"library.id"}
-BOOLEAN_FIELDS = {"video.hdr", "video.dolby_vision"}
+BOOLEAN_FIELDS = {
+    "video.hdr",
+    "video.dolby_vision",
+    "season.is_latest_season",
+    "watch.never_watched",
+    "arr.monitored",
+    "seerr.requested",
+}
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
     "tmdb.release_date",
     "tmdb.first_air_date",
     "tmdb.last_air_date",
     "season.air_date",
+    "episode.air_date",
 }
 PATH_FIELDS = {"media.path", "media.file_name"}
 NUMERIC_OPERATORS = {
@@ -178,6 +222,136 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
 }
+
+
+class DiskStatsResolver:
+    """Holds pre fetched disk stats for one scan run.
+
+    Instantiate once at scan start and call ``activate()`` to install it for
+    the current async context.  All rule engine code running in the same
+    asyncio Task (or its sub tasks) can then call ``DiskStatsResolver.current()``
+    to obtain the active instance.
+
+    No lock is required (each scan creates its own instance with its own
+    snapshot of arr data. The instance level dict cache avoids redundant
+    lookups across the hundreds of media items evaluated in a single scan).
+    """
+
+    _ctx: ContextVar[DiskStatsResolver | None] = ContextVar(
+        "disk_stats_resolver", default=None
+    )
+
+    __slots__ = ("_arr_entries", "_path_mappings", "_cache")
+
+    def __init__(
+        self,
+        arr_entries: list[dict] | None = None,
+        path_mappings: list[dict] | None = None,
+    ) -> None:
+        self._arr_entries: list[dict] = sorted(
+            arr_entries or [], key=lambda e: -len(str(e.get("path") or ""))
+        )
+        self._path_mappings: list[dict] = sorted(
+            path_mappings or [], key=lambda m: -len(str(m.get("source_prefix") or ""))
+        )
+        self._cache: dict[str, tuple[int, float] | None] = {}
+
+    def activate(self) -> None:
+        """Install this resolver for the current async context."""
+        DiskStatsResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> DiskStatsResolver | None:
+        """Return the resolver active in the current async context, or None."""
+        return cls._ctx.get()
+
+    def resolve(self, path: str) -> tuple[int, float] | None:
+        """Return ``(free_bytes, free_percent)`` for the filesystem containing *path*.
+
+        Results are cached for the lifetime of this instance (one scan run).
+        Primary source: pre fetched arr /disk space entries.
+        Fallback: shutil.disk_usage with path-mapping translation.
+        """
+        if path in self._cache:
+            return self._cache[path]
+        result = self._resolve_arr(path) or self._resolve_local(path)
+        self._cache[path] = result
+        return result
+
+    def _resolve_arr(self, path: str) -> tuple[int, float] | None:
+        """Look up disk stats in the pre fetched Radarr/Sonarr /disk space entries."""
+        norm = path.replace("\\", "/")
+        for entry in self._arr_entries:  # sorted longest first
+            raw = (entry.get("path") or "").replace("\\", "/")
+            if not raw:
+                continue
+            ep = raw.rstrip("/") or "/"  # preserve "/" (never collapse to "")
+            if ep == "/":
+                if not norm.startswith("/"):
+                    continue
+            elif norm != ep and not norm.startswith(ep + "/"):
+                continue
+            free = entry.get("free_space", 0) or 0
+            total = entry.get("total_space", 0) or 0
+            return free, (free / total * 100.0 if total else 0.0)
+        return None
+
+    def _resolve_local(self, path: str) -> tuple[int, float] | None:
+        """Fall back to shutil.disk_usage with path mapping translation."""
+        for m in self._path_mappings:  # sorted longest source first
+            source = m.get("source_prefix") or ""
+            if source and path.startswith(source):
+                local = (m.get("local_prefix") or "") + path[len(source) :]
+                try:
+                    usage = shutil.disk_usage(local)
+                    return usage.free, (
+                        usage.free / usage.total * 100.0 if usage.total else 0.0
+                    )
+                except Exception:
+                    return None
+        try:
+            usage = shutil.disk_usage(path)
+            return usage.free, (
+                usage.free / usage.total * 100.0 if usage.total else 0.0
+            )
+        except Exception:
+            return None
+
+
+class SeerrRequestResolver:
+    """Holds pre fetched Seerr request state for one scan run.
+
+    State is keyed by ``(media_type, tmdb_id)`` and values are booleans indicating
+    whether that media currently has at least one request in Seerr.
+    """
+
+    _ctx: ContextVar[SeerrRequestResolver | None] = ContextVar(
+        "seerr_request_resolver", default=None
+    )
+
+    __slots__ = ("_requested_by_key",)
+
+    def __init__(
+        self, requested_by_key: dict[tuple[MediaType, int], bool] | None = None
+    ):
+        self._requested_by_key: dict[tuple[MediaType, int], bool] = (
+            requested_by_key or {}
+        )
+
+    def activate(self) -> None:
+        """Install this resolver for the current async context."""
+        SeerrRequestResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> SeerrRequestResolver | None:
+        """Return the resolver active in the current async context, or None."""
+        return cls._ctx.get()
+
+    def resolve(self, media_type: MediaType, tmdb_id: int | None) -> bool | None:
+        """Return Seerr requested state for the given media key if known."""
+        if tmdb_id is None:
+            return None
+        return self._requested_by_key.get((media_type, tmdb_id))
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -281,6 +455,7 @@ def evaluate_advanced_rule(
     version: MovieVersion | None = None,
     series: Series | None = None,
     season: Season | None = None,
+    episode: Episode | None = None,
 ) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
     """Evaluate an advanced rule against the provided media context, returning whether it
     matches, the matched field values, and the reasons for the match or failure."""
@@ -291,12 +466,23 @@ def evaluate_advanced_rule(
     if not isinstance(root, dict):
         return False, {}, []
 
-    context = _build_context(target_scope, movie, version, series, season)
+    compute_disk = _rule_uses_disk_fields(definition)
+    context = _build_context(
+        target_scope, movie, version, series, season, episode, compute_disk
+    )
     matched: dict[str, Any] = {}
     reasons: list[dict[str, Any]] = []
     if not _evaluate_node(root, context, matched, reasons):
         return False, {}, []
     return True, matched, reasons
+
+
+def _rule_uses_disk_fields(definition: RuleDefinition | None) -> bool:
+    """Return True if the rule definition references any disk.* fields."""
+    return bool(
+        collect_rule_conditions(definition, field="disk.free_bytes")
+        or collect_rule_conditions(definition, field="disk.free_percent")
+    )
 
 
 def _has_valid_definition(definition: RuleDefinition | None) -> bool:
@@ -372,11 +558,20 @@ def _build_context(
     version: MovieVersion | None,
     series: Series | None,
     season: Season | None,
+    episode: Episode | None = None,
+    compute_disk: bool = True,
 ) -> dict[str, Any]:
     """Build the context dictionary for evaluating a rule against a specific target scope."""
     now = datetime.now(UTC)
+    _resolver = DiskStatsResolver.current() if compute_disk else None
+    _seerr_resolver = SeerrRequestResolver.current()
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
+        _disk = (
+            _resolver.resolve(version.path) if (_resolver and version.path) else None
+        )
+        _added = version.added_at or movie.added_at
+        _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
@@ -386,8 +581,8 @@ def _build_context(
                 version.added_at or movie.added_at, now
             ),
             "watch.view_count": movie.view_count,
-            "watch.last_viewed_at": movie.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(movie.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
@@ -409,10 +604,23 @@ def _build_context(
             "video.color_primaries": version.video_color_primaries,
             "media.duration": version.duration,
             "arr.tags": movie.arr_tags or [],
+            "arr.monitored": movie.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.MOVIE, movie.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
+        _series_path = next((ref.path for ref in refs if ref.path), None)
+        _disk = (
+            _resolver.resolve(_series_path) if (_resolver and _series_path) else None
+        )
+        _last_viewed = _effective_last_viewed(series.last_viewed_at, series.added_at)
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -420,8 +628,8 @@ def _build_context(
             "media.size": series.size,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
-            "watch.last_viewed_at": series.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(series.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -443,10 +651,32 @@ def _build_context(
             "audio.channels": series.max_audio_channels,
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.monitored": series.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_SEASON and series and season:
         refs = series.service_refs or []
+        non_special_nums = sorted(
+            s.season_number for s in (series.seasons or []) if s.season_number > 0
+        )
+        max_season = non_special_nums[-1] if non_special_nums else 0
+        if season.season_number > 0 and season.season_number in non_special_nums:
+            seasons_from_latest: int | None = (
+                len(non_special_nums) - 1 - non_special_nums.index(season.season_number)
+            )
+            is_latest_season = season.season_number == max_season
+        else:
+            seasons_from_latest = None
+            is_latest_season = False
+        _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
+        _last_viewed = _effective_last_viewed(season.last_viewed_at, season.added_at)
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
@@ -454,10 +684,14 @@ def _build_context(
             "media.size": season.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
-            "watch.last_viewed_at": season.last_viewed_at,
-            "watch.days_since_last_watched": _days_between(season.last_viewed_at, now),
+            "watch.last_viewed_at": _last_viewed,
+            "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
+            "season.season_number": season.season_number,
+            "season.episode_count": season.episode_count,
+            "season.is_latest_season": is_latest_season,
+            "season.seasons_from_latest": seasons_from_latest,
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -480,6 +714,81 @@ def _build_context(
             "audio.languages": season.audio_languages,
             "subtitle.languages": season.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.monitored": season.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
+        }
+
+    if target_scope == TARGET_EPISODE and series and season and episode:
+        refs = series.service_refs or []
+        non_special_nums_ep = sorted(
+            s.season_number for s in (series.seasons or []) if s.season_number > 0
+        )
+        max_season_ep = non_special_nums_ep[-1] if non_special_nums_ep else 0
+        if season.season_number > 0 and season.season_number in non_special_nums_ep:
+            seasons_from_latest_ep: int | None = (
+                len(non_special_nums_ep)
+                - 1
+                - non_special_nums_ep.index(season.season_number)
+            )
+            is_latest_season_ep = season.season_number == max_season_ep
+        else:
+            seasons_from_latest_ep = None
+            is_latest_season_ep = False
+        _disk = (
+            _resolver.resolve(episode.path) if (_resolver and episode.path) else None
+        )
+        _last_viewed_ep = _effective_last_viewed(
+            episode.last_viewed_at, season.added_at
+        )
+        return {
+            "library.id": [ref.library_id for ref in refs if ref.library_id],
+            "media.path": [episode.path] if episode.path else [],
+            "media.file_name": [episode.path.rsplit("/", 1)[-1]]
+            if episode.path
+            else [],
+            "media.size": episode.size,
+            "media.days_since_added": _days_between(season.added_at, now),
+            "watch.view_count": episode.view_count,
+            "watch.last_viewed_at": _last_viewed_ep,
+            "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
+            "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
+            "episode.number": episode.episode_number,
+            "episode.season_number": season.season_number,
+            "episode.air_date": episode.air_date,
+            "episode.days_since_air_date": _days_between(episode.air_date, now),
+            "season.season_number": season.season_number,
+            "season.episode_count": season.episode_count,
+            "season.is_latest_season": is_latest_season_ep,
+            "season.seasons_from_latest": seasons_from_latest_ep,
+            "season.air_date": season.air_date,
+            "season.days_since_air_date": _days_between(season.air_date, now),
+            "tmdb.first_air_date": series.tmdb_first_air_date,
+            "tmdb.last_air_date": series.tmdb_last_air_date,
+            "tmdb.days_since_first_air_date": _days_between(
+                series.tmdb_first_air_date, now
+            ),
+            "tmdb.days_since_last_air_date": _days_between(
+                series.tmdb_last_air_date, now
+            ),
+            "tmdb.popularity": series.popularity,
+            "tmdb.vote_average": series.vote_average,
+            "tmdb.vote_count": series.vote_count,
+            "series.status": series.status,
+            "arr.tags": series.arr_tags or [],
+            "arr.monitored": season.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "disk.free_bytes": _disk[0] if _disk else None,
+            "disk.free_percent": _disk[1] if _disk else None,
         }
 
     return {}
@@ -625,6 +934,22 @@ def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
         if any(regex.search(value) for value in normalized_values):
             return True
     return False
+
+
+def _effective_last_viewed(
+    last_viewed_at: datetime | None,
+    added_at: datetime | None,
+) -> datetime | None:
+    """Return None if the item was re added after its last watch.
+
+    When a file is deleted and re added the media server preserves the old
+    watch timestamp, making days_since_last_watched appear artificially low
+    for the current copy. Returning None causes the date based watch fields
+    to evaluate as if the current copy was never watched, which is correct.
+    """
+    if last_viewed_at and added_at and added_at > last_viewed_at:
+        return None
+    return last_viewed_at
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

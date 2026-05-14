@@ -320,6 +320,12 @@ async def create_delete_request(
             notification_type=NotificationType.ADMIN_MESSAGE,
             title="New Delete Request",
             message=f"{user.username} requested deletion for {media.title}",
+            context={
+                "actor": user.username,
+                "media_title": media.title,
+                "media_type": request_data.media_type.value,
+                "reason": request_data.reason,
+            },
         )
     except Exception as e:
         LOG.error(f"Failed to send notification: {e}")
@@ -552,6 +558,12 @@ async def approve_delete_request(
                 if tracked_request.execution_error is None
                 else f"Your delete request for {media.title} was approved but failed to execute"
             ),
+            context={
+                "media_title": media.title,
+                "media_type": tracked_request.media_type.value,
+                "reason": tracked_request.reason,
+                "admin_notes": tracked_request.admin_notes,
+            },
         )
     except Exception as e:
         LOG.error(f"Failed to send notification: {e}")
@@ -608,6 +620,12 @@ async def deny_delete_request(
             notification_type=NotificationType.REQUEST_DECLINED,
             title="Delete Request Denied",
             message=f"Your delete request for {media.title} has been denied",
+            context={
+                "media_title": media.title,
+                "media_type": request.media_type.value,
+                "reason": request.reason,
+                "admin_notes": review_data.admin_notes,
+            },
         )
     except Exception as e:
         LOG.error(f"Failed to send notification: {e}")

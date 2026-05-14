@@ -25,6 +25,7 @@ from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
+    AggregatedEpisodeData,
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
@@ -477,6 +478,8 @@ class EmbyServiceBase:
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
         season_paths: dict[tuple[str, int], str] = {}
         season_episode_paths: dict[tuple[str, int], list[str]] = {}
+        # episode data: (series_id, season_number) -> list of AggregatedEpisodeData
+        season_episode_data: dict[tuple[str, int], list[AggregatedEpisodeData]] = {}
 
         start_index = 0
         limit = 500
@@ -583,16 +586,62 @@ class EmbyServiceBase:
                 user_data = episode.get("UserData", {})
                 play_count = user_data.get("PlayCount", 0) or 0
                 season_view_counts[sk] = season_view_counts.get(sk, 0) + play_count
+                ep_last_viewed_at: datetime | None = None
                 if play_count > 0 and user_data.get("LastPlayedDate"):
                     try:
                         lva = datetime.fromisoformat(user_data["LastPlayedDate"])
                         prev = season_last_viewed.get(sk)
                         if prev is None or lva > prev:
                             season_last_viewed[sk] = lva
+                        ep_last_viewed_at = lva
                     except (TypeError, ValueError):
                         pass
                 elif sk not in season_last_viewed:
                     season_last_viewed[sk] = None
+
+                # collect episode data
+                ep_index_raw = episode.get("IndexNumber")
+                if ep_index_raw is not None:
+                    try:
+                        ep_num = int(ep_index_raw)
+                    except (TypeError, ValueError):
+                        ep_num = None
+                    if ep_num is not None:
+                        ep_path: str | None = None
+                        ep_size_ep: int | None = None
+                        for _src in episode.get("MediaSources", []):
+                            _p = _src.get("Path")
+                            if _p:
+                                ep_path = normalize_fpath(_p)
+                                ep_size_ep = _src.get("Size") or None
+                                break
+                        ep_air_ep: datetime | None = season_air_date.get(sk)
+                        _ep_premiere = episode.get("PremiereDate")
+                        if _ep_premiere:
+                            try:
+                                ep_air_ep = datetime.fromisoformat(
+                                    _ep_premiere.replace("Z", "+00:00")
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                        ep_item_id = str(episode.get("Id", ""))
+                        season_episode_data.setdefault(sk, []).append(
+                            AggregatedEpisodeData(
+                                episode_number=ep_num,
+                                name=episode.get("Name") or None,
+                                view_count=play_count,
+                                air_date=ep_air_ep,
+                                last_viewed_at=ep_last_viewed_at,
+                                size=ep_size_ep,
+                                path=ep_path,
+                                jellyfin_episode_id=ep_item_id
+                                if self.service_type == Service.JELLYFIN
+                                else None,
+                                emby_episode_id=ep_item_id
+                                if self.service_type == Service.EMBY
+                                else None,
+                            )
+                        )
 
                 # media aggregate signals per season
                 for source in episode.get("MediaSources", []):
@@ -703,6 +752,7 @@ class EmbyServiceBase:
                 or None,
                 path=season_paths.get(sk),
                 episode_paths=season_episode_paths.get(sk) or None,
+                episode_data=season_episode_data.get(sk) or [],
             )
 
         return series_sizes, season_data

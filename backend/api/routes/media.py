@@ -12,6 +12,7 @@ from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     DeleteRequest,
+    Episode,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -360,6 +361,16 @@ async def get_series(
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
 
+    # count library seasons per series (one GROUP BY query for the whole page)
+    season_counts_result = await db.execute(
+        select(Season.series_id, func.count(Season.id))
+        .where(Season.series_id.in_(series_ids))
+        .group_by(Season.series_id)
+    )
+    season_counts: dict[int, int] = {
+        int(k): int(v) for k, v in season_counts_result.all()
+    }
+
     # get series level candidates (no season)
     candidates_result = await db.execute(
         select(ReclaimCandidate).where(
@@ -499,6 +510,7 @@ async def get_series(
             "status": status,
             "has_season_candidates": series.id in series_with_season_cands
             and candidate is None,
+            "library_season_count": season_counts.get(series.id, 0),
             "added_at": to_utc_isoformat(series.added_at),
         }
         items.append(SeriesWithStatus(**series_dict))
@@ -680,11 +692,15 @@ async def get_candidates(
             Series.vote_average.label("series_vote_average"),
             Series.vote_count.label("series_vote_count"),
             Series.status.label("series_status"),
+            # episode
+            Episode.episode_number.label("episode_number"),
+            Episode.name.label("episode_name"),
         )
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
         .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
         .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
+        .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
 
     if media_type:
@@ -936,6 +952,9 @@ async def get_candidates(
                 series_library_refs=series_library_refs_by_id.get(c.series_id or -1)
                 if c.season_id is not None
                 else None,
+                episode_id=c.episode_id,
+                episode_number=row.episode_number if c.episode_id is not None else None,
+                episode_name=row.episode_name if c.episode_id is not None else None,
             )
         )
 

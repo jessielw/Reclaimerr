@@ -12,6 +12,7 @@ class RadarrMovie:
     year: int | None
     path: str
     has_file: bool
+    monitored: bool
     tags: list[int]
     raw: dict | None = None
 
@@ -31,6 +32,7 @@ def build_radarr_movie_from_dict(data: dict) -> RadarrMovie:
         year=data.get("year"),
         path=data.get("path", ""),
         has_file=data.get("hasFile", False),
+        monitored=data.get("monitored", False),
         tags=data.get("tags", []),
         raw=data,
     )

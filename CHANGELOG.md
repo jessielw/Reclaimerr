@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.18] - 2026-05-14
+
+### Added
+
+- Added episode granularity
+- Series candidates view now has collapsible season and episode level control
+- New Rules
+  - Series status (ended, continuing, etc)
+  - **\*arr** monitored status
+  - Free disk space
+  - Seerr requested
+- Now shows season counts and movie version counts on posters for movies/series tabs
+
+### Changed
+
+- Improved pulling from Tautulli and Jellyfin/Emby play back reporting plugin
+- Substantially improved notification output with some customization on what is returned
+  - Can now control a standard/compact message
+  - Can now send N number of candidates found with a total of reclaimable space
+  - New notifications are enabled by default on creation now
+
+### Fixed
+
+- Last viewed was in-accurate if a file was removed and re-added to a media server
+- Fix wrapping issues on medium size screens for notification selection
+
 ## [0.1.0-beta.17] - 2026-05-11
 
 ### Added

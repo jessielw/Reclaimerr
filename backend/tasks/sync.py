@@ -14,6 +14,7 @@ from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
 from backend.database import async_db
 from backend.database.models import (
+    Episode,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -30,6 +31,7 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, Service, Task
 from backend.models.media import (
+    AggregatedEpisodeData,
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
@@ -605,6 +607,115 @@ async def _sync_seasons(
             if season_number not in incoming_season_numbers:
                 await session.delete(season_obj)
 
+    # upsert episode rows for seasons that have episode_data
+    # flush first so new Season rows get their IDs
+    await session.flush()
+    for sd in season_data:
+        if not sd.episode_data:
+            continue
+        # resolve the season id (may be newly created)
+        season_id: int | None = None
+        if sd.season_number in existing:
+            season_id = existing[sd.season_number].id
+        else:
+            # newly added season (look it up)
+            result2 = await session.execute(
+                select(Season).where(
+                    Season.series_id == series_id,
+                    Season.season_number == sd.season_number,
+                )
+            )
+            new_s = result2.scalar_one_or_none()
+            if new_s:
+                season_id = new_s.id
+        if season_id is None:
+            continue
+        await _upsert_episodes(session, season_id, sd.episode_data, service_type)
+
+
+async def _upsert_episodes(
+    session: AsyncSession,
+    season_id: int,
+    episode_data: list[AggregatedEpisodeData],
+    service_type: Service,
+    *,
+    remove_stale: bool = True,
+) -> None:
+    """Upsert Episode rows for a season from freshly-fetched media server episode data.
+
+    Args:
+        remove_stale: When True (default), delete episodes no longer reported by the
+            service. Set to False for supplemental/linked-server calls where the service
+            may only have partial season coverage and should not delete episodes written
+            by the primary server.
+    """
+    result = await session.execute(
+        select(Episode).where(Episode.season_id == season_id)
+    )
+    existing_eps: dict[int, Episode] = {
+        e.episode_number: e for e in result.scalars().all()
+    }
+    incoming_nums: set[int] = set()
+    for ep in episode_data:
+        incoming_nums.add(ep.episode_number)
+        if ep.episode_number in existing_eps:
+            e = existing_eps[ep.episode_number]
+            # merge watch data: take max view_count and most recent last_viewed_at
+            e.view_count = max(e.view_count or 0, ep.view_count)
+            if ep.last_viewed_at is not None:
+                if e.last_viewed_at is None:
+                    e.last_viewed_at = ep.last_viewed_at
+                else:
+                    # normalize both sides to UTC aware before comparing to avoid
+                    # "offset-naive vs offset-aware" errors (SQLite returns naive datetimes)
+                    ep_lva = (
+                        ep.last_viewed_at
+                        if ep.last_viewed_at.tzinfo
+                        else ep.last_viewed_at.replace(tzinfo=UTC)
+                    )
+                    e_lva = (
+                        e.last_viewed_at
+                        if e.last_viewed_at.tzinfo
+                        else e.last_viewed_at.replace(tzinfo=UTC)
+                    )
+                    if ep_lva > e_lva:
+                        e.last_viewed_at = ep.last_viewed_at
+            if ep.air_date is not None and e.air_date is None:
+                e.air_date = ep.air_date
+            if ep.name is not None and e.name is None:
+                e.name = ep.name
+            if ep.size is not None:
+                e.size = ep.size
+            if ep.path is not None:
+                e.path = ep.path
+            if service_type is Service.PLEX and ep.plex_rating_key:
+                e.plex_rating_key = ep.plex_rating_key
+            elif service_type is Service.JELLYFIN and ep.jellyfin_episode_id:
+                e.jellyfin_episode_id = ep.jellyfin_episode_id
+            elif service_type is Service.EMBY and ep.emby_episode_id:
+                e.emby_episode_id = ep.emby_episode_id
+        else:
+            new_ep = Episode(
+                season_id=season_id,
+                episode_number=ep.episode_number,
+                name=ep.name,
+                air_date=ep.air_date,
+                size=ep.size,
+                path=ep.path,
+                view_count=ep.view_count,
+                last_viewed_at=ep.last_viewed_at,
+                plex_rating_key=ep.plex_rating_key,
+                jellyfin_episode_id=ep.jellyfin_episode_id,
+                emby_episode_id=ep.emby_episode_id,
+            )
+            session.add(new_ep)
+
+    # remove episodes no longer present on the media server
+    if remove_stale:
+        for ep_num, ep_obj in existing_eps.items():
+            if ep_num not in incoming_nums:
+                await session.delete(ep_obj)
+
 
 async def _upsert_series_service_ref(
     session: AsyncSession,
@@ -908,9 +1019,14 @@ async def gather_movies(
     return unique_movies
 
 
+# supplemental episode data from services that lost deduplication:
+# tmdb_id -> list of (service, season_data_list)
+_SupplementalEpisodeData = dict[int, list[tuple[Service, list[AggregatedSeasonData]]]]
+
+
 async def gather_series(
     service: MediaServerType | None = None,
-) -> dict[int, AggregatedSeriesData] | None:
+) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData] | None:
     """Fetch and combine series from all configured media servers, deduplicating by TMDB ID."""
     aggregated_series = []
     async with async_db() as session:
@@ -936,8 +1052,12 @@ async def gather_series(
                 aggregated_series.extend(get_series)
             LOG.debug(f"Fetched {len(get_series)} series from {server.service_type}")
 
-    # deduplicate series, keeping the one with most recent watch date
+    # deduplicate series, keeping the one with most recent watch date.
+    # When a series appears in multiple services (e.g. Plex + Jellyfin), the losing
+    # service's season data is stored as supplemental so its episode IDs (plex_rating_key,
+    # jellyfin_episode_id, emby_episode_id) can still be written to the episodes table.
     unique_series: dict[int, AggregatedSeriesData] = {}
+    supplemental: _SupplementalEpisodeData = {}
     skipped_count = 0
 
     for series in aggregated_series:
@@ -956,18 +1076,32 @@ async def gather_series(
                 not existing.last_viewed_at
                 or series.last_viewed_at > existing.last_viewed_at
             ):
+                # existing loses - stash its season data as supplemental
+                supplemental.setdefault(tmdb_id, []).append(
+                    (existing.service, existing.season_data)
+                )
                 unique_series[tmdb_id] = series
-            # if watch dates are equal/both None, prefer latest added_at
-            elif series.last_viewed_at == existing.last_viewed_at:
-                if series.added_at and (
-                    not existing.added_at or series.added_at > existing.added_at
-                ):
-                    unique_series[tmdb_id] = series
+            else:
+                # new series loses - stash its season data as supplemental
+                # (covers both the equal-date case and the "existing wins" case)
+                if series.last_viewed_at == existing.last_viewed_at:
+                    if series.added_at and (
+                        not existing.added_at or series.added_at > existing.added_at
+                    ):
+                        # new series wins on added_at - existing loses
+                        supplemental.setdefault(tmdb_id, []).append(
+                            (existing.service, existing.season_data)
+                        )
+                        unique_series[tmdb_id] = series
+                        continue
+                supplemental.setdefault(tmdb_id, []).append(
+                    (series.service, series.season_data)
+                )
 
     if skipped_count > 0:
         LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
 
-    return unique_series
+    return unique_series, supplemental
 
 
 async def sync_movies(
@@ -1355,7 +1489,11 @@ async def sync_series(
     source_label = service.value if service else "all-media-services"
     LOG.info(f"Starting series sync ({source_label})...")
 
-    aggregated_series = await gather_series(service)
+    gather_result = await gather_series(service)
+    if not gather_result:
+        LOG.info(f"No series to sync from {source_label}")
+        return set()
+    aggregated_series, supplemental_episode_data = gather_result
     if not aggregated_series:
         LOG.info(f"No series to sync from {source_label}")
         return set()
@@ -1516,6 +1654,47 @@ async def sync_series(
             LOG.debug(
                 f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
             )
+
+            #### supplemental episode ID pass ####
+            # For series that appeared in multiple services (e.g. Plex + Jellyfin/Emby),
+            # the losing service's episode data was discarded during deduplication.
+            # We re-run _upsert_episodes for those seasons here so that all
+            # service specific IDs (plex_rating_key, jellyfin_episode_id, etc.)
+            # are written to the episodes table
+            if supplemental_episode_data:
+                LOG.debug(
+                    f"Running supplemental episode ID upsert for "
+                    f"{len(supplemental_episode_data)} series"
+                )
+                for (
+                    sup_tmdb_id,
+                    service_season_list,
+                ) in supplemental_episode_data.items():
+                    sup_series = existing_series.get(sup_tmdb_id)
+                    if sup_series is None:
+                        continue
+                    for sup_service, sup_seasons in service_season_list:
+                        for sd in sup_seasons:
+                            if not sd.episode_data:
+                                continue
+                            result_s = await session.execute(
+                                select(Season).where(
+                                    Season.series_id == sup_series.id,
+                                    Season.season_number == sd.season_number,
+                                )
+                            )
+                            db_season = result_s.scalar_one_or_none()
+                            if db_season is None:
+                                continue
+                            await _upsert_episodes(
+                                session,
+                                db_season.id,
+                                sd.episode_data,
+                                sup_service,
+                                remove_stale=False,
+                            )
+                await session.commit()
+                LOG.debug("Supplemental episode ID upsert committed")
 
             # refresh per instance Sonarr refs for active series
             sonarr_clients = service_manager.sonarr_clients()
@@ -1928,6 +2107,41 @@ async def _sync_playback_reporting_for_service(
         f"seasons from {server_service} Playback Reporting plugin"
     )
 
+    #### episodes (individual, keyed by episode item ID) ####
+    episode_service_col = (
+        Episode.jellyfin_episode_id
+        if server_service == Service.JELLYFIN
+        else Episode.emby_episode_id
+    )
+    async with async_db() as session:
+        ep_rows = (
+            await session.execute(
+                select(
+                    episode_service_col,
+                    Episode.id,
+                    Episode.view_count,
+                ).where(episode_service_col.is_not(None))
+            )
+        ).all()
+
+        updated_episodes = 0
+        for service_ep_id, ep_id, current_count in ep_rows:
+            plugin_count = episode_stats.get(service_ep_id)
+            if plugin_count and plugin_count > (current_count or 0):
+                await session.execute(
+                    sql_update(Episode)
+                    .where(Episode.id == ep_id)
+                    .values(view_count=plugin_count)
+                )
+                updated_episodes += 1
+
+        await session.commit()
+
+    LOG.info(
+        f"Updated view_count for {updated_episodes} episodes from "
+        f"{server_service} Playback Reporting plugin"
+    )
+
 
 async def sync_tautulli_playback_data() -> None:
     """Supplement movie and series view counts / last-viewed timestamps using
@@ -1990,35 +2204,20 @@ async def sync_tautulli_playback_data() -> None:
         return
     use_mapped_matches = main.service_type != Service.PLEX
 
-    extra: dict[str, Any] = dict(tautulli_config.extra_settings or {})
-    raw_ts = extra.get("last_synced_at")
-    last_synced_at: datetime | None = None
-    if raw_ts:
-        try:
-            last_synced_at = datetime.fromisoformat(raw_ts)
-        except (ValueError, TypeError):
-            last_synced_at = None
-
-    LOG.info(
-        "Syncing Tautulli playback data"
-        + (f" (since {last_synced_at.date()})" if last_synced_at else " (full pull)")
-    )
+    LOG.info("Syncing Tautulli playback data (full pull)")
 
     try:
-        movie_counts = await service_manager.tautulli.get_play_counts(
-            "movie", since=last_synced_at
-        )
-        episode_counts = await service_manager.tautulli.get_play_counts(
-            "episode", since=last_synced_at
-        )
+        movie_counts = await service_manager.tautulli.get_play_counts("movie")
+        episode_counts = await service_manager.tautulli.get_play_counts("episode")
         season_counts = await service_manager.tautulli.get_play_counts(
-            "episode", since=last_synced_at, episode_key="parent_rating_key"
+            "episode", episode_key="parent_rating_key"
+        )
+        individual_episode_counts = await service_manager.tautulli.get_play_counts(
+            "episode", episode_key="rating_key"
         )
     except Exception as e:
         LOG.error(f"Failed to fetch Tautulli history: {e}")
         return
-
-    now = datetime.now(UTC).replace(tzinfo=None)
 
     #### movies ####
     if movie_counts:
@@ -2243,15 +2442,45 @@ async def sync_tautulli_playback_data() -> None:
     else:
         LOG.debug("No season play data returned from Tautulli")
 
-    # persist the sync timestamp so next run is incremental
-    async with async_db() as session:
-        extra["last_synced_at"] = now.isoformat()
-        await session.execute(
-            sql_update(ServiceConfig)
-            .where(ServiceConfig.id == tautulli_config.id)
-            .values(extra_settings=extra)
+    #### episodes (individual, keyed by episode rating_key) ####
+    if individual_episode_counts:
+        LOG.info(
+            f"Tautulli returned individual play data for "
+            f"{len(individual_episode_counts)} episode rating keys"
         )
-        await session.commit()
+        async with async_db() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Episode.plex_rating_key,
+                        Episode.id,
+                        Episode.view_count,
+                        Episode.last_viewed_at,
+                    ).where(Episode.plex_rating_key.is_not(None))
+                )
+            ).all()
+
+            updated = 0
+            for plex_key, ep_id, current_count, current_lva in rows:
+                entry = _play_entry(individual_episode_counts, plex_key)
+                if not entry:
+                    continue
+                taut_count, taut_lva = entry
+                new_count = max(current_count or 0, taut_count)
+                new_lva = _merge_last_viewed(current_lva, taut_lva)
+                if new_count != current_count or new_lva != current_lva:
+                    await session.execute(
+                        sql_update(Episode)
+                        .where(Episode.id == ep_id)
+                        .values(view_count=new_count, last_viewed_at=new_lva)
+                    )
+                    updated += 1
+
+            await session.commit()
+        LOG.info(f"Updated {updated} episodes from Tautulli playback data")
+    else:
+        LOG.debug("No individual episode play data returned from Tautulli")
+
     LOG.info("Tautulli playback sync complete")
 
 
@@ -2419,6 +2648,75 @@ async def sync_linked_data(
         LOG.info(
             f"Refreshed {len(series_matches)} supplemental series/season matches "
             f"from {service}"
+        )
+
+        #### Merge watch data + episode IDs from the linked server ####
+        # The main sync only writes watch data and episode IDs from the main server.
+        # This pass merges view_count / last_viewed_at at series, season, and episode
+        # level from the linked server, and backfills service-specific episode IDs
+        # (e.g. jellyfin_episode_id, plex_rating_key).
+        # remove_stale=False because the linked server may only have partial seasons.
+        ep_series_count = 0
+        ep_updated_count = 0
+        async with async_db() as session:
+            # build tmdb_id -> Series row lookup for fast matching
+            result_sids = await session.execute(
+                select(Series).where(Series.removed_at.is_(None))
+            )
+            series_by_tmdb: dict[int, Series] = {
+                s.tmdb_id: s for s in result_sids.scalars().all() if s.tmdb_id
+            }
+            for linked_series in aggregated_series:
+                ext = linked_series.external_ids
+                if not ext or not ext.tmdb:
+                    continue
+                db_series = series_by_tmdb.get(ext.tmdb)
+                if db_series is None:
+                    continue
+
+                # merge series level watch data
+                db_series.view_count = max(
+                    db_series.view_count or 0, linked_series.view_count or 0
+                )
+                db_series.last_viewed_at = _merge_last_viewed(
+                    db_series.last_viewed_at, linked_series.last_viewed_at
+                )
+
+                for sd in linked_series.season_data:
+                    result_s = await session.execute(
+                        select(Season).where(
+                            Season.series_id == db_series.id,
+                            Season.season_number == sd.season_number,
+                        )
+                    )
+                    db_season = result_s.scalar_one_or_none()
+                    if db_season is None:
+                        continue
+
+                    # merge season level watch data
+                    db_season.view_count = max(
+                        db_season.view_count or 0, sd.view_count or 0
+                    )
+                    db_season.last_viewed_at = _merge_last_viewed(
+                        db_season.last_viewed_at, sd.last_viewed_at
+                    )
+
+                    # backfill episode IDs + merge episode watch data
+                    if sd.episode_data:
+                        await _upsert_episodes(
+                            session,
+                            db_season.id,
+                            sd.episode_data,
+                            service,
+                            remove_stale=False,
+                        )
+                        ep_updated_count += len(sd.episode_data)
+
+                ep_series_count += 1
+            await session.commit()
+        LOG.info(
+            f"Merged watch data + episode IDs from {service} for {ep_series_count} series "
+            f"({ep_updated_count} episode records processed)"
         )
 
 

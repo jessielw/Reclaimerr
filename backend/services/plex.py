@@ -27,6 +27,7 @@ from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import Service
 from backend.models.media import (
+    AggregatedEpisodeData,
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
@@ -280,6 +281,8 @@ class PlexService:
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
         season_paths: dict[tuple[str, int], str] = {}
         season_episode_paths: dict[tuple[str, int], list[str]] = {}
+        # episode data: (series_key, season_number) -> list of AggregatedEpisodeData
+        season_episode_data: dict[tuple[str, int], list[AggregatedEpisodeData]] = {}
 
         # section-level episode list responses can omit per-stream details.
         # collect only episodes that need enrichment and fetch them in batches.
@@ -491,17 +494,64 @@ class PlexService:
             # watch data per season
             ep_view_count = episode.get("viewCount", 0) or 0
             season_view_counts[sk] = season_view_counts.get(sk, 0) + ep_view_count
+            ep_last_viewed_at: datetime | None = None
             if episode.get("lastViewedAt"):
                 try:
                     lva = datetime.fromtimestamp(int(episode["lastViewedAt"]), tz=UTC)
                     prev = season_last_viewed.get(sk)
                     if prev is None or lva > prev:
                         season_last_viewed[sk] = lva
+                    ep_last_viewed_at = lva
                 except (TypeError, ValueError, OSError):
                     if sk not in season_last_viewed:
                         season_last_viewed[sk] = None
             elif sk not in season_last_viewed:
                 season_last_viewed[sk] = None
+
+            # collect episode data
+            ep_index_raw = episode.get("index")
+            if ep_index_raw is not None:
+                try:
+                    ep_num = int(ep_index_raw)
+                except (TypeError, ValueError):
+                    ep_num = None
+                if ep_num is not None:
+                    ep_path: str | None = None
+                    ep_size: int | None = None
+                    _ep_media = source_episode.get("Media", []) or episode.get(
+                        "Media", []
+                    )
+                    if _ep_media and _ep_media[0].get("Part"):
+                        _part = _ep_media[0]["Part"][0]
+                        ep_path = (
+                            normalize_fpath(_part.get("file"))
+                            if _part.get("file")
+                            else None
+                        )
+                        ep_size = _part.get("size") or episode_size or None
+                    ep_air: datetime | None = None
+                    _ep_air_raw = source_episode.get(
+                        "originallyAvailableAt"
+                    ) or episode.get("originallyAvailableAt")
+                    if _ep_air_raw:
+                        try:
+                            ep_air = datetime.strptime(_ep_air_raw, "%Y-%m-%d")
+                        except (TypeError, ValueError):
+                            pass
+                    season_episode_data.setdefault(sk, []).append(
+                        AggregatedEpisodeData(
+                            episode_number=ep_num,
+                            name=source_episode.get("title")
+                            or episode.get("title")
+                            or None,
+                            view_count=ep_view_count,
+                            air_date=ep_air,
+                            last_viewed_at=ep_last_viewed_at,
+                            size=ep_size,
+                            path=ep_path,
+                            plex_rating_key=str(episode.get("ratingKey", "")),
+                        )
+                    )
 
         # build AggregatedSeasonData objects
         season_data: dict[tuple[str, int], AggregatedSeasonData] = {}
@@ -533,6 +583,7 @@ class PlexService:
                 or None,
                 path=season_paths.get(sk),
                 episode_paths=season_episode_paths.get(sk) or None,
+                episode_data=season_episode_data.get(sk) or [],
             )
 
         return series_sizes, series_paths, season_data
@@ -1120,6 +1171,7 @@ class PlexService:
                         subtitle_languages=sd.subtitle_languages,
                         path=sd.path,
                         episode_paths=sd.episode_paths,
+                        episode_data=sd.episode_data,
                     )
                 )
 

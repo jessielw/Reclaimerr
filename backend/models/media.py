@@ -99,6 +99,22 @@ class AggregatedMovieData:
 
 
 @dataclass(slots=True, frozen=True)
+class AggregatedEpisodeData:
+    """Per episode data collected from a media server during sync."""
+
+    episode_number: int
+    view_count: int
+    name: str | None = None
+    air_date: datetime | None = None
+    last_viewed_at: datetime | None = None
+    size: int | None = None
+    path: str | None = None
+    plex_rating_key: str | None = None
+    jellyfin_episode_id: str | None = None
+    emby_episode_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class AggregatedSeasonData:
     """Season with aggregated watch data from a media server."""
 
@@ -117,6 +133,8 @@ class AggregatedSeasonData:
     path: str | None = None
     # all episode file paths belonging to this season (as reported by the media server)
     episode_paths: list[str] | None = None
+    # per-episode data (populated by service layer when available)
+    episode_data: list[AggregatedEpisodeData] = field(default_factory=list)
     # aggregate media signals
     has_hdr: bool | None = None
     has_dolby_vision: bool | None = None
@@ -345,6 +363,8 @@ class SeriesWithStatus(BaseModel):
     status: MediaStatusInfo
     # true when at least one season (but not the whole series) is a reclaim candidate
     has_season_candidates: bool = False
+    # number of seasons actually present in the library
+    library_season_count: int = 0
 
     # timestamps
     added_at: str | None
@@ -456,6 +476,10 @@ class CandidateEntryBase(BaseModel):
     season_audio_codec_families: list[str] | None = None
     season_audio_languages: list[str] | None = None
     season_subtitle_languages: list[str] | None = None
+    # set for episode level candidates
+    episode_id: int | None = None
+    episode_number: int | None = None
+    episode_name: str | None = None
     series_library_refs: list[CandidateLibraryRef] | None = None
 
 

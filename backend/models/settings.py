@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import MediaType, Service
+from backend.enums import MediaType, NotificationType, Service
 from backend.types import MEDIA_SERVERS, MediaServerType
 
 
@@ -57,11 +57,67 @@ class LibrarySelectionUpdate(BaseModel):
     selected: bool
 
 
+def default_notification_preferences() -> dict[str, dict[str, Any]]:
+    """Return default notification formatting preferences."""
+    return {
+        NotificationType.NEW_CLEANUP_CANDIDATES.value: {
+            "detail": "top_n_summary",
+            "max_items": 5,
+        },
+        NotificationType.REQUEST_APPROVED.value: {"detail": "standard"},
+        NotificationType.REQUEST_DECLINED.value: {"detail": "standard"},
+        NotificationType.ADMIN_MESSAGE.value: {"detail": "standard"},
+        NotificationType.TASK_FAILURE.value: {"detail": "standard"},
+    }
+
+
+def normalize_notification_preferences(
+    preferences: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Normalize and validate notification formatting preferences."""
+    normalized = default_notification_preferences()
+    if not isinstance(preferences, dict):
+        return normalized
+
+    cleanup_key = NotificationType.NEW_CLEANUP_CANDIDATES.value
+    cleanup_raw = preferences.get(cleanup_key)
+    if isinstance(cleanup_raw, dict):
+        detail = str(cleanup_raw.get("detail") or "").strip().lower()
+        if detail in {"count_only", "top_n_summary", "top_n_with_reasons"}:
+            normalized[cleanup_key]["detail"] = detail
+        max_items_raw = cleanup_raw.get("max_items")
+        try:
+            max_items = (
+                int(max_items_raw)
+                if max_items_raw is not None
+                else normalized[cleanup_key]["max_items"]
+            )
+            normalized[cleanup_key]["max_items"] = min(max(max_items, 1), 20)
+        except (TypeError, ValueError):
+            pass
+
+    for notif_type in (
+        NotificationType.REQUEST_APPROVED,
+        NotificationType.REQUEST_DECLINED,
+        NotificationType.ADMIN_MESSAGE,
+        NotificationType.TASK_FAILURE,
+    ):
+        key = notif_type.value
+        raw = preferences.get(key)
+        if not isinstance(raw, dict):
+            continue
+        detail = str(raw.get("detail") or "").strip().lower()
+        if detail in {"compact", "standard"}:
+            normalized[key]["detail"] = detail
+
+    return normalized
+
+
 class NotificationSettingItem(BaseModel):
     """Model for creating or updating notification settings."""
 
     id: int | None = None  # None for new, populated for updates
-    enabled: bool
+    enabled: bool = True
     name: str | None = None
     url: str
     new_cleanup_candidates: bool = False
@@ -69,12 +125,16 @@ class NotificationSettingItem(BaseModel):
     request_declined: bool = False
     admin_message: bool = False
     task_failure: bool = False
+    preferences: dict[str, dict[str, Any]] = Field(
+        default_factory=default_notification_preferences
+    )
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationSettingItem:
         """Sanitize and validate notification URL."""
         self.url = self.url.strip()
         _validate_notification_url(self.url)
+        self.preferences = normalize_notification_preferences(self.preferences)
         return self
 
 

@@ -81,7 +81,18 @@ export interface NotificationSetting {
   requestDeclined: boolean;
   adminMessage: boolean;
   taskFailure: boolean;
+  preferences: NotificationPreferences;
 }
+
+export interface NotificationTypePreference {
+  detail: string;
+  max_items?: number;
+}
+
+export type NotificationPreferences = Record<
+  string,
+  NotificationTypePreference
+>;
 
 export enum NotificationType {
   NewCleanupCandidates = "new_cleanup_candidates",
@@ -134,7 +145,7 @@ export interface ReclaimRule {
   name: string;
   media_type: MediaType;
   enabled: boolean;
-  target_scope: "movie_version" | "series" | "season" | null;
+  target_scope: "movie_version" | "series" | "season" | "episode" | null;
   definition: RuleDefinition | null;
   action: RuleAction | null;
   created_at: string;
@@ -334,6 +345,8 @@ export interface SeriesWithStatus {
   last_viewed_at: string | null;
   view_count: number;
   status: MediaStatusInfo;
+  has_season_candidates: boolean;
+  library_season_count: number;
   added_at: string | null;
 }
 
@@ -517,7 +530,7 @@ export interface ReclaimCandidateEntry {
   estimated_space_bytes: number | null;
   has_pending_request: boolean;
   created_at: string;
-  // populated for season-level candidates
+  // populated for season level candidates
   season_id: number | null;
   season_number: number | null;
   series_title: string | null;
@@ -529,6 +542,10 @@ export interface ReclaimCandidateEntry {
   season_audio_codec_families: string[] | null;
   season_audio_languages: string[] | null;
   season_subtitle_languages: string[] | null;
+  // populated for episode level candidates
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   series_library_refs:
     | {
         library_id: string;

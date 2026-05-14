@@ -305,6 +305,12 @@ async def create_protection_request(
                 notification_type=NotificationType.ADMIN_MESSAGE,
                 title="New Exception Request",
                 message=f"{user.username} requested an exception for {media.title}",
+                context={
+                    "actor": user.username,
+                    "media_title": media.title,
+                    "media_type": request_data.media_type.value,
+                    "reason": request_data.reason,
+                },
             )
         except Exception as e:
             LOG.error(f"Failed to send notification: {e}")
@@ -687,6 +693,12 @@ async def approve_request(
             notification_type=NotificationType.REQUEST_APPROVED,
             title="Exception Request Approved",
             message=f"Your request for {media.title} has been approved",
+            context={
+                "media_title": media.title,
+                "media_type": request.media_type.value,
+                "reason": request.reason,
+                "admin_notes": review_data.admin_notes,
+            },
         )
     except Exception as e:
         LOG.error(f"Failed to send notification: {e}")
@@ -830,6 +842,12 @@ async def deny_request(
             notification_type=NotificationType.REQUEST_DECLINED,
             title="Exception Request Denied",
             message=f"Your request for {media.title} has been denied",
+            context={
+                "media_title": media.title,
+                "media_type": request.media_type.value,
+                "reason": request.reason,
+                "admin_notes": review_data.admin_notes,
+            },
         )
     except Exception as e:
         LOG.error(f"Failed to send notification: {e}")

@@ -38,11 +38,21 @@
     onViewDetails,
   }: Props = $props();
 
+  // border based on media type
+  const borderColor = $derived.by(() => {
+    const defaultColor = "bg-gray-800 dark:border-gray-700";
+    if (!showMediaType) return defaultColor;
+    if (mediaType === "movie") return "border-2 border-movie";
+    if (mediaType === "series") return "border-2 border-series";
+    return defaultColor;
+  });
+
   // control buttons based on card size
   const REQUEST_TEXT_MIN_WIDTH = 145;
   let cardEl: HTMLDivElement;
   let cardWidth = $state(0);
   let badgeSize = $state("");
+  let mediaCountSize = $state("text-xs");
 
   let isHovered = $state(false);
   let menuOpen = $state(false);
@@ -78,8 +88,10 @@
       cardWidth = entry.contentRect.width;
       if (cardWidth > REQUEST_TEXT_MIN_WIDTH) {
         badgeSize = "size-5";
+        mediaCountSize = "text-sm";
       } else {
         badgeSize = "size-3";
+        mediaCountSize = "text-xs";
       }
     });
     if (cardEl) observer.observe(cardEl);
@@ -96,8 +108,8 @@
 >
   <!-- main card -->
   <div
-    class="relative aspect-2/3 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-400
-      transition-transform duration-150 dark:border-gray-700 hover:scale-105"
+    class="relative aspect-2/3 rounded-lg overflow-hidden border-2 transition-transform
+      duration-150 hover:scale-105 {borderColor}"
   >
     <!-- poster image -->
     {#if media.poster_url}
@@ -122,6 +134,45 @@
         </Badge>
       </div>
     {/if}
+
+    <!-- count badge (top left, below media type if shown) -->
+    <div class="absolute left-2 top-2 z-20">
+      <div class="flex flex-col gap-1 items-start z-20">
+        {#if mediaType === "movie" && "versions" in media}
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <Badge
+                class="bg-black/60 text-white font-semibold backdrop-blur-sm py-0.5 px-2 
+                  rounded-md min-w-[1.6rem] flex items-center justify-center cursor-help"
+              >
+                <span class="{mediaCountSize} text-center"
+                  >{media.versions.length}</span
+                >
+              </Badge>
+            </Tooltip.Trigger>
+            <Tooltip.Content>
+              <p>Movie Versions ({media.versions.length})</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        {:else if mediaType === "series" && "library_season_count" in media}
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <Badge
+                class="bg-black/60 text-white font-semibold backdrop-blur-sm py-0.5 px-2 
+                rounded-md min-w-[1.6rem] flex items-center justify-center cursor-help"
+              >
+                <span class="{mediaCountSize} text-center"
+                  >{media.library_season_count}</span
+                >
+              </Badge>
+            </Tooltip.Trigger>
+            <Tooltip.Content>
+              <p>Seasons ({media.library_season_count})</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        {/if}
+      </div>
+    </div>
 
     <!-- status indicators (top right) -->
     <div class="absolute top-2 right-2 flex flex-col gap-1 items-end">
