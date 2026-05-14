@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-05-??
 
+### Changed
+
+- Update macOS build configurations for ARM and Intel architectures (desktop)
+
 ### Fixed
 
 - Now utilizes rescan instead of refresh for the **\*arrs**, this fixes an issue where when deletions happened it was not updated in the arr right away
