@@ -294,6 +294,20 @@ class RadarrClient:
             json={"movieIds": movie_ids, "monitored": False},
         )
 
+    async def rescan_movies(self, movie_ids: list[int]) -> None:
+        """Queue a RefreshMovie command so Radarr re-checks metadata and file status.
+
+        Uses RefreshMovie (not RescanMovie) because RescanMovie only adds newly found files;
+        RefreshMovie also removes stale file records when files have been deleted from disk.
+        """
+        if not movie_ids:
+            return
+        await self._make_request(
+            "POST",
+            "command",
+            json={"name": "RefreshMovie", "movieIds": movie_ids},
+        )
+
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         """Test Radarr service connection without full initialization."""

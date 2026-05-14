@@ -342,6 +342,20 @@ class SonarrClient:
             timeout=60,
         )
 
+    async def refresh_series(self, series_ids: list[int]) -> None:
+        """Queue a RefreshSeries command so Sonarr re-checks metadata and file status.
+
+        Uses RefreshSeries (not RescanSeries) because RescanSeries only adds newly found
+        files; RefreshSeries also removes stale file records when files are deleted.
+        Sonarr only accepts a single seriesId per command, so we issue one per series.
+        """
+        for series_id in series_ids:
+            await self._make_request(
+                "POST",
+                "command",
+                json={"name": "RefreshSeries", "seriesId": series_id},
+            )
+
     async def update_season_monitoring(
         self,
         series_id: int,
