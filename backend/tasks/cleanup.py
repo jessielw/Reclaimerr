@@ -1,4 +1,5 @@
 import shutil
+from asyncio import Semaphore, gather
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from backend.core.rule_engine import (
     TARGET_SEASON,
     TARGET_SERIES,
     DiskStatsResolver,
+    SeerrRequestResolver,
     collect_rule_conditions,
     evaluate_advanced_rule,
     normalize_rule_target,
@@ -74,6 +76,7 @@ async def collect_rule_preview_matches(
     ).activate()
     await _refresh_arr_tags_for_rules(list(rules))
     await _refresh_arr_monitoring_for_rules(list(rules))
+    await _activate_seerr_request_resolver_for_rules(db, list(rules))
 
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
@@ -439,6 +442,80 @@ async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
                 )
 
 
+def _rules_use_seerr_requested_field(rules: list[ReclaimRule]) -> bool:
+    """Return True if any rule condition references `seerr.requested`."""
+    for rule in rules:
+        for _ in collect_rule_conditions(rule.definition, field="seerr.requested"):
+            return True
+    return False
+
+
+async def _activate_seerr_request_resolver_for_rules(
+    db: AsyncSession, rules: list[ReclaimRule]
+) -> None:
+    """Activate scan-local Seerr request state for rules that reference seerr.requested."""
+    if not _rules_use_seerr_requested_field(rules):
+        return
+
+    if not service_manager.seerr:
+        LOG.warning(
+            "Rule uses seerr.requested but Seerr service is not configured; "
+            "Seerr rule conditions will not match"
+        )
+        SeerrRequestResolver({}).activate()
+        return
+
+    movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
+    series_targets = any(
+        normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON, TARGET_EPISODE}
+        for r in rules
+    )
+
+    movie_tmdb_ids: set[int] = set()
+    series_tmdb_ids: set[int] = set()
+
+    if movie_targets:
+        rows = (
+            await db.execute(select(Movie.tmdb_id).where(Movie.removed_at.is_(None)))
+        ).all()
+        movie_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
+
+    if series_targets:
+        rows = (
+            await db.execute(select(Series.tmdb_id).where(Series.removed_at.is_(None)))
+        ).all()
+        series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
+
+    requested_by_key: dict[tuple[MediaType, int], bool] = {}
+    sem = Semaphore(10)
+
+    async def _fetch_movie(tmdb_id: int) -> None:
+        async with sem:
+            try:
+                requests = await service_manager.seerr.get_movie_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
+                requested_by_key[(MediaType.MOVIE, tmdb_id)] = bool(requests)
+            except Exception as e:
+                LOG.debug(f"Failed Seerr movie request lookup for TMDB {tmdb_id}: {e}")
+                requested_by_key[(MediaType.MOVIE, tmdb_id)] = False
+
+    async def _fetch_series(tmdb_id: int) -> None:
+        async with sem:
+            try:
+                requests = await service_manager.seerr.get_tv_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
+                requested_by_key[(MediaType.SERIES, tmdb_id)] = bool(requests)
+            except Exception as e:
+                LOG.debug(f"Failed Seerr TV request lookup for TMDB {tmdb_id}: {e}")
+                requested_by_key[(MediaType.SERIES, tmdb_id)] = False
+
+    await gather(*[_fetch_movie(tmdb_id) for tmdb_id in movie_tmdb_ids])
+    await gather(*[_fetch_series(tmdb_id) for tmdb_id in series_tmdb_ids])
+    SeerrRequestResolver(requested_by_key).activate()
+    LOG.debug(
+        f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "
+        f"{len(series_tmdb_ids)} series keys"
+    )
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -475,6 +552,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         ).activate()
         await _refresh_arr_tags_for_rules(list(rules))
         await _refresh_arr_monitoring_for_rules(list(rules))
+        await _activate_seerr_request_resolver_for_rules(db, list(rules))
 
         candidates_created = 0
         candidates_updated = 0

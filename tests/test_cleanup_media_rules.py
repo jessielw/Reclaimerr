@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.api.candidate_views import build_rule_preview_items
+from backend.core.rule_engine import SeerrRequestResolver
 from backend.database import Base
 from backend.database.models import (
     Movie,
@@ -670,6 +671,39 @@ class CleanupMediaRuleTests(unittest.TestCase):
         matched = _evaluate_movie_rule(series, rule, {}, [])
 
         self.assertFalse(matched)
+
+    def test_evaluate_movie_rule_seerr_requested_matches(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = ReclaimRule(
+            name="seerr-rule",
+            media_type=MediaType.MOVIE,
+            enabled=True,
+            target_scope="movie_version",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "seerr.requested",
+                            "operator": "is_true",
+                        },
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        SeerrRequestResolver({(MediaType.MOVIE, 1): True}).activate()
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+        SeerrRequestResolver({(MediaType.MOVIE, 1): False}).activate()
+        self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
 
 
 if __name__ == "__main__":

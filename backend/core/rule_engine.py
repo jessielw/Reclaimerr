@@ -77,6 +77,7 @@ FIELD_LABELS: dict[str, str] = {
     "media.duration": "Duration",
     "arr.tags": "Arr tags",
     "arr.monitored": "Arr monitored",
+    "seerr.requested": "Seerr requested",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -156,6 +157,7 @@ BOOLEAN_FIELDS = {
     "season.is_latest_season",
     "watch.never_watched",
     "arr.monitored",
+    "seerr.requested",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -314,6 +316,42 @@ class DiskStatsResolver:
             )
         except Exception:
             return None
+
+
+class SeerrRequestResolver:
+    """Holds pre fetched Seerr request state for one scan run.
+
+    State is keyed by ``(media_type, tmdb_id)`` and values are booleans indicating
+    whether that media currently has at least one request in Seerr.
+    """
+
+    _ctx: ContextVar[SeerrRequestResolver | None] = ContextVar(
+        "seerr_request_resolver", default=None
+    )
+
+    __slots__ = ("_requested_by_key",)
+
+    def __init__(
+        self, requested_by_key: dict[tuple[MediaType, int], bool] | None = None
+    ):
+        self._requested_by_key: dict[tuple[MediaType, int], bool] = (
+            requested_by_key or {}
+        )
+
+    def activate(self) -> None:
+        """Install this resolver for the current async context."""
+        SeerrRequestResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> SeerrRequestResolver | None:
+        """Return the resolver active in the current async context, or None."""
+        return cls._ctx.get()
+
+    def resolve(self, media_type: MediaType, tmdb_id: int | None) -> bool | None:
+        """Return Seerr requested state for the given media key if known."""
+        if tmdb_id is None:
+            return None
+        return self._requested_by_key.get((media_type, tmdb_id))
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -526,6 +564,7 @@ def _build_context(
     """Build the context dictionary for evaluating a rule against a specific target scope."""
     now = datetime.now(UTC)
     _resolver = DiskStatsResolver.current() if compute_disk else None
+    _seerr_resolver = SeerrRequestResolver.current()
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
@@ -566,6 +605,11 @@ def _build_context(
             "media.duration": version.duration,
             "arr.tags": movie.arr_tags or [],
             "arr.monitored": movie.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.MOVIE, movie.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -608,6 +652,11 @@ def _build_context(
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": series.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -666,6 +715,11 @@ def _build_context(
             "subtitle.languages": season.subtitle_languages,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": season.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -728,6 +782,11 @@ def _build_context(
             "series.status": series.status,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": season.is_monitored,
+            "seerr.requested": (
+                _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }

@@ -99,6 +99,16 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(_definition("library.id", "equals", "lib-1"))
 
+    def test_accepts_seerr_requested_boolean_operator(self) -> None:
+        validate_rule_definition(_definition("seerr.requested", "is_true"))
+
+    def test_rejects_seerr_requested_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'seerr.requested'",
+        ):
+            validate_rule_definition(_definition("seerr.requested", "greater_than", 1))
+
     def test_rejects_empty_library_list_condition(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
