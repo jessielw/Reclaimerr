@@ -334,6 +334,8 @@ export interface SeriesWithStatus {
   last_viewed_at: string | null;
   view_count: number;
   status: MediaStatusInfo;
+  has_season_candidates: boolean;
+  library_season_count: number;
   added_at: string | null;
 }
 

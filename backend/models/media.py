@@ -363,6 +363,8 @@ class SeriesWithStatus(BaseModel):
     status: MediaStatusInfo
     # true when at least one season (but not the whole series) is a reclaim candidate
     has_season_candidates: bool = False
+    # number of seasons actually present in the library
+    library_season_count: int = 0
 
     # timestamps
     added_at: str | None
