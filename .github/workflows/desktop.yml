@@ -27,7 +27,10 @@ jobs:
             artifact_name: reclaimerr-windows-x64.zip
             exe_path: dist/reclaimerr
           - os: macos-latest
-            artifact_name: reclaimerr-macos-x64.zip
+            artifact_name: reclaimerr-macos-arm64.zip
+            exe_path: dist/reclaimerr
+          - os: macos-15-intel
+            artifact_name: reclaimerr-macos-intel.zip
             exe_path: dist/reclaimerr
           - os: ubuntu-latest
             artifact_name: reclaimerr-linux-x64.zip

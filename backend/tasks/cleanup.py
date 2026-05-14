@@ -2148,6 +2148,15 @@ async def _delete_movie_candidates(
             if action == "unmonitor" or cand.movie_id not in movie_arr_action:
                 movie_arr_action[cand.movie_id] = action
 
+    # track which specific version IDs should have files cleaned up per movie.
+    # None in the set means a whole-movie candidate exists (clean up all versions).
+    candidate_version_ids_by_movie: dict[int, set[int | None]] = {}
+    for cand in candidates:
+        if cand.movie_id is not None:
+            candidate_version_ids_by_movie.setdefault(cand.movie_id, set()).add(
+                cand.movie_version_id
+            )
+
     whole_movie_candidates = [c for c in candidates if c.movie_version_id is None]
     version_candidates = [c for c in candidates if c.movie_version_id is not None]
 
@@ -2246,9 +2255,15 @@ async def _delete_movie_candidates(
                 continue
             ver_path = version_path_by_id.get(cand.movie_version_id)
             matched = _match_version_to_arr(ver_path, movie_info["refs"])
-            if matched:
+            cand_action = movie_arr_action.get(cand.movie_id or 0, "delete")
+            if matched and cand_action == "unmonitor":
+                # version-level unmonitor: Radarr unmonitors the whole movie;
+                # file deletion is scoped to just this version in the unmonitor block
                 movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                 all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+            elif matched and cand_action == "delete":
+                # Radarr cannot delete individual versions; use media-server version delete
+                unmatched_version_candidates.append(cand)
             else:
                 LOG.warning(
                     f"No Radarr instance found for '{movie_info['title']}' "
@@ -2318,6 +2333,9 @@ async def _delete_movie_candidates(
                     "title": movie_info.get("title", ""),
                     "method": "radarr",
                     "tmdb_id": movie_info.get("tmdb_id"),
+                    "target_version_ids": candidate_version_ids_by_movie.get(
+                        movie_id, set()
+                    ),
                 }
             )
 
@@ -2434,6 +2452,16 @@ async def _delete_movie_candidates(
         try:
             await client.unmonitor_movies(radarr_ids)
             movies_to_unmonitor.extend(batch)
+            try:
+                await client.rescan_movies(radarr_ids)
+                LOG.debug(
+                    f"Triggered Radarr rescan for {len(radarr_ids)} movie(s) "
+                    f"via config {config_id}"
+                )
+            except Exception as rescan_err:
+                LOG.warning(
+                    f"Radarr rescan trigger failed for config {config_id}: {rescan_err}"
+                )
         except Exception as e:
             LOG.error(
                 f"Error unmonitoring movies via Radarr config {config_id}: {e}",
@@ -2469,10 +2497,25 @@ async def _delete_movie_candidates(
 
                     if not already_processed:
                         if movie:
-                            # delete files from disk
+                            # determine whether this is a whole-movie or version specific operation
+                            target_version_ids: set[int | None] = (
+                                movie_info.get("target_version_ids") or set()
+                            )
+                            is_whole_movie = (
+                                not target_version_ids or None in target_version_ids
+                            )
+
+                            # delete files from disk (only for candidate version(s)).
+                            # sibling_cleanup matches by file stem so it naturally scopes
+                            # to subtitles/nfo files belonging to that specific version.
                             for ver in movie.versions:
                                 if not ver.path:
                                     continue
+                                if (
+                                    not is_whole_movie
+                                    and ver.id not in target_version_ids
+                                ):
+                                    continue  # preserve non candidate version files
                                 local_path = resolve_path(
                                     ver.path,
                                     path_mappings,
@@ -2493,29 +2536,54 @@ async def _delete_movie_candidates(
                                 main_service is not None
                                 and unmonitor_service_type is not None
                             ):
-                                service_versions = [
-                                    v
-                                    for v in movie.versions
-                                    if v.service == unmonitor_service_type
-                                ]
+                                if is_whole_movie:
+                                    service_versions = [
+                                        v
+                                        for v in movie.versions
+                                        if v.service == unmonitor_service_type
+                                    ]
+                                else:
+                                    # version only (only include candidate versions)
+                                    service_versions = [
+                                        v
+                                        for v in movie.versions
+                                        if v.service == unmonitor_service_type
+                                        and v.id in target_version_ids
+                                    ]
                                 deleted_item_ids: set[str] = set()
                                 for ver in service_versions:
-                                    if ver.service_item_id not in deleted_item_ids:
-                                        try:
-                                            await main_service.delete_item(
-                                                ver.service_item_id
-                                            )
-                                            deleted_item_ids.add(ver.service_item_id)
-                                        except Exception as ms_err:
-                                            LOG.warning(
-                                                f"Media server delete_item failed for "
-                                                f"'{movie.title}': {ms_err}"
-                                            )
+                                    if ver.service_item_id in deleted_item_ids:
+                                        continue
+                                    if not is_whole_movie:
+                                        # skip if a non candidate version still uses this item id
+                                        # (e.g. multi version Plex entry sharing one ratingKey)
+                                        if any(
+                                            v.service_item_id == ver.service_item_id
+                                            for v in movie.versions
+                                            if v.service == unmonitor_service_type
+                                            and v.id not in target_version_ids
+                                        ):
+                                            continue
+                                    try:
+                                        await main_service.delete_item(
+                                            ver.service_item_id
+                                        )
+                                        deleted_item_ids.add(ver.service_item_id)
+                                    except Exception as ms_err:
+                                        LOG.warning(
+                                            f"Media server delete_item failed for "
+                                            f"'{movie.title}': {ms_err}"
+                                        )
 
-                            movie.removed_at = datetime.now(UTC)
-                            event_versions = [v for v in movie.versions if v.path] or [
-                                None
-                            ]
+                            # only soft delete the movie record when all versions are removed
+                            if is_whole_movie:
+                                movie.removed_at = datetime.now(UTC)
+                            event_versions = [
+                                v
+                                for v in movie.versions
+                                if v.path
+                                and (is_whole_movie or v.id in target_version_ids)
+                            ] or [None]
                             for version in event_versions:
                                 unmonitor_events.append(
                                     {
@@ -2853,6 +2921,16 @@ async def _delete_series_candidates(
         try:
             await client.unmonitor_series(sonarr_ids)
             series_to_unmonitor.extend(batch)
+            try:
+                await client.refresh_series(sonarr_ids)
+                LOG.debug(
+                    f"Triggered Sonarr refresh for {len(sonarr_ids)} series "
+                    f"via config {config_id}"
+                )
+            except Exception as refresh_err:
+                LOG.warning(
+                    f"Sonarr refresh trigger failed for config {config_id}: {refresh_err}"
+                )
         except Exception as e:
             LOG.error(
                 f"Error unmonitoring series via Sonarr config {config_id}: {e}",
@@ -3194,6 +3272,14 @@ async def _delete_season_candidates(
                                 f"Media server delete_item failed for "
                                 f"'{series_obj.title}' S{season_number:02d}: {ms_err}"
                             )
+                if sonarr_client and sonarr_ref_id:
+                    try:
+                        await sonarr_client.refresh_series([sonarr_ref_id])
+                    except Exception as refresh_err:
+                        LOG.warning(
+                            f"Sonarr refresh failed for '{series_obj.title}' "
+                            f"S{season_number:02d}: {refresh_err}"
+                        )
             else:
                 try:
                     await sonarr_client.delete_season_files(
