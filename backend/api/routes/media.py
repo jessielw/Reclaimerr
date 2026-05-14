@@ -361,6 +361,16 @@ async def get_series(
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
 
+    # count library seasons per series (one GROUP BY query for the whole page)
+    season_counts_result = await db.execute(
+        select(Season.series_id, func.count(Season.id))
+        .where(Season.series_id.in_(series_ids))
+        .group_by(Season.series_id)
+    )
+    season_counts: dict[int, int] = {
+        int(k): int(v) for k, v in season_counts_result.all()
+    }
+
     # get series level candidates (no season)
     candidates_result = await db.execute(
         select(ReclaimCandidate).where(
@@ -500,6 +510,7 @@ async def get_series(
             "status": status,
             "has_season_candidates": series.id in series_with_season_cands
             and candidate is None,
+            "library_season_count": season_counts.get(series.id, 0),
             "added_at": to_utc_isoformat(series.added_at),
         }
         items.append(SeriesWithStatus(**series_dict))

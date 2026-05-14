@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Series status (ended, continuing, etc)
   - **\*arr** monitored status
   - Free disk space
+- Now shows season counts and movie version counts on posters for movies/series tabs
 
 ### Changed
 
