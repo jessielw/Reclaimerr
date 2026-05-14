@@ -460,6 +460,13 @@
       defaultOperator: "is_true",
     },
     {
+      value: "seerr.requested",
+      label: "Seerr requested",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "disk.free_bytes",
       label: "Disk free (bytes)",
       kind: "number",
