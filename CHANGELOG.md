@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Substantially improved notification output with some customization on what is returned
   - Can now control a standard/compact message
   - Can now send N number of candidates found with a total of reclaimable space
+  - New notifications are enabled by default on creation now
 
 ### Fixed
 
