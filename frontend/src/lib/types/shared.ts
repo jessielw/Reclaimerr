@@ -81,7 +81,18 @@ export interface NotificationSetting {
   requestDeclined: boolean;
   adminMessage: boolean;
   taskFailure: boolean;
+  preferences: NotificationPreferences;
 }
+
+export interface NotificationTypePreference {
+  detail: string;
+  max_items?: number;
+}
+
+export type NotificationPreferences = Record<
+  string,
+  NotificationTypePreference
+>;
 
 export enum NotificationType {
   NewCleanupCandidates = "new_cleanup_candidates",

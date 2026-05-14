@@ -50,7 +50,10 @@ from backend.database.models import (
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.models.post_action_webhooks import PostActionWebhookEvent
-from backend.services.notifications import notify_all_users
+from backend.services.notifications import (
+    build_cleanup_notification_context,
+    notify_all_users,
+)
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
@@ -101,14 +104,20 @@ async def scan_cleanup_candidates() -> None:
 
     async with track_task_execution(Task.SCAN_CLEANUP_CANDIDATES):
         try:
+            scan_started_at = datetime.now(UTC)
             async with async_db() as session:
                 response = await _scan_with_db(session)
                 if response and response[0] > 0:
                     try:
+                        context = await build_cleanup_notification_context(
+                            created_count=response[0],
+                            created_since=scan_started_at,
+                        )
                         await notify_all_users(
                             notification_type=NotificationType.NEW_CLEANUP_CANDIDATES,
                             title="New Cleanup Candidates Found",
                             message=f"There are {response[0]} new cleanup candidates",
+                            context=context,
                         )
                     except Exception as e:
                         LOG.error(f"Error sending cleanup scan notification: {e}")
@@ -1070,6 +1079,7 @@ async def _sync_season_candidates(
         select(ReclaimCandidate).where(
             ReclaimCandidate.media_type == MediaType.SERIES,
             ReclaimCandidate.season_id.isnot(None),
+            ReclaimCandidate.episode_id.is_(None),
         )
     )
     season_candidate_lookup: dict[int, ReclaimCandidate] = {

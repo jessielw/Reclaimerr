@@ -105,6 +105,8 @@ class NotificationSetting(Base):
     admin_message: Mapped[bool] = mapped_column(Boolean, default=False)
     # admin notification types
     task_failure: Mapped[bool] = mapped_column(Boolean, default=False)
+    # per notification content preferences (formatting/detail controls)
+    preferences: Mapped[dict | None] = mapped_column(JSON, default=None)
 
     # last updated
     updated_at: Mapped[datetime] = mapped_column(

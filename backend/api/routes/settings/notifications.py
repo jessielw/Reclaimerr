@@ -11,7 +11,11 @@ from backend.core.logger import LOG
 from backend.database import get_db
 from backend.database.models import NotificationSetting, User
 from backend.enums import UserRole
-from backend.models.settings import NotificationSettingItem, NotificationTestRequest
+from backend.models.settings import (
+    NotificationSettingItem,
+    NotificationTestRequest,
+    normalize_notification_preferences,
+)
 from backend.services.notifications import test_notification_url
 
 router = APIRouter(tags=["settings", "notifications"])
@@ -41,6 +45,7 @@ async def get_notification_settings(
             request_declined=n.request_declined,
             admin_message=n.admin_message,
             task_failure=n.task_failure,
+            preferences=normalize_notification_preferences(n.preferences),
         )
         for n in notifications
     ]
@@ -109,6 +114,7 @@ async def create_or_update_notification(
         notification.request_declined = data.request_declined
         notification.admin_message = data.admin_message
         notification.task_failure = data.task_failure
+        notification.preferences = normalize_notification_preferences(data.preferences)
 
         await db.commit()
         await db.refresh(notification)
@@ -129,6 +135,7 @@ async def create_or_update_notification(
             request_declined=data.request_declined,
             admin_message=data.admin_message,
             task_failure=data.task_failure,
+            preferences=normalize_notification_preferences(data.preferences),
         )
         db.add(notification)
         await db.commit()
@@ -151,6 +158,7 @@ async def create_or_update_notification(
             request_declined=notification.request_declined,
             admin_message=notification.admin_message,
             task_failure=notification.task_failure,
+            preferences=normalize_notification_preferences(notification.preferences),
         ),
     }
 
