@@ -60,14 +60,18 @@ ensure_user() {
 
 	if [ -n "$user_by_uid" ]; then
 		APP_USER="$user_by_uid"
-		usermod -o -g "$target_gid" "$APP_USER"
+		usermod -g "$target_gid" "$APP_USER"
 		return
 	fi
 
 	if id "$APP_USER" >/dev/null 2>&1; then
 		usermod -o -u "$target_uid" -g "$target_gid" "$APP_USER"
 	else
-		useradd -o -u "$target_uid" -g "$target_gid" -d "$APP_HOME" -s /usr/sbin/nologin "$APP_USER"
+		if [ "$target_uid" -lt 1000 ]; then
+			useradd -r -o -u "$target_uid" -g "$target_gid" -d "$APP_HOME" -s /usr/sbin/nologin "$APP_USER"
+		else
+			useradd -o -u "$target_uid" -g "$target_gid" -d "$APP_HOME" -s /usr/sbin/nologin "$APP_USER"
+		fi
 	fi
 }
 
