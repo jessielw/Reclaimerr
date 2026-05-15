@@ -2534,7 +2534,8 @@ async def _delete_movie_candidates(
 
                             # remove from media server
                             if (
-                                main_service is not None
+                                media_server_fallback_enabled
+                                and main_service is not None
                                 and unmonitor_service_type is not None
                             ):
                                 if is_whole_movie:
@@ -2994,7 +2995,8 @@ async def _delete_series_candidates(
 
                         # remove from media server
                         if (
-                            main_service_s is not None
+                            media_server_fallback_enabled
+                            and main_service_s is not None
                             and unmonitor_svc_type is not None
                         ):
                             ref = next(
@@ -3258,7 +3260,7 @@ async def _delete_season_candidates(
                         f"S{season_number:02d} (arr_series_path={arr_series_path!r})"
                     )
                 # also remove from media server to keep library clean
-                if deleted_via_sonarr:
+                if deleted_via_sonarr and media_server_fallback_enabled:
                     media_svc = service_manager.main_media_server
                     if media_svc is None:
                         _season_svc_id = None
