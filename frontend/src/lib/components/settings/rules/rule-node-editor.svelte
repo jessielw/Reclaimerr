@@ -334,6 +334,13 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "imdb.id",
+      label: "IMDb ID",
+      kind: "text",
+      operators: textOperators,
+      defaultOperator: "contains_any",
+    },
+    {
       value: "series.status",
       label: "Series status",
       kind: "text",
