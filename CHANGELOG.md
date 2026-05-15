@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.20] - 2026-05-15
+
+### Changed
+
+- Improve upsert on episodes to avoid any unique key constraints
+- Only show count badge for movies if there is more than 1 movie version
+- Only show count badge for series if there is more than 0 seasons
+
+### Fixed
+
+- Added_at field not being updated/valid during syncs/deletes of media
+- Enhance media server removal logic with fallback checks in candidate deletion for sonarr/series
+- During move the file would be deleted by the **\*arrs** BEFORE Reclaimerr could move it safely - now Reclaimerr moves the file, un-monitors/deletes (if enabled) and refreshes the arr so it has the updated information
+
 ## [0.1.0-beta.19] - 2026-05-14
 
 ### Changed

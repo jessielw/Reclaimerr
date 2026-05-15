@@ -46,6 +46,7 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
+    SeriesServiceRef,
 )
 from backend.enums import MediaType, NotificationType, Service, Task
 from backend.models.cleanup import MatchedCandidateRecord
@@ -1850,6 +1851,58 @@ async def _load_arr_disk_space() -> list[dict]:
     return sorted(result, key=lambda e: -len(str(e.get("path") or "")))
 
 
+async def _best_effort_radarr_rescan(
+    movie_ids_by_config: dict[int, set[int]],
+    *,
+    context: str,
+) -> None:
+    """Best effort Radarr refresh for affected movies, grouped by config."""
+    if not movie_ids_by_config:
+        return
+    radarr_clients = service_manager.radarr_clients()
+    if not radarr_clients and service_manager.radarr:
+        radarr_clients = {0: service_manager.radarr}
+    for config_id, movie_ids in movie_ids_by_config.items():
+        client = radarr_clients.get(config_id)
+        if not client or not movie_ids:
+            continue
+        try:
+            ids = sorted(movie_ids)
+            await client.rescan_movies(ids)
+            LOG.debug(
+                f"{context}: triggered Radarr refresh for {len(ids)} movie(s) "
+                f"(config {config_id})"
+            )
+        except Exception as e:
+            LOG.warning(f"{context}: Radarr refresh failed for config {config_id}: {e}")
+
+
+async def _best_effort_sonarr_refresh(
+    series_ids_by_config: dict[int, set[int]],
+    *,
+    context: str,
+) -> None:
+    """Best effort Sonarr refresh for affected series, grouped by config."""
+    if not series_ids_by_config:
+        return
+    sonarr_clients = service_manager.sonarr_clients()
+    if not sonarr_clients and service_manager.sonarr:
+        sonarr_clients = {0: service_manager.sonarr}
+    for config_id, series_ids in series_ids_by_config.items():
+        client = sonarr_clients.get(config_id)
+        if not client or not series_ids:
+            continue
+        try:
+            ids = sorted(series_ids)
+            await client.refresh_series(ids)
+            LOG.debug(
+                f"{context}: triggered Sonarr refresh for {len(ids)} series "
+                f"(config {config_id})"
+            )
+        except Exception as e:
+            LOG.warning(f"{context}: Sonarr refresh failed for config {config_id}: {e}")
+
+
 def _service_value(service: Service | str | None) -> str | None:
     if service is None:
         return None
@@ -2099,11 +2152,18 @@ async def _delete_movie_candidates(
     """Delete movie candidates. Returns count of deleted candidates."""
     deleted_count = 0
 
-    # load fallback toggle from settings
+    # load fallback toggle + move settings from settings
     async with async_db() as db:
         settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
         media_server_fallback_enabled = (
             settings_row.media_server_fallback_enabled if settings_row else True
+        )
+        move_enabled = settings_row.move_enabled if settings_row else False
+        move_destination_movies = (
+            settings_row.move_destination_movies if settings_row else None
+        )
+        move_path_mappings: list[dict] = (
+            settings_row.path_mappings or [] if settings_row else []
         )
 
     # get all movie candidates from database
@@ -2257,7 +2317,7 @@ async def _delete_movie_candidates(
             matched = _match_version_to_arr(ver_path, movie_info["refs"])
             cand_action = movie_arr_action.get(cand.movie_id or 0, "delete")
             if matched and cand_action == "unmonitor":
-                # version-level unmonitor: Radarr unmonitors the whole movie;
+                # version-level unmonitor: Radarr un-monitors the whole movie;
                 # file deletion is scoped to just this version in the unmonitor block
                 movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                 all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
@@ -2340,6 +2400,7 @@ async def _delete_movie_candidates(
             )
 
     movies_to_delete: list[dict] = []
+    radarr_refresh_after_delete: dict[int, set[int]] = {}
     for config_id, batch in movies_to_delete_by_config.items():
         client = radarr_clients.get(config_id)
         if not client:
@@ -2347,8 +2408,63 @@ async def _delete_movie_candidates(
         LOG.info(f"Deleting {len(batch)} movies via Radarr config {config_id}")
         radarr_ids = [m["radarr_id"] for m in batch]
         try:
-            await client.delete_movies(radarr_ids)
+            if (
+                move_enabled
+                and move_destination_movies
+                and move_destination_movies.strip()
+            ):
+                # move files first, then remove library entry without deleting files
+                destination_root = Path(move_destination_movies)
+                batch_movie_ids = {m["movie_id"] for m in batch if m["movie_id"]}
+                async with async_db() as db:
+                    ver_rows = (
+                        (
+                            await db.execute(
+                                select(MovieVersion).where(
+                                    MovieVersion.movie_id.in_(batch_movie_ids)
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                versions_by_movie: dict[int, list[MovieVersion]] = {}
+                for ver in ver_rows:
+                    if ver.movie_id:
+                        versions_by_movie.setdefault(ver.movie_id, []).append(ver)
+                for m in batch:
+                    mid = m["movie_id"]
+                    if not mid:
+                        continue
+                    for ver in versions_by_movie.get(mid, []):
+                        if not ver.path:
+                            continue
+                        local_path = resolve_path(
+                            ver.path,
+                            move_path_mappings,
+                            service_type=ver.service.value,
+                        )
+                        if local_path:
+                            try:
+                                move_media(local_path, destination_root)
+                                LOG.info(
+                                    f"Moved '{m['title']}' to {destination_root} "
+                                    f"before Radarr library removal"
+                                )
+                            except Exception as move_err:
+                                LOG.warning(
+                                    f"Pre-delete move failed for '{m['title']}': {move_err}"
+                                )
+                        else:
+                            LOG.warning(
+                                f"Cannot resolve path for '{m['title']}' ({ver.path!r}); "
+                                f"skipping pre-delete move"
+                            )
+                await client.delete_movies(radarr_ids, delete_files=False)
+            else:
+                await client.delete_movies(radarr_ids)
             movies_to_delete.extend(batch)
+            radarr_refresh_after_delete.setdefault(config_id, set()).update(radarr_ids)
         except Exception as e:
             LOG.error(
                 f"Error deleting movies via Radarr config {config_id}: {e}",
@@ -2377,6 +2493,7 @@ async def _delete_movie_candidates(
                     if not already_processed:
                         if movie:
                             movie.removed_at = datetime.now(UTC)
+                            movie.added_at = None
                             event_versions = [v for v in movie.versions if v.path] or [
                                 None
                             ]
@@ -2440,9 +2557,14 @@ async def _delete_movie_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
+        await _best_effort_radarr_rescan(
+            radarr_refresh_after_delete,
+            context="movie delete cleanup",
+        )
 
     # process unmonitor batches: mark unmonitored in Radarr, then delete files + media server
     movies_to_unmonitor: list[dict] = []
+    radarr_refresh_after_unmonitor: dict[int, set[int]] = {}
     for config_id, batch in movies_to_unmonitor_by_config.items():
         client = radarr_clients.get(config_id)
         if not client:
@@ -2452,16 +2574,9 @@ async def _delete_movie_candidates(
         try:
             await client.unmonitor_movies(radarr_ids)
             movies_to_unmonitor.extend(batch)
-            try:
-                await client.rescan_movies(radarr_ids)
-                LOG.debug(
-                    f"Triggered Radarr rescan for {len(radarr_ids)} movie(s) "
-                    f"via config {config_id}"
-                )
-            except Exception as rescan_err:
-                LOG.warning(
-                    f"Radarr rescan trigger failed for config {config_id}: {rescan_err}"
-                )
+            radarr_refresh_after_unmonitor.setdefault(config_id, set()).update(
+                radarr_ids
+            )
         except Exception as e:
             LOG.error(
                 f"Error unmonitoring movies via Radarr config {config_id}: {e}",
@@ -2533,7 +2648,8 @@ async def _delete_movie_candidates(
 
                             # remove from media server
                             if (
-                                main_service is not None
+                                media_server_fallback_enabled
+                                and main_service is not None
                                 and unmonitor_service_type is not None
                             ):
                                 if is_whole_movie:
@@ -2578,6 +2694,7 @@ async def _delete_movie_candidates(
                             # only soft delete the movie record when all versions are removed
                             if is_whole_movie:
                                 movie.removed_at = datetime.now(UTC)
+                                movie.added_at = None
                             event_versions = [
                                 v
                                 for v in movie.versions
@@ -2648,6 +2765,10 @@ async def _delete_movie_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing movie unmonitor state: {e}", exc_info=True)
+        await _best_effort_radarr_rescan(
+            radarr_refresh_after_unmonitor,
+            context="movie unmonitor cleanup",
+        )
 
     # fallback to media server for whole-movie candidates not handled by any arr instance
     if whole_movie_candidates:
@@ -2683,11 +2804,18 @@ async def _delete_series_candidates(
     """Delete series candidates. Returns count of deleted series."""
     deleted_count = 0
 
-    # load fallback toggle from settings
+    # load fallback toggle + move settings from settings
     async with async_db() as db:
         settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
         media_server_fallback_enabled = (
             settings_row.media_server_fallback_enabled if settings_row else True
+        )
+        move_enabled = settings_row.move_enabled if settings_row else False
+        move_destination_series = (
+            settings_row.move_destination_series if settings_row else None
+        )
+        move_path_mappings: list[dict] = (
+            settings_row.path_mappings or [] if settings_row else []
         )
 
     # get all series candidates from database
@@ -2815,6 +2943,7 @@ async def _delete_series_candidates(
             )
 
     series_to_delete: list[dict] = []
+    sonarr_refresh_after_delete: dict[int, set[int]] = {}
     for config_id, batch in series_to_delete_by_config.items():
         client = sonarr_clients.get(config_id)
         if not client:
@@ -2822,8 +2951,61 @@ async def _delete_series_candidates(
         LOG.info(f"Deleting {len(batch)} series via Sonarr config {config_id}")
         try:
             for series_info in batch:
-                await client.delete_series(series_info["sonarr_id"], delete_files=True)
+                if (
+                    move_enabled
+                    and move_destination_series
+                    and move_destination_series.strip()
+                ):
+                    # move series directory first, then remove Sonarr library entry only
+                    destination_root = Path(move_destination_series)
+                    series_id = series_info["series_id"]
+                    async with async_db() as db:
+                        ref_result = await db.execute(
+                            select(SeriesServiceRef)
+                            .where(SeriesServiceRef.series_id == series_id)
+                            .where(SeriesServiceRef.path.isnot(None))
+                            .limit(1)
+                        )
+                        series_ref = ref_result.scalars().first()
+                    if series_ref and series_ref.path:
+                        local_series_path = resolve_path(
+                            series_ref.path,
+                            move_path_mappings,
+                            service_type=series_ref.service.value,
+                        )
+                        if local_series_path:
+                            try:
+                                move_directory(local_series_path, destination_root)
+                                LOG.info(
+                                    f"Moved '{series_info['title']}' to "
+                                    f"{destination_root} before Sonarr library removal"
+                                )
+                            except Exception as move_err:
+                                LOG.warning(
+                                    f"Pre-delete move failed for "
+                                    f"'{series_info['title']}': {move_err}"
+                                )
+                        else:
+                            LOG.warning(
+                                f"Cannot resolve path for '{series_info['title']}' "
+                                f"({series_ref.path!r}); skipping pre-delete move"
+                            )
+                    else:
+                        LOG.warning(
+                            f"No path available for '{series_info['title']}'; "
+                            f"skipping pre-delete move"
+                        )
+                    await client.delete_series(
+                        series_info["sonarr_id"], delete_files=False
+                    )
+                else:
+                    await client.delete_series(
+                        series_info["sonarr_id"], delete_files=True
+                    )
             series_to_delete.extend(batch)
+            sonarr_refresh_after_delete.setdefault(config_id, set()).update(
+                {int(s["sonarr_id"]) for s in batch}
+            )
         except Exception as e:
             LOG.error(
                 f"Error deleting series via Sonarr config {config_id}: {e}",
@@ -2852,6 +3034,7 @@ async def _delete_series_candidates(
                     series = result.scalar_one_or_none()
                     if series:
                         series.removed_at = datetime.now(UTC)
+                        series.added_at = None
                         event_refs = [r for r in series.service_refs if r.path] or [
                             None
                         ]
@@ -2909,9 +3092,14 @@ async def _delete_series_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing series deletion state: {e}", exc_info=True)
+        await _best_effort_sonarr_refresh(
+            sonarr_refresh_after_delete,
+            context="series delete cleanup",
+        )
 
     # process unmonitor batches: mark unmonitored in Sonarr, then delete files + media server
     series_to_unmonitor: list[dict] = []
+    sonarr_refresh_after_unmonitor: dict[int, set[int]] = {}
     for config_id, batch in series_to_unmonitor_by_config.items():
         client = sonarr_clients.get(config_id)
         if not client:
@@ -2921,16 +3109,9 @@ async def _delete_series_candidates(
         try:
             await client.unmonitor_series(sonarr_ids)
             series_to_unmonitor.extend(batch)
-            try:
-                await client.refresh_series(sonarr_ids)
-                LOG.debug(
-                    f"Triggered Sonarr refresh for {len(sonarr_ids)} series "
-                    f"via config {config_id}"
-                )
-            except Exception as refresh_err:
-                LOG.warning(
-                    f"Sonarr refresh trigger failed for config {config_id}: {refresh_err}"
-                )
+            sonarr_refresh_after_unmonitor.setdefault(config_id, set()).update(
+                sonarr_ids
+            )
         except Exception as e:
             LOG.error(
                 f"Error unmonitoring series via Sonarr config {config_id}: {e}",
@@ -2991,7 +3172,8 @@ async def _delete_series_candidates(
 
                         # remove from media server
                         if (
-                            main_service_s is not None
+                            media_server_fallback_enabled
+                            and main_service_s is not None
                             and unmonitor_svc_type is not None
                         ):
                             ref = next(
@@ -3012,6 +3194,7 @@ async def _delete_series_candidates(
                                     )
 
                         series.removed_at = datetime.now(UTC)
+                        series.added_at = None
                         for ref in series.service_refs:
                             if ref.path:
                                 unmonitor_series_events.append(
@@ -3069,6 +3252,10 @@ async def _delete_series_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing series unmonitor state: {e}", exc_info=True)
+        await _best_effort_sonarr_refresh(
+            sonarr_refresh_after_unmonitor,
+            context="series unmonitor cleanup",
+        )
 
     # fallback to media server deletion for candidates not handled by any Sonarr instance
     if media_server_fallback_enabled:
@@ -3125,6 +3312,7 @@ async def _delete_season_candidates(
         return 0
 
     LOG.info(f"Found {len(candidates)} season candidates to evaluate for deletion")
+    sonarr_refresh_after_season_ops: dict[int, set[int]] = {}
 
     # load rules for arr_action resolution
     season_rule_ids = {rid for c in candidates for rid in (c.matched_rule_ids or [])}
@@ -3254,7 +3442,7 @@ async def _delete_season_candidates(
                         f"S{season_number:02d} (arr_series_path={arr_series_path!r})"
                     )
                 # also remove from media server to keep library clean
-                if deleted_via_sonarr:
+                if deleted_via_sonarr and media_server_fallback_enabled:
                     media_svc = service_manager.main_media_server
                     if media_svc is None:
                         _season_svc_id = None
@@ -3272,14 +3460,6 @@ async def _delete_season_candidates(
                                 f"Media server delete_item failed for "
                                 f"'{series_obj.title}' S{season_number:02d}: {ms_err}"
                             )
-                if sonarr_client and sonarr_ref_id:
-                    try:
-                        await sonarr_client.refresh_series([sonarr_ref_id])
-                    except Exception as refresh_err:
-                        LOG.warning(
-                            f"Sonarr refresh failed for '{series_obj.title}' "
-                            f"S{season_number:02d}: {refresh_err}"
-                        )
             else:
                 try:
                     await sonarr_client.delete_season_files(
@@ -3430,7 +3610,15 @@ async def _delete_season_candidates(
             season_id=season.id,
             season_number=season_number,
         )
+        if sonarr_ref_config_id is not None and sonarr_ref_id is not None:
+            sonarr_refresh_after_season_ops.setdefault(sonarr_ref_config_id, set()).add(
+                sonarr_ref_id
+            )
 
+    await _best_effort_sonarr_refresh(
+        sonarr_refresh_after_season_ops,
+        context="season cleanup",
+    )
     return deleted_count
 
 
@@ -3463,6 +3651,7 @@ async def _delete_episode_candidates(
         return 0
 
     LOG.info(f"Found {len(candidates)} episode candidates to evaluate for deletion")
+    sonarr_refresh_after_episode_ops: dict[int, set[int]] = {}
 
     episode_rule_ids = {rid for c in candidates for rid in (c.matched_rule_ids or [])}
     async with async_db() as db:
@@ -3653,7 +3842,15 @@ async def _delete_episode_candidates(
             await db.commit()
 
         deleted_count += 1
+        if sonarr_ref_config_id is not None and sonarr_ref_id is not None:
+            sonarr_refresh_after_episode_ops.setdefault(
+                sonarr_ref_config_id, set()
+            ).add(sonarr_ref_id)
 
+    await _best_effort_sonarr_refresh(
+        sonarr_refresh_after_episode_ops,
+        context="episode cleanup",
+    )
     return deleted_count
 
 
@@ -3746,6 +3943,7 @@ async def _delete_movies_via_media_server(
                 movie_obj = result.scalar_one_or_none()
                 if movie_obj:
                     movie_obj.removed_at = datetime.now(UTC)
+                    movie_obj.added_at = None
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
@@ -3868,6 +4066,7 @@ async def _delete_series_via_media_server(
                 series_db = result.scalar_one_or_none()
                 if series_db:
                     series_db.removed_at = datetime.now(UTC)
+                    series_db.added_at = None
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
@@ -4053,6 +4252,8 @@ async def move_specific_candidates(
 
     moved = 0
     failed = 0
+    move_radarr_refresh: dict[int, set[int]] = {}
+    move_sonarr_refresh: dict[int, set[int]] = {}
 
     #### movie candidates ####
     movie_candidates = [c for c in candidates if c.media_type == MediaType.MOVIE]
@@ -4140,6 +4341,8 @@ async def move_specific_candidates(
                                 f"move: unmonitored '{movie.title}' in Radarr "
                                 f"(config_id={config_id}, arr_id={arr_movie_id})"
                             )
+                    for c_id, a_id in unmonitored:
+                        move_radarr_refresh.setdefault(c_id, set()).add(a_id)
                 except Exception as arr_err:
                     LOG.warning(
                         f"move_specific_candidates: Radarr unmonitor failed for "
@@ -4223,6 +4426,11 @@ async def move_specific_candidates(
                 exc_info=True,
             )
             failed += 1
+
+    await _best_effort_radarr_rescan(
+        move_radarr_refresh,
+        context="move cleanup",
+    )
 
     #### series / season candidates ####
     series_candidates = [c for c in candidates if c.media_type == MediaType.SERIES]
@@ -4382,6 +4590,9 @@ async def move_specific_candidates(
                                     f"S{season.season_number:02d} in Sonarr "
                                     f"(config_id={config_id}, arr_id={arr_s_id})"
                                 )
+                                move_sonarr_refresh.setdefault(config_id, set()).add(
+                                    arr_s_id
+                                )
                             else:
                                 await sonarr_clients[config_id].unmonitor_series(
                                     [arr_s_id]
@@ -4389,6 +4600,9 @@ async def move_specific_candidates(
                                 LOG.info(
                                     f"move: unmonitored '{series_obj.title}' in Sonarr "
                                     f"(config_id={config_id}, arr_id={arr_s_id})"
+                                )
+                                move_sonarr_refresh.setdefault(config_id, set()).add(
+                                    arr_s_id
                                 )
                     except Exception as arr_err:
                         LOG.warning(
@@ -4473,6 +4687,7 @@ async def move_specific_candidates(
                         ).scalar_one_or_none()
                         if series_db:
                             series_db.removed_at = datetime.now(UTC)
+                            series_db.added_at = None
 
                         history_name = series_obj.title
                         history_size = series_obj.size
@@ -4520,5 +4735,9 @@ async def move_specific_candidates(
                 )
                 failed += 1
 
+    await _best_effort_sonarr_refresh(
+        move_sonarr_refresh,
+        context="move cleanup",
+    )
     LOG.info(f"Move complete: {moved} moved, {failed} failed")
     return moved, failed

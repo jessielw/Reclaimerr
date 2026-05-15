@@ -649,6 +649,11 @@ async def _upsert_episodes(
             may only have partial season coverage and should not delete episodes written
             by the primary server.
     """
+    # Flush any pending inserts (e.g. from a prior _upsert_episodes call for the same
+    # season_id) so that the query below reflects the full current state. With
+    # autoflush=False this is required to avoid any UNIQUE-constraint violations when
+    # season_data contains duplicate season numbers.
+    await session.flush()
     result = await session.execute(
         select(Episode).where(Episode.season_id == season_id)
     )
@@ -709,6 +714,10 @@ async def _upsert_episodes(
                 emby_episode_id=ep.emby_episode_id,
             )
             session.add(new_ep)
+            # We have to register in existing_eps so a duplicate ep_number later in the
+            # same episode_data list hits the update branch rather than creating a second
+            # pending INSERT (which would violate the UNIQUE constraint on flush)!
+            existing_eps[ep.episode_number] = new_ep
 
     # remove episodes no longer present on the media server
     if remove_stale:
@@ -914,7 +923,7 @@ async def _upsert_movie_versions(
         ev.subtitle_has_forced = ver.subtitle_has_forced
         ev.subtitle_languages = ver.subtitle_languages
         ev.has_chapters = ver.has_chapters
-        if ver.added_at and not ev.added_at:
+        if ver.added_at:
             ev.added_at = ver.added_at
 
     # prune stale versions - all incoming versions come from the authoritative main server
@@ -1180,8 +1189,8 @@ async def sync_movies(
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
 
-                    # update added_at if available and not already set
-                    if earliest_added and not existing_movie.added_at:
+                    # update added_at if available
+                    if earliest_added:
                         existing_movie.added_at = earliest_added
                     existing_movie.last_viewed_at = movie.last_viewed_at
                     existing_movie.view_count = movie.view_count
@@ -1219,7 +1228,7 @@ async def sync_movies(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
                             f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
                         )
-                        if earliest_added and not existing_movie.added_at:
+                        if earliest_added:
                             existing_movie.added_at = earliest_added
                         existing_movie.last_viewed_at = movie.last_viewed_at
                         existing_movie.view_count = movie.view_count
@@ -1395,6 +1404,7 @@ async def sync_movies(
                     deleted_movie_ids = []
                     for movie in movies_to_delete:
                         movie.removed_at = datetime.now(UTC)
+                        movie.added_at = None
                         deleted_movie_ids.append(movie.id)
                         LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
 
@@ -1567,8 +1577,8 @@ async def sync_series(
                         session, existing_series_obj.id, series
                     )
 
-                    # update added_at if available and not already set
-                    if series.added_at and not existing_series_obj.added_at:
+                    # update added_at if available
+                    if series.added_at:
                         existing_series_obj.added_at = series.added_at
                     existing_series_obj.last_viewed_at = series.last_viewed_at
                     existing_series_obj.view_count = series.view_count
@@ -1772,6 +1782,7 @@ async def sync_series(
                     deleted_series_ids = []
                     for s in series_to_delete:
                         s.removed_at = datetime.now(UTC)
+                        s.added_at = None
                         deleted_series_ids.append(s.id)
                         LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
 
