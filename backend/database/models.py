@@ -755,7 +755,7 @@ class ReclaimCandidate(Base):
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
     movie_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movie_versions.id"), default=None, index=True
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
     )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(
@@ -932,7 +932,7 @@ class DeleteRequest(Base):
 
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)
     movie_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movie_versions.id"), default=None, index=True
+        ForeignKey("movie_versions.id", ondelete="SET NULL"), default=None, index=True
     )
     series_id: Mapped[int | None] = mapped_column(ForeignKey("series.id"), default=None)
     season_id: Mapped[int | None] = mapped_column(

@@ -2377,6 +2377,7 @@ async def _delete_movie_candidates(
                     if not already_processed:
                         if movie:
                             movie.removed_at = datetime.now(UTC)
+                            movie.added_at = None
                             event_versions = [v for v in movie.versions if v.path] or [
                                 None
                             ]
@@ -2578,6 +2579,7 @@ async def _delete_movie_candidates(
                             # only soft delete the movie record when all versions are removed
                             if is_whole_movie:
                                 movie.removed_at = datetime.now(UTC)
+                                movie.added_at = None
                             event_versions = [
                                 v
                                 for v in movie.versions
@@ -2852,6 +2854,7 @@ async def _delete_series_candidates(
                     series = result.scalar_one_or_none()
                     if series:
                         series.removed_at = datetime.now(UTC)
+                        series.added_at = None
                         event_refs = [r for r in series.service_refs if r.path] or [
                             None
                         ]
@@ -3012,6 +3015,7 @@ async def _delete_series_candidates(
                                     )
 
                         series.removed_at = datetime.now(UTC)
+                        series.added_at = None
                         for ref in series.service_refs:
                             if ref.path:
                                 unmonitor_series_events.append(
@@ -3746,6 +3750,7 @@ async def _delete_movies_via_media_server(
                 movie_obj = result.scalar_one_or_none()
                 if movie_obj:
                     movie_obj.removed_at = datetime.now(UTC)
+                    movie_obj.added_at = None
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
@@ -3868,6 +3873,7 @@ async def _delete_series_via_media_server(
                 series_db = result.scalar_one_or_none()
                 if series_db:
                     series_db.removed_at = datetime.now(UTC)
+                    series_db.added_at = None
 
                 result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
@@ -4473,6 +4479,7 @@ async def move_specific_candidates(
                         ).scalar_one_or_none()
                         if series_db:
                             series_db.removed_at = datetime.now(UTC)
+                            series_db.added_at = None
 
                         history_name = series_obj.title
                         history_size = series_obj.size
