@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Added_at field not being updated/valid during syncs/deletes of media
-- Enhance media server removal logic with fallback checks in candidate deletion
+- Enhance media server removal logic with fallback checks in candidate deletion for sonarr/series
 
 ## [0.1.0-beta.19] - 2026-05-14
 
