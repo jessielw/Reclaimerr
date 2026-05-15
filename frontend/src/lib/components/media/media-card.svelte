@@ -138,7 +138,7 @@
     <!-- count badge (top left, below media type if shown) -->
     <div class="absolute left-2 top-2 z-20">
       <div class="flex flex-col gap-1 items-start z-20">
-        {#if mediaType === "movie" && "versions" in media}
+        {#if mediaType === "movie" && "versions" in media && media.versions.length > 1}
           <Tooltip.Root>
             <Tooltip.Trigger>
               <Badge
@@ -154,7 +154,7 @@
               <p>Movie Versions ({media.versions.length})</p>
             </Tooltip.Content>
           </Tooltip.Root>
-        {:else if mediaType === "series" && "library_season_count" in media}
+        {:else if mediaType === "series" && "library_season_count" in media && media.library_season_count > 0}
           <Tooltip.Root>
             <Tooltip.Trigger>
               <Badge

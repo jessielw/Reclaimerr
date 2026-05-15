@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improve upsert on episodes to avoid any unique key constraints
+- Only show count badge for movies if there is more than 1 movie version
+- Only show count badge for series if there is more than 0 seasons
 
 ### Fixed
 
