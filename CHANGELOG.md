@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-05-??
 
+### Changed
+
+- Improve upsert on episodes to avoid any unique key constraints
+
 ### Fixed
 
 - Added_at field not being updated/valid during syncs/deletes of media

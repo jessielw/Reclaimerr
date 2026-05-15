@@ -649,6 +649,11 @@ async def _upsert_episodes(
             may only have partial season coverage and should not delete episodes written
             by the primary server.
     """
+    # Flush any pending inserts (e.g. from a prior _upsert_episodes call for the same
+    # season_id) so that the query below reflects the full current state. With
+    # autoflush=False this is required to avoid any UNIQUE-constraint violations when
+    # season_data contains duplicate season numbers.
+    await session.flush()
     result = await session.execute(
         select(Episode).where(Episode.season_id == season_id)
     )
@@ -709,6 +714,10 @@ async def _upsert_episodes(
                 emby_episode_id=ep.emby_episode_id,
             )
             session.add(new_ep)
+            # We have to register in existing_eps so a duplicate ep_number later in the
+            # same episode_data list hits the update branch rather than creating a second
+            # pending INSERT (which would violate the UNIQUE constraint on flush)!
+            existing_eps[ep.episode_number] = new_ep
 
     # remove episodes no longer present on the media server
     if remove_stale:
