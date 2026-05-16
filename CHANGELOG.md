@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- New task to check for updates (defaults to running once per hour - can also be disabled completely if desired)
+  - Option to disable **optional** tasks
+- New **Notices** modal that can be accessed via the bell icon on the sidebar
+  - Will show up green if there is a notice (right now this is only hooked up to new updates)
+- Added new api endpoint `info/update-status`
+
+### Changed
+
+- Add ability in the API to enforce enable/disabling tasks
+
 ## [0.1.0-beta.20] - 2026-05-15
 
 ### Changed

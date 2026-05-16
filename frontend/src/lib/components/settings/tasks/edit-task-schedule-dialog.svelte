@@ -8,6 +8,7 @@
   import { truncateString } from "$lib/utils/strings";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import { ScheduleType } from "$lib/types/shared";
   import { formatIntervalDisplay } from "$lib/utils/strings";
 
@@ -20,6 +21,7 @@
     defaultScheduleType: ScheduleType;
     defaultScheduleValue: string;
     enabled: boolean;
+    canDisable: boolean;
     onClose: () => void;
     onSuccess: () => void;
   }
@@ -59,7 +61,8 @@
     scheduleValue: initialScheduleValue,
     defaultScheduleType,
     defaultScheduleValue,
-    enabled,
+    enabled: initialEnabled,
+    canDisable = false,
     onClose,
     onSuccess,
   }: Props = $props();
@@ -70,6 +73,7 @@
 
   let selectedPreset = $state<string>("custom");
   let customValue = $state("");
+  let enabledState = $state(true);
 
   // derive display values for select triggers
   const scheduleTypeDisplay = $derived(
@@ -98,6 +102,7 @@
     if (open && !initialized) {
       scheduleType = initialScheduleType;
       scheduleValue = initialScheduleValue;
+      enabledState = initialEnabled;
 
       if (initialScheduleType === ScheduleType.Interval) {
         const preset = intervalPresets.find(
@@ -196,7 +201,7 @@
       await put_api(`/api/tasks/tasks/${taskId}/schedule`, {
         schedule_type: scheduleType,
         schedule_value: scheduleValue,
-        enabled: enabled,
+        enabled: enabledState,
       });
 
       toast.success(`Schedule updated for ${taskName}`);
@@ -323,6 +328,18 @@
             </p>
           </div>
         {/if}
+      {/if}
+
+      {#if canDisable}
+        <div class="space-y-2">
+          <Label for="taskEnabled">Task Enabled</Label>
+          <div class="flex items-center justify-between rounded-md border p-3">
+            <p class="text-sm text-muted-foreground">
+              Disable to stop scheduled and manual runs.
+            </p>
+            <Switch id="taskEnabled" bind:checked={enabledState} />
+          </div>
+        </div>
       {/if}
 
       <!-- current schedule preview -->

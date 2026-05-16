@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from backend.core.logger import LOG
 from backend.database import async_db
-from backend.database.models import BackgroundJob, ServiceConfig
+from backend.database.models import BackgroundJob, ServiceConfig, TaskSchedule
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
 from backend.jobs import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
@@ -19,6 +19,7 @@ from backend.tasks.sync import (
     sync_media,
     sync_media_libraries,
 )
+from backend.tasks.update_check import check_app_updates
 from backend.types import MEDIA_SERVERS
 
 MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
@@ -31,6 +32,25 @@ MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
         Task.TAG_CLEANUP_CANDIDATES,
     }
 )
+
+# any tasks that can be disabled by the user (e.g. via config or UI toggle) should be added to this set
+DISABLE_ABLE_TASKS: frozenset[Task] = frozenset({Task.CHECK_APP_UPDATES})
+
+
+def can_disable_task(task: Task) -> bool:
+    """Whether the given task is allowed to be disabled by the user (e.g. via config or UI toggle)."""
+    return task in DISABLE_ABLE_TASKS
+
+
+async def is_task_enabled(task: Task) -> bool:
+    """Whether the given task is currently enabled."""
+    async with async_db() as session:
+        result = await session.execute(
+            select(TaskSchedule.enabled).where(TaskSchedule.task == task)
+        )
+        enabled = result.scalar_one_or_none()
+    # default safe behavior for unknown schedule row: treat as enabled
+    return True if enabled is None else bool(enabled)
 
 
 async def _get_active_task_job(task: Task) -> BackgroundJob | None:
@@ -51,6 +71,9 @@ async def _get_active_task_job(task: Task) -> BackgroundJob | None:
 
 
 async def request_task_run(task: Task) -> tuple[BackgroundJob | None, bool]:
+    if not await is_task_enabled(task):
+        raise ValueError(f"Task '{task.value}' is disabled")
+
     queued_job = await enqueue_background_job(
         job_type=BackgroundJobType.TASK_RUN,
         payload=TaskRunJobPayload(task=task).model_dump(mode="json"),
@@ -70,6 +93,12 @@ async def enqueue_task_run(task: Task) -> bool:
 
 
 async def enqueue_scheduled_task(task: Task) -> None:
+    if not await is_task_enabled(task):
+        LOG.info(
+            f"Skipped scheduled task enqueue for {task.friendly_name()} (disabled)"
+        )
+        return
+
     queued = await enqueue_task_run(task)
     if queued:
         LOG.info(f"Queued scheduled task: {task.friendly_name()}")
@@ -101,6 +130,10 @@ async def _run_linked_data_sync() -> None:
 
 
 async def execute_task(task: Task) -> dict[str, Any] | None:
+    if not await is_task_enabled(task):
+        LOG.info(f"Skipped task execution for {task.friendly_name()} (disabled)")
+        return
+
     if task is Task.SYNC_MEDIA:
         return await sync_media()
     if task is Task.SYNC_MEDIA_LIBRARIES:
@@ -119,6 +152,9 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
         return
     if task is Task.WEEKLY_HOUSE_KEEPING:
         await weekly_house_keeping()
+        return
+    if task is Task.CHECK_APP_UPDATES:
+        await check_app_updates()
         return
 
     raise ValueError(f"Unsupported task for background execution: {task}")
