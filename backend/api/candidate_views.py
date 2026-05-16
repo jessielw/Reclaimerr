@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -24,6 +25,23 @@ from backend.models.media import (
 )
 
 _VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
+_NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(value: str | None) -> tuple[Any, ...]:
+    """Build a natural sort key for mixed text/number strings."""
+    if not value:
+        return ("",)
+    parts = _NATURAL_SORT_TOKEN_RE.split(value.lower())
+    key: list[Any] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part))
+    return tuple(key)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -342,11 +360,16 @@ async def build_rule_preview_items(
 
     items.sort(
         key=lambda item: (
-            -(item.estimated_space_bytes or 0),
-            item.media_title.lower(),
+            _natural_sort_key(item.media_title),
+            item.media_year is None,
+            item.media_year or 0,
+            item.season_number is None,
             item.season_number or 0,
+            item.episode_number is None,
             item.episode_number or 0,
+            item.movie_version_id is None,
             item.movie_version_id or 0,
+            item.media_id,
         )
     )
     return items
