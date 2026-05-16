@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Add ability in the API to enforce enable/disabling tasks
+- Rule preview system now sorts the results in an ABC-123-S01 order
 
 ## [0.1.0-beta.20] - 2026-05-15
 
