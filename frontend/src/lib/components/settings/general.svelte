@@ -51,6 +51,9 @@
   let moveDestinationMovies = $state("");
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
+  let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
+    "unmonitor",
+  );
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   let testingWebhookIndex = $state<number | null>(null);
@@ -114,6 +117,7 @@
         move_destination_movies: moveDestinationMovies,
         move_destination_series: moveDestinationSeries,
         media_server_fallback_enabled: mediaServerFallbackEnabled,
+        default_arr_delete_behavior: defaultArrDeleteBehavior,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -318,6 +322,8 @@
         moveDestinationSeries = settings.move_destination_series ?? "";
         mediaServerFallbackEnabled =
           settings.media_server_fallback_enabled ?? true;
+        defaultArrDeleteBehavior =
+          settings.default_arr_delete_behavior ?? "unmonitor";
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -957,6 +963,50 @@
         deletion, or the item is not tracked in any arr instance), fall back to
         deleting via the media server (Jellyfin/Emby/Plex) directly. Disable
         this if your media server has read only file access.
+      </p>
+    </div>
+
+    <!-- default ARR delete behavior -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <h3 class="font-semibold text-foreground mb-1">
+        Default ARR Delete Behavior
+      </h3>
+      <p class="text-muted-foreground text-sm mb-3">
+        Fallback behavior for deletes that are not tied to a matched cleanup
+        rule, such as approved delete requests. Rule-level ARR actions still
+        override this.
+      </p>
+      <div class="max-w-md">
+        <Label for="defaultArrDeleteBehavior" class="mb-2">
+          <span class="text-sm text-foreground">Fallback ARR Action</span>
+        </Label>
+        <Select.Root
+          type="single"
+          bind:value={defaultArrDeleteBehavior}
+          name="defaultArrDeleteBehavior"
+        >
+          <Select.Trigger
+            id="defaultArrDeleteBehavior"
+            class="w-full cursor-pointer text-foreground"
+          >
+            {defaultArrDeleteBehavior === "remove_if_empty"
+              ? "Remove from ARR when empty"
+              : "Unmonitor after deletion"}
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="unmonitor" class="cursor-pointer">
+              Unmonitor after deletion
+            </Select.Item>
+            <Select.Item value="remove_if_empty" class="cursor-pointer">
+              Remove from ARR when empty
+            </Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </div>
+      <p class="text-xs text-muted-foreground mt-2">
+        <code>Unmonitor</code> keeps the ARR entry but prevents re-grabs.
+        <code>Remove when empty</code> removes the ARR item only after the last remaining
+        file for that movie or series is gone.
       </p>
     </div>
 

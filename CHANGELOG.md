@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New **Notices** modal that can be accessed via the bell icon on the sidebar
   - Will show up green if there is a notice (right now this is only hooked up to new updates)
 - Added new api endpoint `info/update-status`
+- General settings **\*Arr Default Behavior** options to either delete/unmonitor when deleting/moving media that is not a candidate + falls back for all other rules
 
 ### Changed
 
