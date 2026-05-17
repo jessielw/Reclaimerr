@@ -16,6 +16,7 @@
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import { formatFileSize } from "$lib/utils/formatters";
+  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 
   const TMDB_POSTER_WIDTH = 342;
   const inputPlaceHolderText =
@@ -317,11 +318,18 @@
                     class="mt-1"
                   />
                   <div>
-                    <p class="font-medium text-foreground">
-                      Delete whole {mediaType === MediaType.Movie
-                        ? "movie"
-                        : "series"}
-                    </p>
+                    <Tooltip.Root>
+                      <Tooltip.Trigger class="w-full">
+                        <p class="font-medium text-foreground">Delete all</p>
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>
+                        <p>
+                          {mediaType === MediaType.Movie
+                            ? "(Deletes all movie versions)"
+                            : "(Deletes all seasons & episodes)"}
+                        </p>
+                      </Tooltip.Content>
+                    </Tooltip.Root>
                   </div>
                 </label>
 
