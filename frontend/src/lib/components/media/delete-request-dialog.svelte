@@ -6,6 +6,7 @@
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";
   import {
+    type EpisodeWithStatus,
     MediaType,
     Permission,
     type DeleteRequest,
@@ -63,22 +64,30 @@
   let submitting = $state(false);
 
   let seasons = $state<SeasonWithStatus[]>([]);
+  let episodes = $state<EpisodeWithStatus[]>([]);
   let loadingSeasons = $state(false);
+  let loadingEpisodes = $state(false);
   let scopeExpanded = $state(true);
-  let scopeWholeItem = $state(false);
+  let scopeMode = $state<"whole" | "versions" | "seasons" | "episodes">(
+    "whole",
+  );
   let selectedSeasonIds = $state<Set<number>>(new Set());
   let selectedVersionIds = $state<Set<number>>(new Set());
+  let selectedEpisodeIds = $state<Set<number>>(new Set());
 
   $effect(() => {
     if (open) {
       reason = "";
-      scopeWholeItem = false;
+      scopeMode = "whole";
       selectedSeasonIds = new Set();
       selectedVersionIds = new Set();
+      selectedEpisodeIds = new Set();
       scopeExpanded = true;
       seasons = [];
+      episodes = [];
       if (showSeasonPicker && media) {
         fetchSeasons(media.id);
+        fetchEpisodes(media.id);
       }
     }
   });
@@ -96,7 +105,19 @@
     }
   };
 
-  // toggle season picker
+  const fetchEpisodes = async (seriesId: number) => {
+    loadingEpisodes = true;
+    try {
+      episodes = await get_api<EpisodeWithStatus[]>(
+        `/api/media/series/${seriesId}/episodes`,
+      );
+    } catch (err: any) {
+      toast.error(`Failed to load episodes: ${err.message}`);
+    } finally {
+      loadingEpisodes = false;
+    }
+  };
+
   const toggleSeason = (id: number) => {
     const next = new Set(selectedSeasonIds);
     if (next.has(id)) next.delete(id);
@@ -104,13 +125,30 @@
     selectedSeasonIds = next;
   };
 
-  // toggle movie version picker
   const toggleVersion = (id: number) => {
     const next = new Set(selectedVersionIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     selectedVersionIds = next;
   };
+
+  const toggleEpisode = (id: number) => {
+    const next = new Set(selectedEpisodeIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedEpisodeIds = next;
+  };
+
+  const groupedEpisodes = $derived(
+    Array.from(
+      episodes.reduce((map, ep) => {
+        const current = map.get(ep.season_number) ?? [];
+        current.push(ep);
+        map.set(ep.season_number, current);
+        return map;
+      }, new Map<number, EpisodeWithStatus[]>()),
+    ).sort((a, b) => a[0] - b[0]),
+  );
 
   const pathBasename = (path: string | null) => {
     if (!path) return "Unknown file";
@@ -124,9 +162,16 @@
       (isAdmin || !!reason.trim()) &&
       !media.status.is_protected &&
       !media.status.has_pending_delete_request &&
-      (scopeWholeItem ||
-        (showSeasonPicker && selectedSeasonIds.size > 0) ||
-        (showVersionPicker && selectedVersionIds.size > 0)),
+      (scopeMode === "whole" ||
+        (showSeasonPicker &&
+          scopeMode === "seasons" &&
+          selectedSeasonIds.size > 0) ||
+        (showSeasonPicker &&
+          scopeMode === "episodes" &&
+          selectedEpisodeIds.size > 0) ||
+        (showVersionPicker &&
+          scopeMode === "versions" &&
+          selectedVersionIds.size > 0)),
   );
 
   const handleSubmit = async () => {
@@ -141,13 +186,18 @@
       };
 
       const scopePayloads: Array<Record<string, number>> = [];
-      if (scopeWholeItem) scopePayloads.push({});
-      if (showSeasonPicker) {
+      if (scopeMode === "whole") scopePayloads.push({});
+      if (showSeasonPicker && scopeMode === "seasons") {
         for (const seasonId of selectedSeasonIds) {
           scopePayloads.push({ season_id: seasonId });
         }
       }
-      if (showVersionPicker) {
+      if (showSeasonPicker && scopeMode === "episodes") {
+        for (const episodeId of selectedEpisodeIds) {
+          scopePayloads.push({ episode_id: episodeId });
+        }
+      }
+      if (showVersionPicker && scopeMode === "versions") {
         for (const versionId of selectedVersionIds) {
           scopePayloads.push({ movie_version_id: versionId });
         }
@@ -246,7 +296,7 @@
               <div>
                 <p class="font-medium text-foreground">Request Scope</p>
                 <p class="text-sm text-muted-foreground">
-                  Choose the whole item or specific seasons/versions.
+                  Choose the whole item or a narrower target.
                 </p>
               </div>
               <ChevronRight
@@ -260,9 +310,10 @@
                   class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
                 >
                   <input
-                    type="checkbox"
-                    checked={scopeWholeItem}
-                    onchange={() => (scopeWholeItem = !scopeWholeItem)}
+                    type="radio"
+                    name="delete-scope"
+                    checked={scopeMode === "whole"}
+                    onchange={() => (scopeMode = "whole")}
                     class="mt-1"
                   />
                   <div>
@@ -276,85 +327,191 @@
 
                 {#if showVersionPicker}
                   <div class="space-y-2">
-                    <p class="text-sm font-medium text-foreground">
-                      Specific versions
-                    </p>
-                    {#if (media.versions ?? []).length === 0}
-                      <p class="text-sm text-muted-foreground">
-                        No versions available.
-                      </p>
-                    {:else}
-                      <div class="max-h-52 overflow-y-auto space-y-2 pr-1">
-                        {#each media.versions ?? [] as version (version.id)}
-                          <label
-                            class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedVersionIds.has(version.id)}
-                              onchange={() => toggleVersion(version.id)}
-                              class="mt-1"
-                            />
-                            <div class="min-w-0">
-                              <p class="font-medium text-foreground">
-                                {version.library_name} · {version.service}
-                              </p>
-                              <p
-                                class="break-all text-sm text-muted-foreground"
-                              >
-                                {pathBasename(version.path)}
-                              </p>
-                              <p class="text-xs text-muted-foreground">
-                                `{formatFileSize(version.size)}` ?? "Unknown
-                                size"
-                              </p>
-                            </div>
-                          </label>
-                        {/each}
+                    <label
+                      class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
+                    >
+                      <input
+                        type="radio"
+                        name="delete-scope"
+                        checked={scopeMode === "versions"}
+                        onchange={() => (scopeMode = "versions")}
+                        class="mt-1"
+                      />
+                      <div>
+                        <p class="font-medium text-foreground">
+                          Specific versions
+                        </p>
                       </div>
+                    </label>
+                    {#if scopeMode === "versions"}
+                      {#if (media.versions ?? []).length === 0}
+                        <p class="text-sm text-muted-foreground">
+                          No versions available.
+                        </p>
+                      {:else}
+                        <div class="max-h-52 overflow-y-auto space-y-2 pr-1">
+                          {#each media.versions ?? [] as version (version.id)}
+                            <label
+                              class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedVersionIds.has(version.id)}
+                                onchange={() => toggleVersion(version.id)}
+                                class="mt-1"
+                              />
+                              <div class="min-w-0">
+                                <p class="font-medium text-foreground">
+                                  {version.library_name} - {version.service}
+                                </p>
+                                <p
+                                  class="break-all text-sm text-muted-foreground"
+                                >
+                                  {pathBasename(version.path)}
+                                </p>
+                                <p class="text-xs text-muted-foreground">
+                                  {version.size != null
+                                    ? formatFileSize(version.size)
+                                    : "Unknown size"}
+                                </p>
+                              </div>
+                            </label>
+                          {/each}
+                        </div>
+                      {/if}
                     {/if}
                   </div>
                 {/if}
 
                 {#if showSeasonPicker}
                   <div class="space-y-2">
-                    <p class="text-sm font-medium text-foreground">
-                      Specific seasons
-                    </p>
-                    {#if loadingSeasons}
-                      <p class="text-sm text-muted-foreground">
-                        Loading seasons…
-                      </p>
-                    {:else if seasons.length === 0}
-                      <p class="text-sm text-muted-foreground">
-                        No seasons available.
-                      </p>
-                    {:else}
-                      <div class="max-h-52 overflow-y-auto space-y-2 pr-1">
-                        {#each seasons as season (season.id)}
-                          <label
-                            class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedSeasonIds.has(season.id)}
-                              onchange={() => toggleSeason(season.id)}
-                              class="mt-1"
-                            />
-                            <div class="min-w-0">
-                              <p class="font-medium text-foreground">
-                                Season {season.season_number}
-                              </p>
-                              <p class="text-sm text-muted-foreground">
-                                {season.episode_count ?? "?"} episodes
-                                {#if season.size != null}
-                                  · {formatFileSize(season.size)}
-                                {/if}
-                              </p>
-                            </div>
-                          </label>
-                        {/each}
+                    <label
+                      class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
+                    >
+                      <input
+                        type="radio"
+                        name="delete-scope"
+                        checked={scopeMode === "seasons"}
+                        onchange={() => (scopeMode = "seasons")}
+                        class="mt-1"
+                      />
+                      <div>
+                        <p class="font-medium text-foreground">
+                          Specific seasons
+                        </p>
                       </div>
+                    </label>
+                    {#if scopeMode === "seasons"}
+                      {#if loadingSeasons}
+                        <p class="text-sm text-muted-foreground">
+                          Loading seasons...
+                        </p>
+                      {:else if seasons.length === 0}
+                        <p class="text-sm text-muted-foreground">
+                          No seasons available.
+                        </p>
+                      {:else}
+                        <div class="max-h-52 overflow-y-auto space-y-2 pr-1">
+                          {#each seasons as season (season.id)}
+                            <label
+                              class={`flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3 ${season.status.is_protected || season.status.has_pending_delete_request ? "cursor-not-allowed opacity-60" : ""}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedSeasonIds.has(season.id)}
+                                onchange={() => toggleSeason(season.id)}
+                                class="mt-1"
+                                disabled={season.status.is_protected ||
+                                  season.status.has_pending_delete_request}
+                              />
+                              <div class="min-w-0">
+                                <p class="font-medium text-foreground">
+                                  Season {season.season_number}
+                                </p>
+                                <p class="text-sm text-muted-foreground">
+                                  {season.episode_count ?? "?"} episodes
+                                  {#if season.size != null}
+                                    - {formatFileSize(season.size)}
+                                  {/if}
+                                </p>
+                              </div>
+                            </label>
+                          {/each}
+                        </div>
+                      {/if}
+                    {/if}
+                  </div>
+
+                  <div class="space-y-2">
+                    <label
+                      class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3"
+                    >
+                      <input
+                        type="radio"
+                        name="delete-scope"
+                        checked={scopeMode === "episodes"}
+                        onchange={() => (scopeMode = "episodes")}
+                        class="mt-1"
+                      />
+                      <div>
+                        <p class="font-medium text-foreground">
+                          Specific episodes
+                        </p>
+                      </div>
+                    </label>
+                    {#if scopeMode === "episodes"}
+                      {#if loadingEpisodes}
+                        <p class="text-sm text-muted-foreground">
+                          Loading episodes...
+                        </p>
+                      {:else if episodes.length === 0}
+                        <p class="text-sm text-muted-foreground">
+                          No episodes available.
+                        </p>
+                      {:else}
+                        <div class="max-h-72 overflow-y-auto space-y-2 pr-1">
+                          {#each groupedEpisodes as [groupSeasonNumber, seasonEpisodes]}
+                            <div class="space-y-1">
+                              <div
+                                class="text-xs uppercase tracking-wide text-muted-foreground"
+                              >
+                                Season {groupSeasonNumber}
+                              </div>
+                              {#each seasonEpisodes as ep (ep.id)}
+                                <label
+                                  class={`flex items-start gap-3 rounded-lg border border-border/60 px-3 py-3 ${ep.status.is_protected || ep.status.has_pending_delete_request ? "cursor-not-allowed opacity-60" : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedEpisodeIds.has(ep.id)}
+                                    onchange={() => toggleEpisode(ep.id)}
+                                    class="mt-1"
+                                    disabled={ep.status.is_protected ||
+                                      ep.status.has_pending_delete_request}
+                                  />
+                                  <div class="min-w-0">
+                                    <p class="font-medium text-foreground">
+                                      S{String(ep.season_number).padStart(
+                                        2,
+                                        "0",
+                                      )}E{String(ep.episode_number).padStart(
+                                        2,
+                                        "0",
+                                      )}{#if ep.name}
+                                        &nbsp;&quot;{ep.name}&quot;{/if}
+                                    </p>
+                                    <p class="text-sm text-muted-foreground">
+                                      {ep.size != null
+                                        ? formatFileSize(ep.size)
+                                        : "Unknown size"}
+                                    </p>
+                                  </div>
+                                </label>
+                              {/each}
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
                     {/if}
                   </div>
                 {/if}
@@ -362,7 +519,6 @@
             {/if}
           </div>
 
-          <!-- reason input for non admin users -->
           {#if !isAdmin}
             <div class="space-y-2">
               <Label for="delete-reason" class="text-foreground">
@@ -383,13 +539,14 @@
       {/if}
     </div>
 
-    <!-- buttons -->
     <Dialog.Footer class="mt-auto">
       <Button
         variant="secondary"
         class="cursor-pointer"
-        onclick={() => handleClose()}>Cancel</Button
+        onclick={() => handleClose()}
       >
+        Cancel
+      </Button>
       <Button
         onclick={handleSubmit}
         disabled={!canSubmit || submitting}
