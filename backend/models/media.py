@@ -421,6 +421,16 @@ class PaginatedMediaResponse(BaseModel):
     total_pages: int
 
 
+@dataclass(slots=True)
+class CandidateDisplayGroup:
+    group_kind: str
+    media_id: int | None
+    sort_title: str
+    sort_created_at: datetime
+    sort_size: int
+    candidate_ids: list[int]
+
+
 class CandidateLibraryRef(BaseModel):
     library_id: str
     library_name: str

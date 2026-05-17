@@ -30,6 +30,7 @@ from backend.database.models import (
 from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
 from backend.models.media import (
     ArrRefResponse,
+    CandidateDisplayGroup,
     CandidateEntry,
     CandidateLibraryRef,
     DeleteCandidatesRequest,
@@ -95,6 +96,151 @@ def _candidate_row_sort_key(
         row.episode_number or 0,
         to_utc_isoformat(row.ReclaimCandidate.created_at) or "",
     )
+
+
+def _candidate_effective_size_expr():
+    return func.coalesce(
+        ReclaimCandidate.estimated_space_bytes,
+        MovieVersion.size,
+        Episode.size,
+        Season.size,
+        Movie.size,
+        Series.size,
+        0,
+    )
+
+
+def _apply_candidate_filters(query, media_type: MediaType | None, search: str | None):
+    if media_type is not None:
+        query = query.where(ReclaimCandidate.media_type == media_type)
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.where(
+            or_(
+                Movie.title.ilike(search_term),
+                Series.title.ilike(search_term),
+                ReclaimCandidate.reason.ilike(search_term),
+            )
+        )
+
+    return query
+
+
+async def _get_candidate_page_groups(
+    db: AsyncSession,
+    *,
+    media_type: MediaType | None,
+    search: str | None,
+    sort_by: str,
+    sort_order: str,
+    page: int,
+    per_page: int,
+) -> tuple[int, list[CandidateDisplayGroup]]:
+    descriptor_query = (
+        select(
+            ReclaimCandidate.id.label("candidate_id"),
+            ReclaimCandidate.media_type.label("media_type"),
+            ReclaimCandidate.movie_id.label("movie_id"),
+            ReclaimCandidate.movie_version_id.label("movie_version_id"),
+            ReclaimCandidate.series_id.label("series_id"),
+            ReclaimCandidate.season_id.label("season_id"),
+            ReclaimCandidate.episode_id.label("episode_id"),
+            ReclaimCandidate.created_at.label("created_at"),
+            _candidate_effective_size_expr().label("effective_size_bytes"),
+            Movie.title.label("movie_title"),
+            Series.title.label("series_title"),
+        )
+        .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+        .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
+        .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+        .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
+        .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
+    )
+    descriptor_query = _apply_candidate_filters(descriptor_query, media_type, search)
+    descriptor_rows = (await db.execute(descriptor_query)).all()
+
+    series_with_nested_scope = {
+        row.series_id
+        for row in descriptor_rows
+        if row.series_id is not None
+        and (row.season_id is not None or row.episode_id is not None)
+    }
+
+    groups_by_key: dict[tuple[str, int], CandidateDisplayGroup] = {}
+    for row in descriptor_rows:
+        if (
+            row.media_type is MediaType.MOVIE
+            and row.movie_version_id is not None
+            and row.movie_id is not None
+        ):
+            key = ("movie_versions", row.movie_id)
+            media_id = row.movie_id
+        elif (
+            row.media_type is MediaType.SERIES
+            and row.series_id is not None
+            and row.series_id in series_with_nested_scope
+        ):
+            key = ("series_seasons", row.series_id)
+            media_id = row.series_id
+        else:
+            key = ("flat", row.candidate_id)
+            media_id = (
+                row.movie_id if row.media_type is MediaType.MOVIE else row.series_id
+            )
+
+        title = (
+            row.movie_title if row.media_type is MediaType.MOVIE else row.series_title
+        )
+        size_bytes = int(row.effective_size_bytes or 0)
+        created_at = row.created_at or datetime.min
+        group = groups_by_key.get(key)
+        if group is None:
+            groups_by_key[key] = CandidateDisplayGroup(
+                group_kind=key[0],
+                media_id=media_id,
+                sort_title=title or "",
+                sort_created_at=created_at,
+                sort_size=size_bytes,
+                candidate_ids=[row.candidate_id],
+            )
+            continue
+
+        group.candidate_ids.append(row.candidate_id)
+        group.sort_created_at = max(group.sort_created_at, created_at)
+        group.sort_size += size_bytes
+
+    groups = list(groups_by_key.values())
+    if sort_by == "media_title":
+        groups.sort(
+            key=lambda group: (
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            ),
+            reverse=sort_order == "desc",
+        )
+    elif sort_by == "estimated_space_bytes":
+        groups.sort(
+            key=lambda group: (
+                group.sort_size,
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            ),
+            reverse=sort_order == "desc",
+        )
+    else:
+        groups.sort(
+            key=lambda group: (
+                group.sort_created_at,
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            ),
+            reverse=sort_order == "desc",
+        )
+
+    total = len(groups)
+    offset = (page - 1) * per_page
+    return total, groups[offset : offset + per_page]
 
 
 @router.get("/movies", response_model=PaginatedMediaResponse)
@@ -886,7 +1032,7 @@ async def get_candidates(
     search: str | None = Query(None, max_length=200),
     media_type: MediaType | None = Query(None),
 ):
-    """Get all reclaim candidates with media info and pending request status."""
+    """Get reclaim candidates paginated by display group, with media info and request status."""
     base_query = (
         select(
             ReclaimCandidate,
@@ -952,138 +1098,42 @@ async def get_candidates(
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
+    base_query = _apply_candidate_filters(base_query, media_type, search)
 
-    if media_type:
-        base_query = base_query.where(ReclaimCandidate.media_type == media_type)
+    total, page_groups = await _get_candidate_page_groups(
+        db,
+        media_type=media_type,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page=page,
+        per_page=per_page,
+    )
 
-    if search:
-        search_term = f"%{search}%"
-        base_query = base_query.where(
-            or_(
-                Movie.title.ilike(search_term),
-                Series.title.ilike(search_term),
-                ReclaimCandidate.reason.ilike(search_term),
-            )
-        )
-
-    if media_type is MediaType.SERIES:
-        grouped_query = (
-            select(
-                ReclaimCandidate.series_id.label("series_id"),
-                Series.title.label("series_title"),
-                func.coalesce(
-                    func.sum(ReclaimCandidate.estimated_space_bytes), 0
-                ).label("group_size_bytes"),
-                func.max(ReclaimCandidate.created_at).label("group_created_at"),
-            )
-            .join(Series, ReclaimCandidate.series_id == Series.id)
-            .where(ReclaimCandidate.media_type == MediaType.SERIES)
-            .group_by(ReclaimCandidate.series_id, Series.title)
-        )
-        if search:
-            search_term = f"%{search}%"
-            grouped_query = grouped_query.where(
-                or_(
-                    Series.title.ilike(search_term),
-                    ReclaimCandidate.reason.ilike(search_term),
-                )
-            )
-
-        grouped_subquery = grouped_query.subquery()
-        total = (
-            await db.execute(select(func.count()).select_from(grouped_subquery))
-        ).scalar_one() or 0
-
-        if sort_by == "media_title":
-            grouped_order_expr = grouped_subquery.c.series_title
-        elif sort_by == "estimated_space_bytes":
-            grouped_order_expr = grouped_subquery.c.group_size_bytes
-        else:
-            grouped_order_expr = grouped_subquery.c.group_created_at
-
-        if sort_order == "desc":
-            grouped_order_expr = grouped_order_expr.desc()
-            grouped_tiebreak = grouped_subquery.c.series_id.desc()
-        else:
-            grouped_order_expr = grouped_order_expr.asc()
-            grouped_tiebreak = grouped_subquery.c.series_id.asc()
-
-        offset = (page - 1) * per_page
-        page_series_ids = [
-            row.series_id
-            for row in (
-                await db.execute(
-                    select(grouped_subquery.c.series_id)
-                    .order_by(grouped_order_expr, grouped_tiebreak)
-                    .offset(offset)
-                    .limit(per_page)
-                )
-            ).all()
-            if row.series_id is not None
-        ]
-
-        if not page_series_ids:
-            rows = []
-        else:
-            series_id_position = {
-                series_id: idx for idx, series_id in enumerate(page_series_ids)
-            }
-            result = await db.execute(
-                base_query.where(ReclaimCandidate.series_id.in_(page_series_ids))
-            )
-            rows = sorted(
-                result.all(),
-                key=lambda row: (
-                    series_id_position.get(row.ReclaimCandidate.series_id or -1, -1),
-                    *_candidate_row_sort_key(row),
-                ),
-            )
+    if not page_groups:
+        rows = []
     else:
-        count_query = (
-            select(func.count(ReclaimCandidate.id))
-            .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
-            .outerjoin(
-                MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id
-            )
-            .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
-            .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
-        )
-
-        if media_type is MediaType.MOVIE:
-            count_query = count_query.where(ReclaimCandidate.media_type == media_type)
-
-        if search:
-            search_term = f"%{search}%"
-            count_query = count_query.where(
-                or_(
-                    Movie.title.ilike(search_term),
-                    Series.title.ilike(search_term),
-                    ReclaimCandidate.reason.ilike(search_term),
-                )
-            )
-
-        total = (await db.execute(count_query)).scalar_one() or 0
-
-        media_title_expr = func.coalesce(Movie.title, Series.title)
-        if sort_by == "media_title":
-            order_expr = media_title_expr
-        elif sort_by == "estimated_space_bytes":
-            order_expr = ReclaimCandidate.estimated_space_bytes
-        else:
-            order_expr = ReclaimCandidate.created_at
-
-        if sort_order == "desc":
-            order_expr = order_expr.desc()
-            id_tiebreak = ReclaimCandidate.id.desc()
-        else:
-            order_expr = order_expr.asc()
-            id_tiebreak = ReclaimCandidate.id.asc()
-
-        offset = (page - 1) * per_page
+        candidate_ids = [
+            candidate_id
+            for group in page_groups
+            for candidate_id in group.candidate_ids
+        ]
+        candidate_group_position = {
+            candidate_id: idx
+            for idx, group in enumerate(page_groups)
+            for candidate_id in group.candidate_ids
+        }
         result = await db.execute(
-            base_query.order_by(order_expr, id_tiebreak).offset(offset).limit(per_page)
+            base_query.where(ReclaimCandidate.id.in_(candidate_ids))
         )
-        rows = result.all()
+        rows = sorted(
+            result.all(),
+            key=lambda row: (
+                candidate_group_position.get(row.ReclaimCandidate.id, -1),
+                *_candidate_row_sort_key(row),
+                row.ReclaimCandidate.id,
+            ),
+        )
 
     # collect IDs to check for pending exception requests in one query each
     movie_ids = [

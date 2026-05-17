@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved error handling of invalid season/episode combinations
 - Move is only enabled for Series, Seasons, or Movie Versions (not episodes)
 - **Series** cards now show episode count instead of season count (hovering the number will display the season/episode count in a tool tip)
+- Candidates API now supports 'all'
 
 ### Fixed
 
