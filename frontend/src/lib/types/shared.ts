@@ -138,6 +138,7 @@ export interface GeneralSettings {
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
+  default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
 }
 
 export interface ReclaimRule {
@@ -361,6 +362,19 @@ export interface SeasonWithStatus {
   status: MediaStatusInfo;
 }
 
+export interface EpisodeWithStatus {
+  id: number;
+  season_id: number;
+  season_number: number;
+  episode_number: number;
+  name: string | null;
+  size: number | null;
+  view_count: number;
+  air_date: string | null;
+  last_viewed_at: string | null;
+  status: MediaStatusInfo;
+}
+
 export interface ArrRef {
   service_type: string;
   service_config_id: number;
@@ -390,6 +404,13 @@ export interface ProtectionRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  target_scope:
+    | "movie"
+    | "movie_version"
+    | "series"
+    | "season"
+    | "episode"
+    | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -407,6 +428,9 @@ export interface ProtectionRequest {
   effective_expires_at: string | null;
   season_id: number | null;
   season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   created_at: string;
   updated_at: string;
   version_resolution: string | null;
@@ -428,6 +452,13 @@ export interface DeleteRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  target_scope:
+    | "movie"
+    | "movie_version"
+    | "series"
+    | "season"
+    | "episode"
+    | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -443,6 +474,9 @@ export interface DeleteRequest {
   execution_error: string | null;
   season_id: number | null;
   season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   created_at: string;
   updated_at: string;
   version_resolution: string | null;
@@ -463,6 +497,11 @@ export interface ProtectedEntry {
   media_type: MediaType;
   media_id: number;
   movie_version_id: number | null;
+  season_id: number | null;
+  season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
