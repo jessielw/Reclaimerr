@@ -4,13 +4,21 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
-from backend.database.models import Movie, MovieVersion, ProtectedMedia, Series, User
+from backend.database.models import (
+    Episode,
+    Movie,
+    MovieVersion,
+    ProtectedMedia,
+    Season,
+    Series,
+    User,
+)
 from backend.enums import MediaType, Permission, UserRole
 from backend.models.protect import (
     CreateProtectedEntryRequest,
@@ -22,7 +30,83 @@ from backend.models.protect import (
 router = APIRouter(prefix="/api/protected", tags=["protected"])
 
 
+async def _resolve_series_scope(
+    db: AsyncSession,
+    *,
+    media_id: int,
+    season_id: int | None,
+    episode_id: int | None,
+) -> tuple[Season | None, Episode | None]:
+    """Helper function to resolve season and episode based on provided IDs and media ID."""
+    if season_id is not None and episode_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Specify either season_id or episode_id, not both",
+        )
+
+    if episode_id is not None:
+        episode_result = await db.execute(
+            select(Episode, Season)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Episode.id == episode_id, Season.series_id == media_id)
+        )
+        row = episode_result.one_or_none()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Episode not found",
+            )
+        return row.Season, row.Episode
+
+    if season_id is not None:
+        season_result = await db.execute(
+            select(Season).where(
+                Season.id == season_id,
+                Season.series_id == media_id,
+            )
+        )
+        season = season_result.scalar_one_or_none()
+        if season is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
+            )
+        return season, None
+
+    return None, None
+
+
+def _series_scope_overlap_clause(
+    *,
+    season_id: int | None,
+    episode_id: int | None,
+):
+    """Construct a SQLAlchemy clause to check for overlapping protection scopes based on season and episode IDs."""
+    if episode_id is not None:
+        return or_(
+            and_(
+                ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None)
+            ),
+            and_(
+                ProtectedMedia.season_id == season_id,
+                ProtectedMedia.episode_id.is_(None),
+            ),
+            ProtectedMedia.episode_id == episode_id,
+        )
+    if season_id is not None:
+        return or_(
+            and_(
+                ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None)
+            ),
+            and_(
+                ProtectedMedia.season_id == season_id,
+                ProtectedMedia.episode_id.is_(None),
+            ),
+        )
+    return and_(ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None))
+
+
 def can_manage_protection(user: User) -> bool:
+    """Check if the user has permission to manage protected media entries."""
     return user.role is UserRole.ADMIN or has_permission(
         user, Permission.MANAGE_PROTECTION
     )
@@ -49,10 +133,15 @@ async def get_protected_entries(
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
+            Season.season_number.label("season_number"),
+            Episode.episode_number.label("episode_number"),
+            Episode.name.label("episode_name"),
             User.username.label("actor_username"),
         )
         .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
         .outerjoin(Series, Series.id == ProtectedMedia.series_id)
+        .outerjoin(Season, Season.id == ProtectedMedia.season_id)
+        .outerjoin(Episode, Episode.id == ProtectedMedia.episode_id)
         .outerjoin(User, User.id == ProtectedMedia.protected_by_user_id)
     )
 
@@ -140,6 +229,11 @@ async def get_protected_entries(
                 media_type=entry.media_type,
                 media_id=media_id,
                 movie_version_id=entry.movie_version_id,
+                season_id=entry.season_id,
+                season_number=row.season_number,
+                episode_id=entry.episode_id,
+                episode_number=row.episode_number,
+                episode_name=row.episode_name,
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
@@ -185,6 +279,8 @@ async def create_protection_entry(
         )
 
     media = None
+    season: Season | None = None
+    episode: Episode | None = None
     if request_data.media_type is MediaType.MOVIE:
         if request_data.movie_version_id is not None:
             version_result = await db.execute(
@@ -198,6 +294,11 @@ async def create_protection_entry(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Movie version not found",
                 )
+        if request_data.season_id is not None or request_data.episode_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="season_id and episode_id are only valid for series",
+            )
         media_result = await db.execute(
             select(Movie).where(
                 Movie.id == request_data.media_id,
@@ -216,6 +317,12 @@ async def create_protection_entry(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="movie_version_id is only valid for movies",
             )
+        season, episode = await _resolve_series_scope(
+            db,
+            media_id=request_data.media_id,
+            season_id=request_data.season_id,
+            episode_id=request_data.episode_id,
+        )
         media_result = await db.execute(
             select(Series).where(
                 Series.id == request_data.media_id,
@@ -226,6 +333,10 @@ async def create_protection_entry(
         existing_query = select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
             ProtectedMedia.series_id == request_data.media_id,
+            _series_scope_overlap_clause(
+                season_id=season.id if season else None,
+                episode_id=episode.id if episode else None,
+            ),
         )
 
     if not media:
@@ -255,6 +366,8 @@ async def create_protection_entry(
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
+        season_id=season.id if season else None,
+        episode_id=episode.id if episode else None,
         reason=request_data.reason,
         protected_by_user_id=user.id,
         permanent=permanent,
@@ -270,6 +383,11 @@ async def create_protection_entry(
         media_type=new_entry.media_type,
         media_id=request_data.media_id,
         movie_version_id=new_entry.movie_version_id,
+        season_id=new_entry.season_id,
+        season_number=season.season_number if season else None,
+        episode_id=new_entry.episode_id,
+        episode_number=episode.episode_number if episode else None,
+        episode_name=episode.name if episode else None,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
@@ -350,6 +468,8 @@ async def update_protection_duration(
         select(User).where(User.id == entry.protected_by_user_id)
     )
     actor = actor_result.scalar_one_or_none()
+    season = await db.get(Season, entry.season_id) if entry.season_id else None
+    episode = await db.get(Episode, entry.episode_id) if entry.episode_id else None
     expires_at_value = entry.expires_at
 
     return ProtectedEntryResponse(
@@ -357,6 +477,11 @@ async def update_protection_duration(
         media_type=entry.media_type,
         media_id=media_id,
         movie_version_id=entry.movie_version_id,
+        season_id=entry.season_id,
+        season_number=season.season_number if season else None,
+        episode_id=entry.episode_id,
+        episode_number=episode.episode_number if episode else None,
+        episode_name=episode.name if episode else None,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,

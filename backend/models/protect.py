@@ -8,6 +8,11 @@ class ProtectedEntryResponse(BaseModel):
     media_type: MediaType
     media_id: int
     movie_version_id: int | None = None
+    season_id: int | None = None
+    season_number: int | None = None
+    episode_id: int | None = None
+    episode_number: int | None = None
+    episode_name: str | None = None
     media_title: str
     media_year: int | None
     poster_url: str | None
@@ -24,6 +29,8 @@ class CreateProtectedEntryRequest(BaseModel):
     media_type: MediaType
     media_id: int
     movie_version_id: int | None = None
+    season_id: int | None = None
+    episode_id: int | None = None
     reason: str | None = None
     duration_days: int | None = None
 

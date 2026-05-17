@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,6 +34,7 @@ from backend.models.media import (
     CandidateLibraryRef,
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
+    EpisodeWithStatus,
     MediaStatusInfo,
     MoveCandidatesRequest,
     MoveCandidatesResponse,
@@ -61,6 +62,21 @@ def extract_genre_names(genres: list[dict] | None) -> list[str] | None:
     if not genres:
         return None
     return [g["name"] for g in genres]
+
+
+def _whole_series_scope_clause(model):
+    """Clause to filter for entries that apply to a whole series (not season or episode specific)."""
+    return and_(model.season_id.is_(None), model.episode_id.is_(None))
+
+
+def _season_only_scope_clause(model):
+    """Clause to filter for entries that apply to a season only (not whole series or episode specific)."""
+    return and_(model.season_id.isnot(None), model.episode_id.is_(None))
+
+
+def _episode_scope_clause(model):
+    """Clause to filter for entries that apply to an episode (not whole series or season specific)."""
+    return model.episode_id.isnot(None)
 
 
 @router.get("/movies", response_model=PaginatedMediaResponse)
@@ -384,7 +400,7 @@ async def get_series(
     season_cands_result = await db.execute(
         select(ReclaimCandidate.series_id).where(
             ReclaimCandidate.series_id.in_(series_ids),
-            ReclaimCandidate.season_id.isnot(None),
+            _season_only_scope_clause(ReclaimCandidate),
         )
     )
     series_with_season_cands: set[int] = {
@@ -396,6 +412,7 @@ async def get_series(
     protected_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.series_id.in_(series_ids),
+            _whole_series_scope_clause(ProtectedMedia),
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -409,6 +426,7 @@ async def get_series(
     requests_result = await db.execute(
         select(ProtectionRequest).where(
             ProtectionRequest.series_id.in_(series_ids),
+            _whole_series_scope_clause(ProtectionRequest),
             ProtectionRequest.status == ProtectionRequestStatus.PENDING,
         )
     )
@@ -417,6 +435,7 @@ async def get_series(
     delete_requests_result = await db.execute(
         select(DeleteRequest).where(
             DeleteRequest.series_id.in_(series_ids),
+            _whole_series_scope_clause(DeleteRequest),
             DeleteRequest.status == ProtectionRequestStatus.PENDING,
         )
     )
@@ -554,7 +573,10 @@ async def get_series_seasons(
 
     # season level reclaim candidates
     cand_result = await db.execute(
-        select(ReclaimCandidate).where(ReclaimCandidate.season_id.in_(season_ids))
+        select(ReclaimCandidate).where(
+            ReclaimCandidate.season_id.in_(season_ids),
+            ReclaimCandidate.episode_id.is_(None),
+        )
     )
     season_candidates = {c.season_id: c for c in cand_result.scalars().all()}
 
@@ -562,7 +584,7 @@ async def get_series_seasons(
     now = datetime.now(UTC)
     prot_result = await db.execute(
         select(ProtectedMedia).where(
-            ProtectedMedia.season_id.in_(season_ids),
+            ProtectedMedia.series_id == series_id,
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -570,20 +592,61 @@ async def get_series_seasons(
             ),
         )
     )
-    season_protected = {p.season_id: p for p in prot_result.scalars().all()}
+    protected_entries = prot_result.scalars().all()
+    whole_series_protected = next(
+        (p for p in protected_entries if p.season_id is None and p.episode_id is None),
+        None,
+    )
+    season_protected = {
+        p.season_id: p
+        for p in protected_entries
+        if p.season_id is not None and p.episode_id is None
+    }
+    request_result = await db.execute(
+        select(ProtectionRequest).where(
+            ProtectionRequest.series_id == series_id,
+            ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    pending_requests = request_result.scalars().all()
+    whole_series_request = next(
+        (r for r in pending_requests if r.season_id is None and r.episode_id is None),
+        None,
+    )
+    season_requests = {
+        r.season_id: r
+        for r in pending_requests
+        if r.season_id is not None and r.episode_id is None
+    }
     delete_req_result = await db.execute(
         select(DeleteRequest).where(
-            DeleteRequest.season_id.in_(season_ids),
+            DeleteRequest.series_id == series_id,
             DeleteRequest.status == ProtectionRequestStatus.PENDING,
         )
     )
-    season_delete_requests = {r.season_id: r for r in delete_req_result.scalars().all()}
+    pending_delete_requests = delete_req_result.scalars().all()
+    whole_series_delete_request = next(
+        (
+            r
+            for r in pending_delete_requests
+            if r.season_id is None and r.episode_id is None
+        ),
+        None,
+    )
+    season_delete_requests = {
+        r.season_id: r
+        for r in pending_delete_requests
+        if r.season_id is not None and r.episode_id is None
+    }
 
     items: list[SeasonWithStatus] = []
     for season in seasons:
         cand = season_candidates.get(season.id)
-        prot = season_protected.get(season.id)
-        delete_req = season_delete_requests.get(season.id)
+        prot = season_protected.get(season.id) or whole_series_protected
+        req = season_requests.get(season.id) or whole_series_request
+        delete_req = (
+            season_delete_requests.get(season.id) or whole_series_delete_request
+        )
         season_status = MediaStatusInfo(
             is_candidate=cand is not None,
             candidate_id=cand.id if cand else None,
@@ -592,6 +655,10 @@ async def get_series_seasons(
             is_protected=prot is not None,
             protected_reason=prot.reason if prot else None,
             protected_permanent=prot.permanent if prot else True,
+            has_pending_request=req is not None,
+            request_id=req.id if req else None,
+            request_status=req.status if req else None,
+            request_reason=req.reason if req else None,
             has_pending_delete_request=delete_req is not None,
             delete_request_id=delete_req.id if delete_req else None,
             delete_request_status=delete_req.status if delete_req else None,
@@ -617,6 +684,161 @@ async def get_series_seasons(
                 max_audio_channels=season.max_audio_channels,
                 subtitle_languages=season.subtitle_languages,
                 status=season_status,
+            )
+        )
+
+    return items
+
+
+@router.get("/series/{series_id}/episodes", response_model=list[EpisodeWithStatus])
+async def get_series_episodes(
+    series_id: int,
+    _user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Get per episode status for a series."""
+    series_result = await db.execute(
+        select(Series).where(Series.id == series_id, Series.removed_at.is_(None))
+    )
+    if series_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Series not found"
+        )
+
+    episodes_result = await db.execute(
+        select(Episode, Season)
+        .join(Season, Episode.season_id == Season.id)
+        .where(Season.series_id == series_id)
+        .order_by(Season.season_number, Episode.episode_number)
+    )
+    rows = episodes_result.all()
+    if not rows:
+        return []
+
+    episode_ids = [row.Episode.id for row in rows]
+
+    cand_result = await db.execute(
+        select(ReclaimCandidate).where(ReclaimCandidate.episode_id.in_(episode_ids))
+    )
+    episode_candidates = {c.episode_id: c for c in cand_result.scalars().all()}
+
+    now = datetime.now(UTC)
+    prot_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.series_id == series_id,
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_entries = prot_result.scalars().all()
+    whole_series_protected = next(
+        (p for p in protected_entries if p.season_id is None and p.episode_id is None),
+        None,
+    )
+    season_protected = {
+        p.season_id: p
+        for p in protected_entries
+        if p.season_id is not None and p.episode_id is None
+    }
+    episode_protected = {
+        p.episode_id: p for p in protected_entries if p.episode_id is not None
+    }
+
+    request_result = await db.execute(
+        select(ProtectionRequest).where(
+            ProtectionRequest.series_id == series_id,
+            ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    pending_requests = request_result.scalars().all()
+    whole_series_request = next(
+        (r for r in pending_requests if r.season_id is None and r.episode_id is None),
+        None,
+    )
+    season_requests = {
+        r.season_id: r
+        for r in pending_requests
+        if r.season_id is not None and r.episode_id is None
+    }
+    episode_requests = {
+        r.episode_id: r for r in pending_requests if r.episode_id is not None
+    }
+
+    delete_req_result = await db.execute(
+        select(DeleteRequest).where(
+            DeleteRequest.series_id == series_id,
+            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+        )
+    )
+    pending_delete_requests = delete_req_result.scalars().all()
+    whole_series_delete_request = next(
+        (
+            r
+            for r in pending_delete_requests
+            if r.season_id is None and r.episode_id is None
+        ),
+        None,
+    )
+    season_delete_requests = {
+        r.season_id: r
+        for r in pending_delete_requests
+        if r.season_id is not None and r.episode_id is None
+    }
+    episode_delete_requests = {
+        r.episode_id: r for r in pending_delete_requests if r.episode_id is not None
+    }
+
+    items: list[EpisodeWithStatus] = []
+    for row in rows:
+        episode = row.Episode
+        season = row.Season
+        cand = episode_candidates.get(episode.id)
+        prot = (
+            episode_protected.get(episode.id)
+            or season_protected.get(season.id)
+            or whole_series_protected
+        )
+        req = (
+            episode_requests.get(episode.id)
+            or season_requests.get(season.id)
+            or whole_series_request
+        )
+        delete_req = (
+            episode_delete_requests.get(episode.id)
+            or season_delete_requests.get(season.id)
+            or whole_series_delete_request
+        )
+        items.append(
+            EpisodeWithStatus(
+                id=episode.id,
+                season_id=season.id,
+                season_number=season.season_number,
+                episode_number=episode.episode_number,
+                name=episode.name,
+                size=episode.size,
+                view_count=episode.view_count,
+                air_date=to_utc_isoformat(episode.air_date),
+                last_viewed_at=to_utc_isoformat(episode.last_viewed_at),
+                status=MediaStatusInfo(
+                    is_candidate=cand is not None,
+                    candidate_id=cand.id if cand else None,
+                    candidate_reason=cand.reason if cand else None,
+                    candidate_space_bytes=cand.estimated_space_bytes if cand else None,
+                    is_protected=prot is not None,
+                    protected_reason=prot.reason if prot else None,
+                    protected_permanent=prot.permanent if prot else True,
+                    has_pending_request=req is not None,
+                    request_id=req.id if req else None,
+                    request_status=req.status if req else None,
+                    request_reason=req.reason if req else None,
+                    has_pending_delete_request=delete_req is not None,
+                    delete_request_id=delete_req.id if delete_req else None,
+                    delete_request_status=delete_req.status if delete_req else None,
+                    delete_request_reason=delete_req.reason if delete_req else None,
+                ),
             )
         )
 
@@ -774,6 +996,8 @@ async def get_candidates(
     pending_movies_whole: set[int] = set()
     pending_movie_versions: set[tuple[int, int]] = set()
     pending_series: set[int] = set()
+    pending_seasons: set[tuple[int, int]] = set()
+    pending_episodes: set[tuple[int, int]] = set()
 
     if movie_ids:
         req_result = await db.execute(
@@ -794,12 +1018,24 @@ async def get_candidates(
 
     if series_ids:
         req_result = await db.execute(
-            select(ProtectionRequest.series_id).where(
+            select(
+                ProtectionRequest.series_id,
+                ProtectionRequest.season_id,
+                ProtectionRequest.episode_id,
+            ).where(
                 ProtectionRequest.series_id.in_(series_ids),
                 ProtectionRequest.status == ProtectionRequestStatus.PENDING,
             )
         )
-        pending_series = {r[0] for r in req_result.all()}
+        for series_id, season_id, episode_id in req_result.all():
+            if series_id is None:
+                continue
+            if episode_id is not None:
+                pending_episodes.add((series_id, episode_id))
+            elif season_id is not None:
+                pending_seasons.add((series_id, season_id))
+            else:
+                pending_series.add(series_id)
 
     global_library_name_by_id: dict[str, str] = {}
     libraries_result = await db.execute(
@@ -868,7 +1104,23 @@ async def get_candidates(
                 )
             )
             if is_movie
-            else c.series_id in pending_series
+            else (
+                c.series_id in pending_series
+                or (
+                    c.series_id is not None
+                    and c.episode_id is None
+                    and c.season_id is not None
+                    and (c.series_id, c.season_id) in pending_seasons
+                )
+                or (
+                    c.series_id is not None
+                    and c.episode_id is not None
+                    and (
+                        (c.series_id, c.season_id or -1) in pending_seasons
+                        or (c.series_id, c.episode_id) in pending_episodes
+                    )
+                )
+            )
         )
 
         if media_id is None or media_title is None:
@@ -1000,7 +1252,7 @@ async def delete_candidates(
 async def move_candidates(
     request: MoveCandidatesRequest,
     user: Annotated[User, Depends(get_current_user)],
-    _db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Move specific reclaim candidates to the configured destination instead of deleting.
 
@@ -1016,6 +1268,19 @@ async def move_candidates(
 
     if not request.candidate_ids:
         return MoveCandidatesResponse(moved=0, failed=0)
+
+    episode_scope_result = await db.execute(
+        select(ReclaimCandidate.id).where(
+            ReclaimCandidate.id.in_(request.candidate_ids),
+            _episode_scope_clause(ReclaimCandidate),
+        )
+    )
+    episode_scope_ids = [row[0] for row in episode_scope_result.all()]
+    if episode_scope_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Episode candidates cannot be moved yet",
+        )
 
     moved, failed = await move_specific_candidates(
         request.candidate_ids, approved_by=user.username

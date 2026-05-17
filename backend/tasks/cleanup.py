@@ -2,9 +2,9 @@ import shutil
 from asyncio import Semaphore, gather
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -48,7 +48,13 @@ from backend.database.models import (
     SeriesArrRef,
     SeriesServiceRef,
 )
-from backend.enums import MediaType, NotificationType, Service, Task
+from backend.enums import (
+    MediaType,
+    NotificationType,
+    ProtectionRequestStatus,
+    Service,
+    Task,
+)
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.notifications import (
@@ -67,6 +73,65 @@ __all__ = [
     "move_specific_candidates",
     "collect_rule_preview_matches",
 ]
+
+ArrDeleteFallback: TypeAlias = Literal["unmonitor", "remove_if_empty"]
+ArrDeleteAction: TypeAlias = Literal["delete", "unmonitor", "remove_if_empty"]
+
+
+def _is_series_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+    return and_(model.season_id.is_(None), model.episode_id.is_(None))
+
+
+def _is_season_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+    return and_(model.season_id.isnot(None), model.episode_id.is_(None))
+
+
+def _is_episode_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+    return model.episode_id.isnot(None)
+
+
+async def _soft_remove_movie_if_empty(
+    db: AsyncSession, movie_id: int | None
+) -> Movie | None:
+    if movie_id is None:
+        return None
+    movie = (
+        await db.execute(select(Movie).where(Movie.id == movie_id))
+    ).scalar_one_or_none()
+    if movie is None:
+        return None
+    remaining_version_id = (
+        await db.execute(
+            select(MovieVersion.id).where(MovieVersion.movie_id == movie_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if remaining_version_id is not None:
+        return movie
+    movie.removed_at = datetime.now(UTC)
+    movie.added_at = None
+    return movie
+
+
+async def _soft_remove_series_if_empty(
+    db: AsyncSession, series_id: int | None
+) -> Series | None:
+    if series_id is None:
+        return None
+    series = (
+        await db.execute(select(Series).where(Series.id == series_id))
+    ).scalar_one_or_none()
+    if series is None:
+        return None
+    remaining_season_id = (
+        await db.execute(
+            select(Season.id).where(Season.series_id == series_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if remaining_season_id is not None:
+        return series
+    series.removed_at = datetime.now(UTC)
+    series.added_at = None
+    return series
 
 
 async def collect_rule_preview_matches(
@@ -598,7 +663,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.SERIES,
-                    ReclaimCandidate.season_id.is_(None),
+                    _is_series_scope(ReclaimCandidate),
                 )
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
@@ -613,8 +678,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.SERIES,
-                    ReclaimCandidate.season_id.isnot(None),
-                    ReclaimCandidate.episode_id.is_(None),
+                    _is_season_scope(ReclaimCandidate),
                 )
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
@@ -629,7 +693,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             del_result = await db.execute(
                 delete(ReclaimCandidate).where(
                     ReclaimCandidate.media_type == MediaType.SERIES,
-                    ReclaimCandidate.episode_id.isnot(None),
+                    _is_episode_scope(ReclaimCandidate),
                 )
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
@@ -737,7 +801,7 @@ async def _sync_series_candidates(
     result = await db.execute(
         select(ReclaimCandidate).where(
             ReclaimCandidate.media_type == MediaType.SERIES,
-            ReclaimCandidate.season_id.is_(None),
+            _is_series_scope(ReclaimCandidate),
         )
     )
     existing_candidates = result.scalars().all()
@@ -1002,7 +1066,7 @@ async def _collect_season_candidate_records(
         select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
             ProtectedMedia.series_id.isnot(None),
-            ProtectedMedia.season_id.is_(None),
+            _is_series_scope(ProtectedMedia),
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -1018,7 +1082,7 @@ async def _collect_season_candidate_records(
     protected_season_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
-            ProtectedMedia.season_id.isnot(None),
+            _is_season_scope(ProtectedMedia),
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -1079,8 +1143,7 @@ async def _sync_season_candidates(
     existing_result = await db.execute(
         select(ReclaimCandidate).where(
             ReclaimCandidate.media_type == MediaType.SERIES,
-            ReclaimCandidate.season_id.isnot(None),
-            ReclaimCandidate.episode_id.is_(None),
+            _is_season_scope(ReclaimCandidate),
         )
     )
     season_candidate_lookup: dict[int, ReclaimCandidate] = {
@@ -1161,7 +1224,7 @@ async def _collect_episode_candidate_records(
         select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
             ProtectedMedia.series_id.isnot(None),
-            ProtectedMedia.season_id.is_(None),
+            _is_series_scope(ProtectedMedia),
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -1176,7 +1239,7 @@ async def _collect_episode_candidate_records(
     protected_season_result = await db.execute(
         select(ProtectedMedia).where(
             ProtectedMedia.media_type == MediaType.SERIES,
-            ProtectedMedia.season_id.isnot(None),
+            _is_season_scope(ProtectedMedia),
             or_(
                 ProtectedMedia.permanent.is_(True),
                 ProtectedMedia.expires_at.is_(None),
@@ -1241,7 +1304,7 @@ async def _sync_episode_candidates(
     existing_result = await db.execute(
         select(ReclaimCandidate).where(
             ReclaimCandidate.media_type == MediaType.SERIES,
-            ReclaimCandidate.episode_id.isnot(None),
+            _is_episode_scope(ReclaimCandidate),
         )
     )
     episode_candidate_lookup: dict[int, ReclaimCandidate] = {
@@ -1500,13 +1563,34 @@ def _rule_action(rule: ReclaimRule) -> dict:
     return rule.action or {}
 
 
-def _get_arr_action(candidate: "ReclaimCandidate", rules: dict) -> str:
-    """Return 'unmonitor' if any matched rule requests it, otherwise 'delete'."""
+def _coerce_arr_delete_fallback(value: str | None) -> ArrDeleteFallback:
+    if value == "remove_if_empty":
+        return "remove_if_empty"
+    return "unmonitor"
+
+
+def _get_arr_action(
+    candidate: "ReclaimCandidate",
+    rules: dict,
+    default_behavior: ArrDeleteFallback = "unmonitor",
+) -> ArrDeleteAction:
+    """Resolve ARR behavior for a candidate.
+
+    Matched rules remain authoritative: if any matched rule requests
+    ``unmonitor`` we honor that, otherwise any matched rule implies ``delete``.
+    Synthetic/no-rule candidates fall back to the global delete behavior.
+    """
+    has_matched_rule = False
     for rule_id in candidate.matched_rule_ids or []:
         rule = rules.get(rule_id)
-        if rule and _rule_action(rule).get("arr_action") == "unmonitor":
+        if not rule:
+            continue
+        has_matched_rule = True
+        if _rule_action(rule).get("arr_action") == "unmonitor":
             return "unmonitor"
-    return "delete"
+    if has_matched_rule:
+        return "delete"
+    return default_behavior
 
 
 def _managed_tag_for_rule(rule: ReclaimRule) -> str | None:
@@ -1518,6 +1602,24 @@ def _managed_tag_for_rule(rule: ReclaimRule) -> str | None:
     if not tag:
         return None
     return tag if tag.startswith("rec-") else f"rec-{tag}"
+
+
+def _merge_arr_action(
+    current: ArrDeleteAction | None,
+    candidate_action: ArrDeleteAction,
+) -> ArrDeleteAction:
+    """Merge multiple candidate actions for the same parent media.
+
+    Precedence is strict:
+    1. ``unmonitor`` wins
+    2. explicit rule ``delete`` beats fallback ``remove_if_empty``
+    3. ``remove_if_empty`` applies only if nothing stronger exists
+    """
+    if current == "unmonitor" or candidate_action == "unmonitor":
+        return "unmonitor"
+    if current == "delete" or candidate_action == "delete":
+        return "delete"
+    return "remove_if_empty"
 
 
 async def _sync_rule_radarr_tags() -> tuple[int, int]:
@@ -1977,6 +2079,8 @@ async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
     media_server_fallback_enabled: bool = True,
+    rules: dict[int, ReclaimRule] | None = None,
+    default_arr_delete_behavior: ArrDeleteFallback = "unmonitor",
 ) -> int:
     """Delete movie-version candidates using service-aware targeted deletion.
 
@@ -2035,6 +2139,9 @@ async def _delete_movie_version_candidates(
     for candidate in version_candidates:
         if candidate.movie_version_id is None:
             continue
+        cand_arr_action = _get_arr_action(
+            candidate, rules or {}, default_arr_delete_behavior
+        )
         version = versions.get(candidate.movie_version_id)
         if version is None:
             await _mark_candidate_delete_failure(
@@ -2087,6 +2194,7 @@ async def _delete_movie_version_candidates(
                     )
 
             async with async_db() as db:
+                remove_arr_refs: list[tuple[int, int]] = []
                 cand_result = await db.execute(
                     select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
                 )
@@ -2107,6 +2215,25 @@ async def _delete_movie_version_candidates(
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
                     await db.delete(ver_db)
+                    await db.flush()
+                    movie_db = await _soft_remove_movie_if_empty(db, ver_db.movie_id)
+                    if (
+                        cand_arr_action == "remove_if_empty"
+                        and movie_db is not None
+                        and movie_db.removed_at is not None
+                    ):
+                        arr_ref_rows = (
+                            await db.execute(
+                                select(
+                                    MovieArrRef.service_config_id,
+                                    MovieArrRef.arr_movie_id,
+                                ).where(MovieArrRef.movie_id == ver_db.movie_id)
+                            )
+                        ).all()
+                        remove_arr_refs = [
+                            (config_id, arr_movie_id)
+                            for config_id, arr_movie_id in arr_ref_rows
+                        ]
 
                 db.add(
                     ReclaimHistory(
@@ -2120,6 +2247,25 @@ async def _delete_movie_version_candidates(
                 )
 
                 await db.commit()
+
+            if remove_arr_refs:
+                radarr_clients = service_manager.radarr_clients()
+                if not radarr_clients and service_manager.radarr:
+                    radarr_clients = {0: service_manager.radarr}
+                for config_id, arr_movie_id in remove_arr_refs:
+                    client = radarr_clients.get(config_id)
+                    if not client:
+                        continue
+                    try:
+                        await client.delete_movies([arr_movie_id], delete_files=False)
+                        LOG.info(
+                            f"Removed '{movie.title}' from Radarr entirely "
+                            f"(no files remaining, config_id={config_id}, arr_id={arr_movie_id})"
+                        )
+                    except Exception as arr_err:
+                        LOG.warning(
+                            f"Could not remove empty movie '{movie.title}' from Radarr: {arr_err}"
+                        )
 
             deleted_count += 1
             LOG.info(
@@ -2157,6 +2303,12 @@ async def _delete_movie_candidates(
         settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
         media_server_fallback_enabled = (
             settings_row.media_server_fallback_enabled if settings_row else True
+        )
+        default_arr_delete_behavior = _coerce_arr_delete_fallback(
+            settings_row.default_arr_delete_behavior if settings_row else None
+        )
+        default_arr_delete_behavior = _coerce_arr_delete_fallback(
+            settings_row.default_arr_delete_behavior if settings_row else None
         )
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_movies = (
@@ -2201,12 +2353,14 @@ async def _delete_movie_candidates(
             }
 
     # determine per-movie action ("delete" or "unmonitor")
-    movie_arr_action: dict[int, str] = {}
+    movie_arr_action: dict[int, ArrDeleteAction] = {}
     for cand in candidates:
         if cand.movie_id:
-            action = _get_arr_action(cand, rules_by_id)
-            if action == "unmonitor" or cand.movie_id not in movie_arr_action:
-                movie_arr_action[cand.movie_id] = action
+            action = _get_arr_action(cand, rules_by_id, default_arr_delete_behavior)
+            movie_arr_action[cand.movie_id] = _merge_arr_action(
+                movie_arr_action.get(cand.movie_id),
+                action,
+            )
 
     # track which specific version IDs should have files cleaned up per movie.
     # None in the set means a whole-movie candidate exists (clean up all versions).
@@ -2350,7 +2504,11 @@ async def _delete_movie_candidates(
     # Handle version candidates not routable to any arr instance via media server
     if unmatched_version_candidates:
         deleted_count += await _delete_movie_version_candidates(
-            unmatched_version_candidates, approved_by, media_server_fallback_enabled
+            unmatched_version_candidates,
+            approved_by,
+            media_server_fallback_enabled,
+            rules_by_id,
+            default_arr_delete_behavior,
         )
 
     if not movie_arr_routing:
@@ -2695,6 +2853,31 @@ async def _delete_movie_candidates(
                             if is_whole_movie:
                                 movie.removed_at = datetime.now(UTC)
                                 movie.added_at = None
+                            else:
+                                target_version_ids = {
+                                    ver_id
+                                    for ver_id in target_version_ids
+                                    if ver_id is not None
+                                }
+                                deleted_size = 0
+                                if target_version_ids:
+                                    target_versions = [
+                                        v
+                                        for v in movie.versions
+                                        if v.id in target_version_ids
+                                    ]
+                                    deleted_size = sum(
+                                        v.size or 0 for v in target_versions
+                                    )
+                                    if deleted_size and movie.size is not None:
+                                        movie.size = max(0, movie.size - deleted_size)
+                                    await db.execute(
+                                        delete(MovieVersion).where(
+                                            MovieVersion.id.in_(target_version_ids)
+                                        )
+                                    )
+                                    await db.flush()
+                                    await _soft_remove_movie_if_empty(db, movie.id)
                             event_versions = [
                                 v
                                 for v in movie.versions
@@ -2810,6 +2993,9 @@ async def _delete_series_candidates(
         media_server_fallback_enabled = (
             settings_row.media_server_fallback_enabled if settings_row else True
         )
+        default_arr_delete_behavior = _coerce_arr_delete_fallback(
+            settings_row.default_arr_delete_behavior if settings_row else None
+        )
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_series = (
             settings_row.move_destination_series if settings_row else None
@@ -2824,7 +3010,7 @@ async def _delete_series_candidates(
             select(ReclaimCandidate)
             .join(Series, ReclaimCandidate.series_id == Series.id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
-            .where(ReclaimCandidate.season_id.is_(None))  # series-level only
+            .where(_is_series_scope(ReclaimCandidate))
             .where(Series.removed_at.is_(None))
         )
         if restrict_to_ids:
@@ -2854,12 +3040,16 @@ async def _delete_series_candidates(
             }
 
     # determine per-series action ("delete" or "unmonitor")
-    series_arr_action: dict[int, str] = {}
+    series_arr_action: dict[int, ArrDeleteAction] = {}
     for cand in candidates:
         if cand.series_id:
-            action = _get_arr_action(cand, series_rules_by_id)
-            if action == "unmonitor" or cand.series_id not in series_arr_action:
-                series_arr_action[cand.series_id] = action
+            action = _get_arr_action(
+                cand, series_rules_by_id, default_arr_delete_behavior
+            )
+            series_arr_action[cand.series_id] = _merge_arr_action(
+                series_arr_action.get(cand.series_id),
+                action,
+            )
 
     async with async_db() as db:
         # load series data + all arr refs (with stored arr_series_path for path routing)
@@ -3293,6 +3483,9 @@ async def _delete_season_candidates(
         media_server_fallback_enabled = (
             settings_row.media_server_fallback_enabled if settings_row else True
         )
+        default_arr_delete_behavior = _coerce_arr_delete_fallback(
+            settings_row.default_arr_delete_behavior if settings_row else None
+        )
 
     async with async_db() as db:
         query = (
@@ -3300,7 +3493,7 @@ async def _delete_season_candidates(
             .join(Season, ReclaimCandidate.season_id == Season.id)
             .join(Series, ReclaimCandidate.series_id == Series.id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
-            .where(ReclaimCandidate.season_id.isnot(None))
+            .where(_is_season_scope(ReclaimCandidate))
             .where(Series.removed_at.is_(None))
         )
         if restrict_to_ids:
@@ -3359,7 +3552,9 @@ async def _delete_season_candidates(
         deleted_via_sonarr = False
 
         # determine arr_action for this candidate
-        cand_arr_action = _get_arr_action(candidate, season_rules_by_id)
+        cand_arr_action = _get_arr_action(
+            candidate, season_rules_by_id, default_arr_delete_behavior
+        )
 
         # try Sonarr first
         sonarr_ref_id: int | None = None
@@ -3566,8 +3761,31 @@ async def _delete_season_candidates(
                 )
                 await db.execute(
                     delete(ProtectionRequest).where(
-                        ProtectionRequest.season_id == season_db.id
+                        ProtectionRequest.season_id == season_db.id,
+                        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
                     )
+                )
+                await db.execute(
+                    update(ProtectionRequest)
+                    .where(
+                        ProtectionRequest.season_id == season_db.id,
+                        ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(season_id=None, episode_id=None)
+                )
+                await db.execute(
+                    delete(DeleteRequest).where(
+                        DeleteRequest.season_id == season_db.id,
+                        DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                    )
+                )
+                await db.execute(
+                    update(DeleteRequest)
+                    .where(
+                        DeleteRequest.season_id == season_db.id,
+                        DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(season_id=None, episode_id=None)
                 )
                 await db.execute(
                     delete(ProtectedMedia).where(
@@ -3575,6 +3793,8 @@ async def _delete_season_candidates(
                     )
                 )
                 await db.delete(season_db)
+                await db.flush()
+                await _soft_remove_series_if_empty(db, candidate.series_id)
 
             db.add(
                 ReclaimHistory(
@@ -3631,6 +3851,13 @@ async def _delete_episode_candidates(
     Returns count of episodes successfully processed.
     """
     deleted_count = 0
+    default_arr_delete_behavior: ArrDeleteFallback = "unmonitor"
+
+    async with async_db() as db:
+        settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+        default_arr_delete_behavior = _coerce_arr_delete_fallback(
+            settings_row.default_arr_delete_behavior if settings_row else None
+        )
 
     async with async_db() as db:
         query = (
@@ -3639,7 +3866,7 @@ async def _delete_episode_candidates(
             .join(Season, ReclaimCandidate.season_id == Season.id)
             .join(Series, ReclaimCandidate.series_id == Series.id)
             .where(ReclaimCandidate.media_type == MediaType.SERIES)
-            .where(ReclaimCandidate.episode_id.isnot(None))
+            .where(_is_episode_scope(ReclaimCandidate))
             .where(Series.removed_at.is_(None))
         )
         if restrict_to_ids:
@@ -3705,7 +3932,9 @@ async def _delete_episode_candidates(
         if not episode or not season or not series_obj:
             continue
 
-        cand_arr_action = _get_arr_action(candidate, episode_rules_by_id)
+        cand_arr_action = _get_arr_action(
+            candidate, episode_rules_by_id, default_arr_delete_behavior
+        )
         ep_label = f"S{season.season_number:02d}E{episode.episode_number:02d}"
 
         sonarr_ref_id: int | None = None
@@ -3811,6 +4040,30 @@ async def _delete_episode_candidates(
                         f"Media server delete_item failed for "
                         f"'{series_obj.title}' {ep_label}: {ms_err}"
                     )
+            if (
+                cand_arr_action == "remove_if_empty"
+                and sonarr_client is not None
+                and sonarr_ref_id is not None
+            ):
+                try:
+                    fresh_series = await sonarr_client.get_series(sonarr_ref_id)
+                    all_empty = all(
+                        (s.statistics or {}).get("episodeFileCount", 0) == 0
+                        for s in fresh_series.seasons
+                    )
+                    if all_empty:
+                        await sonarr_client.delete_series(
+                            sonarr_ref_id, delete_files=False
+                        )
+                        LOG.info(
+                            f"Removed '{series_obj.title}' from Sonarr entirely "
+                            f"(no files remaining, sonarr_id={sonarr_ref_id})"
+                        )
+                except Exception as e:
+                    LOG.warning(
+                        f"Could not check/remove empty series '{series_obj.title}' "
+                        f"from Sonarr after episode delete: {e}"
+                    )
 
         if not deleted_via_sonarr:
             LOG.warning(
@@ -3827,13 +4080,135 @@ async def _delete_episode_candidates(
             if cand_obj:
                 await db.delete(cand_obj)
 
+            episode_db = (
+                await db.execute(
+                    select(Episode).where(Episode.id == candidate.episode_id)
+                )
+            ).scalar_one_or_none()
+            season_db = (
+                await db.execute(select(Season).where(Season.id == candidate.season_id))
+            ).scalar_one_or_none()
+            series_db = (
+                await db.execute(select(Series).where(Series.id == candidate.series_id))
+            ).scalar_one_or_none()
+
+            deleted_episode_size = (
+                episode_db.size
+                if episode_db and episode_db.size is not None
+                else episode.size
+            )
+
+            if episode_db:
+                await db.execute(
+                    delete(ProtectedMedia).where(
+                        ProtectedMedia.episode_id == episode_db.id
+                    )
+                )
+                await db.execute(
+                    delete(ProtectionRequest).where(
+                        ProtectionRequest.episode_id == episode_db.id,
+                        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+                    )
+                )
+                await db.execute(
+                    update(ProtectionRequest)
+                    .where(
+                        ProtectionRequest.episode_id == episode_db.id,
+                        ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(episode_id=None)
+                )
+                await db.execute(
+                    delete(DeleteRequest).where(
+                        DeleteRequest.episode_id == episode_db.id,
+                        DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                    )
+                )
+                await db.execute(
+                    update(DeleteRequest)
+                    .where(
+                        DeleteRequest.episode_id == episode_db.id,
+                        DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(episode_id=None)
+                )
+                await db.delete(episode_db)
+
+            if (
+                deleted_episode_size is not None
+                and season_db is not None
+                and season_db.size is not None
+            ):
+                season_db.size = max(0, season_db.size - deleted_episode_size)
+            if season_db is not None and season_db.episode_count is not None:
+                season_db.episode_count = max(0, season_db.episode_count - 1)
+            if (
+                deleted_episode_size is not None
+                and series_db is not None
+                and series_db.size is not None
+            ):
+                series_db.size = max(0, series_db.size - deleted_episode_size)
+
+            await db.flush()
+
+            if season_db is not None:
+                remaining_episode = (
+                    await db.execute(
+                        select(Episode.id)
+                        .where(Episode.season_id == season_db.id)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if remaining_episode is None:
+                    await db.execute(
+                        delete(ReclaimCandidate).where(
+                            ReclaimCandidate.season_id == season_db.id
+                        )
+                    )
+                    await db.execute(
+                        delete(ProtectionRequest).where(
+                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+                        )
+                    )
+                    await db.execute(
+                        update(ProtectionRequest)
+                        .where(
+                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                        )
+                        .values(season_id=None, episode_id=None)
+                    )
+                    await db.execute(
+                        delete(DeleteRequest).where(
+                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                        )
+                    )
+                    await db.execute(
+                        update(DeleteRequest)
+                        .where(
+                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                        )
+                        .values(season_id=None, episode_id=None)
+                    )
+                    await db.execute(
+                        delete(ProtectedMedia).where(
+                            ProtectedMedia.season_id == season_db.id
+                        )
+                    )
+                    await db.delete(season_db)
+                    await db.flush()
+                    await _soft_remove_series_if_empty(db, candidate.series_id)
+
             db.add(
                 ReclaimHistory(
                     approved_by=approved_by,
                     media_type=MediaType.SERIES,
                     tmdb_id=series_obj.tmdb_id,
                     name=f"{series_obj.title} {ep_label}",
-                    size=episode.size,
+                    size=deleted_episode_size,
                     action="unmonitored"
                     if cand_arr_action == "unmonitor"
                     else "deleted",
@@ -4390,6 +4765,8 @@ async def move_specific_candidates(
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
                     await db.delete(ver_db)
+                    await db.flush()
+                    await _soft_remove_movie_if_empty(db, ver_db.movie_id)
 
                 db.add(
                     ReclaimHistory(
@@ -4515,13 +4892,22 @@ async def move_specific_candidates(
                     failed += 1
                     continue
 
-                is_season = candidate.season_id is not None
+                is_episode = candidate.episode_id is not None
+                is_season = candidate.season_id is not None and not is_episode
                 season = (
                     seasons_map.get(candidate.season_id)
                     if is_season and candidate.season_id
                     else None
                 )
                 season_folder: Path | None = None
+
+                if is_episode:
+                    LOG.warning(
+                        f"move_specific_candidates: episode-scoped candidate {candidate.id} "
+                        f"is not supported by move"
+                    )
+                    failed += 1
+                    continue
 
                 if is_season:
                     if season is None:
@@ -4666,8 +5052,35 @@ async def move_specific_candidates(
                             )
                             await db.execute(
                                 delete(ProtectionRequest).where(
-                                    ProtectionRequest.season_id == season_db.id
+                                    ProtectionRequest.season_id == season_db.id,
+                                    ProtectionRequest.status
+                                    == ProtectionRequestStatus.PENDING,
                                 )
+                            )
+                            await db.execute(
+                                update(ProtectionRequest)
+                                .where(
+                                    ProtectionRequest.season_id == season_db.id,
+                                    ProtectionRequest.status
+                                    != ProtectionRequestStatus.PENDING,
+                                )
+                                .values(season_id=None, episode_id=None)
+                            )
+                            await db.execute(
+                                delete(DeleteRequest).where(
+                                    DeleteRequest.season_id == season_db.id,
+                                    DeleteRequest.status
+                                    == ProtectionRequestStatus.PENDING,
+                                )
+                            )
+                            await db.execute(
+                                update(DeleteRequest)
+                                .where(
+                                    DeleteRequest.season_id == season_db.id,
+                                    DeleteRequest.status
+                                    != ProtectionRequestStatus.PENDING,
+                                )
+                                .values(season_id=None, episode_id=None)
                             )
                             await db.execute(
                                 delete(ProtectedMedia).where(
@@ -4675,6 +5088,8 @@ async def move_specific_candidates(
                                 )
                             )
                             await db.delete(season_db)
+                            await db.flush()
+                            await _soft_remove_series_if_empty(db, candidate.series_id)
 
                         history_name = f"{series_obj.title} S{season.season_number:02d}"
                         history_size = season.size
