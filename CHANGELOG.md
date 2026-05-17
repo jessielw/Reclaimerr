@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates unified view with filters for movie/series
 - Added a notification beside **Candidates** on the nav bar that will now be displayed if there is **any** candidates at all
 - Can now clone rules
+- Now remembers which tab was last used in Requests
 
 ### Changed
 

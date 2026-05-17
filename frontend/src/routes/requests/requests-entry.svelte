@@ -4,9 +4,18 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Shield from "@lucide/svelte/icons/shield";
   import { Button } from "$lib/components/ui/button/index.js";
+  import { createFilterState } from "$lib/utils/pagination";
 
   type RequestTab = "deletion" | "protection";
-  let activeTab = $state<RequestTab>("protection");
+  const _activeTabStore = createFilterState<RequestTab>(
+    "requests_active_tab",
+    "protection",
+  );
+  let activeTab = $state<RequestTab>(
+    _activeTabStore.getInitial() === "deletion" ? "deletion" : "protection",
+  );
+
+  $effect(() => _activeTabStore.save(activeTab));
 </script>
 
 <div class="p-2.5 md:p-8 pb-0 md:pb-0">
