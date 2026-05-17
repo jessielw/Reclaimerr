@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard now shows total size of movies/series on the 'Total' cards
 - Added a **Auto** option to the dashboard size formatter - this intelligently selects the most appropriate size to show
 - Now shows episode names when utilizing the scope **Episodes** in the rule previewer
+- Env variable `LOG_RETENTION_DAYS` _(defaults to 30)_ to keep N daily rotated log files
 
 ### Changed
 
