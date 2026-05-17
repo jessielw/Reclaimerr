@@ -14,6 +14,7 @@ User data (DB, logs, avatars) is stored in the platform data dir at runtime
 on macOS, ~/.local/share/reclaimerr on Linux).
 """
 
+import os
 import platform
 import subprocess
 import sys
@@ -50,8 +51,17 @@ def run(cmd: list[str], **kwargs):
 
 def build_frontend():
     print("\n=== Building frontend ===")
+    app_channel = os.environ.get("VITE_APP_CHANNEL", "dev")
+    frontend_env = os.environ.copy()
+    frontend_env["VITE_APP_CHANNEL"] = app_channel
+    print(f"Frontend channel: {app_channel}")
     # shell=True is required on Windows because npm is a .cmd file (we don't need this on Unix).
-    run(["npm", "run", "build"], cwd=FRONTEND_DIR, shell=(PLATFORM == "Windows"))
+    run(
+        ["npm", "run", "build"],
+        cwd=FRONTEND_DIR,
+        shell=(PLATFORM == "Windows"),
+        env=frontend_env,
+    )
     if not FRONTEND_DIST.exists():
         print("ERROR: frontend/dist not found after build")
         sys.exit(1)

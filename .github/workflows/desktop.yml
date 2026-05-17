@@ -10,6 +10,14 @@ on:
         description: "Release tag to attach artifacts to (e.g. 0.1.0-beta1)"
         required: true
         type: string
+      app_channel:
+        description: "Frontend channel (dev or release)"
+        required: false
+        default: dev
+        type: choice
+        options:
+          - dev
+          - release
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -62,8 +70,20 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra desktop
 
+      - name: Resolve frontend channel
+        id: channel
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "value=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.event.inputs.app_channel || 'dev' }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build desktop app
         run: uv run python scripts/build_desktop.py
+        env:
+          VITE_APP_CHANNEL: ${{ steps.channel.outputs.value }}
 
       - name: Archive build (Windows)
         if: runner.os == 'Windows'
