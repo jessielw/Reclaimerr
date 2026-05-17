@@ -324,13 +324,15 @@ async def build_rule_preview_items(
                 reason_parts=normalized_reasons,
                 reason_tokens=reason_tokens(normalized_reasons),
                 estimated_space_bytes=(
-                    version.size
+                    record.estimated_space_bytes
+                    if record.estimated_space_bytes is not None
+                    else version.size
                     if version
                     else episode.size
                     if episode
                     else season.size
                     if season
-                    else record.estimated_space_bytes
+                    else None
                 ),
                 season_id=record.season_id,
                 season_number=season.season_number if season else None,
