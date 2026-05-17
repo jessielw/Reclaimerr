@@ -79,6 +79,24 @@ def _episode_scope_clause(model):
     return model.episode_id.isnot(None)
 
 
+def _candidate_row_sort_key(
+    row,
+) -> tuple[int, int, int, str]:
+    """Keep whole-series rows first, then seasons, then episodes within each series."""
+    if row.ReclaimCandidate.episode_id is not None:
+        scope_rank = 2
+    elif row.ReclaimCandidate.season_id is not None:
+        scope_rank = 1
+    else:
+        scope_rank = 0
+    return (
+        scope_rank,
+        row.season_number or 0,
+        row.episode_number or 0,
+        to_utc_isoformat(row.ReclaimCandidate.created_at) or "",
+    )
+
+
 @router.get("/movies", response_model=PaginatedMediaResponse)
 async def get_movies(
     _user: Annotated[User, Depends(get_current_user)],
@@ -915,6 +933,7 @@ async def get_candidates(
             Series.vote_count.label("series_vote_count"),
             Series.status.label("series_status"),
             # episode
+            Episode.size.label("episode_size"),
             Episode.episode_number.label("episode_number"),
             Episode.name.label("episode_name"),
         )
@@ -938,49 +957,124 @@ async def get_candidates(
             )
         )
 
-    count_query = (
-        select(func.count(ReclaimCandidate.id))
-        .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
-        .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
-        .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
-        .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
-    )
-
-    if media_type:
-        count_query = count_query.where(ReclaimCandidate.media_type == media_type)
-
-    if search:
-        search_term = f"%{search}%"
-        count_query = count_query.where(
-            or_(
-                Movie.title.ilike(search_term),
-                Series.title.ilike(search_term),
-                ReclaimCandidate.reason.ilike(search_term),
+    if media_type is MediaType.SERIES:
+        grouped_query = (
+            select(
+                ReclaimCandidate.series_id.label("series_id"),
+                Series.title.label("series_title"),
+                func.coalesce(
+                    func.sum(ReclaimCandidate.estimated_space_bytes), 0
+                ).label("group_size_bytes"),
+                func.max(ReclaimCandidate.created_at).label("group_created_at"),
             )
+            .join(Series, ReclaimCandidate.series_id == Series.id)
+            .where(ReclaimCandidate.media_type == MediaType.SERIES)
+            .group_by(ReclaimCandidate.series_id, Series.title)
+        )
+        if search:
+            search_term = f"%{search}%"
+            grouped_query = grouped_query.where(
+                or_(
+                    Series.title.ilike(search_term),
+                    ReclaimCandidate.reason.ilike(search_term),
+                )
+            )
+
+        grouped_subquery = grouped_query.subquery()
+        total = (
+            await db.execute(select(func.count()).select_from(grouped_subquery))
+        ).scalar_one() or 0
+
+        if sort_by == "media_title":
+            grouped_order_expr = grouped_subquery.c.series_title
+        elif sort_by == "estimated_space_bytes":
+            grouped_order_expr = grouped_subquery.c.group_size_bytes
+        else:
+            grouped_order_expr = grouped_subquery.c.group_created_at
+
+        if sort_order == "desc":
+            grouped_order_expr = grouped_order_expr.desc()
+            grouped_tiebreak = grouped_subquery.c.series_id.desc()
+        else:
+            grouped_order_expr = grouped_order_expr.asc()
+            grouped_tiebreak = grouped_subquery.c.series_id.asc()
+
+        offset = (page - 1) * per_page
+        page_series_ids = [
+            row.series_id
+            for row in (
+                await db.execute(
+                    select(grouped_subquery.c.series_id)
+                    .order_by(grouped_order_expr, grouped_tiebreak)
+                    .offset(offset)
+                    .limit(per_page)
+                )
+            ).all()
+            if row.series_id is not None
+        ]
+
+        if not page_series_ids:
+            rows = []
+        else:
+            series_id_position = {
+                series_id: idx for idx, series_id in enumerate(page_series_ids)
+            }
+            result = await db.execute(
+                base_query.where(ReclaimCandidate.series_id.in_(page_series_ids))
+            )
+            rows = sorted(
+                result.all(),
+                key=lambda row: (
+                    series_id_position.get(row.ReclaimCandidate.series_id or -1, -1),
+                    *_candidate_row_sort_key(row),
+                ),
+            )
+    else:
+        count_query = (
+            select(func.count(ReclaimCandidate.id))
+            .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+            .outerjoin(
+                MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id
+            )
+            .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+            .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         )
 
-    total = (await db.execute(count_query)).scalar_one() or 0
+        if media_type is MediaType.MOVIE:
+            count_query = count_query.where(ReclaimCandidate.media_type == media_type)
 
-    media_title_expr = func.coalesce(Movie.title, Series.title)
-    if sort_by == "media_title":
-        order_expr = media_title_expr
-    elif sort_by == "estimated_space_bytes":
-        order_expr = ReclaimCandidate.estimated_space_bytes
-    else:
-        order_expr = ReclaimCandidate.created_at
+        if search:
+            search_term = f"%{search}%"
+            count_query = count_query.where(
+                or_(
+                    Movie.title.ilike(search_term),
+                    Series.title.ilike(search_term),
+                    ReclaimCandidate.reason.ilike(search_term),
+                )
+            )
 
-    if sort_order == "desc":
-        order_expr = order_expr.desc()
-        id_tiebreak = ReclaimCandidate.id.desc()
-    else:
-        order_expr = order_expr.asc()
-        id_tiebreak = ReclaimCandidate.id.asc()
+        total = (await db.execute(count_query)).scalar_one() or 0
 
-    offset = (page - 1) * per_page
-    result = await db.execute(
-        base_query.order_by(order_expr, id_tiebreak).offset(offset).limit(per_page)
-    )
-    rows = result.all()
+        media_title_expr = func.coalesce(Movie.title, Series.title)
+        if sort_by == "media_title":
+            order_expr = media_title_expr
+        elif sort_by == "estimated_space_bytes":
+            order_expr = ReclaimCandidate.estimated_space_bytes
+        else:
+            order_expr = ReclaimCandidate.created_at
+
+        if sort_order == "desc":
+            order_expr = order_expr.desc()
+            id_tiebreak = ReclaimCandidate.id.desc()
+        else:
+            order_expr = order_expr.asc()
+            id_tiebreak = ReclaimCandidate.id.asc()
+
+        offset = (page - 1) * per_page
+        result = await db.execute(
+            base_query.order_by(order_expr, id_tiebreak).offset(offset).limit(per_page)
+        )
+        rows = result.all()
 
     # collect IDs to check for pending exception requests in one query each
     movie_ids = [
@@ -1127,15 +1221,19 @@ async def get_candidates(
             continue
 
         estimated_space_bytes = (
-            row.version_size
+            c.estimated_space_bytes
+            if c.estimated_space_bytes is not None
+            else row.version_size
             if row.version_size is not None
+            else row.episode_size
+            if row.episode_size is not None
             else row.season_size
             if row.season_size is not None
             else row.movie_size
             if is_movie and row.movie_size is not None
             else row.series_size
             if (not is_movie and row.series_size is not None)
-            else c.estimated_space_bytes
+            else None
         )
 
         items_out.append(
