@@ -33,6 +33,7 @@ from backend.models.media import (
     CandidateDisplayGroup,
     CandidateEntry,
     CandidateLibraryRef,
+    CandidatesPresenceResponse,
     DeleteCandidatesRequest,
     DeleteCandidatesResponse,
     EpisodeWithStatus,
@@ -1374,6 +1375,18 @@ async def get_candidates(
         page=page,
         per_page=per_page,
         total_pages=total_pages,
+    )
+
+
+@router.get("/candidates/presence", response_model=CandidatesPresenceResponse)
+async def get_candidates_presence(
+    _user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Return whether any reclaim candidates currently exist."""
+    result = await db.execute(select(ReclaimCandidate.id).limit(1))
+    return CandidatesPresenceResponse(
+        has_candidates=result.scalar_one_or_none() is not None
     )
 
 

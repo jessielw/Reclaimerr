@@ -6,7 +6,7 @@ from typing import TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.api.routes.media import get_candidates
+from backend.api.routes.media import get_candidates, get_candidates_presence
 from backend.database import Base
 from backend.database.models import (
     Episode,
@@ -271,6 +271,28 @@ def test_get_candidates_search_keeps_series_group_intact() -> None:
             assert {item.id for item in response.items} == set(
                 ids["charlie_candidate_ids"]
             )
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_presence_reports_existing_candidates() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            empty_response = await get_candidates_presence(_admin_user(), db_session)
+            assert empty_response.has_candidates is False
+
+            await _seed_candidates(db_session)
+            populated_response = await get_candidates_presence(
+                _admin_user(), db_session
+            )
+            assert populated_response.has_candidates is True
         await engine.dispose()
 
     asyncio.run(run())

@@ -3,6 +3,7 @@
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
   import SidebarNotices from "./sidebar-notices.svelte";
+  import SidebarCandidatesBadge from "./sidebar-candidates-badge.svelte";
   import logoImage from "$lib/assets/logo.png";
   import { VERSION } from "$lib/version";
   import House from "@lucide/svelte/icons/house";
@@ -272,7 +273,12 @@
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
                 >
                   <item.icon />
-                  <span class="font-medium">{item.label}</span>
+                  <span class="flex items-center gap-2 flex-1 min-w-0">
+                    <span class="font-medium">{item.label}</span>
+                    {#if item.path === "/candidates"}
+                      <SidebarCandidatesBadge />
+                    {/if}
+                  </span>
                 </a>
               </Tooltip.Trigger>
               <Tooltip.Content>
@@ -290,7 +296,12 @@
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
             >
               <item.icon />
-              <span class="font-medium">{item.label}</span>
+              <span class="flex items-center gap-2 flex-1 min-w-0">
+                <span class="font-medium">{item.label}</span>
+                {#if item.path === "/candidates"}
+                  <SidebarCandidatesBadge />
+                {/if}
+              </span>
             </a>
           {/if}
           <Tooltip.Content>

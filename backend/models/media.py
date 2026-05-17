@@ -530,6 +530,10 @@ class PaginatedCandidatesResponse(BaseModel):
     total_pages: int
 
 
+class CandidatesPresenceResponse(BaseModel):
+    has_candidates: bool
+
+
 class DeleteCandidatesRequest(BaseModel):
     candidate_ids: list[int]
 
