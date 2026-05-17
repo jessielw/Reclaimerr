@@ -6,14 +6,14 @@ from pydantic import BaseModel
 class DashboardKpis(BaseModel):
     total_movies: int
     total_series: int
-    total_movies_size_gb: float
-    total_series_size_gb: float
-    reclaimable_movies_gb: float
-    reclaimable_series_gb: float
-    reclaimable_total_gb: float
+    total_movies_size_bytes: int
+    total_series_size_bytes: int
+    reclaimable_movies_bytes: int
+    reclaimable_series_bytes: int
+    reclaimable_total_bytes: int
     reclaimed_movies: int
     reclaimed_series: int
-    reclaimed_total_gb: float
+    reclaimed_total_bytes: int
 
 
 class DashboardRequestsSummary(BaseModel):
