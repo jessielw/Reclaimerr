@@ -6,6 +6,7 @@
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";
   import {
+    type EpisodeWithStatus,
     MediaType,
     Permission,
     type ProtectionRequest,
@@ -46,6 +47,10 @@
     seasonId?: number | null;
     // season number for display context when seasonId is set
     seasonNumber?: number | null;
+    // pre-set an episode (skips the scope picker and targets just this episode)
+    episodeId?: number | null;
+    episodeNumber?: number | null;
+    episodeName?: string | null;
     onClose?: () => void;
     onSuccess?: (request: ProtectionRequest) => void;
   }
@@ -56,6 +61,9 @@
     mediaType,
     seasonId = null,
     seasonNumber = null,
+    episodeId = null,
+    episodeNumber = null,
+    episodeName = null,
     onClose,
     onSuccess,
   }: Props = $props();
@@ -67,7 +75,7 @@
 
   // show the season checklist only for series without a pre-selected season
   const showScopePicker = $derived(
-    mediaType === MediaType.Series && seasonId == null,
+    mediaType === MediaType.Series && seasonId == null && episodeId == null,
   );
 
   // show version picker for movies with 2+ versions
@@ -83,11 +91,14 @@
 
   // scope state
   let seasons = $state<SeasonWithStatus[]>([]);
+  let episodes = $state<EpisodeWithStatus[]>([]);
   let loadingSeasons = $state(false);
+  let loadingEpisodes = $state(false);
   let scopeExpanded = $state(true);
   let versionPickerExpanded = $state(true);
-  let scopeWholeSeries = $state(false);
+  let scopeMode = $state<"series" | "seasons" | "episodes">("series");
   let selectedSeasonIds = $state<Set<number>>(new Set());
+  let selectedEpisodeIds = $state<Set<number>>(new Set());
 
   // version selection: null = whole movie, number = specific version id
   let selectedVersionId = $state<number | null>(null);
@@ -97,16 +108,19 @@
       reason = isAdmin ? "Admin decision" : "";
       duration = isAdmin ? "permanent" : "30";
       customDays = "30";
-      scopeWholeSeries = false;
+      scopeMode = "series";
       selectedSeasonIds = new Set();
+      selectedEpisodeIds = new Set();
       scopeExpanded = true;
       versionPickerExpanded = true;
       seasons = [];
+      episodes = [];
       // auto-pick when there's exactly one version; otherwise default to whole-movie (null)
       const vers = media?.versions ?? [];
       selectedVersionId = vers.length === 1 ? vers[0].id : null;
       if (showScopePicker && media) {
         fetchSeasons(media.id);
+        fetchEpisodes(media.id);
       }
     }
   });
@@ -124,11 +138,31 @@
     }
   };
 
+  const fetchEpisodes = async (seriesId: number) => {
+    loadingEpisodes = true;
+    try {
+      episodes = await get_api<EpisodeWithStatus[]>(
+        `/api/media/series/${seriesId}/episodes`,
+      );
+    } catch (err: any) {
+      toast.error(`Failed to load episodes: ${err.message}`);
+    } finally {
+      loadingEpisodes = false;
+    }
+  };
+
   const toggleSeason = (id: number) => {
     const next = new Set(selectedSeasonIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     selectedSeasonIds = next;
+  };
+
+  const toggleEpisode = (id: number) => {
+    const next = new Set(selectedEpisodeIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedEpisodeIds = next;
   };
 
   const durationOptions = [
@@ -143,7 +177,10 @@
   const canSubmit = $derived(
     !!media &&
       (isAdmin || !!reason.trim()) &&
-      (!showScopePicker || scopeWholeSeries || selectedSeasonIds.size > 0),
+      (!showScopePicker ||
+        scopeMode === "series" ||
+        (scopeMode === "seasons" && selectedSeasonIds.size > 0) ||
+        (scopeMode === "episodes" && selectedEpisodeIds.size > 0)),
   );
 
   const handleSubmit = async () => {
@@ -180,11 +217,17 @@
 
       if (showScopePicker) {
         // submit one request per checked scope item
-        type ScopeExtra = { season_id?: number };
+        type ScopeExtra = { season_id?: number; episode_id?: number };
         const scopeItems: ScopeExtra[] = [];
-        if (scopeWholeSeries) scopeItems.push({});
-        for (const sid of selectedSeasonIds)
-          scopeItems.push({ season_id: sid });
+        if (scopeMode === "series") {
+          scopeItems.push({});
+        } else if (scopeMode === "seasons") {
+          for (const sid of selectedSeasonIds)
+            scopeItems.push({ season_id: sid });
+        } else {
+          for (const eid of selectedEpisodeIds)
+            scopeItems.push({ episode_id: eid });
+        }
 
         const results = await Promise.allSettled(
           scopeItems.map((extra) =>
@@ -220,6 +263,7 @@
           {
             ...basePayload,
             ...(seasonId != null ? { season_id: seasonId } : {}),
+            ...(episodeId != null ? { episode_id: episodeId } : {}),
           },
         );
 
@@ -263,6 +307,15 @@
         {#if seasonId != null && seasonNumber != null}
           {isAdmin ? "Protect" : "Request protection for"} Season {seasonNumber}
           of this series from deletion
+        {:else if episodeId != null && episodeNumber != null}
+          {isAdmin ? "Protect" : "Request protection for"} episode S{String(
+            seasonNumber ?? 0,
+          ).padStart(2, "0")}E{String(episodeNumber).padStart(
+            2,
+            "0",
+          )}{#if episodeName}
+            &nbsp;&quot;{episodeName}&quot;{/if}
+          of this series from deletion
         {:else if showScopePicker}
           {isAdmin
             ? "Choose what to protect from deletion"
@@ -294,6 +347,14 @@
             {#if seasonNumber != null}
               <p class="text-sm text-muted-foreground">
                 Season {seasonNumber}
+              </p>
+            {/if}
+            {#if episodeNumber != null}
+              <p class="text-sm text-muted-foreground">
+                S{String(seasonNumber ?? 0).padStart(2, "0")}E{String(
+                  episodeNumber,
+                ).padStart(2, "0")}{#if episodeName}
+                  &nbsp;&quot;{episodeName}&quot;{/if}
               </p>
             {/if}
             {#if media.status.is_candidate}
@@ -396,54 +457,191 @@
                     Loading seasons…
                   </p>
                 {:else}
-                  <!-- whole series row -->
-                  <label
-                    class="flex items-center gap-3 py-1.5 px-1 cursor-pointer
-                      rounded hover:bg-muted/40"
-                  >
-                    <input
-                      type="checkbox"
-                      bind:checked={scopeWholeSeries}
-                      class="accent-primary cursor-pointer"
-                    />
-                    <span class="text-sm text-foreground font-medium flex-1">
-                      Whole series
-                    </span>
-                  </label>
+                  <div class="space-y-2">
+                    <label
+                      class="flex items-center gap-3 py-1.5 px-1 cursor-pointer rounded hover:bg-muted/40"
+                    >
+                      <input
+                        type="radio"
+                        name="series-scope"
+                        checked={scopeMode === "series"}
+                        onchange={() => (scopeMode = "series")}
+                        class="accent-primary cursor-pointer"
+                      />
+                      <span class="text-sm text-foreground font-medium flex-1">
+                        Whole series
+                      </span>
+                    </label>
 
-                  {#if seasons.length > 0}
-                    <div class="border-t border-border pt-1 space-y-0.5">
-                      {#each seasons as season (season.id)}
-                        <label
-                          class="flex items-center gap-3 py-1.5 px-1
-                            cursor-pointer rounded hover:bg-muted/40"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedSeasonIds.has(season.id)}
-                            onchange={() => toggleSeason(season.id)}
-                            class="accent-primary cursor-pointer"
-                          />
-                          <span class="text-sm text-foreground flex-1">
-                            Season {season.season_number}
-                          </span>
-                          {#if season.status.is_candidate}
-                            <span
-                              class="text-xs text-amber-400 font-medium px-1.5
-                                py-0.5 bg-amber-400/10 rounded"
+                    <label
+                      class="flex items-center gap-3 py-1.5 px-1 cursor-pointer rounded hover:bg-muted/40"
+                    >
+                      <input
+                        type="radio"
+                        name="series-scope"
+                        checked={scopeMode === "seasons"}
+                        onchange={() => (scopeMode = "seasons")}
+                        class="accent-primary cursor-pointer"
+                      />
+                      <span class="text-sm text-foreground font-medium flex-1">
+                        Specific seasons
+                      </span>
+                    </label>
+
+                    {#if scopeMode === "seasons"}
+                      {#if loadingSeasons}
+                        <p class="text-sm text-muted-foreground py-1">
+                          Loading seasons...
+                        </p>
+                      {:else if seasons.length === 0}
+                        <p class="text-sm text-muted-foreground py-1">
+                          No seasons available.
+                        </p>
+                      {:else}
+                        <div class="border-t border-border pt-1 space-y-0.5">
+                          {#each seasons as season (season.id)}
+                            <label
+                              class={`flex items-center gap-3 py-1.5 px-1 rounded ${
+                                season.status.is_protected ||
+                                season.status.has_pending_request
+                                  ? "cursor-not-allowed opacity-60"
+                                  : "cursor-pointer hover:bg-muted/40"
+                              }`}
                             >
-                              flagged
-                            </span>
-                          {/if}
-                          {#if formatSizeGb(season.size) != null}
-                            <span class="text-xs text-muted-foreground">
-                              {formatSizeGb(season.size)}
-                            </span>
-                          {/if}
-                        </label>
-                      {/each}
-                    </div>
-                  {/if}
+                              <input
+                                type="checkbox"
+                                checked={selectedSeasonIds.has(season.id)}
+                                onchange={() => toggleSeason(season.id)}
+                                class="accent-primary cursor-pointer"
+                                disabled={season.status.is_protected ||
+                                  season.status.has_pending_request}
+                              />
+                              <span class="text-sm text-foreground flex-1">
+                                Season {season.season_number}
+                              </span>
+                              {#if season.status.is_candidate}
+                                <span
+                                  class="text-xs text-amber-400 font-medium px-1.5 py-0.5 bg-amber-400/10 rounded"
+                                >
+                                  flagged
+                                </span>
+                              {/if}
+                              {#if season.status.is_protected}
+                                <span class="text-xs text-muted-foreground">
+                                  protected
+                                </span>
+                              {:else if season.status.has_pending_request}
+                                <span class="text-xs text-muted-foreground">
+                                  pending
+                                </span>
+                              {/if}
+                              {#if formatSizeGb(season.size) != null}
+                                <span class="text-xs text-muted-foreground">
+                                  {formatSizeGb(season.size)}
+                                </span>
+                              {/if}
+                            </label>
+                          {/each}
+                        </div>
+                      {/if}
+                    {/if}
+
+                    <label
+                      class="flex items-center gap-3 py-1.5 px-1 cursor-pointer rounded hover:bg-muted/40"
+                    >
+                      <input
+                        type="radio"
+                        name="series-scope"
+                        checked={scopeMode === "episodes"}
+                        onchange={() => (scopeMode = "episodes")}
+                        class="accent-primary cursor-pointer"
+                      />
+                      <span class="text-sm text-foreground font-medium flex-1">
+                        Specific episodes
+                      </span>
+                    </label>
+
+                    {#if scopeMode === "episodes"}
+                      {#if loadingEpisodes}
+                        <p class="text-sm text-muted-foreground py-1">
+                          Loading episodes...
+                        </p>
+                      {:else if episodes.length === 0}
+                        <p class="text-sm text-muted-foreground py-1">
+                          No episodes available.
+                        </p>
+                      {:else}
+                        <div
+                          class="border-t border-border pt-2 space-y-2 max-h-72 overflow-y-auto pr-1"
+                        >
+                          {#each Array.from(episodes.reduce((map, ep) => {
+                              const current = map.get(ep.season_number) ?? [];
+                              current.push(ep);
+                              map.set(ep.season_number, current);
+                              return map;
+                            }, new Map<number, EpisodeWithStatus[]>())) as [groupSeasonNumber, seasonEpisodes]}
+                            <div class="space-y-1">
+                              <div
+                                class="text-xs uppercase tracking-wide text-muted-foreground"
+                              >
+                                Season {groupSeasonNumber}
+                              </div>
+                              {#each seasonEpisodes as ep (ep.id)}
+                                <label
+                                  class={`flex items-center gap-3 py-1.5 px-1 rounded ${
+                                    ep.status.is_protected ||
+                                    ep.status.has_pending_request
+                                      ? "cursor-not-allowed opacity-60"
+                                      : "cursor-pointer hover:bg-muted/40"
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedEpisodeIds.has(ep.id)}
+                                    onchange={() => toggleEpisode(ep.id)}
+                                    class="accent-primary cursor-pointer"
+                                    disabled={ep.status.is_protected ||
+                                      ep.status.has_pending_request}
+                                  />
+                                  <span class="text-sm text-foreground flex-1">
+                                    S{String(ep.season_number).padStart(
+                                      2,
+                                      "0",
+                                    )}E{String(ep.episode_number).padStart(
+                                      2,
+                                      "0",
+                                    )}{#if ep.name}
+                                      &nbsp;&quot;{ep.name}&quot;{/if}
+                                  </span>
+                                  {#if ep.status.is_candidate}
+                                    <span
+                                      class="text-xs text-amber-400 font-medium px-1.5 py-0.5 bg-amber-400/10 rounded"
+                                    >
+                                      flagged
+                                    </span>
+                                  {/if}
+                                  {#if ep.status.is_protected}
+                                    <span class="text-xs text-muted-foreground">
+                                      protected
+                                    </span>
+                                  {:else if ep.status.has_pending_request}
+                                    <span class="text-xs text-muted-foreground">
+                                      pending
+                                    </span>
+                                  {/if}
+                                  {#if formatSizeGb(ep.size) != null}
+                                    <span class="text-xs text-muted-foreground">
+                                      {formatSizeGb(ep.size)}
+                                    </span>
+                                  {/if}
+                                </label>
+                              {/each}
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+                    {/if}
+                  </div>
                 {/if}
               </div>
             {/if}

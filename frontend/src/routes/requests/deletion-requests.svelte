@@ -124,6 +124,33 @@
     cancelDialogOpen = true;
   };
 
+  const formatTarget = (req: DeleteRequest): string => {
+    if (req.episode_number != null) {
+      const label = `S${String(req.season_number ?? 0).padStart(2, "0")}E${String(req.episode_number).padStart(2, "0")}`;
+      return req.episode_name ? `${label} "${req.episode_name}"` : label;
+    }
+    if (req.season_number != null) return `Season ${req.season_number}`;
+    if (req.movie_version_id != null) return "Specific version";
+    return req.media_type === "movie" ? "Whole movie" : "Whole series";
+  };
+
+  const requestScope = (req: DeleteRequest): string => {
+    if (req.target_scope) return req.target_scope;
+    if (req.episode_number != null) return "episode";
+    if (req.season_number != null) return "season";
+    if (req.movie_version_id != null) return "movie_version";
+    return req.media_type === "movie" ? "movie" : "series";
+  };
+
+  const targetDetailsHeading = (req: DeleteRequest): string => {
+    if (requestScope(req) === "episode") return "Episode Details";
+    if (requestScope(req) === "season") return "Season Details";
+    return "Version Details";
+  };
+
+  const hasTargetDetails = (req: DeleteRequest): boolean =>
+    ["movie_version", "season", "episode"].includes(requestScope(req));
+
   const submitApprove = async () => {
     if (!approveTarget) return;
     approveSubmitting = true;
@@ -217,6 +244,9 @@
                       <p class="text-sm text-muted-foreground">
                         Requested {formatDate(req.created_at)}
                       </p>
+                      <p class="text-xs text-muted-foreground">
+                        Target: {formatTarget(req)}
+                      </p>
                     </div>
                     <RequestStatusBadge status={req.status} />
                   </div>
@@ -257,14 +287,7 @@
                   <p class="text-sm font-medium text-foreground">Target</p>
                   <p class="text-sm text-muted-foreground">
                     <MediaTypeBadge mediaType={selectedRequest.media_type} />
-                    {#if selectedRequest.season_number != null}
-                      <span class="ml-2"
-                        >Season {selectedRequest.season_number}</span
-                      >
-                    {/if}
-                    {#if selectedRequest.movie_version_id != null}
-                      <span class="ml-2">Specific version</span>
-                    {/if}
+                    <span class="ml-2">{formatTarget(selectedRequest)}</span>
                   </p>
                 </div>
                 <div>
@@ -281,12 +304,10 @@
                 </div>
               </div>
 
-              {#if selectedRequest.movie_version_id != null || selectedRequest.season_id != null}
+              {#if hasTargetDetails(selectedRequest)}
                 <div class="text-foreground/75">
                   <p class="mb-2 text-sm font-medium text-foreground">
-                    {selectedRequest.season_id != null
-                      ? "Season Details"
-                      : "Version Details"}
+                    {targetDetailsHeading(selectedRequest)}
                   </p>
                   <div class="flex flex-wrap gap-1.5">
                     <!-- filename -->
