@@ -391,6 +391,33 @@
     );
   };
 
+  const formatTarget = (req: ProtectionRequest): string => {
+    if (req.episode_number != null) {
+      const label = `S${String(req.season_number ?? 0).padStart(2, "0")}E${String(req.episode_number).padStart(2, "0")}`;
+      return req.episode_name ? `${label} "${req.episode_name}"` : label;
+    }
+    if (req.season_number != null) return `Season ${req.season_number}`;
+    if (req.movie_version_id != null) return "Specific version";
+    return req.media_type === "movie" ? "Whole movie" : "Whole series";
+  };
+
+  const requestScope = (req: ProtectionRequest): string => {
+    if (req.target_scope) return req.target_scope;
+    if (req.episode_number != null) return "episode";
+    if (req.season_number != null) return "season";
+    if (req.movie_version_id != null) return "movie_version";
+    return req.media_type === "movie" ? "movie" : "series";
+  };
+
+  const targetDetailsHeading = (req: ProtectionRequest): string => {
+    if (requestScope(req) === "episode") return "Episode Details";
+    if (requestScope(req) === "season") return "Season Details";
+    return "Version Details";
+  };
+
+  const hasTargetDetails = (req: ProtectionRequest): boolean =>
+    ["movie_version", "season", "episode"].includes(requestScope(req));
+
   onMount(() => {
     loadRequests();
   });
@@ -864,6 +891,17 @@
                 <p
                   class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                 >
+                  Target
+                </p>
+                <p class="text-sm text-foreground">
+                  {formatTarget(selectedRequest)}
+                </p>
+              </div>
+
+              <div class="space-y-1">
+                <p
+                  class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                >
                   Protection
                 </p>
                 <p class="text-sm text-foreground">
@@ -876,12 +914,10 @@
                 {/if}
               </div>
 
-              {#if selectedRequest.movie_version_id != null || selectedRequest.season_id != null}
+              {#if hasTargetDetails(selectedRequest)}
                 <div class="text-foreground/75">
                   <p class="mb-2 text-sm font-medium text-foreground">
-                    {selectedRequest.season_id != null
-                      ? "Season Details"
-                      : "Version Details"}
+                    {targetDetailsHeading(selectedRequest)}
                   </p>
                   <div class="flex flex-wrap gap-1.5">
                     <!-- filename -->
@@ -1031,6 +1067,9 @@
                   Requested {formatDate(req.created_at)} · {formatEffectiveProtectionLabel(
                     req,
                   )}
+                </p>
+                <p class="text-xs text-muted-foreground">
+                  Target: {formatTarget(req)}
                 </p>
                 {#if hasProtectionOverride(req)}
                   <p class="text-xs text-muted-foreground">

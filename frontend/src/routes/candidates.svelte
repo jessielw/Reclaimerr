@@ -315,6 +315,12 @@
     entries.filter((e) => selectedIds.has(e.id)),
   );
 
+  const selectedEntriesHaveEpisodeScope = $derived(
+    selectedEntries.some(
+      (entry) => entry.episode_id != null || entry.episode_number != null,
+    ),
+  );
+
   const selectedTotalBytes = $derived(
     selectedEntries.reduce((acc, e) => acc + (e.estimated_space_bytes ?? 0), 0),
   );
@@ -498,6 +504,10 @@
   };
 
   const openSingleMove = (entry: ReclaimCandidateEntry) => {
+    if (entry.episode_id != null || entry.episode_number != null) {
+      toast.error("Episode candidates cannot be moved yet.");
+      return;
+    }
     moveTarget = entry;
     moveDialogOpen = true;
   };
@@ -630,6 +640,10 @@
 
   const submitBulkMove = async () => {
     if (selectedEntries.length === 0) return;
+    if (selectedEntriesHaveEpisodeScope) {
+      toast.error("Episode candidates cannot be moved yet.");
+      return;
+    }
     bulkMoveSubmitting = true;
     try {
       const resp = await post_api<MoveResponse>("/api/media/candidates/move", {
@@ -658,10 +672,30 @@
     data = {
       ...data,
       items: data.items.map((item) =>
-        item.media_id === request.media_id &&
-        item.media_type === request.media_type &&
-        (item.season_id ?? null) === (request.season_id ?? null) &&
-        (item.movie_version_id ?? null) === (request.movie_version_id ?? null)
+        (() => {
+          if (
+            item.media_id !== request.media_id ||
+            item.media_type !== request.media_type
+          ) {
+            return false;
+          }
+
+          if (request.media_type === MediaType.Movie) {
+            return request.movie_version_id == null
+              ? true
+              : (item.movie_version_id ?? null) === request.movie_version_id;
+          }
+
+          if (request.episode_id != null) {
+            return (item.episode_id ?? null) === request.episode_id;
+          }
+
+          if (request.season_id != null) {
+            return (item.season_id ?? null) === request.season_id;
+          }
+
+          return true;
+        })()
           ? { ...item, has_pending_request: true }
           : item,
       ),
@@ -700,6 +734,7 @@
           media_id: entry.media_id,
           movie_version_id: entry.movie_version_id ?? undefined,
           season_id: entry.season_id ?? undefined,
+          episode_id: entry.episode_id ?? undefined,
           reason: "Admin decision",
           duration_days: durationDays,
         }),
@@ -996,6 +1031,9 @@
   mediaType={requestTarget?.media_type ?? MediaType.Movie}
   seasonId={requestTarget?.season_id ?? null}
   seasonNumber={requestTarget?.season_number ?? null}
+  episodeId={requestTarget?.episode_id ?? null}
+  episodeNumber={requestTarget?.episode_number ?? null}
+  episodeName={requestTarget?.episode_name ?? null}
   onSuccess={handleRequestSuccess}
 />
 
@@ -1208,6 +1246,7 @@
                   <Button
                     size="sm"
                     class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
+                    disabled={selectedEntriesHaveEpisodeScope}
                     onclick={() => (bulkMoveDialogOpen = true)}
                   >
                     <FolderOutput class="size-4" />
@@ -1215,7 +1254,11 @@
                   </Button>
                 </Tooltip.Trigger>
                 <Tooltip.Content>
-                  <p>Move to destination folder</p>
+                  <p>
+                    {selectedEntriesHaveEpisodeScope
+                      ? "Episode candidates cannot be moved yet"
+                      : "Move to destination folder"}
+                  </p>
                 </Tooltip.Content>
               </Tooltip.Root>
             {/if}
