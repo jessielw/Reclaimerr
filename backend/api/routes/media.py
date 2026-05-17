@@ -404,6 +404,14 @@ async def get_series(
     season_counts: dict[int, int] = {
         int(k): int(v) for k, v in season_counts_result.all()
     }
+    episode_counts_result = await db.execute(
+        select(Season.series_id, func.coalesce(func.sum(Season.episode_count), 0))
+        .where(Season.series_id.in_(series_ids))
+        .group_by(Season.series_id)
+    )
+    episode_counts: dict[int, int] = {
+        int(k): int(v) for k, v in episode_counts_result.all()
+    }
 
     # get series level candidates (no season)
     candidates_result = await db.execute(
@@ -548,6 +556,7 @@ async def get_series(
             "has_season_candidates": series.id in series_with_season_cands
             and candidate is None,
             "library_season_count": season_counts.get(series.id, 0),
+            "library_episode_count": episode_counts.get(series.id, 0),
             "added_at": to_utc_isoformat(series.added_at),
         }
         items.append(SeriesWithStatus(**series_dict))

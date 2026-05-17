@@ -365,6 +365,8 @@ class SeriesWithStatus(BaseModel):
     has_season_candidates: bool = False
     # number of seasons actually present in the library
     library_season_count: int = 0
+    # number of episodes actually present in the library
+    library_episode_count: int = 0
 
     # timestamps
     added_at: str | None

@@ -83,6 +83,22 @@
     }
   };
 
+  const seriesBadgeCount = $derived.by(() => {
+    if (mediaType !== "series" || !("library_episode_count" in media)) return 0;
+    return media.library_episode_count > 0
+      ? media.library_episode_count
+      : media.library_season_count;
+  });
+
+  const seriesBadgeTooltip = $derived.by(() => {
+    if (mediaType !== "series" || !("library_episode_count" in media))
+      return "";
+    if (media.library_episode_count > 0) {
+      return `Episodes (${media.library_episode_count}) • Seasons (${media.library_season_count})`;
+    }
+    return `Seasons (${media.library_season_count})`;
+  });
+
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
       cardWidth = entry.contentRect.width;
@@ -154,7 +170,7 @@
               <p>Movie Versions ({media.versions.length})</p>
             </Tooltip.Content>
           </Tooltip.Root>
-        {:else if mediaType === "series" && "library_season_count" in media && media.library_season_count > 0}
+        {:else if mediaType === "series" && "library_season_count" in media && seriesBadgeCount > 0}
           <Tooltip.Root>
             <Tooltip.Trigger>
               <Badge
@@ -162,12 +178,12 @@
                 rounded-md min-w-[1.6rem] flex items-center justify-center cursor-help"
               >
                 <span class="{mediaCountSize} text-center"
-                  >{media.library_season_count}</span
+                  >{seriesBadgeCount}</span
                 >
               </Badge>
             </Tooltip.Trigger>
             <Tooltip.Content>
-              <p>Seasons ({media.library_season_count})</p>
+              <p>{seriesBadgeTooltip}</p>
             </Tooltip.Content>
           </Tooltip.Root>
         {/if}

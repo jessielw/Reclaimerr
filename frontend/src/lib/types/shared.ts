@@ -348,6 +348,7 @@ export interface SeriesWithStatus {
   status: MediaStatusInfo;
   has_season_candidates: boolean;
   library_season_count: number;
+  library_episode_count: number;
   added_at: string | null;
 }
 
