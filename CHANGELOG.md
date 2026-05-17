@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule preview system now sorts the results in an ABC-123-S01 order
 - Improved alembic revisions internally
 - Improved error handling of invalid season/episode combinations
+- Move is only enabled for Series, Seasons, or Movie Versions (not episodes)
 
 ### Fixed
 
