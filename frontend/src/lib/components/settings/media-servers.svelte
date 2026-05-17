@@ -34,6 +34,7 @@
     apiKeyIsSet: boolean;
     testing: boolean;
     saving: boolean;
+    testStatus: "idle" | "loading" | "success" | "error";
   };
 
   type AffectedRuleSummary = {
@@ -86,6 +87,7 @@
     apiKeyIsSet: false,
     testing: false,
     saving: false,
+    testStatus: "idle",
   });
 
   let servers = $state<Record<ServerKey, MediaServerState>>({
@@ -125,6 +127,7 @@
   // handle changes from the config forms
   const handleConfigChange = (serverKey: ServerKey, event: CustomEvent) => {
     const { field, value } = event.detail;
+    servers[serverKey].testStatus = "idle";
     if (field === "enabled") servers[serverKey].config.enabled = value;
     else if (field === "baseUrl") servers[serverKey].config.baseUrl = value;
     else if (field === "apiKey") servers[serverKey].config.apiKey = value;
@@ -133,6 +136,7 @@
   // test connection to a media server
   const testServer = async (serverKey: ServerKey) => {
     servers[serverKey].testing = true;
+    servers[serverKey].testStatus = "loading";
     const config = servers[serverKey].config;
     try {
       const payload: Record<string, unknown> = {
@@ -146,10 +150,9 @@
         payload,
       );
       if (!response) throw new Error("Connection test failed");
-      toast.success(
-        `Connection test for ${SERVER_LABELS[serverKey]} was successful!`,
-      );
+      servers[serverKey].testStatus = "success";
     } catch (err: any) {
+      servers[serverKey].testStatus = "error";
       toast.error(
         `Connection test for ${SERVER_LABELS[serverKey]} failed: ${err.message}`,
       );
@@ -526,7 +529,7 @@
               disabled={servers[mainServer].testing ||
                 servers[mainServer].saving ||
                 globalSaving}
-              loading={servers[mainServer].testing}
+              status={servers[mainServer].testStatus}
               size="sm">Test</TestButton
             >
           </div>
@@ -569,6 +572,7 @@
                   disabled={servers[serverKey].testing ||
                     servers[serverKey].saving ||
                     globalSaving}
+                  status={servers[serverKey].testStatus}
                   class="cursor-pointer gap-2"
                   size="sm">Test</TestButton
                 >

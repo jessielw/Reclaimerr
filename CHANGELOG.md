@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates API now supports 'all'
 - Poster sizes for candidates are all now the same and slightly larger
 - Requests search/filter section now matches the rest of the program
+- Media servers and services **Test** button now shows a green check instead of a toast on success
+- All toast messages will now be colored based on their type (success, error, warning, etc.)
 
 ### Fixed
 

@@ -15,8 +15,8 @@
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
+  import TestButton from "$lib/components/test-button.svelte";
   import * as Select from "$lib/components/ui/select";
-  import TestTube from "@lucide/svelte/icons/test-tube";
   import Save from "@lucide/svelte/icons/save";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Plus from "@lucide/svelte/icons/plus";
@@ -196,6 +196,25 @@
   let loading = $state(false);
   let testingService = $state(false);
   let savingService = $state(false);
+  type TestStatus = "idle" | "loading" | "success" | "error";
+  let serviceTestStatus = $state<Record<SettingsTab, TestStatus>>({
+    [SettingsTab.Radarr]: "idle",
+    [SettingsTab.Sonarr]: "idle",
+    [SettingsTab.Seerr]: "idle",
+    [SettingsTab.Tautulli]: "idle",
+    [SettingsTab.MediaServers]: "idle",
+    [SettingsTab.Jellyfin]: "idle",
+    [SettingsTab.Emby]: "idle",
+    [SettingsTab.Plex]: "idle",
+    [SettingsTab.General]: "idle",
+    [SettingsTab.Tasks]: "idle",
+    [SettingsTab.BackgroundJobs]: "idle",
+    [SettingsTab.Notifications]: "idle",
+    [SettingsTab.Account]: "idle",
+    [SettingsTab.Rules]: "idle",
+    [SettingsTab.Users]: "idle",
+    [SettingsTab.About]: "idle",
+  });
 
   // set initial active tab to first available tab for user
   let activeTab = $state(
@@ -296,6 +315,7 @@
   const applyArrInstanceSelection = (serviceId: string, id: number | null) => {
     const instance = arrInstances[serviceId]?.find((item) => item.id === id);
     if (!instance) return;
+    serviceTestStatus[serviceId as SettingsTab] = "idle";
     serviceState[serviceId as SettingsTab].config = {
       ...instance,
       apiKey: "",
@@ -306,6 +326,7 @@
 
   // create new instance draft with confirm if dirty
   const createNewArrInstanceDraft = (serviceId: string) => {
+    serviceTestStatus[serviceId as SettingsTab] = "idle";
     serviceState[serviceId as SettingsTab] = emptyServiceState(serviceId);
   };
 
@@ -403,6 +424,7 @@
   // handler for service config changes (radarr/sonarr/seerr only)
   const handleServiceChange = (event: CustomEvent) => {
     const { field, value } = event.detail;
+    serviceTestStatus[activeTab] = "idle";
     if (field === "enabled") serviceState[activeTab].config.enabled = value;
     else if (field === "name") serviceState[activeTab].config.name = value;
     else if (field === "baseUrl")
@@ -432,6 +454,7 @@
   // test service connection
   const testServiceConnection = async (serviceId: string) => {
     testingService = true;
+    serviceTestStatus[serviceId as SettingsTab] = "loading";
     const config = serviceState[serviceId as SettingsTab].config;
     try {
       // only send api_key if the user typed a new one (backend resolves existing key otherwise)
@@ -450,10 +473,9 @@
       if (!response) {
         throw new Error("Connection test failed");
       }
-      toast.success(
-        `Connection test for ${toTitleCase(serviceId)} was successful!`,
-      );
+      serviceTestStatus[serviceId as SettingsTab] = "success";
     } catch (err: any) {
+      serviceTestStatus[serviceId as SettingsTab] = "error";
       toast.error(
         `Connection test for ${toTitleCase(serviceId)} failed: ${err.message}`,
       );
@@ -788,18 +810,15 @@
 
             <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
             <div class="flex gap-3 justify-end mt-3">
-              <Button
+              <TestButton
                 onclick={() => testServiceConnection(activeTab)}
                 disabled={testingService || savingService}
+                status={serviceTestStatus[activeTab]}
                 class="cursor-pointer gap-2"
+                size="default"
               >
-                {#if testingService}
-                  <Spinner class="size-4" />
-                {:else}
-                  <TestTube class="size-4" />
-                {/if}
                 Test
-              </Button>
+              </TestButton>
               <Button
                 onclick={() => saveServiceSettings(activeTab)}
                 disabled={savingService || testingService}

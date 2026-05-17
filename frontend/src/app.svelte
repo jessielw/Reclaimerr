@@ -127,4 +127,4 @@
 
 <ModeWatcher defaultMode="dark" />
 
-<Toaster />
+<Toaster richColors />
