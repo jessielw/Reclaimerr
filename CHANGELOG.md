@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Sometimes media could be left behind during a deletion request for episodes
 - Several bugs for episode level protection/deletions
+- Issue when calculating space in candidate views
 
 ## [0.1.0-beta.20] - 2026-05-15
 
