@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule preview system now sorts the results in an ABC-123-S01 order
 - Improved alembic revisions internally
 
+### Fixed
+
+- Sometimes media could be left behind during a deletion request for episodes
+
 ## [0.1.0-beta.20] - 2026-05-15
 
 ### Changed
