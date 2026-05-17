@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Env variable `LOG_RETENTION_DAYS` _(defaults to 30)_ to keep N daily rotated log files
 - Candidates unified view with filters for movie/series
 - Added a notification beside **Candidates** on the nav bar that will now be displayed if there is **any** candidates at all
+- Can now clone rules
 
 ### Changed
 
