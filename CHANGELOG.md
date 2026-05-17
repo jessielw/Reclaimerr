@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Series** cards now show episode count instead of season count (hovering the number will display the season/episode count in a tool tip)
 - Candidates API now supports 'all'
 - Poster sizes for candidates are all now the same and slightly larger
+- Requests search/filter section now matches the rest of the program
 
 ### Fixed
 
