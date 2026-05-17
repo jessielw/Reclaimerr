@@ -99,6 +99,9 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(_definition("library.id", "equals", "lib-1"))
 
+    def test_accepts_imdb_id_text_operator(self) -> None:
+        validate_rule_definition(_definition("imdb.id", "contains_any", ["tt0133093"]))
+
     def test_accepts_seerr_requested_boolean_operator(self) -> None:
         validate_rule_definition(_definition("seerr.requested", "is_true"))
 
