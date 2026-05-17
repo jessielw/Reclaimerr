@@ -602,14 +602,14 @@ export type RulePreviewEntry = Omit<
 export interface DashboardKpis {
   total_movies: number;
   total_series: number;
-  total_movies_size_gb: number;
-  total_series_size_gb: number;
-  reclaimable_movies_gb: number;
-  reclaimable_series_gb: number;
-  reclaimable_total_gb: number;
+  total_movies_size_bytes: number;
+  total_series_size_bytes: number;
+  reclaimable_movies_bytes: number;
+  reclaimable_series_bytes: number;
+  reclaimable_total_bytes: number;
   reclaimed_movies: number;
   reclaimed_series: number;
-  reclaimed_total_gb: number;
+  reclaimed_total_bytes: number;
 }
 
 export interface ReclaimHistoryEntry {
