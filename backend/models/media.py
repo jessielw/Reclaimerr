@@ -394,6 +394,21 @@ class SeasonWithStatus(BaseModel):
     status: MediaStatusInfo
 
 
+class EpisodeWithStatus(BaseModel):
+    """Episode with its reclaim / protection status."""
+
+    id: int
+    season_id: int
+    season_number: int
+    episode_number: int
+    name: str | None
+    size: int | None
+    view_count: int
+    air_date: str | None
+    last_viewed_at: str | None
+    status: MediaStatusInfo
+
+
 class PaginatedMediaResponse(BaseModel):
     """Paginated response wrapper."""
 
