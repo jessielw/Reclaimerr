@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - General settings **\*Arr Default Behavior** options to either delete/unmonitor when deleting/moving media that is not a candidate + falls back for all other rules
 - Dashboard now shows total size of movies/series on the 'Total' cards
 - Added a **Auto** option to the dashboard size formatter - this intelligently selects the most appropriate size to show
+- Now shows episode names when utilizing the scope **Episodes** in the rule previewer
 
 ### Changed
 

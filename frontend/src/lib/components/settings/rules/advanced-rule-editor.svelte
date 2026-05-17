@@ -1090,7 +1090,20 @@
                         </div>
                         <div class="mt-1 flex flex-wrap items-center gap-2">
                           <MediaTypeBadge mediaType={entry.media_type} />
-                          {#if entry.season_id !== null}
+                          {#if entry.episode_id !== null}
+                            <span class="text-xs text-muted-foreground">
+                              S{String(entry.season_number ?? 0).padStart(
+                                2,
+                                "0",
+                              )}E{String(entry.episode_number ?? 0).padStart(
+                                2,
+                                "0",
+                              )}
+                              {#if entry.episode_name}
+                                "{entry.episode_name}"
+                              {/if}
+                            </span>
+                          {:else if entry.season_id !== null}
                             <span class="text-xs text-muted-foreground">
                               Season {entry.season_number ?? "?"}
                             </span>
