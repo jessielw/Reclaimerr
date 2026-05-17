@@ -15,6 +15,8 @@ class CreateProtectionRequest(BaseModel):
     movie_version_id: int | None = None
     # set when protecting a specific season instead of the whole series
     season_id: int | None = None
+    # set when protecting a specific episode instead of the whole season/series
+    episode_id: int | None = None
 
 
 class ReviewProtectionRequest(BaseModel):
@@ -33,12 +35,16 @@ class ProtectionRequestResponse(BaseModel):
     media_id: int
     media_title: str
     media_year: int | None
+    target_scope: str | None = None
     candidate_id: int | None
     movie_version_id: int | None = None
 
     # season specific fields (None for series/movie level requests)
     season_id: int | None = None
     season_number: int | None = None
+    episode_id: int | None = None
+    episode_number: int | None = None
+    episode_name: str | None = None
 
     requested_by_user_id: int
     requested_by_username: str
@@ -82,6 +88,7 @@ class CreateDeleteRequest(BaseModel):
     reason: str | None = None
     movie_version_id: int | None = None
     season_id: int | None = None
+    episode_id: int | None = None
 
 
 class ReviewDeleteRequest(BaseModel):
@@ -98,9 +105,13 @@ class DeleteRequestResponse(BaseModel):
     media_id: int
     media_title: str
     media_year: int | None
+    target_scope: str | None = None
     movie_version_id: int | None = None
     season_id: int | None = None
     season_number: int | None = None
+    episode_id: int | None = None
+    episode_number: int | None = None
+    episode_name: str | None = None
 
     requested_by_user_id: int
     requested_by_username: str

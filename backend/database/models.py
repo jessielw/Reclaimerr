@@ -194,6 +194,9 @@ class GeneralSettings(Base):
 
     # deletion routing
     media_server_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_arr_delete_behavior: Mapped[str] = mapped_column(
+        String(32), default="unmonitor"
+    )
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -838,10 +841,19 @@ class ProtectedMedia(Base):
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
     )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), default=None, index=True
+    )
 
     # optional details
     reason: Mapped[str | None] = mapped_column(Text, default=None)
     protected_by: Mapped[User] = relationship(init=False, lazy="noload", repr=False)
+    season: Mapped[Season | None] = relationship(init=False, lazy="noload", repr=False)
+    episode: Mapped[Episode | None] = relationship(
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
 
     # expiration options
     permanent: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -886,6 +898,13 @@ class ProtectionRequest(Base):
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
     )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), default=None, index=True
+    )
+    target_scope: Mapped[str | None] = mapped_column(String(32), default=None)
+    season_number_snapshot: Mapped[int | None] = mapped_column(Integer, default=None)
+    episode_number_snapshot: Mapped[int | None] = mapped_column(Integer, default=None)
+    episode_name_snapshot: Mapped[str | None] = mapped_column(String(500), default=None)
 
     # relationships
     movie: Mapped[Movie | None] = relationship(
@@ -901,6 +920,11 @@ class ProtectionRequest(Base):
         repr=False,
     )
     season: Mapped[Season | None] = relationship(
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    episode: Mapped[Episode | None] = relationship(
         init=False,
         lazy="noload",
         repr=False,
@@ -963,6 +987,13 @@ class DeleteRequest(Base):
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), default=None, index=True
     )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), default=None, index=True
+    )
+    target_scope: Mapped[str | None] = mapped_column(String(32), default=None)
+    season_number_snapshot: Mapped[int | None] = mapped_column(Integer, default=None)
+    episode_number_snapshot: Mapped[int | None] = mapped_column(Integer, default=None)
+    episode_name_snapshot: Mapped[str | None] = mapped_column(String(500), default=None)
 
     movie: Mapped[Movie | None] = relationship(
         back_populates="delete_requests",
@@ -977,6 +1008,11 @@ class DeleteRequest(Base):
         repr=False,
     )
     season: Mapped[Season | None] = relationship(
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+    episode: Mapped[Episode | None] = relationship(
         init=False,
         lazy="noload",
         repr=False,

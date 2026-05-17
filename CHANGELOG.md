@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add ability in the API to enforce enable/disabling tasks
 - Rule preview system now sorts the results in an ABC-123-S01 order
 - Improved alembic revisions internally
+- Improved error handling of invalid season/episode combinations
 
 ### Fixed
 
 - Sometimes media could be left behind during a deletion request for episodes
+- Several bugs for episode level protection/deletions
 
 ## [0.1.0-beta.20] - 2026-05-15
 
