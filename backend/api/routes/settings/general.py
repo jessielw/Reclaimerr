@@ -79,6 +79,7 @@ async def update_general_settings(
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
+    settings.default_arr_delete_behavior = request.default_arr_delete_behavior
 
     # update metadata
     settings.updated_at = datetime.now(UTC)
