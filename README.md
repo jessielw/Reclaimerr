@@ -147,6 +147,8 @@ CORS_ORIGINS=http://localhost:3000
 
 # logging (options: DEBUG, INFO, WARNING, ERROR, CRITICAL)
 # LOG_LEVEL=INFO
+# keep N daily rotated log files (values <=0 are clamped to 1)
+# LOG_RETENTION_DAYS=30
 
 # optional (only use if you want to reset or set the admin password on first launch, min 3 / max 64)
 # ADMIN_PASSWORD=

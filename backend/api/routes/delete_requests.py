@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,6 +13,7 @@ from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
 from backend.database.models import (
     DeleteRequest,
+    Episode,
     Movie,
     MovieVersion,
     ProtectedMedia,
@@ -36,6 +37,75 @@ from backend.services.notifications import notify_all_users, notify_user
 from backend.tasks.cleanup import delete_specific_candidates
 
 router = APIRouter(prefix="/api", tags=["delete-requests"])
+
+
+async def _resolve_series_scope(
+    db: AsyncSession,
+    *,
+    media_id: int,
+    season_id: int | None,
+    episode_id: int | None,
+) -> tuple[Season | None, Episode | None]:
+    """Resolve season and episode based on provided IDs, ensuring they belong to the
+    specified series and that both are not provided simultaneously.
+    """
+    if season_id is not None and episode_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Specify either season_id or episode_id, not both",
+        )
+
+    if episode_id is not None:
+        episode_result = await db.execute(
+            select(Episode, Season)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Episode.id == episode_id, Season.series_id == media_id)
+        )
+        row = episode_result.one_or_none()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Episode not found",
+            )
+        return row.Season, row.Episode
+
+    if season_id is not None:
+        season_result = await db.execute(
+            select(Season).where(
+                Season.id == season_id,
+                Season.series_id == media_id,
+            )
+        )
+        season = season_result.scalar_one_or_none()
+        if season is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
+            )
+        return season, None
+
+    return None, None
+
+
+def _series_scope_overlap_clause(
+    model: type[DeleteRequest] | type[ProtectedMedia],
+    *,
+    season_id: int | None,
+    episode_id: int | None,
+):
+    """Build a SQLAlchemy clause to match delete requests or protections that overlap
+    with the specified series scope."""
+    if episode_id is not None:
+        return or_(
+            and_(model.season_id.is_(None), model.episode_id.is_(None)),
+            and_(model.season_id == season_id, model.episode_id.is_(None)),
+            model.episode_id == episode_id,
+        )
+    if season_id is not None:
+        return or_(
+            and_(model.season_id.is_(None), model.episode_id.is_(None)),
+            and_(model.season_id == season_id, model.episode_id.is_(None)),
+        )
+    return and_(model.season_id.is_(None), model.episode_id.is_(None))
 
 
 def _active_protection_filter() -> ColumnElement[bool]:
@@ -71,17 +141,65 @@ async def _get_delete_request_media(
 
 
 async def _lookup_season_number(
-    db: AsyncSession, season_id: int | None, season: Season | None = None
+    db: AsyncSession,
+    season_id: int | None,
+    season: Season | None = None,
+    season_number_snapshot: int | None = None,
 ) -> int | None:
     """Lookup season number by season_id, with optional short-circuit if season already provided."""
     if season is not None:
         return season.season_number
+    if season_number_snapshot is not None:
+        return season_number_snapshot
     if not season_id:
         return None
     result = await db.execute(
         select(Season.season_number).where(Season.id == season_id)
     )
     return result.scalar_one_or_none()
+
+
+async def _lookup_episode_fields(
+    db: AsyncSession,
+    episode_id: int | None,
+    episode: Episode | None = None,
+    episode_number_snapshot: int | None = None,
+    episode_name_snapshot: str | None = None,
+) -> tuple[int | None, str | None]:
+    if episode is not None:
+        return episode.episode_number, episode.name
+    if episode_number_snapshot is not None or episode_name_snapshot is not None:
+        return episode_number_snapshot, episode_name_snapshot
+    if not episode_id:
+        return None, None
+    result = await db.execute(
+        select(Episode.episode_number, Episode.name).where(Episode.id == episode_id)
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None, None
+    return row.episode_number, row.name
+
+
+def _request_target_scope(
+    *,
+    media_type: MediaType,
+    movie_version_id: int | None,
+    season_id: int | None,
+    episode_id: int | None,
+    target_scope: str | None,
+    season_number_snapshot: int | None = None,
+    episode_number_snapshot: int | None = None,
+) -> str:
+    if target_scope:
+        return target_scope
+    if media_type is MediaType.MOVIE:
+        return "movie_version" if movie_version_id is not None else "movie"
+    if episode_id is not None or episode_number_snapshot is not None:
+        return "episode"
+    if season_id is not None or season_number_snapshot is not None:
+        return "season"
+    return "series"
 
 
 async def _build_delete_request_response(
@@ -112,15 +230,41 @@ async def _build_delete_request_response(
             reviewed_by_username = reviewer.scalar_one_or_none()
 
     season = request.season  # may be None if not eager loaded
+    episode = request.episode  # may be None if not eager loaded
+    episode_number, episode_name = await _lookup_episode_fields(
+        db,
+        request.episode_id,
+        episode,
+        request.episode_number_snapshot,
+        request.episode_name_snapshot,
+    )
+    target_scope = _request_target_scope(
+        media_type=request.media_type,
+        movie_version_id=request.movie_version_id,
+        season_id=request.season_id,
+        episode_id=request.episode_id,
+        target_scope=request.target_scope,
+        season_number_snapshot=request.season_number_snapshot,
+        episode_number_snapshot=request.episode_number_snapshot,
+    )
     return DeleteRequestResponse(
         id=request.id,
         media_type=request.media_type,
         media_id=media_id,
         media_title=media.title,
         media_year=media.year,
+        target_scope=target_scope,
         movie_version_id=request.movie_version_id,
         season_id=request.season_id,
-        season_number=await _lookup_season_number(db, request.season_id, season),
+        season_number=await _lookup_season_number(
+            db,
+            request.season_id,
+            season,
+            request.season_number_snapshot,
+        ),
+        episode_id=request.episode_id,
+        episode_number=episode_number,
+        episode_name=episode_name,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username=requested_by_username,
         reason=request.reason,
@@ -172,6 +316,7 @@ async def create_delete_request(
         )
 
     season: Season | None = None
+    episode: Episode | None = None
     movie_version: MovieVersion | None = None
 
     if request_data.media_type is MediaType.MOVIE:
@@ -186,10 +331,10 @@ async def create_delete_request(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found"
             )
 
-        if request_data.season_id is not None:
+        if request_data.season_id is not None or request_data.episode_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="season_id is only valid for series",
+                detail="season_id and episode_id are only valid for series",
             )
 
         if request_data.movie_version_id is not None:
@@ -223,18 +368,13 @@ async def create_delete_request(
                 detail="movie_version_id is only valid for movies",
             )
 
-        if request_data.season_id is not None:
-            season_result = await db.execute(
-                select(Season).where(
-                    Season.id == request_data.season_id,
-                    Season.series_id == request_data.media_id,
-                )
+        if request_data.season_id is not None or request_data.episode_id is not None:
+            season, episode = await _resolve_series_scope(
+                db,
+                media_id=request_data.media_id,
+                season_id=request_data.season_id,
+                episode_id=request_data.episode_id,
             )
-            season = season_result.scalar_one_or_none()
-            if season is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Season not found"
-                )
 
     protected_query = select(ProtectedMedia).where(_active_protection_filter())
     if request_data.media_type is MediaType.MOVIE:
@@ -251,17 +391,23 @@ async def create_delete_request(
                 ProtectedMedia.movie_id == request_data.media_id
             )
     else:
-        if request_data.season_id is not None:
+        if season is not None or episode is not None:
             protected_query = protected_query.where(
                 ProtectedMedia.series_id == request_data.media_id,
-                or_(
-                    ProtectedMedia.season_id.is_(None),
-                    ProtectedMedia.season_id == request_data.season_id,
+                _series_scope_overlap_clause(
+                    ProtectedMedia,
+                    season_id=season.id if season else None,
+                    episode_id=episode.id if episode else None,
                 ),
             )
         else:
             protected_query = protected_query.where(
-                ProtectedMedia.series_id == request_data.media_id
+                ProtectedMedia.series_id == request_data.media_id,
+                _series_scope_overlap_clause(
+                    ProtectedMedia,
+                    season_id=None,
+                    episode_id=None,
+                ),
             )
 
     protected_result = await db.execute(protected_query)
@@ -284,7 +430,11 @@ async def create_delete_request(
     else:
         existing_query = existing_query.where(
             DeleteRequest.series_id == request_data.media_id,
-            DeleteRequest.season_id == request_data.season_id,
+            _series_scope_overlap_clause(
+                DeleteRequest,
+                season_id=season.id if season else None,
+                episode_id=episode.id if episode else None,
+            ),
         )
     existing_result = await db.execute(existing_query)
     if existing_result.scalar_one_or_none():
@@ -292,6 +442,16 @@ async def create_delete_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You already have a pending delete request for this media",
         )
+
+    target_scope = _request_target_scope(
+        media_type=request_data.media_type,
+        movie_version_id=request_data.movie_version_id,
+        season_id=season.id if season else None,
+        episode_id=episode.id if episode else None,
+        target_scope=None,
+        season_number_snapshot=season.season_number if season else None,
+        episode_number_snapshot=episode.episode_number if episode else None,
+    )
 
     delete_request = DeleteRequest(
         media_type=request_data.media_type,
@@ -302,7 +462,12 @@ async def create_delete_request(
         series_id=request_data.media_id
         if request_data.media_type is MediaType.SERIES
         else None,
-        season_id=request_data.season_id,
+        season_id=season.id if season else None,
+        episode_id=episode.id if episode else None,
+        target_scope=target_scope,
+        season_number_snapshot=season.season_number if season else None,
+        episode_number_snapshot=episode.episode_number if episode else None,
+        episode_name_snapshot=episode.name if episode else None,
         requested_by_user_id=user.id,
         reason=request_data.reason,
     )
@@ -336,9 +501,13 @@ async def create_delete_request(
         media_id=request_data.media_id,
         media_title=media.title,
         media_year=media.year,
+        target_scope=target_scope,
         movie_version_id=delete_request.movie_version_id,
         season_id=delete_request.season_id,
         season_number=season.season_number if season else None,
+        episode_id=delete_request.episode_id,
+        episode_number=episode.episode_number if episode else None,
+        episode_name=episode.name if episode else None,
         requested_by_user_id=user.id,
         requested_by_username=user.username,
         reason=delete_request.reason,
@@ -386,6 +555,7 @@ async def get_my_delete_requests(
             selectinload(DeleteRequest.movie),
             selectinload(DeleteRequest.series),
             selectinload(DeleteRequest.season),
+            selectinload(DeleteRequest.episode),
         )
         .order_by(DeleteRequest.created_at.desc())
     )
@@ -430,6 +600,7 @@ async def get_all_delete_requests(
             selectinload(DeleteRequest.movie),
             selectinload(DeleteRequest.series),
             selectinload(DeleteRequest.season),
+            selectinload(DeleteRequest.episode),
             selectinload(DeleteRequest.requested_by),
             selectinload(DeleteRequest.reviewed_by),
         )
@@ -506,6 +677,7 @@ async def approve_delete_request(
         movie_version_id=request.movie_version_id,
         series_id=request.series_id,
         season_id=request.season_id,
+        episode_id=request.episode_id,
         reviewed=True,
         approved_for_deletion=True,
         tagged_in_arr=False,

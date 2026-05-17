@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.21] - 2026-05-17
+
+### Added
+
+- New task to check for updates (defaults to running once per hour - can also be disabled completely if desired)
+  - Option to disable **optional** tasks
+- New **Notices** modal that can be accessed via the bell icon on the sidebar
+  - Will show up green if there is a notice (right now this is only hooked up to new updates)
+- Added new api endpoint `info/update-status`
+- General settings **\*Arr Default Behavior** options to either delete/unmonitor when deleting/moving media that is not a candidate + falls back for all other rules
+- Dashboard now shows total size of movies/series on the 'Total' cards
+- Added a **Auto** option to the dashboard size formatter - this intelligently selects the most appropriate size to show
+- Now shows episode names when utilizing the scope **Episodes** in the rule previewer
+- Env variable `LOG_RETENTION_DAYS` _(defaults to 30)_ to keep N daily rotated log files
+- Candidates unified view with filters for movie/series
+- Added a notification beside **Candidates** on the nav bar that will now be displayed if there is **any** candidates at all
+- Can now clone rules
+- Now remembers which tab was last used in Requests
+- Now shows a 'DEV' badge when in dev on the top right hand corner of the screen
+
+### Changed
+
+- Add ability in the API to enforce enable/disabling tasks
+- Rule preview system now sorts the results in an ABC-123-S01 order
+- Improved alembic revisions internally
+- Improved error handling of invalid season/episode combinations
+- Move is only enabled for Series, Seasons, or Movie Versions (not episodes)
+- **Series** cards now show episode count instead of season count (hovering the number will display the season/episode count in a tool tip)
+- Candidates API now supports 'all'
+- Poster sizes for candidates are all now the same and slightly larger
+- Requests search/filter section now matches the rest of the program
+- Media servers and services **Test** button now shows a green check instead of a toast on success
+- All toast messages will now be colored based on their type (success, error, warning, etc.)
+
+### Fixed
+
+- Sometimes media could be left behind during a deletion request for episodes
+- Several bugs for episode level protection/deletions
+- Issue when calculating space in candidate views
+- Issue when sorting candidates via row for Series - they are now grouped a lot more cleanly
+
 ## [0.1.0-beta.20] - 2026-05-15
 
 ### Changed

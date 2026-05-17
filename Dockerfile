@@ -4,10 +4,11 @@
 ## frontend build stage
 FROM node:25-alpine3.22 AS frontend-build
 WORKDIR /frontend
+ARG VITE_APP_CHANNEL=dev
 COPY frontend/package.json ./package.json
 RUN npm install
 COPY frontend ./
-RUN npm run build
+RUN VITE_APP_CHANNEL=${VITE_APP_CHANNEL} npm run build
 
 ## backend base image
 FROM python:3.13-slim AS backend-base

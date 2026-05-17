@@ -65,4 +65,25 @@ const formatDateToLocaleString = (dateStr: string | null): string => {
   }
 };
 
-export { formatDate, formatDistanceToNow, formatDateToLocaleString };
+/**
+ * Formats a date string into a locale-specific date and time string.
+ * Uses browser locale/timezone and treats timezone-less API strings as UTC.
+ */
+const formatDateTimeToLocaleString = (dateStr: string | null): string => {
+  if (!dateStr) return "Unknown";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(parseApiDate(dateStr));
+  } catch {
+    return dateStr;
+  }
+};
+
+export {
+  formatDate,
+  formatDistanceToNow,
+  formatDateToLocaleString,
+  formatDateTimeToLocaleString,
+};

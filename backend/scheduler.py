@@ -8,10 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
-from backend.core.task_runtime import MAIN_SERVER_REQUIRED_TASKS, enqueue_scheduled_task
+from backend.core.task_runtime import (
+    MAIN_SERVER_REQUIRED_TASKS,
+    can_disable_task,
+    enqueue_scheduled_task,
+)
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
+from backend.jobs import cancel_pending_background_jobs_by_dedupe_key
 
 scheduler = AsyncIOScheduler()
 
@@ -84,6 +89,15 @@ DEFAULT_SCHEDULES = (
         "schedule_value": "0 8 * * 0",  # weekly on Sunday at 8 AM
         "default_schedule_type": ScheduleType.CRON,
         "default_schedule_value": "0 8 * * 0",
+        "enabled": True,
+    },
+    {
+        "task": Task.CHECK_APP_UPDATES,
+        "description": "Checks GitHub for new Reclaimerr releases",
+        "schedule_type": ScheduleType.INTERVAL,
+        "schedule_value": "3600",  # hourly
+        "default_schedule_type": ScheduleType.INTERVAL,
+        "default_schedule_value": "3600",
         "enabled": True,
     },
 )
@@ -223,10 +237,20 @@ async def update_task_schedule(
         if not task_schedule:
             raise ValueError(f"Task schedule not found: {task}")
 
+        if not can_disable_task(task) and task_schedule.enabled != enabled:
+            raise ValueError(f"Task '{task.value}' does not support enable/disable")
+
+        was_enabled = task_schedule.enabled
         task_schedule.schedule_type = schedule_type
         task_schedule.schedule_value = schedule_value
         task_schedule.enabled = enabled
         await db.commit()
+
+        if was_enabled and not enabled:
+            await cancel_pending_background_jobs_by_dedupe_key(
+                f"task-run-{task}",
+                reason="Canceled because the task was disabled",
+            )
 
         # update scheduler
         if enabled:

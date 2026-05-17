@@ -211,6 +211,18 @@
     removeDialogOpen = true;
   };
 
+  const formatTarget = (entry: ProtectedEntry): string => {
+    if (entry.episode_number != null) {
+      const label = `S${String(entry.season_number ?? 0).padStart(2, "0")}E${String(entry.episode_number).padStart(2, "0")}`;
+      return entry.episode_name ? `${label} "${entry.episode_name}"` : label;
+    }
+    if (entry.season_number != null) return `Season ${entry.season_number}`;
+    if (entry.movie_version_id != null) return "Specific version";
+    return entry.media_type === MediaType.Movie
+      ? "Whole movie"
+      : "Whole series";
+  };
+
   // remove the entry from protection list via API and update local data accordingly
   const removeEntry = async () => {
     if (!removeTarget) return;
@@ -560,6 +572,9 @@
                         {entry.media_title}{entry.media_year
                           ? ` (${entry.media_year})`
                           : ""}
+                      </div>
+                      <div class="text-xs text-muted-foreground mt-1">
+                        {formatTarget(entry)}
                       </div>
                     </div>
                   </div>

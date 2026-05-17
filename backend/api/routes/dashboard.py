@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from backend.core.auth import get_current_user
 from backend.core.utils.datetime_utils import to_utc_isoformat
-from backend.core.utils.file_utils import bytes_to_gb
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -64,15 +63,17 @@ async def get_dashboard(
                 .select_from(Series)
                 .scalar_subquery()
                 .label("series_count"),
-                select(func.coalesce(func.sum(Movie.size), 0))
+                select(
+                    func.coalesce(func.sum(ReclaimCandidate.estimated_space_bytes), 0)
+                )
                 .select_from(ReclaimCandidate)
-                .join(Movie, ReclaimCandidate.movie_id == Movie.id)
                 .where(ReclaimCandidate.media_type == MediaType.MOVIE)
                 .scalar_subquery()
                 .label("movie_size_total"),
-                select(func.coalesce(func.sum(Series.size), 0))
+                select(
+                    func.coalesce(func.sum(ReclaimCandidate.estimated_space_bytes), 0)
+                )
                 .select_from(ReclaimCandidate)
-                .join(Series, ReclaimCandidate.series_id == Series.id)
                 .where(ReclaimCandidate.media_type == MediaType.SERIES)
                 .scalar_subquery()
                 .label("series_size_total"),
@@ -338,16 +339,14 @@ async def get_dashboard(
     kpis = DashboardKpis(
         total_movies=movie_count,
         total_series=series_count,
-        total_movies_size_gb=round(float(bytes_to_gb(all_movies_size)), 2),
-        total_series_size_gb=round(float(bytes_to_gb(all_series_size)), 2),
-        reclaimable_movies_gb=round(float(bytes_to_gb(movie_size_total)), 2),
-        reclaimable_series_gb=round(float(bytes_to_gb(series_size_total)), 2),
-        reclaimable_total_gb=round(
-            float(bytes_to_gb(movie_size_total + series_size_total)), 2
-        ),
+        total_movies_size_bytes=int(all_movies_size),
+        total_series_size_bytes=int(all_series_size),
+        reclaimable_movies_bytes=int(movie_size_total),
+        reclaimable_series_bytes=int(series_size_total),
+        reclaimable_total_bytes=int(movie_size_total + series_size_total),
         reclaimed_movies=reclaimed_movies,
         reclaimed_series=reclaimed_series,
-        reclaimed_total_gb=round(float(bytes_to_gb(reclaimed_total_size)), 2),
+        reclaimed_total_bytes=int(reclaimed_total_size),
     )
     request_summary = DashboardRequestsSummary(
         pending_count=pending_requests,

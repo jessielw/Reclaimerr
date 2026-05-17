@@ -61,5 +61,8 @@ class Task(StrEnum):
     # housekeeping
     WEEKLY_HOUSE_KEEPING = auto()
 
+    # misc
+    CHECK_APP_UPDATES = auto()
+
     def friendly_name(self) -> str:
         return self.name.replace("_", " ").title()

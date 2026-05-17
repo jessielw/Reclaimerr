@@ -365,6 +365,8 @@ class SeriesWithStatus(BaseModel):
     has_season_candidates: bool = False
     # number of seasons actually present in the library
     library_season_count: int = 0
+    # number of episodes actually present in the library
+    library_episode_count: int = 0
 
     # timestamps
     added_at: str | None
@@ -394,6 +396,21 @@ class SeasonWithStatus(BaseModel):
     status: MediaStatusInfo
 
 
+class EpisodeWithStatus(BaseModel):
+    """Episode with its reclaim / protection status."""
+
+    id: int
+    season_id: int
+    season_number: int
+    episode_number: int
+    name: str | None
+    size: int | None
+    view_count: int
+    air_date: str | None
+    last_viewed_at: str | None
+    status: MediaStatusInfo
+
+
 class PaginatedMediaResponse(BaseModel):
     """Paginated response wrapper."""
 
@@ -402,6 +419,16 @@ class PaginatedMediaResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+@dataclass(slots=True)
+class CandidateDisplayGroup:
+    group_kind: str
+    media_id: int | None
+    sort_title: str
+    sort_created_at: datetime
+    sort_size: int
+    candidate_ids: list[int]
 
 
 class CandidateLibraryRef(BaseModel):
@@ -501,6 +528,10 @@ class PaginatedCandidatesResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class CandidatesPresenceResponse(BaseModel):
+    has_candidates: bool
 
 
 class DeleteCandidatesRequest(BaseModel):

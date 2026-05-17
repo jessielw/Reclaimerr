@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     log_level: str = Field(
         default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL."
     )
+    log_retention_days: int = Field(
+        default=30,
+        description="Number of days of rotated logs to retain (minimum 1).",
+    )
 
     # admin
     admin_password: str | None = Field(
@@ -119,6 +123,12 @@ class Settings(BaseSettings):
             return str(LogLevel(v.upper())).upper()
         except ValueError:
             return "INFO"
+
+    @field_validator("log_retention_days")
+    @classmethod
+    def validate_log_retention_days(cls, v: int) -> int:
+        """Clamp log retention to a safe minimum."""
+        return max(1, v)
 
     @field_validator("jwt_secret", mode="before")
     @classmethod

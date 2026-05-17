@@ -40,6 +40,9 @@
       : "cursor-pointer rounded-full",
   );
   const iconCls = $derived(compact ? "size-3.5 shrink-0" : "size-4 shrink-0");
+  const canMove = $derived(
+    moveEnabled && entry.episode_id == null && entry.episode_number == null,
+  );
 </script>
 
 {#if entry.has_pending_request}
@@ -71,7 +74,7 @@
 {#if canDelete}
   {#if showTooltips}
     <Tooltip.Root>
-      {#if moveEnabled}
+      {#if canMove}
         <Tooltip.Root>
           <Tooltip.Trigger>
             <Button
@@ -97,7 +100,7 @@
       <Tooltip.Content><p>Delete</p></Tooltip.Content>
     </Tooltip.Root>
   {:else}
-    {#if moveEnabled}
+    {#if canMove}
       <Button
         size="icon"
         class="{btnBase} bg-amber-500/80 hover:bg-amber-500/60"

@@ -138,6 +138,7 @@ export interface GeneralSettings {
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
+  default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
 }
 
 export interface ReclaimRule {
@@ -347,6 +348,7 @@ export interface SeriesWithStatus {
   status: MediaStatusInfo;
   has_season_candidates: boolean;
   library_season_count: number;
+  library_episode_count: number;
   added_at: string | null;
 }
 
@@ -358,6 +360,19 @@ export interface SeasonWithStatus {
   view_count: number;
   last_viewed_at: string | null;
   air_date: string | null;
+  status: MediaStatusInfo;
+}
+
+export interface EpisodeWithStatus {
+  id: number;
+  season_id: number;
+  season_number: number;
+  episode_number: number;
+  name: string | null;
+  size: number | null;
+  view_count: number;
+  air_date: string | null;
+  last_viewed_at: string | null;
   status: MediaStatusInfo;
 }
 
@@ -390,6 +405,13 @@ export interface ProtectionRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  target_scope:
+    | "movie"
+    | "movie_version"
+    | "series"
+    | "season"
+    | "episode"
+    | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -407,6 +429,9 @@ export interface ProtectionRequest {
   effective_expires_at: string | null;
   season_id: number | null;
   season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   created_at: string;
   updated_at: string;
   version_resolution: string | null;
@@ -428,6 +453,13 @@ export interface DeleteRequest {
   media_type: MediaType;
   poster_url: string | null;
   media_id: number;
+  target_scope:
+    | "movie"
+    | "movie_version"
+    | "series"
+    | "season"
+    | "episode"
+    | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -443,6 +475,9 @@ export interface DeleteRequest {
   execution_error: string | null;
   season_id: number | null;
   season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   created_at: string;
   updated_at: string;
   version_resolution: string | null;
@@ -463,6 +498,11 @@ export interface ProtectedEntry {
   media_type: MediaType;
   media_id: number;
   movie_version_id: number | null;
+  season_id: number | null;
+  season_number: number | null;
+  episode_id: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
@@ -563,14 +603,14 @@ export type RulePreviewEntry = Omit<
 export interface DashboardKpis {
   total_movies: number;
   total_series: number;
-  total_movies_size_gb: number;
-  total_series_size_gb: number;
-  reclaimable_movies_gb: number;
-  reclaimable_series_gb: number;
-  reclaimable_total_gb: number;
+  total_movies_size_bytes: number;
+  total_series_size_bytes: number;
+  reclaimable_movies_bytes: number;
+  reclaimable_series_bytes: number;
+  reclaimable_total_bytes: number;
   reclaimed_movies: number;
   reclaimed_series: number;
-  reclaimed_total_gb: number;
+  reclaimed_total_bytes: number;
 }
 
 export interface ReclaimHistoryEntry {

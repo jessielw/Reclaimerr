@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
-from backend.core.task_runtime import MAIN_SERVER_REQUIRED_TASKS, request_task_run
+from backend.core.task_runtime import (
+    MAIN_SERVER_REQUIRED_TASKS,
+    can_disable_task,
+    is_task_enabled,
+    request_task_run,
+)
 from backend.core.task_tracking import COMPLETION_TTL_MINUTES
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
@@ -124,6 +129,7 @@ async def list_tasks(
                 "default_schedule_value": db_schedule.default_schedule_value,
                 "enabled": db_schedule.enabled,
                 "editable": editable,
+                "can_disable": can_disable_task(db_schedule.task),
                 "requires_main_server": db_schedule.task in MAIN_SERVER_REQUIRED_TASKS,
             }
         )
@@ -185,6 +191,11 @@ async def run_task_now(task_id: str, _admin: Annotated[User, Depends(require_adm
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
     try:
+        if not await is_task_enabled(task_enum):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task '{task_id}' is disabled and cannot be run",
+            )
         job, queued = await request_task_run(task_enum)
         return {
             "status": "success",
@@ -196,6 +207,10 @@ async def run_task_now(task_id: str, _admin: Annotated[User, Depends(require_adm
             "job_id": job.id if job is not None else None,
             "already_active": not queued,
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         LOG.error(f"Error queueing task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -237,7 +252,10 @@ async def update_schedule(
             },
         }
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        detail = str(e)
+        if "does not support enable/disable" in detail:
+            raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=404, detail=detail)
     except Exception as e:
         LOG.error(f"Error updating task schedule {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

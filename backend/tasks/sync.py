@@ -14,6 +14,7 @@ from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
 from backend.database import async_db
 from backend.database.models import (
+    DeleteRequest,
     Episode,
     Movie,
     MovieArrRef,
@@ -29,7 +30,7 @@ from backend.database.models import (
     ServiceMediaLibrary,
     SupplementalMediaMatch,
 )
-from backend.enums import MediaType, Service, Task
+from backend.enums import MediaType, ProtectionRequestStatus, Service, Task
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -600,8 +601,31 @@ async def _sync_seasons(
         )
         await session.execute(
             sql_delete(ProtectionRequest).where(
-                ProtectionRequest.season_id.in_(removed_season_ids)
+                ProtectionRequest.season_id.in_(removed_season_ids),
+                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
             )
+        )
+        await session.execute(
+            sql_update(ProtectionRequest)
+            .where(
+                ProtectionRequest.season_id.in_(removed_season_ids),
+                ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+            )
+            .values(season_id=None, episode_id=None)
+        )
+        await session.execute(
+            sql_delete(DeleteRequest).where(
+                DeleteRequest.season_id.in_(removed_season_ids),
+                DeleteRequest.status == ProtectionRequestStatus.PENDING,
+            )
+        )
+        await session.execute(
+            sql_update(DeleteRequest)
+            .where(
+                DeleteRequest.season_id.in_(removed_season_ids),
+                DeleteRequest.status != ProtectionRequestStatus.PENDING,
+            )
+            .values(season_id=None, episode_id=None)
         )
         for season_number, season_obj in existing.items():
             if season_number not in incoming_season_numbers:
@@ -723,6 +747,44 @@ async def _upsert_episodes(
     if remove_stale:
         for ep_num, ep_obj in existing_eps.items():
             if ep_num not in incoming_nums:
+                await session.execute(
+                    sql_delete(ReclaimCandidate).where(
+                        ReclaimCandidate.episode_id == ep_obj.id
+                    )
+                )
+                await session.execute(
+                    sql_delete(ProtectedMedia).where(
+                        ProtectedMedia.episode_id == ep_obj.id
+                    )
+                )
+                await session.execute(
+                    sql_delete(ProtectionRequest).where(
+                        ProtectionRequest.episode_id == ep_obj.id,
+                        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+                    )
+                )
+                await session.execute(
+                    sql_update(ProtectionRequest)
+                    .where(
+                        ProtectionRequest.episode_id == ep_obj.id,
+                        ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(episode_id=None)
+                )
+                await session.execute(
+                    sql_delete(DeleteRequest).where(
+                        DeleteRequest.episode_id == ep_obj.id,
+                        DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                    )
+                )
+                await session.execute(
+                    sql_update(DeleteRequest)
+                    .where(
+                        DeleteRequest.episode_id == ep_obj.id,
+                        DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                    )
+                    .values(episode_id=None)
+                )
                 await session.delete(ep_obj)
 
 

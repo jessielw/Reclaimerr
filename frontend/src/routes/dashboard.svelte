@@ -4,6 +4,7 @@
   import ErrorBox from "$lib/components/error-box.svelte";
   import Notice from "$lib/components/notice.svelte";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
+  import { formatFileSize } from "$lib/utils/formatters";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
   import TrendingDown from "@lucide/svelte/icons/trending-down";
   import Minus from "@lucide/svelte/icons/minus";
@@ -42,8 +43,8 @@
     (dashboard?.kpis.total_movies ?? 0) + (dashboard?.kpis.total_series ?? 0),
   );
   const librarySizeTotal = $derived(
-    (dashboard?.kpis.total_movies_size_gb ?? 0) +
-      (dashboard?.kpis.total_series_size_gb ?? 0),
+    (dashboard?.kpis.total_movies_size_bytes ?? 0) +
+      (dashboard?.kpis.total_series_size_bytes ?? 0),
   );
   const showSyncNotice = $derived(
     (dashboard?.media_server_configured ?? false) && libraryTotal === 0,
@@ -53,17 +54,17 @@
       (dashboard?.requests.denied_7d ?? 0),
   );
   const reclaimableMovieShare = $derived.by(() => {
-    const total = dashboard?.kpis.reclaimable_total_gb ?? 0;
+    const total = dashboard?.kpis.reclaimable_total_bytes ?? 0;
     if (!total) return 0;
     return Math.round(
-      ((dashboard?.kpis.reclaimable_movies_gb ?? 0) / total) * 100,
+      ((dashboard?.kpis.reclaimable_movies_bytes ?? 0) / total) * 100,
     );
   });
   const reclaimableSeriesShare = $derived.by(() => {
-    const total = dashboard?.kpis.reclaimable_total_gb ?? 0;
+    const total = dashboard?.kpis.reclaimable_total_bytes ?? 0;
     if (!total) return 0;
     return Math.round(
-      ((dashboard?.kpis.reclaimable_series_gb ?? 0) / total) * 100,
+      ((dashboard?.kpis.reclaimable_series_bytes ?? 0) / total) * 100,
     );
   });
 
@@ -79,33 +80,42 @@
   };
 
   // helpers
-  type SizeUnit = "MB" | "GB" | "TB";
-  const UNIT_CYCLE: SizeUnit[] = ["MB", "GB", "TB"];
+  type SizeUnit = "AUTO" | "MB" | "GB" | "TB";
+  const UNIT_CYCLE: SizeUnit[] = ["AUTO", "MB", "GB", "TB"];
   const SIZE_UNIT_KEY = "reclaimerr_dashboard_size_unit";
   const storedUnit = localStorage.getItem(SIZE_UNIT_KEY);
   let sizeUnit = $state<SizeUnit>(
     UNIT_CYCLE.includes(storedUnit as SizeUnit)
       ? (storedUnit as SizeUnit)
-      : "GB",
+      : "AUTO",
   );
   $effect(() => {
     localStorage.setItem(SIZE_UNIT_KEY, sizeUnit);
   });
+
   const cycleSizeUnit = () => {
     const idx = UNIT_CYCLE.indexOf(sizeUnit);
     sizeUnit = UNIT_CYCLE[(idx + 1) % UNIT_CYCLE.length];
   };
-  const formatSize = (gbValue: number) => {
-    if (sizeUnit === "MB") return `${(gbValue * 1024).toFixed(0)} MB`;
-    if (sizeUnit === "TB") return `${(gbValue / 1024).toFixed(2)} TB`;
-    return `${gbValue.toFixed(2)} GB`;
+
+  const formatSize = (bytes: number) => {
+    if (sizeUnit === "AUTO") {
+      return formatFileSize(bytes);
+    }
+    if (sizeUnit === "MB") return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+    if (sizeUnit === "TB")
+      return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
+
   const formatPercent = (value: number) => `${Math.round(value)}%`;
+
   const getTrendClass = (value: number) => {
     if (value > 0) return "text-green-500";
     if (value < 0) return "text-destructive";
     return "text-muted-foreground";
   };
+
   const formatSigned = (value: number) =>
     value > 0 ? `+${value}` : `${value}`;
 
@@ -222,7 +232,7 @@
           class="text-xs px-2 py-0.5 rounded-full border border-border bg-secondary/50 text-muted-foreground
             hover:bg-secondary transition-colors cursor-pointer"
         >
-          {sizeUnit}
+          {sizeUnit === "AUTO" ? "Auto" : sizeUnit}
         </button>
       </div>
     </div>
@@ -259,7 +269,7 @@
             >
               <p class="text-sm text-muted-foreground">Space Reclaimed</p>
               <p class="text-3xl font-bold text-primary mt-2">
-                {formatSize(dashboard.kpis.reclaimed_total_gb)}
+                {formatSize(dashboard.kpis.reclaimed_total_bytes)}
               </p>
             </article>
             <article
@@ -290,10 +300,14 @@
                 {dashboard.kpis.total_movies}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
-                {librarySizeTotal > 0
-                  ? `${formatPercent((dashboard.kpis.total_movies_size_gb / librarySizeTotal) * 100)} of ` +
-                    "library by size"
-                  : "No library items yet"}
+                {#if librarySizeTotal > 0}
+                  {formatPercent(
+                    (dashboard.kpis.total_movies_size_bytes /
+                      librarySizeTotal) *
+                      100,
+                  )} of library by size
+                  <i>({formatSize(dashboard.kpis.total_movies_size_bytes)})</i>
+                {/if}
               </p>
             </article>
 
@@ -306,10 +320,14 @@
                 {dashboard.kpis.total_series}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
-                {librarySizeTotal > 0
-                  ? `${formatPercent((dashboard.kpis.total_series_size_gb / librarySizeTotal) * 100)} of ` +
-                    "library by size"
-                  : "No library items yet"}
+                {#if librarySizeTotal > 0}
+                  {formatPercent(
+                    (dashboard.kpis.total_series_size_bytes /
+                      librarySizeTotal) *
+                      100,
+                  )} of library by size
+                  <i>({formatSize(dashboard.kpis.total_series_size_bytes)})</i>
+                {/if}
               </p>
             </article>
 
@@ -319,7 +337,7 @@
             >
               <p class="text-sm text-muted-foreground">Reclaimable (Movies)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
-                {formatSize(dashboard.kpis.reclaimable_movies_gb)}
+                {formatSize(dashboard.kpis.reclaimable_movies_bytes)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableMovieShare}% of reclaimable total
@@ -332,7 +350,7 @@
             >
               <p class="text-sm text-muted-foreground">Reclaimable (Series)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
-                {formatSize(dashboard.kpis.reclaimable_series_gb)}
+                {formatSize(dashboard.kpis.reclaimable_series_bytes)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableSeriesShare}% of reclaimable total
@@ -347,10 +365,10 @@
             >
               <p class="text-sm text-muted-foreground">Total Reclaimable</p>
               <p class="text-2xl font-bold text-primary mt-2">
-                {formatSize(dashboard.kpis.reclaimable_total_gb)}
+                {formatSize(dashboard.kpis.reclaimable_total_bytes)}
               </p>
               <p class="text-xs text-muted-foreground mt-2">
-                {dashboard.kpis.reclaimable_total_gb > 0
+                {dashboard.kpis.reclaimable_total_bytes > 0
                   ? "Cleanup opportunity available"
                   : "Nothing reclaimable right now"}
               </p>

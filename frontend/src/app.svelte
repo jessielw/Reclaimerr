@@ -33,6 +33,11 @@
     "/setup": Setup,
   };
 
+  const appChannel = (import.meta.env.VITE_APP_CHANNEL ?? "dev")
+    .toString()
+    .toLowerCase();
+  const isDevBuild = appChannel !== "release";
+
   let sidebarOpen = $state(false);
   let needsSetup = $state(false);
 
@@ -95,6 +100,14 @@
         </button>
         <img src={logoImage} alt="reclaimerr logo" class="w-6 h-6" />
         <h1 class="font-semibold text-lg text-foreground">Reclaimerr</h1>
+        {#if isDevBuild}
+          <span
+            class="absolute right-1 top-1 z-10 rounded bg-destructive px-1.5 py-0.5 text-[10px]
+              font-bold tracking-wide text-destructive-foreground pointer-events-none"
+          >
+            DEV
+          </span>
+        {/if}
       </div>
 
       <!-- mobile backdrop overlay -->
@@ -120,6 +133,14 @@
       <main class="flex-1 overflow-y-auto mt-16 lg:mt-0">
         <SystemAlerts />
         <Router {routes} />
+        {#if isDevBuild}
+          <span
+            class="absolute right-5 top-1 z-10 rounded bg-destructive px-1.5 py-0.5 text-[10px]
+              font-bold tracking-wide text-destructive-foreground pointer-events-none"
+          >
+            DEV
+          </span>
+        {/if}
       </main>
     </div>
   </Tooltip.Provider>
@@ -127,4 +148,4 @@
 
 <ModeWatcher defaultMode="dark" />
 
-<Toaster />
+<Toaster richColors />

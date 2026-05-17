@@ -235,6 +235,12 @@
 
   // after successful exception request, update only the requested media card in local state
   const handleExceptionSuccess = (request: ProtectionRequest) => {
+    const isWholeScope =
+      request.media_type === MediaType.Movie
+        ? request.movie_version_id == null
+        : request.season_id == null && request.episode_id == null;
+    if (!isWholeScope) return;
+
     const isPending = request.status === ProtectionRequestStatus.Pending;
     const isApproved = request.status === ProtectionRequestStatus.Approved;
 
@@ -249,6 +255,12 @@
 
   // after successful delete request, update only the requested media card in local state
   const handleDeleteSuccess = (request: DeleteRequest) => {
+    const isWholeScope =
+      request.media_type === MediaType.Movie
+        ? request.movie_version_id == null
+        : request.season_id == null && request.episode_id == null;
+    if (!isWholeScope) return;
+
     upsertStatus(request.media_id, () => ({
       has_pending_delete_request: true,
       delete_request_id: request.id,

@@ -189,3 +189,32 @@ async def fail_background_job(job_id: int, error_message: str) -> None:
             )
         )
         await session.commit()
+
+
+async def cancel_pending_background_jobs_by_dedupe_key(
+    dedupe_key: str, *, reason: str = "Canceled by configuration change"
+) -> int:
+    """Cancel all pending background jobs matching a dedupe key."""
+    now = datetime.now(UTC)
+    async with async_db() as session:
+        result = await session.execute(
+            sql_update(BackgroundJob)
+            .where(
+                BackgroundJob.dedupe_key == dedupe_key,
+                BackgroundJob.status == BackgroundJobStatus.PENDING,
+            )
+            .values(
+                status=BackgroundJobStatus.CANCELED,
+                completed_at=now,
+                error_message=reason,
+            )
+            .returning(BackgroundJob.id)
+        )
+        canceled_ids = result.scalars().all()
+        await session.commit()
+
+    if canceled_ids:
+        LOG.info(
+            f"Canceled {len(canceled_ids)} pending background job(s) for dedupe key {dedupe_key}"
+        )
+    return len(canceled_ids)

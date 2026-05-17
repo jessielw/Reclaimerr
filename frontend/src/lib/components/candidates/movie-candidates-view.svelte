@@ -1,12 +1,9 @@
 <script lang="ts">
-  import { Button } from "$lib/components/ui/button/index.js";
   import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import X from "@lucide/svelte/icons/x";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
-  import VersionMediaInfoWidget from "$lib/components/candidates/movie-version-mediainfo.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
   import {
@@ -15,19 +12,14 @@
     extractPathNoFile,
   } from "$lib/utils/candidate-rules";
   import Badge from "$lib/components/ui/badge/badge.svelte";
+  import CandidateVersionInfoDialog from "$lib/components/candidates/candidate-version-info-dialog.svelte";
+  import CandidateFlatCard from "$lib/components/candidates/candidate-flat-card.svelte";
+  import { movieSummaryChips } from "$lib/components/candidates/view-utils";
+  import type {
+    FlatRow,
+    MovieGroupRow,
+  } from "$lib/components/candidates/view-types";
 
-  type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
-  type MovieGroupRow = {
-    kind: "group";
-    group_type: "movie_versions";
-    seriesEntry: ReclaimCandidateEntry | null;
-    seasons: ReclaimCandidateEntry[];
-    versions: ReclaimCandidateEntry[];
-    media_id: number;
-    media_title: string;
-    media_year: number | null;
-    poster_url: string | null;
-  };
   type DisplayRow = FlatRow | MovieGroupRow;
 
   interface Props {
@@ -72,55 +64,13 @@
     groupTotalBytes,
   }: Props = $props();
 
-  let infoOpen = $state(false);
   let infoTarget = $state<ReclaimCandidateEntry | null>(null);
-
-  const movieSummaryChips = (entry: ReclaimCandidateEntry): string[] => {
-    const chips: string[] = [];
-    if (entry.version_video_width && entry.version_video_height) {
-      chips.push(`${entry.version_video_width}x${entry.version_video_height}`);
-    }
-    if (entry.version_video_codec_family) {
-      chips.push(entry.version_video_codec_family.toUpperCase());
-    }
-    if (entry.version_video_dolby_vision) chips.push("DV");
-    else if (entry.version_video_hdr) chips.push("HDR");
-    if (entry.version_audio_codec_family) {
-      chips.push(entry.version_audio_codec_family.toUpperCase());
-    }
-    chips.push(formatFileSize(entry.estimated_space_bytes));
-    return chips;
-  };
-
-  const unknownValue = "Unknown";
-
-  const resolutionLabel = (entry: ReclaimCandidateEntry): string => {
-    const res =
-      entry.version_video_resolution ||
-      (entry.version_video_height ? String(entry.version_video_height) : null);
-    return cleanResolutionString(res) ?? unknownValue;
-  };
-
-  const fileNameFromPath = (
-    path: string | null,
-    fallbackFileName: string | null = null,
-  ): string => {
-    if (fallbackFileName && fallbackFileName.trim()) {
-      return fallbackFileName.trim();
-    }
-    if (!path) return unknownValue;
-    const parts = path.split(/[/\\]/);
-    const extractedFileName = parts[parts.length - 1];
-    return extractedFileName?.trim() ? extractedFileName : unknownValue;
-  };
 
   const openInfo = (entry: ReclaimCandidateEntry) => {
     infoTarget = entry;
-    infoOpen = true;
   };
 
   const closeInfo = () => {
-    infoOpen = false;
     infoTarget = null;
   };
 </script>
@@ -129,62 +79,28 @@
   {#each rows as row (row.kind === "flat" ? `mobile-flat-${row.entry.id}` : `mobile-group-${row.media_id}`)}
     {#if row.kind === "flat"}
       {@const entry = row.entry}
-      <div class="p-4 space-y-3">
-        <div class="flex gap-3">
-          {#if canBulkSelect}
-            <input
-              type="checkbox"
-              checked={selectedIds.has(entry.id)}
-              onchange={() => toggleSelect(entry.id)}
-              class="mt-1 cursor-pointer accent-primary"
-            />
-          {/if}
-          <div class="flex-1">
-            <div class="flex items-start gap-3">
-              <PosterThumb
-                mediaType={entry.media_type}
-                posterUrl={entry.poster_url}
-              />
-              <div class="min-w-0">
-                <div class="text-sm font-medium text-foreground">
-                  {entry.media_title}
-                  {#if entry.media_year}
-                    <span class="text-muted-foreground"
-                      >({entry.media_year})</span
-                    >
-                  {/if}
-                </div>
-                <div class="mt-1">
-                  <MediaTypeBadge mediaType={entry.media_type} />
-                </div>
-                <div class="mt-2 flex flex-wrap gap-1.5">
-                  {#each movieSummaryChips(entry) as chip}
-                    <span
-                      class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
-                    >
-                      {chip}
-                    </span>
-                  {/each}
-                </div>
-                <div class="mt-2 text-xs text-muted-foreground">
-                  {formatDate(entry.created_at)}
-                </div>
-                <CandidateTmdbMeta {entry} />
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="flex justify-end gap-2">
-          <CandidateActionButtons
-            {entry}
-            {canDelete}
-            {moveEnabled}
-            {openSingleRequest}
-            {openSingleDelete}
-            {openSingleMove}
-          />
-        </div>
-      </div>
+      <CandidateFlatCard
+        {entry}
+        {canBulkSelect}
+        {canDelete}
+        {selectedIds}
+        {toggleSelect}
+        {openSingleRequest}
+        {openSingleDelete}
+        {openSingleMove}
+        {moveEnabled}
+        {formatDate}
+      >
+        {#snippet summary()}
+          {#each movieSummaryChips(entry) as chip}
+            <span
+              class="text-xs leading-5 px-2 rounded-full border border-border bg-muted/50 text-foreground"
+            >
+              {chip}
+            </span>
+          {/each}
+        {/snippet}
+      </CandidateFlatCard>
     {:else}
       {@const expanded = expandedGroups.has(row.media_id)}
       {@const allSel = isGroupAllSelected(row)}
@@ -211,7 +127,7 @@
                 mediaType={MediaType.Movie}
                 posterUrl={row.poster_url}
                 posterSize={"154"}
-                tailWindElSize="w-24"
+                tailWindElSize="w-28"
               />
               <div class="min-w-0">
                 <div class="text-sm font-medium text-foreground">
@@ -394,47 +310,8 @@
   {/each}
 </div>
 
-{#if infoOpen && infoTarget}
-  <div class="fixed inset-0 z-50">
-    <button
-      type="button"
-      aria-label="Close details"
-      class="absolute inset-0 bg-background/70 backdrop-blur-[1px]"
-      onclick={closeInfo}
-    ></button>
-    <div
-      class="relative mx-auto mt-8 w-[min(92vw,820px)] rounded-md border border-border bg-card shadow-xl"
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-    >
-      <div
-        class="flex items-center justify-between border-b border-border px-4 py-3"
-      >
-        <div class="min-w-0">
-          <div class="text-sm font-semibold text-foreground truncate">
-            {infoTarget.version_library_name ?? "Version"} - {resolutionLabel(
-              infoTarget,
-            )}
-          </div>
-          <div class="text-xs text-muted-foreground truncate">
-            {fileNameFromPath(
-              infoTarget.version_path,
-              infoTarget.version_file_name,
-            )}
-          </div>
-        </div>
-        <Button
-          size="icon"
-          class="cursor-pointer rounded-full size-8"
-          onclick={closeInfo}
-        >
-          <X class="size-4" />
-        </Button>
-      </div>
-      <div class="max-h-[75vh] overflow-y-auto p-4">
-        <VersionMediaInfoWidget entry={infoTarget} {formatDate} />
-      </div>
-    </div>
-  </div>
-{/if}
+<CandidateVersionInfoDialog
+  entry={infoTarget}
+  {formatDate}
+  onClose={closeInfo}
+/>

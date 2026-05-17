@@ -36,6 +36,7 @@
     default_schedule_value: string;
     enabled: boolean;
     editable: boolean;
+    can_disable: boolean;
     requires_main_server: boolean;
   }
 
@@ -317,6 +318,7 @@
     defaultScheduleType={editingTask.default_schedule_type}
     defaultScheduleValue={editingTask.default_schedule_value}
     enabled={editingTask.enabled}
+    canDisable={editingTask.can_disable}
     onClose={() => (editDialogOpen = false)}
     onSuccess={handleEditSuccess}
   />

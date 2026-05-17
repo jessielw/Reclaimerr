@@ -2,14 +2,17 @@ import re
 import sys
 from pathlib import Path
 from random import sample as random_sample
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core import __version__
+from backend.core.auth import get_current_user
 from backend.database import get_db
-from backend.database.models import Movie, Series
+from backend.database.models import AppUpdateState, Movie, Series, User
+from backend.enums import UserRole
 
 from .default_backdrops import TOP_RATED_BACKDROPS
 
@@ -79,6 +82,41 @@ async def get_version() -> dict[str, str]:
         "version": str(__version__),
         "program": __version__.program_name,
         "url": __version__.program_url,
+    }
+
+
+@router.get("/update-status")
+async def get_update_status(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return update status for sidebar indicators (admin visible only)."""
+    state = (await db.execute(select(AppUpdateState))).scalars().first()
+    if state is None:
+        return {
+            "update_available": False,
+            "latest_version": None,
+            "latest_release_url": None,
+            "last_checked_at": None,
+        }
+
+    if current_user.role is not UserRole.ADMIN:
+        return {
+            "update_available": False,
+            "latest_version": None,
+            "latest_release_url": None,
+            "last_checked_at": state.last_checked_at.isoformat()
+            if state.last_checked_at
+            else None,
+        }
+
+    return {
+        "update_available": bool(state.update_available),
+        "latest_version": state.latest_version,
+        "latest_release_url": state.latest_release_url,
+        "last_checked_at": state.last_checked_at.isoformat()
+        if state.last_checked_at
+        else None,
     }
 
 

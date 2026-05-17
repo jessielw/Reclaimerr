@@ -40,7 +40,7 @@ class Logger:
         file_handler = TimedRotatingFileHandler(
             self.log_file,
             when="midnight",
-            backupCount=30,
+            backupCount=settings.log_retention_days,
             encoding="utf-8",
         )
         file_handler.setFormatter(fmt)

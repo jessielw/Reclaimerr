@@ -8,6 +8,7 @@
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import Plus from "@lucide/svelte/icons/plus";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import Copy from "@lucide/svelte/icons/copy";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Download from "@lucide/svelte/icons/download";
   import Upload from "@lucide/svelte/icons/upload";
@@ -31,6 +32,7 @@
   let loading = $state(false);
   let rules = $state<ReclaimRule[]>([]);
   let editingRule = $state<ReclaimRule | null>(null);
+  let ruleFormMode = $state<"create" | "edit">("create");
   let showRuleForm = $state(false);
   let availableLibraries = $state<LibraryType[]>([]);
 
@@ -128,7 +130,7 @@
 
   const handleSaveRule = async (ruleData: Partial<ReclaimRule>) => {
     try {
-      if (editingRule) {
+      if (ruleFormMode === "edit" && editingRule) {
         const updated = await post_api<ReclaimRule>(
           `/api/rules/${editingRule.id}`,
           ruleData,
@@ -172,17 +174,28 @@
 
   const editRule = (rule: ReclaimRule) => {
     editingRule = toPlainRule(rule);
+    ruleFormMode = "edit";
+    showRuleForm = true;
+  };
+
+  const cloneRule = (rule: ReclaimRule) => {
+    const cloned = toPlainRule(rule);
+    cloned.name = `${rule.name} (copy)`;
+    editingRule = cloned;
+    ruleFormMode = "create";
     showRuleForm = true;
   };
 
   const createNewRule = () => {
     editingRule = null;
+    ruleFormMode = "create";
     showRuleForm = true;
   };
 
   const closeRuleForm = () => {
     showRuleForm = false;
     editingRule = null;
+    ruleFormMode = "create";
   };
 
   const getRuleSummary = (rule: ReclaimRule): string => {
@@ -582,8 +595,18 @@
                         size="icon"
                         onclick={() => editRule(rule)}
                         class="text-foreground cursor-pointer"
+                        title="Edit rule"
                       >
                         <Pencil class="size-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onclick={() => cloneRule(rule)}
+                        class="text-foreground cursor-pointer"
+                        title="Clone rule"
+                      >
+                        <Copy class="size-4" />
                       </Button>
                       <Button
                         variant="ghost"

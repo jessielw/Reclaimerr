@@ -32,13 +32,19 @@
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import History from "@lucide/svelte/icons/history";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-  import ClapperBoard from "@lucide/svelte/icons/clapperboard";
-  import Tv from "@lucide/svelte/icons/tv";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
   import Shield from "@lucide/svelte/icons/shield";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import MixedCandidatesView from "$lib/components/candidates/mixed-candidates-view.svelte";
   import MovieCandidatesView from "$lib/components/candidates/movie-candidates-view.svelte";
   import SeriesCandidatesView from "$lib/components/candidates/series-candidates-view.svelte";
+  import type {
+    DisplayRow,
+    FlatRow,
+    GroupRow,
+    MovieGroupRow,
+    SeriesGroupRow,
+  } from "$lib/components/candidates/view-types";
 
   interface DeleteResponse {
     deleted: number;
@@ -50,45 +56,20 @@
     failed: number;
   }
 
-  // display row (either a flat entry, a series season group, or a movie version group)
-  type FlatRow = { kind: "flat"; entry: ReclaimCandidateEntry };
-  type SeriesGroupRow = {
-    kind: "group";
-    group_type: "series_seasons";
-    seriesEntry: ReclaimCandidateEntry | null;
-    seasons: ReclaimCandidateEntry[];
-    versions: ReclaimCandidateEntry[];
-    media_id: number;
-    media_title: string;
-    media_year: number | null;
-    poster_url: string | null;
-  };
-  type MovieGroupRow = {
-    kind: "group";
-    group_type: "movie_versions";
-    seriesEntry: ReclaimCandidateEntry | null;
-    seasons: ReclaimCandidateEntry[];
-    versions: ReclaimCandidateEntry[];
-    media_id: number;
-    media_title: string;
-    media_year: number | null;
-    poster_url: string | null;
-  };
-  type GroupRow = SeriesGroupRow | MovieGroupRow;
-  type DisplayRow = FlatRow | GroupRow;
-
   // state
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
   let searchQuery = $state("");
-  const _tabStore = createFilterState("candidates_active_tab", MediaType.Movie);
+  const _mediaFilterStore = createFilterState("candidates_media_filter", "all");
   const _sortByStore = createFilterState("candidates_sort_by", "created_at");
   const _sortOrderStore = createFilterState("candidates_sort_order", "desc");
-  let activeTab = $state(
-    _tabStore.getInitial() === MediaType.Series
-      ? MediaType.Series
-      : MediaType.Movie,
+  let mediaFilter = $state<"all" | MediaType.Movie | MediaType.Series>(
+    _mediaFilterStore.getInitial() === MediaType.Movie
+      ? MediaType.Movie
+      : _mediaFilterStore.getInitial() === MediaType.Series
+        ? MediaType.Series
+        : "all",
   );
 
   // top level view: candidates vs history
@@ -183,10 +164,25 @@
 
   // build grouped display rows from the flat API response
   const displayRows = $derived((): DisplayRow[] => {
+    const seriesWithScopedEntries = new Set<number>();
     const seasonGroups = new Map<number, ReclaimCandidateEntry[]>();
     const versionGroups = new Map<number, ReclaimCandidateEntry[]>();
     const seriesFlat = new Map<number, ReclaimCandidateEntry>();
-    const flatRows: DisplayRow[] = [];
+    const flatRows = new Map<number, ReclaimCandidateEntry>();
+    const orderedKeys: string[] = [];
+    const seenKeys = new Set<string>();
+
+    const pushOrderedKey = (key: string) => {
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+      orderedKeys.push(key);
+    };
+
+    for (const e of entries) {
+      if (e.media_type === MediaType.Series && e.season_id != null) {
+        seriesWithScopedEntries.add(e.media_id);
+      }
+    }
 
     for (const e of entries) {
       if (
@@ -197,65 +193,82 @@
         const g = versionGroups.get(e.media_id) ?? [];
         g.push(e);
         versionGroups.set(e.media_id, g);
+        pushOrderedKey(`movie-group:${e.media_id}`);
       } else if (e.season_id != null) {
         const g = seasonGroups.get(e.media_id) ?? [];
         g.push(e);
         seasonGroups.set(e.media_id, g);
-      } else if (e.media_type === MediaType.Series) {
+        pushOrderedKey(`series-group:${e.media_id}`);
+      } else if (
+        e.media_type === MediaType.Series &&
+        seriesWithScopedEntries.has(e.media_id)
+      ) {
         seriesFlat.set(e.media_id, e);
+        pushOrderedKey(`series-group:${e.media_id}`);
+      } else if (e.media_type === MediaType.Series) {
+        flatRows.set(e.id, e);
+        pushOrderedKey(`flat:${e.id}`);
       } else {
-        flatRows.push({ kind: "flat", entry: e });
+        flatRows.set(e.id, e);
+        pushOrderedKey(`flat:${e.id}`);
       }
     }
 
-    for (const [mid, fe] of seriesFlat) {
-      if (seasonGroups.has(mid)) {
-      } else {
-        flatRows.push({ kind: "flat", entry: fe });
+    const result: DisplayRow[] = [];
+    for (const key of orderedKeys) {
+      if (key.startsWith("flat:")) {
+        const entry = flatRows.get(Number(key.slice(5)));
+        if (entry) result.push({ kind: "flat", entry });
+        continue;
       }
-    }
 
-    const result: DisplayRow[] = [...flatRows];
+      if (key.startsWith("series-group:")) {
+        const mid = Number(key.slice("series-group:".length));
+        const seasons = seasonGroups.get(mid) ?? [];
+        if (seasons.length === 0) continue;
+        const sorted = [...seasons].sort((a, b) => {
+          const sA = a.season_number ?? 0;
+          const sB = b.season_number ?? 0;
+          if (sA !== sB) return sA - sB;
+          return (a.episode_number ?? 0) - (b.episode_number ?? 0);
+        });
+        const first = sorted[0];
+        result.push({
+          kind: "group",
+          group_type: "series_seasons",
+          seriesEntry: seriesFlat.get(mid) ?? null,
+          seasons: sorted,
+          versions: [],
+          media_id: mid,
+          media_title: first.series_title ?? first.media_title,
+          media_year: first.media_year,
+          poster_url: first.poster_url,
+        });
+        continue;
+      }
 
-    for (const [mid, seasons] of seasonGroups) {
-      const sorted = [...seasons].sort((a, b) => {
-        const sA = a.season_number ?? 0;
-        const sB = b.season_number ?? 0;
-        if (sA !== sB) return sA - sB;
-        return (a.episode_number ?? 0) - (b.episode_number ?? 0);
-      });
-      const first = sorted[0];
-      result.push({
-        kind: "group",
-        group_type: "series_seasons",
-        seriesEntry: seriesFlat.get(mid) ?? null,
-        seasons: sorted,
-        versions: [],
-        media_id: mid,
-        media_title: first.series_title ?? first.media_title,
-        media_year: first.media_year,
-        poster_url: first.poster_url,
-      });
-    }
-
-    for (const [mid, versions] of versionGroups) {
-      const sorted = [...versions].sort((a, b) => {
-        const sa = a.version_size ?? 0;
-        const sb = b.version_size ?? 0;
-        return sb - sa;
-      });
-      const first = sorted[0];
-      result.push({
-        kind: "group",
-        group_type: "movie_versions",
-        seriesEntry: null,
-        seasons: [],
-        versions: sorted,
-        media_id: mid,
-        media_title: first.media_title,
-        media_year: first.media_year,
-        poster_url: first.poster_url,
-      });
+      if (key.startsWith("movie-group:")) {
+        const mid = Number(key.slice("movie-group:".length));
+        const versions = versionGroups.get(mid) ?? [];
+        if (versions.length === 0) continue;
+        const sorted = [...versions].sort((a, b) => {
+          const sa = a.version_size ?? 0;
+          const sb = b.version_size ?? 0;
+          return sb - sa;
+        });
+        const first = sorted[0];
+        result.push({
+          kind: "group",
+          group_type: "movie_versions",
+          seriesEntry: null,
+          seasons: [],
+          versions: sorted,
+          media_id: mid,
+          media_title: first.media_title,
+          media_year: first.media_year,
+          poster_url: first.poster_url,
+        });
+      }
     }
 
     return result;
@@ -315,11 +328,17 @@
     entries.filter((e) => selectedIds.has(e.id)),
   );
 
+  const selectedEntriesHaveEpisodeScope = $derived(
+    selectedEntries.some(
+      (entry) => entry.episode_id != null || entry.episode_number != null,
+    ),
+  );
+
   const selectedTotalBytes = $derived(
     selectedEntries.reduce((acc, e) => acc + (e.estimated_space_bytes ?? 0), 0),
   );
 
-  $effect(() => _tabStore.save(activeTab));
+  $effect(() => _mediaFilterStore.save(mediaFilter));
   $effect(() => _sortByStore.save(sortBy));
   $effect(() => _sortOrderStore.save(sortOrder));
   $effect(() => _viewStore.save(activeView));
@@ -327,7 +346,7 @@
   $effect(() => _historySortOrderStore.save(historySortOrder));
 
   $effect(() => {
-    activeTab;
+    mediaFilter;
     sortBy;
     sortOrder;
     perPage;
@@ -361,7 +380,7 @@
       });
 
       if (searchQuery.trim()) params.append("search", searchQuery.trim());
-      params.append("media_type", activeTab);
+      if (mediaFilter !== "all") params.append("media_type", mediaFilter);
 
       data = await get_api<PaginatedResponse<ReclaimCandidateEntry>>(
         `/api/media/candidates?${params.toString()}`,
@@ -498,6 +517,10 @@
   };
 
   const openSingleMove = (entry: ReclaimCandidateEntry) => {
+    if (entry.episode_id != null || entry.episode_number != null) {
+      toast.error("Episode candidates cannot be moved yet.");
+      return;
+    }
     moveTarget = entry;
     moveDialogOpen = true;
   };
@@ -630,6 +653,10 @@
 
   const submitBulkMove = async () => {
     if (selectedEntries.length === 0) return;
+    if (selectedEntriesHaveEpisodeScope) {
+      toast.error("Episode candidates cannot be moved yet.");
+      return;
+    }
     bulkMoveSubmitting = true;
     try {
       const resp = await post_api<MoveResponse>("/api/media/candidates/move", {
@@ -658,10 +685,30 @@
     data = {
       ...data,
       items: data.items.map((item) =>
-        item.media_id === request.media_id &&
-        item.media_type === request.media_type &&
-        (item.season_id ?? null) === (request.season_id ?? null) &&
-        (item.movie_version_id ?? null) === (request.movie_version_id ?? null)
+        (() => {
+          if (
+            item.media_id !== request.media_id ||
+            item.media_type !== request.media_type
+          ) {
+            return false;
+          }
+
+          if (request.media_type === MediaType.Movie) {
+            return request.movie_version_id == null
+              ? true
+              : (item.movie_version_id ?? null) === request.movie_version_id;
+          }
+
+          if (request.episode_id != null) {
+            return (item.episode_id ?? null) === request.episode_id;
+          }
+
+          if (request.season_id != null) {
+            return (item.season_id ?? null) === request.season_id;
+          }
+
+          return true;
+        })()
           ? { ...item, has_pending_request: true }
           : item,
       ),
@@ -700,6 +747,7 @@
           media_id: entry.media_id,
           movie_version_id: entry.movie_version_id ?? undefined,
           season_id: entry.season_id ?? undefined,
+          episode_id: entry.episode_id ?? undefined,
           reason: "Admin decision",
           duration_days: durationDays,
         }),
@@ -996,6 +1044,9 @@
   mediaType={requestTarget?.media_type ?? MediaType.Movie}
   seasonId={requestTarget?.season_id ?? null}
   seasonNumber={requestTarget?.season_number ?? null}
+  episodeId={requestTarget?.episode_id ?? null}
+  episodeNumber={requestTarget?.episode_number ?? null}
+  episodeName={requestTarget?.episode_name ?? null}
   onSuccess={handleRequestSuccess}
 />
 
@@ -1043,37 +1094,6 @@
     </div>
 
     {#if activeView === "candidates"}
-      <div class="inline-flex rounded-md border border-border p-1 bg-card">
-        <Button
-          size="sm"
-          class="cursor-pointer {activeTab === MediaType.Movie
-            ? 'bg-primary text-background dark:text-foreground'
-            : 'text-foreground bg-transparent'}"
-          onclick={() => {
-            activeTab = MediaType.Movie;
-            selectedIds = new Set();
-            expandedGroups = new Set();
-          }}
-        >
-          <ClapperBoard class="size-4 " />
-          Movies
-        </Button>
-        <Button
-          size="sm"
-          class="cursor-pointer {activeTab === MediaType.Series
-            ? 'bg-primary text-background dark:text-foreground'
-            : 'text-foreground bg-transparent'}"
-          onclick={() => {
-            activeTab = MediaType.Series;
-            selectedIds = new Set();
-            expandedGroups = new Set();
-          }}
-        >
-          <Tv class="size-4 " />
-          Series
-        </Button>
-      </div>
-
       <!-- filters -->
       <div class="flex flex-col sm:flex-row gap-2">
         <div class="relative flex-1">
@@ -1092,6 +1112,48 @@
         <div class="flex flex-1 flex-col gap-2 sm:flex-row">
           <!-- row 1 on mobile: sort by + sort order -->
           <div class="flex flex-1 gap-2">
+            <Select.Root
+              type="single"
+              value={mediaFilter}
+              onValueChange={(v) => {
+                mediaFilter =
+                  v === MediaType.Movie || v === MediaType.Series ? v : "all";
+                selectedIds = new Set();
+                expandedGroups = new Set();
+              }}
+            >
+              <Select.Trigger class="flex-1 bg-card text-card-foreground">
+                {mediaFilter === "all"
+                  ? "All media"
+                  : mediaFilter === MediaType.Movie
+                    ? "Movies"
+                    : "Series"}
+              </Select.Trigger>
+              <Select.Content class="bg-card">
+                <Select.Item
+                  value="all"
+                  label="All media"
+                  class="text-card-foreground"
+                >
+                  All media
+                </Select.Item>
+                <Select.Item
+                  value={MediaType.Movie}
+                  label="Movies"
+                  class="text-card-foreground"
+                >
+                  Movies
+                </Select.Item>
+                <Select.Item
+                  value={MediaType.Series}
+                  label="Series"
+                  class="text-card-foreground"
+                >
+                  Series
+                </Select.Item>
+              </Select.Content>
+            </Select.Root>
+
             <Select.Root type="single" bind:value={sortBy}>
               <Select.Trigger class="flex-1 bg-card text-card-foreground">
                 {sortByOptions.find((o) => o.value === sortBy)?.label}
@@ -1208,6 +1270,7 @@
                   <Button
                     size="sm"
                     class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
+                    disabled={selectedEntriesHaveEpisodeScope}
                     onclick={() => (bulkMoveDialogOpen = true)}
                   >
                     <FolderOutput class="size-4" />
@@ -1215,7 +1278,11 @@
                   </Button>
                 </Tooltip.Trigger>
                 <Tooltip.Content>
-                  <p>Move to destination folder</p>
+                  <p>
+                    {selectedEntriesHaveEpisodeScope
+                      ? "Episode candidates cannot be moved yet"
+                      : "Move to destination folder"}
+                  </p>
                 </Tooltip.Content>
               </Tooltip.Root>
             {/if}
@@ -1258,7 +1325,28 @@
           <div class="p-8 text-center text-muted-foreground">
             No reclaim candidates found.
           </div>
-        {:else if activeTab === MediaType.Movie}
+        {:else if mediaFilter === "all"}
+          <MixedCandidatesView
+            rows={displayRows()}
+            {canBulkSelect}
+            {canDelete}
+            {selectedIds}
+            {expandedGroups}
+            {allPageSelected}
+            {toggleSelect}
+            {toggleSelectAll}
+            {toggleGroupSelect}
+            {isGroupAllSelected}
+            {isGroupPartialSelected}
+            {toggleExpand}
+            {openSingleRequest}
+            {openSingleDelete}
+            {openSingleMove}
+            {moveEnabled}
+            {formatDate}
+            {groupTotalBytes}
+          />
+        {:else if mediaFilter === MediaType.Movie}
           <MovieCandidatesView
             rows={movieRows}
             {canBulkSelect}
@@ -1311,7 +1399,7 @@
             Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
               data.page * data.per_page,
               data.total,
-            )} of {data.total} candidates
+            )} of {data.total} results
           </p>
           <CompactPagination
             currentPage={data.page}

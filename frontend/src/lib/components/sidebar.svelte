@@ -2,6 +2,8 @@
   import { link, location } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
+  import SidebarNotices from "./sidebar-notices.svelte";
+  import SidebarCandidatesBadge from "./sidebar-candidates-badge.svelte";
   import logoImage from "$lib/assets/logo.png";
   import { VERSION } from "$lib/version";
   import House from "@lucide/svelte/icons/house";
@@ -95,7 +97,6 @@
   let menuOpen = $state(false);
   let hiddenPaths = $state<string[]>([]);
   let hydratedStorageKey = $state<string | null>(null);
-
   const SIDEBAR_HIDDEN_PATHS_KEY = "sidebar_hidden_paths";
   const lockedNavPaths = new Set(["/settings"]);
   const allNavPaths = new Set(navItems.map((item) => item.path));
@@ -272,7 +273,12 @@
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
                 >
                   <item.icon />
-                  <span class="font-medium">{item.label}</span>
+                  <span class="flex items-center gap-2 flex-1 min-w-0">
+                    <span class="font-medium">{item.label}</span>
+                    {#if item.path === "/candidates"}
+                      <SidebarCandidatesBadge />
+                    {/if}
+                  </span>
                 </a>
               </Tooltip.Trigger>
               <Tooltip.Content>
@@ -290,7 +296,12 @@
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
             >
               <item.icon />
-              <span class="font-medium">{item.label}</span>
+              <span class="flex items-center gap-2 flex-1 min-w-0">
+                <span class="font-medium">{item.label}</span>
+                {#if item.path === "/candidates"}
+                  <SidebarCandidatesBadge />
+                {/if}
+              </span>
             </a>
           {/if}
           <Tooltip.Content>
@@ -360,10 +371,15 @@
   </div>
 
   <!-- footer -->
-  <div class="flex p-3 border-t border-border space-3 gap-3 items-center">
-    <HardDrive class="text-muted-foreground" />
-    <div class="text-xs text-muted-foreground text-center">
+  <div
+    class="flex p-3 border-t border-border space-3 justify-between items-center"
+  >
+    <div
+      class="flex items-center gap-3 text-xs text-muted-foreground break-keep cursor-default"
+    >
+      <HardDrive class="text-muted-foreground" />
       Reclaimerr v{VERSION}
     </div>
+    <SidebarNotices />
   </div>
 </aside>
