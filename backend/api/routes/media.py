@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
 from backend.database.models import (
     DeleteRequest,
@@ -27,30 +28,37 @@ from backend.database.models import (
     ServiceMediaLibrary,
     User,
 )
-from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
+from backend.enums import (
+    CandidateFileOpOperation,
+    MediaType,
+    Permission,
+    ProtectionRequestStatus,
+    UserRole,
+)
+from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
+from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.media import (
     ArrRefResponse,
     CandidateDisplayGroup,
     CandidateEntry,
     CandidateLibraryRef,
+    CandidateOperationQueuedResponse,
     CandidatesPresenceResponse,
     DeleteCandidatesRequest,
-    DeleteCandidatesResponse,
     EpisodeWithStatus,
     MediaStatusInfo,
     MoveCandidatesRequest,
-    MoveCandidatesResponse,
     MovieVersionResponse,
     MovieWithStatus,
     PaginatedCandidatesResponse,
     PaginatedMediaResponse,
     PaginatedReclaimHistoryResponse,
+    ReclaimHistoryAttributes,
     ReclaimHistoryEntry,
     SeasonWithStatus,
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
-from backend.tasks.cleanup import delete_specific_candidates, move_specific_candidates
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -126,6 +134,147 @@ def _apply_candidate_filters(query, media_type: MediaType | None, search: str | 
         )
 
     return query
+
+
+def _title_with_year(title: str, year: int | None) -> str:
+    return f"{title} ({year})" if year is not None else title
+
+
+def _quality_suffix(
+    resolution: str | None,
+    hdr: bool | None,
+    dolby_vision: bool | None,
+) -> str:
+    parts: list[str] = []
+    if resolution:
+        parts.append(resolution)
+    if hdr:
+        parts.append("HDR")
+    if dolby_vision:
+        parts.append("DV")
+    return f" - {' '.join(parts)}" if parts else ""
+
+
+def _candidate_job_item_from_row(row) -> CandidateFileOpJobItem | None:
+    if row.media_type is MediaType.MOVIE:
+        if not row.movie_title:
+            return None
+        resolution = (
+            row.version_video_resolution if row.movie_version_id is not None else None
+        )
+        hdr = row.version_video_hdr if row.movie_version_id is not None else None
+        dolby_vision = (
+            row.version_video_dolby_vision if row.movie_version_id is not None else None
+        )
+        title = _title_with_year(row.movie_title, row.movie_year)
+        return CandidateFileOpJobItem(
+            candidate_id=row.candidate_id,
+            media_type=MediaType.MOVIE,
+            scope="version" if row.movie_version_id is not None else "movie",
+            title=row.movie_title,
+            year=row.movie_year,
+            tmdb_id=row.movie_tmdb_id,
+            resolution=resolution,
+            hdr=hdr,
+            dolby_vision=dolby_vision,
+            display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
+        )
+
+    if not row.series_title:
+        return None
+
+    title = _title_with_year(row.series_title, row.series_year)
+    resolution = guesstimate_resolution(
+        row.season_max_video_width,
+        row.season_max_video_height,
+        None,
+    )
+    hdr = row.season_has_hdr
+    dolby_vision = row.season_has_dolby_vision
+
+    if row.episode_id is not None and row.episode_number is not None:
+        episode_tag = (
+            f"S{int(row.season_number or 0):02d}E{int(row.episode_number):02d}"
+        )
+        if row.episode_name:
+            title = f"{title} - {episode_tag} - {row.episode_name}"
+        else:
+            title = f"{title} - {episode_tag}"
+        scope = "episode"
+    elif row.season_id is not None and row.season_number is not None:
+        title = f"{title} - Season {int(row.season_number)}"
+        scope = "season"
+    else:
+        scope = "series"
+        resolution = None
+        hdr = None
+        dolby_vision = None
+
+    return CandidateFileOpJobItem(
+        candidate_id=row.candidate_id,
+        media_type=MediaType.SERIES,
+        scope=scope,
+        title=row.series_title,
+        year=row.series_year,
+        tmdb_id=row.series_tmdb_id,
+        season_number=row.season_number,
+        episode_number=row.episode_number,
+        episode_name=row.episode_name,
+        resolution=resolution,
+        hdr=hdr,
+        dolby_vision=dolby_vision,
+        display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
+    )
+
+
+async def _get_candidate_job_labels(
+    db: AsyncSession,
+    candidate_ids: list[int],
+    *,
+    limit: int = 5,
+) -> tuple[list[str], list[CandidateFileOpJobItem], int]:
+    if not candidate_ids:
+        return [], [], 0
+
+    result = await db.execute(
+        select(
+            ReclaimCandidate.id.label("candidate_id"),
+            ReclaimCandidate.media_type.label("media_type"),
+            ReclaimCandidate.movie_version_id.label("movie_version_id"),
+            ReclaimCandidate.season_id.label("season_id"),
+            ReclaimCandidate.episode_id.label("episode_id"),
+            Movie.title.label("movie_title"),
+            Movie.year.label("movie_year"),
+            Movie.tmdb_id.label("movie_tmdb_id"),
+            MovieVersion.video_resolution.label("version_video_resolution"),
+            MovieVersion.video_hdr.label("version_video_hdr"),
+            MovieVersion.video_dolby_vision.label("version_video_dolby_vision"),
+            Series.title.label("series_title"),
+            Series.year.label("series_year"),
+            Series.tmdb_id.label("series_tmdb_id"),
+            Season.season_number.label("season_number"),
+            Season.has_hdr.label("season_has_hdr"),
+            Season.has_dolby_vision.label("season_has_dolby_vision"),
+            Season.max_video_width.label("season_max_video_width"),
+            Season.max_video_height.label("season_max_video_height"),
+            Episode.episode_number.label("episode_number"),
+            Episode.name.label("episode_name"),
+        )
+        .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+        .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
+        .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+        .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
+        .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
+        .where(ReclaimCandidate.id.in_(candidate_ids))
+    )
+    details = [
+        detail
+        for detail in (_candidate_job_item_from_row(row) for row in result.all())
+        if detail is not None
+    ]
+    preview_details = details[:limit]
+    labels = [detail.display_label for detail in preview_details]
+    return labels, details, len(details)
 
 
 async def _get_candidate_page_groups(
@@ -1390,7 +1539,7 @@ async def get_candidates_presence(
     )
 
 
-@router.post("/candidates/delete", response_model=DeleteCandidatesResponse)
+@router.post("/candidates/delete", response_model=CandidateOperationQueuedResponse)
 async def delete_candidates(
     request: DeleteCandidatesRequest,
     user: Annotated[User, Depends(get_current_user)],
@@ -1410,15 +1559,32 @@ async def delete_candidates(
         )
 
     if not request.candidate_ids:
-        return DeleteCandidatesResponse(deleted=0, failed=0)
+        return CandidateOperationQueuedResponse(
+            job_id=None,
+            status="noop",
+            message="No candidates selected",
+        )
 
-    deleted, failed = await delete_specific_candidates(
-        request.candidate_ids, approved_by=user.username
+    item_labels, item_details, item_label_total = await _get_candidate_job_labels(
+        _db, request.candidate_ids
     )
-    return DeleteCandidatesResponse(deleted=deleted, failed=failed)
+    job = await queue_candidate_file_op_job(
+        operation=CandidateFileOpOperation.DELETE,
+        candidate_ids=request.candidate_ids,
+        requested_by_user_id=user.id,
+        requested_by_username=user.username,
+        item_labels=item_labels,
+        item_label_total=item_label_total,
+        item_details=item_details,
+    )
+    return CandidateOperationQueuedResponse(
+        job_id=job.id,
+        status="queued",
+        message="Candidate delete queued",
+    )
 
 
-@router.post("/candidates/move", response_model=MoveCandidatesResponse)
+@router.post("/candidates/move", response_model=CandidateOperationQueuedResponse)
 async def move_candidates(
     request: MoveCandidatesRequest,
     user: Annotated[User, Depends(get_current_user)],
@@ -1437,7 +1603,11 @@ async def move_candidates(
         )
 
     if not request.candidate_ids:
-        return MoveCandidatesResponse(moved=0, failed=0)
+        return CandidateOperationQueuedResponse(
+            job_id=None,
+            status="noop",
+            message="No candidates selected",
+        )
 
     episode_scope_result = await db.execute(
         select(ReclaimCandidate.id).where(
@@ -1452,10 +1622,23 @@ async def move_candidates(
             detail="Episode candidates cannot be moved yet",
         )
 
-    moved, failed = await move_specific_candidates(
-        request.candidate_ids, approved_by=user.username
+    item_labels, item_details, item_label_total = await _get_candidate_job_labels(
+        db, request.candidate_ids
     )
-    return MoveCandidatesResponse(moved=moved, failed=failed)
+    job = await queue_candidate_file_op_job(
+        operation=CandidateFileOpOperation.MOVE,
+        candidate_ids=request.candidate_ids,
+        requested_by_user_id=user.id,
+        requested_by_username=user.username,
+        item_labels=item_labels,
+        item_label_total=item_label_total,
+        item_details=item_details,
+    )
+    return CandidateOperationQueuedResponse(
+        job_id=job.id,
+        status="queued",
+        message="Candidate move queued",
+    )
 
 
 @router.get("/reclaim-history", response_model=PaginatedReclaimHistoryResponse)
@@ -1498,6 +1681,9 @@ async def get_reclaim_history(
             tmdb_id=row.tmdb_id,
             name=row.name,
             size=row.size,
+            attributes=ReclaimHistoryAttributes.model_validate(row.attributes)
+            if row.attributes is not None
+            else None,
             action=row.action or "deleted",
             destination_path=row.destination_path,
             created_at=to_utc_isoformat(row.created_at) or "",

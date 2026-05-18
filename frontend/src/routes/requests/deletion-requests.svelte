@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { get_api, post_api, delete_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import Spinner from "$lib/components/ui/spinner.svelte";
@@ -53,6 +53,7 @@
   let cancelTarget = $state<DeleteRequest | null>(null);
   let cancelDialogOpen = $state(false);
   let cancelSubmitting = $state(false);
+  let queuedExecutionRefreshInterval: number | null = null;
 
   const filteredRequests = $derived.by(() => {
     const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -83,8 +84,10 @@
     filteredRequests.find((r) => r.id === selectedRequestId) ?? null,
   );
 
-  const loadRequests = async () => {
-    loading = true;
+  const loadRequests = async (showSpinner = true) => {
+    if (showSpinner) {
+      loading = true;
+    }
     error = null;
     try {
       requests = canManageRequests
@@ -93,9 +96,20 @@
     } catch (e: any) {
       error = e.message ?? "Failed to load delete requests.";
     } finally {
-      loading = false;
+      if (showSpinner) {
+        loading = false;
+      }
     }
   };
+
+  const hasQueuedExecution = $derived(
+    requests.some(
+      (request) =>
+        request.status === ProtectionRequestStatus.Approved &&
+        request.executed_at == null &&
+        request.execution_error == null,
+    ),
+  );
 
   $effect(() => {
     if (filteredRequests.length === 0) {
@@ -158,7 +172,7 @@
       await post_api(`/api/delete-requests/${approveTarget.id}/approve`, {
         admin_notes: approveNotes.trim() || null,
       });
-      toast.success("Delete request approved.");
+      toast.success("Delete request approved and queued.");
       approveDialogOpen = false;
       await loadRequests();
     } catch (e: any) {
@@ -202,6 +216,36 @@
 
   onMount(() => {
     loadRequests();
+  });
+
+  $effect(() => {
+    if (!hasQueuedExecution) {
+      if (queuedExecutionRefreshInterval) {
+        clearInterval(queuedExecutionRefreshInterval);
+        queuedExecutionRefreshInterval = null;
+      }
+      return;
+    }
+
+    if (queuedExecutionRefreshInterval) {
+      clearInterval(queuedExecutionRefreshInterval);
+    }
+    queuedExecutionRefreshInterval = window.setInterval(() => {
+      void loadRequests(false);
+    }, 10000);
+
+    return () => {
+      if (queuedExecutionRefreshInterval) {
+        clearInterval(queuedExecutionRefreshInterval);
+        queuedExecutionRefreshInterval = null;
+      }
+    };
+  });
+
+  onDestroy(() => {
+    if (queuedExecutionRefreshInterval) {
+      clearInterval(queuedExecutionRefreshInterval);
+    }
   });
 </script>
 
@@ -387,6 +431,20 @@
                   {selectedRequest.reason || "No reason provided"}
                 </p>
               </div>
+
+              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error}
+                <div>
+                  <p class="mb-2 text-sm font-medium text-amber-500">
+                    Execution Status
+                  </p>
+                  <p
+                    class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200"
+                  >
+                    This request has been approved and queued for background
+                    execution.
+                  </p>
+                </div>
+              {/if}
 
               {#if selectedRequest.admin_notes}
                 <div>

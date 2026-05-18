@@ -6,7 +6,6 @@
   import MediaServers from "$lib/components/settings/media-servers.svelte";
   import Notifications from "$lib/components/settings/notifications.svelte";
   import Tasks from "$lib/components/settings/tasks/tasks.svelte";
-  import BackgroundJobs from "$lib/components/settings/tasks/background-jobs.svelte";
   import Account from "$lib/components/settings/account.svelte";
   import Users from "$lib/components/settings/users.svelte";
   import About from "$lib/components/settings/about.svelte";
@@ -23,7 +22,6 @@
   import Wrench from "@lucide/svelte/icons/wrench";
   import Bell from "@lucide/svelte/icons/bell";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
-  import Boxes from "@lucide/svelte/icons/boxes";
   import Server from "@lucide/svelte/icons/server";
   import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
   import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
@@ -145,12 +143,6 @@
           icon: CalendarClock,
           adminOnly: true,
         },
-        {
-          id: SettingsTab.BackgroundJobs,
-          label: "Background Jobs",
-          icon: Boxes,
-          adminOnly: true,
-        },
         { id: SettingsTab.Notifications, label: "Notifications", icon: Bell },
         { id: SettingsTab.Account, label: "Account", icon: UserCog },
         {
@@ -208,7 +200,6 @@
     [SettingsTab.Plex]: "idle",
     [SettingsTab.General]: "idle",
     [SettingsTab.Tasks]: "idle",
-    [SettingsTab.BackgroundJobs]: "idle",
     [SettingsTab.Notifications]: "idle",
     [SettingsTab.Account]: "idle",
     [SettingsTab.Rules]: "idle",
@@ -844,10 +835,6 @@
             <!-- tasks -->
           {:else if activeTab === SettingsTab.Tasks}
             <Tasks svgIcon={getTabIcon(activeTab)} />
-
-            <!-- background jobs -->
-          {:else if activeTab === SettingsTab.BackgroundJobs}
-            <BackgroundJobs svgIcon={getTabIcon(activeTab)} />
 
             <!-- notifications -->
           {:else if activeTab === SettingsTab.Notifications}

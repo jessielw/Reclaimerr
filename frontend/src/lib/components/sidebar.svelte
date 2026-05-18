@@ -17,6 +17,7 @@
   import Shield from "@lucide/svelte/icons/shield";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import Filter from "@lucide/svelte/icons/filter";
+  import History from "@lucide/svelte/icons/history";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Check from "@lucide/svelte/icons/check";
@@ -24,14 +25,24 @@
   import * as Avatar from "$lib/components/ui/avatar/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
+  import { Permission } from "$lib/types/shared";
   import { createFilterState } from "$lib/utils/pagination";
 
   // optional callback to close sidebar on mobile after navigation
   let { onNavigate = () => {} }: { onNavigate?: () => void } = $props();
 
+  type NavItem = {
+    path: string;
+    label: string;
+    icon: any;
+    adminOnly: boolean;
+    tooltip: string | null;
+    requiredPermission?: Permission;
+  };
+
   // nav items: path = route path, label = display text, icon = icon component
   // adminOnly = whether to show item only for admin users
-  const navItems = [
+  const navItems: NavItem[] = [
     {
       path: "/",
       label: "Dashboard",
@@ -75,6 +86,13 @@
       adminOnly: false,
       tooltip:
         "Review media that are candidates for deletion based on your retention settings",
+    },
+    {
+      path: "/history",
+      label: "History",
+      icon: History,
+      adminOnly: false,
+      tooltip: "Browse reclaim activity and recent file history",
     },
     {
       path: "/rules",
@@ -132,6 +150,15 @@
   };
 
   const isShown = (path: string): boolean => !hiddenPaths.includes(path);
+
+  const canAccessNavItem = (item: NavItem): boolean => {
+    if (item.adminOnly && $auth.user?.role !== "admin") return false;
+    if (!item.requiredPermission) return true;
+    return (
+      $auth.user?.role === "admin" ||
+      ($auth.user?.permissions ?? []).includes(item.requiredPermission)
+    );
+  };
 
   const toggleNavVisibility = (path: string) => {
     if (lockedNavPaths.has(path)) return;
@@ -215,7 +242,7 @@
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="start" class="w-52">
         {#each customizableNavItems as item}
-          {#if !item.adminOnly || $auth.user?.role === "admin"}
+          {#if canAccessNavItem(item)}
             <DropdownMenu.Item
               class="cursor-pointer data-highlighted:text-primary"
               onSelect={(event) => {
@@ -257,7 +284,7 @@
 
     <!-- navigation items -->
     {#each visibleNavItems as item}
-      {#if !item.adminOnly || $auth.user?.role === "admin"}
+      {#if canAccessNavItem(item)}
         <Tooltip.Root>
           <!-- we'll only add a trigger if tooltip exists -->
           {#if item.tooltip}

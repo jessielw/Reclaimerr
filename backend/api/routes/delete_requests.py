@@ -23,18 +23,20 @@ from backend.database.models import (
     User,
 )
 from backend.enums import (
+    CandidateFileOpOperation,
     MediaType,
     NotificationType,
     Permission,
     ProtectionRequestStatus,
 )
+from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
+from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.requests import (
     CreateDeleteRequest,
     DeleteRequestResponse,
     ReviewDeleteRequest,
 )
 from backend.services.notifications import notify_all_users, notify_user
-from backend.tasks.cleanup import delete_specific_candidates
 
 router = APIRouter(prefix="/api", tags=["delete-requests"])
 
@@ -179,6 +181,180 @@ async def _lookup_episode_fields(
     if row is None:
         return None, None
     return row.episode_number, row.name
+
+
+def _quality_suffix(
+    resolution: str | None,
+    hdr: bool | None,
+    dolby_vision: bool | None,
+) -> str:
+    parts: list[str] = []
+    if resolution:
+        parts.append(resolution)
+    if hdr:
+        parts.append("HDR")
+    if dolby_vision:
+        parts.append("DV")
+    return f" - {' '.join(parts)}" if parts else ""
+
+
+async def _build_delete_request_job_item(
+    db: AsyncSession,
+    request: DeleteRequest,
+    *,
+    media_title: str,
+    media_year: int | None,
+    media_tmdb_id: int | None,
+    candidate_id: int,
+) -> CandidateFileOpJobItem:
+    """Build a CandidateFileOpJobItem for a delete request, looking up any additional
+    metadata needed for the job item."""
+    titled_media = (
+        f"{media_title} ({media_year})" if media_year is not None else media_title
+    )
+
+    if request.media_type is MediaType.MOVIE:
+        if request.movie_version_id is None:
+            return CandidateFileOpJobItem(
+                candidate_id=candidate_id,
+                media_type=MediaType.MOVIE,
+                scope="movie",
+                title=media_title,
+                year=media_year,
+                tmdb_id=media_tmdb_id,
+                display_label=titled_media,
+            )
+
+        version_result = await db.execute(
+            select(
+                MovieVersion.video_resolution,
+                MovieVersion.video_hdr,
+                MovieVersion.video_dolby_vision,
+            ).where(MovieVersion.id == request.movie_version_id)
+        )
+        version_row = version_result.one_or_none()
+        resolution = version_row.video_resolution if version_row else None
+        hdr = version_row.video_hdr if version_row else None
+        dolby_vision = version_row.video_dolby_vision if version_row else None
+        return CandidateFileOpJobItem(
+            candidate_id=candidate_id,
+            media_type=MediaType.MOVIE,
+            scope="version",
+            title=media_title,
+            year=media_year,
+            tmdb_id=media_tmdb_id,
+            resolution=resolution,
+            hdr=hdr,
+            dolby_vision=dolby_vision,
+            display_label=f"{titled_media}{_quality_suffix(resolution, hdr, dolby_vision)}",
+        )
+
+    if request.episode_id is not None or request.episode_number_snapshot is not None:
+        season_number = await _lookup_season_number(
+            db,
+            request.season_id,
+            season_number_snapshot=request.season_number_snapshot,
+        )
+        episode_number, episode_name = await _lookup_episode_fields(
+            db,
+            request.episode_id,
+            episode_number_snapshot=request.episode_number_snapshot,
+            episode_name_snapshot=request.episode_name_snapshot,
+        )
+        season_result = await db.execute(
+            select(
+                Season.max_video_width,
+                Season.max_video_height,
+                Season.has_hdr,
+                Season.has_dolby_vision,
+            ).where(Season.id == request.season_id)
+        )
+        season_row = season_result.one_or_none()
+        resolution = (
+            guesstimate_resolution(
+                season_row.max_video_width,
+                season_row.max_video_height,
+                None,
+            )
+            if season_row
+            else None
+        )
+        hdr = season_row.has_hdr if season_row else None
+        dolby_vision = season_row.has_dolby_vision if season_row else None
+        episode_tag = f"S{int(season_number or 0):02d}E{int(episode_number or 0):02d}"
+        title = f"{titled_media} - {episode_tag}"
+        if episode_name:
+            title = f"{title} - {episode_name}"
+        return CandidateFileOpJobItem(
+            candidate_id=candidate_id,
+            media_type=MediaType.SERIES,
+            scope="episode",
+            title=media_title,
+            year=media_year,
+            tmdb_id=media_tmdb_id,
+            season_number=season_number,
+            episode_number=episode_number,
+            episode_name=episode_name,
+            resolution=resolution,
+            hdr=hdr,
+            dolby_vision=dolby_vision,
+            display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
+        )
+
+    if request.season_id is not None or request.season_number_snapshot is not None:
+        season_number = await _lookup_season_number(
+            db,
+            request.season_id,
+            season_number_snapshot=request.season_number_snapshot,
+        )
+        season_result = await db.execute(
+            select(
+                Season.max_video_width,
+                Season.max_video_height,
+                Season.has_hdr,
+                Season.has_dolby_vision,
+            ).where(Season.id == request.season_id)
+        )
+        season_row = season_result.one_or_none()
+        resolution = (
+            guesstimate_resolution(
+                season_row.max_video_width,
+                season_row.max_video_height,
+                None,
+            )
+            if season_row
+            else None
+        )
+        hdr = season_row.has_hdr if season_row else None
+        dolby_vision = season_row.has_dolby_vision if season_row else None
+        title = (
+            f"{titled_media} - Season {int(season_number)}"
+            if season_number is not None
+            else titled_media
+        )
+        return CandidateFileOpJobItem(
+            candidate_id=candidate_id,
+            media_type=MediaType.SERIES,
+            scope="season",
+            title=media_title,
+            year=media_year,
+            tmdb_id=media_tmdb_id,
+            season_number=season_number,
+            resolution=resolution,
+            hdr=hdr,
+            dolby_vision=dolby_vision,
+            display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
+        )
+
+    return CandidateFileOpJobItem(
+        candidate_id=candidate_id,
+        media_type=MediaType.SERIES,
+        scope="series",
+        title=media_title,
+        year=media_year,
+        tmdb_id=media_tmdb_id,
+        display_label=titled_media,
+    )
 
 
 def _request_target_scope(
@@ -642,9 +818,7 @@ async def approve_delete_request(
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ):
-    """Approve a delete request. This will attempt to execute the deletion immediately, and update
-    the request status accordingly. Manager permission required.
-    """
+    """Approve a delete request and queue it for background execution."""
     result = await db.execute(
         select(DeleteRequest).where(DeleteRequest.id == request_id)
     )
@@ -660,6 +834,8 @@ async def approve_delete_request(
         )
 
     media, _ = await _get_delete_request_media(db, request)
+    media_year = getattr(media, "year", None)
+    media_tmdb_id = getattr(media, "tmdb_id", None)
 
     request.status = ProtectionRequestStatus.APPROVED
     request.reviewed_by_user_id = manager.id
@@ -687,8 +863,25 @@ async def approve_delete_request(
     await db.commit()
     await db.refresh(candidate)
 
-    deleted, failed = await delete_specific_candidates(
-        [candidate.id], approved_by=manager.username
+    item_detail = await _build_delete_request_job_item(
+        db,
+        request,
+        media_title=media.title,
+        media_year=media_year,
+        media_tmdb_id=media_tmdb_id,
+        candidate_id=candidate.id,
+    )
+    item_label = item_detail.display_label
+
+    await queue_candidate_file_op_job(
+        operation=CandidateFileOpOperation.DELETE,
+        candidate_ids=[candidate.id],
+        requested_by_user_id=manager.id,
+        requested_by_username=manager.username,
+        delete_request_id=request.id,
+        item_labels=[item_label],
+        item_label_total=1,
+        item_details=[item_detail],
     )
 
     tracked_request = await db.get(DeleteRequest, request_id)
@@ -696,23 +889,6 @@ async def approve_delete_request(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
         )
-
-    candidate_result = await db.execute(
-        select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
-    )
-    candidate_after = candidate_result.scalar_one_or_none()
-
-    if deleted > 0 and failed == 0:
-        tracked_request.executed_at = datetime.now(UTC)
-        tracked_request.execution_error = None
-    else:
-        tracked_request.execution_error = (
-            candidate_after.last_delete_error if candidate_after else None
-        ) or "Deletion failed"
-        if candidate_after is not None:
-            await db.delete(candidate_after)
-
-    await db.commit()
     await db.refresh(tracked_request)
 
     LOG.info(
@@ -725,11 +901,7 @@ async def approve_delete_request(
             user_id=tracked_request.requested_by_user_id,
             notification_type=NotificationType.REQUEST_APPROVED,
             title="Delete Request Approved",
-            message=(
-                f"Your delete request for {media.title} was approved"
-                if tracked_request.execution_error is None
-                else f"Your delete request for {media.title} was approved but failed to execute"
-            ),
+            message=f"Your delete request for {media.title} was approved and queued for execution",
             context={
                 "media_title": media.title,
                 "media_type": tracked_request.media_type.value,
