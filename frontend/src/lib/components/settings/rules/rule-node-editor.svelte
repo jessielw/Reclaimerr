@@ -35,6 +35,12 @@
     defaultOperator: RuleConditionOperator;
   }
 
+  interface FieldGroup {
+    key: string;
+    label: string;
+    items: FieldConfig[];
+  }
+
   let {
     node,
     rootNode = node,
@@ -482,6 +488,89 @@
     },
   ];
 
+  // organize fields into common and categorized groups for the UI
+  const COMMON_FIELD_VALUES = new Set<string>([
+    "library.id",
+    "media.path",
+    "media.size",
+    "watch.never_watched",
+    "watch.view_count",
+    "watch.days_since_last_watched",
+    "watch.last_viewed_at",
+    "series.status",
+    "tmdb.vote_average",
+    "disk.free_percent",
+  ]);
+
+  const fieldLabelComparator = (a: FieldConfig, b: FieldConfig) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+
+  const categoryLabel = (fieldValue: string): string => {
+    const [prefix] = fieldValue.split(".");
+    switch (prefix) {
+      case "library":
+        return "Library";
+      case "media":
+        return "Media";
+      case "watch":
+        return "Watch";
+      case "tmdb":
+        return "TMDB";
+      case "season":
+        return "Season";
+      case "episode":
+        return "Episode";
+      case "series":
+        return "Series";
+      case "video":
+        return "Video";
+      case "audio":
+        return "Audio";
+      case "subtitle":
+        return "Subtitle";
+      case "arr":
+        return "Arr";
+      case "seerr":
+        return "Seerr";
+      case "disk":
+        return "Disk";
+      default:
+        return "Other";
+    }
+  };
+
+  const groupedFields: FieldGroup[] = (() => {
+    const groups: FieldGroup[] = [];
+
+    const commonItems = fields
+      .filter((field) => COMMON_FIELD_VALUES.has(field.value))
+      .sort(fieldLabelComparator);
+    if (commonItems.length > 0) {
+      groups.push({ key: "common", label: "Common", items: commonItems });
+    }
+
+    const byCategory = new Map<string, FieldConfig[]>();
+    for (const field of fields) {
+      if (COMMON_FIELD_VALUES.has(field.value)) continue;
+      const label = categoryLabel(field.value);
+      const current = byCategory.get(label) ?? [];
+      current.push(field);
+      byCategory.set(label, current);
+    }
+
+    for (const [label, items] of [...byCategory.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0], undefined, { sensitivity: "base" }),
+    )) {
+      groups.push({
+        key: label.toLowerCase(),
+        label,
+        items: items.sort(fieldLabelComparator),
+      });
+    }
+
+    return groups;
+  })();
+
   const MAX_TOTAL_GROUPS = 5;
 
   const TMDB_SERIES_STATUSES = [
@@ -789,11 +878,20 @@
         >
           {fieldLabel(node.field)}
         </Select.Trigger>
+        <!-- organize fields into common and categorized groups for the UI -->
         <Select.Content>
-          {#each fields as field}
-            <Select.Item value={field.value} label={field.label}
-              >{field.label}</Select.Item
-            >
+          {#each groupedFields as group, index (group.key)}
+            <Select.Group>
+              <Select.GroupHeading>{group.label}</Select.GroupHeading>
+              {#each group.items as field (field.value)}
+                <Select.Item value={field.value} label={field.label}
+                  >{field.label}</Select.Item
+                >
+              {/each}
+            </Select.Group>
+            {#if index < groupedFields.length - 1}
+              <Select.Separator />
+            {/if}
           {/each}
         </Select.Content>
       </Select.Root>

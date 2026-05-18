@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improve deletion request handling
 - Enhance user feedback for approved deletion requests
 - Improved access control on navbar
+- Rule editor keys are now grouped and organized in ABC order where needed for easier navigation
 
 ### Fixed
 
