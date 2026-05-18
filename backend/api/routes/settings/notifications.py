@@ -60,9 +60,9 @@ async def test_notification(
     if not data.url:
         raise HTTPException(status_code=400, detail="Apprise URL is required to test")
 
-    success = await test_notification_url(data.url)
+    success, error_message = await test_notification_url(data.url)
     if not success:
-        raise HTTPException(status_code=400, detail="Failed to send test notification")
+        raise HTTPException(status_code=400, detail=error_message)
 
     return {"message": "Test notification sent successfully"}
 

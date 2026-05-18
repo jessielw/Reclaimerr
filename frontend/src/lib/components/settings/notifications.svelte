@@ -316,7 +316,7 @@
       });
       toast.success("Test notification sent successfully!");
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message, { duration: 15000 });
     } finally {
       testingIndex = null;
     }

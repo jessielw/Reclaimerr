@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Improve handling of jellyfin/emby playback reporting plugin data retrieval
 - Improve grabbing episode data from all users on Emby/Jellyfin
+- Improved error handling for testing notifications
 
 ## [0.1.0-beta.21] - 2026-05-17
 
