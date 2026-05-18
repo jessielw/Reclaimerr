@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhance user feedback for approved deletion requests
 - Improved access control on navbar
 
+### Fixed
+
+- Candidates overflowing on mobile with long rule names
+
 ### Removed
 
 - Removed history from Settings
