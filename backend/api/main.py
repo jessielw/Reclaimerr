@@ -38,6 +38,7 @@ from backend.core.service_manager import service_manager
 from backend.core.settings import settings
 from backend.core.worker import worker_loop
 from backend.database import close_db, init_db
+from backend.enums import BackgroundJobType
 from backend.jobs import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
@@ -48,7 +49,7 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize client manager on startup."""
-    worker_task: asyncio.Task | None = None
+    worker_tasks: list[asyncio.Task] = []
     scheduler_started = False
 
     try:
@@ -77,11 +78,27 @@ async def lifespan(app: FastAPI):
         # reset any jobs left in RUNNING state from a previous process
         await reset_stale_jobs()
 
-        # start in-process background worker
-        _worker_id = f"{socket.gethostname()}:{os.getpid()}"
-        worker_task = asyncio.create_task(
-            worker_loop(_worker_id), name="background-worker"
-        )
+        # background workers (in process)
+        host_pid = f"{socket.gethostname()}:{os.getpid()}"
+        worker_tasks = [
+            asyncio.create_task(
+                worker_loop(
+                    f"{host_pid}:default",
+                    allowed_job_types={
+                        BackgroundJobType.SERVICE_TOGGLE,
+                        BackgroundJobType.TASK_RUN,
+                    },
+                ),
+                name="background-worker-default",
+            ),
+            asyncio.create_task(
+                worker_loop(
+                    f"{host_pid}:file-ops",
+                    allowed_job_types={BackgroundJobType.CANDIDATE_FILE_OP},
+                ),
+                name="background-worker-file-ops",
+            ),
+        ]
 
         LOG.info("reclaimerr API ready")
 
@@ -93,8 +110,9 @@ async def lifespan(app: FastAPI):
     finally:
         LOG.info("Shutting down reclaimerr API")
 
-        if worker_task is not None:
+        for worker_task in worker_tasks:
             worker_task.cancel()
+        for worker_task in worker_tasks:
             try:
                 await worker_task
             except asyncio.CancelledError:

@@ -543,6 +543,12 @@ class DeleteCandidatesResponse(BaseModel):
     failed: int
 
 
+class CandidateOperationQueuedResponse(BaseModel):
+    job_id: int | None = None
+    status: str
+    message: str
+
+
 class MoveCandidatesRequest(BaseModel):
     candidate_ids: list[int]
 
@@ -560,6 +566,12 @@ class PaginatedRulePreviewResponse(BaseModel):
     total_pages: int
 
 
+class ReclaimHistoryAttributes(BaseModel):
+    resolution: str | None = None
+    hdr: bool | None = None
+    dolby_vision: bool | None = None
+
+
 class ReclaimHistoryEntry(BaseModel):
     id: int
     approved_by: str
@@ -567,6 +579,7 @@ class ReclaimHistoryEntry(BaseModel):
     tmdb_id: int | None
     name: str | None
     size: int | None
+    attributes: ReclaimHistoryAttributes | None = None
     action: str = "deleted"
     destination_path: str | None = None
     created_at: str

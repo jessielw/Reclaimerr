@@ -11,6 +11,7 @@
   import Series from "./routes/series.svelte";
   import Protected from "./routes/protected.svelte";
   import Candidates from "./routes/candidates.svelte";
+  import History from "./routes/history.svelte";
   import Rules from "./routes/rules.svelte";
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
@@ -28,6 +29,7 @@
     "/protected": Protected,
     "/requests": Requests,
     "/candidates": Candidates,
+    "/history": History,
     "/rules": Rules,
     "/settings": Settings,
     "/setup": Setup,
@@ -148,4 +150,4 @@
 
 <ModeWatcher defaultMode="dark" />
 
-<Toaster richColors />
+<Toaster richColors closeButton />

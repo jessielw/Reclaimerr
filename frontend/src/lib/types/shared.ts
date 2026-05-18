@@ -48,7 +48,6 @@ export enum SettingsTab {
   Tautulli = "tautulli",
   General = "general",
   Tasks = "tasks",
-  BackgroundJobs = "background_jobs",
   Notifications = "notifications",
   Account = "account",
   Rules = "rules",
@@ -230,6 +229,58 @@ export enum BackgroundJobStatus {
 export enum BackgroundJobType {
   ServiceToggle = "service_toggle",
   TaskRun = "task_run",
+  CandidateFileOp = "candidate_file_op",
+}
+
+export type CandidateFileOpScope =
+  | "movie"
+  | "version"
+  | "series"
+  | "season"
+  | "episode";
+
+export interface CandidateFileOpJobItem {
+  candidate_id: number;
+  media_type: MediaType;
+  scope: CandidateFileOpScope;
+  title: string;
+  year: number | null;
+  tmdb_id: number | null;
+  season_number: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
+  resolution: string | null;
+  hdr: boolean | null;
+  dolby_vision: boolean | null;
+  display_label: string;
+}
+
+export interface CandidateFileOpJobProgress {
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  current_item_label: string | null;
+  percent: number;
+}
+
+export interface CandidateFileOpJobResult {
+  operation: "delete" | "move";
+  processed: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface CandidateFileOpJobPayload {
+  operation: "delete" | "move";
+  candidate_ids: number[];
+  requested_by_user_id: number;
+  requested_by_username: string;
+  delete_request_id?: number | null;
+  item_labels: string[];
+  item_label_total?: number | null;
+  item_details?: CandidateFileOpJobItem[];
+  progress?: CandidateFileOpJobProgress | null;
+  result?: CandidateFileOpJobResult | null;
 }
 
 export interface BackgroundJobRecord {
@@ -248,7 +299,7 @@ export interface BackgroundJobRecord {
   error_message: string | null;
   created_at: string;
   updated_at: string;
-  payload: Record<string, unknown>;
+  payload: Record<string, unknown> | CandidateFileOpJobPayload;
 }
 
 // media browsing types
@@ -620,6 +671,11 @@ export interface ReclaimHistoryEntry {
   tmdb_id: number | null;
   name: string | null;
   size: number | null;
+  attributes: {
+    resolution: string | null;
+    hdr: boolean | null;
+    dolby_vision: boolean | null;
+  } | null;
   action: string;
   destination_path: string | null;
   created_at: string;

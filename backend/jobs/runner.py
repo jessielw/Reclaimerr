@@ -6,7 +6,12 @@ from backend.core.service_runtime import handle_service_toggle
 from backend.core.task_runtime import execute_task
 from backend.database.models import BackgroundJob
 from backend.enums import BackgroundJobType
-from backend.models.jobs import ServiceToggleJobPayload, TaskRunJobPayload
+from backend.jobs.candidate_file_ops import run_candidate_file_op_job
+from backend.models.jobs import (
+    CandidateFileOpJobPayload,
+    ServiceToggleJobPayload,
+    TaskRunJobPayload,
+)
 from backend.models.settings import ServiceConfigUpdate
 
 
@@ -31,5 +36,9 @@ async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
     if job.job_type is BackgroundJobType.TASK_RUN:
         payload = TaskRunJobPayload.model_validate(job.payload)
         return await execute_task(payload.task)
+
+    if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
+        payload = CandidateFileOpJobPayload.model_validate(job.payload)
+        return await run_candidate_file_op_job(job.id, payload)
 
     raise ValueError(f"Unsupported background job type: {job.job_type}")
