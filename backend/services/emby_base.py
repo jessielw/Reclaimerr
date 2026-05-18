@@ -1066,9 +1066,23 @@ class EmbyServiceBase:
             return {}
 
         # "colums" is an intentional typo in the plugin source
-        columns: list[str] = data.get("colums", [])
+        raw_columns = data.get("colums")
+        # in case some plugin builds use the correctly spelled key, we handle that too
+        if raw_columns is None:
+            raw_columns = data.get("columns")
+        columns: list[str] = raw_columns if isinstance(raw_columns, list) else []
         # cSpell: enable
-        results: list[list] = data.get("results", [])
+        raw_results = data.get("results", [])
+        results: list[list] = raw_results if isinstance(raw_results, list) else []
+
+        # no row queries can legitimately return empty columns and results
+        if not columns and not results:
+            message = data.get("message")
+            if message:
+                LOG.debug(
+                    f"Playback Reporting plugin query returned no rows: {message}"
+                )
+            return {}
 
         try:
             item_id_idx = columns.index("ItemId")
@@ -1079,11 +1093,17 @@ class EmbyServiceBase:
             )
             return {}
 
-        return {
-            row[item_id_idx]: int(row[play_count_idx])
-            for row in results
-            if row[item_id_idx]
-        }
+        parsed: dict[str, int] = {}
+        for row in results:
+            if not isinstance(row, (list, tuple)):
+                continue
+            if len(row) <= max(item_id_idx, play_count_idx):
+                continue
+            item_id = row[item_id_idx]
+            if not item_id:
+                continue
+            parsed[str(item_id)] = int(row[play_count_idx])
+        return parsed
 
     async def get_series_ids_for_episode_ids(
         self, episode_item_ids: list[str]
@@ -1114,34 +1134,78 @@ class EmbyServiceBase:
             users = await self.get_users()
             if not users:
                 return {}
-            user_id = users[0].id
         except Exception as e:
             LOG.error(f"Failed to fetch users for episode→series mapping: {e}")
             return {}
 
         _CHUNK = 200
+        unresolved_ids: set[str] = set(episode_item_ids)
         mapping: dict[str, tuple[str | None, str | None]] = {}
-        for i in range(0, len(episode_item_ids), _CHUNK):
-            chunk = episode_item_ids[i : i + _CHUNK]
-            try:
-                data = await self._make_request(
-                    f"Users/{user_id}/Items",
-                    params={
-                        "Ids": ",".join(chunk),
-                        "Fields": "SeriesId,SeasonId",
-                        "EnableUserData": "false",
-                        "Recursive": "true",
-                    },
-                )
-                items = data.get("Items", []) if isinstance(data, dict) else []
-                for item in items:
-                    item_id = item.get("Id")
-                    series_id = item.get("SeriesId")
-                    season_id = item.get("SeasonId")
-                    if item_id and (series_id or season_id):
-                        mapping[item_id] = (series_id, season_id)
-            except Exception as e:
-                LOG.warning(f"Failed to resolve episode IDs chunk to series IDs: {e}")
+        for user in users:
+            if not unresolved_ids:
+                break
+
+            candidate_ids = list(unresolved_ids)
+            for i in range(0, len(candidate_ids), _CHUNK):
+                chunk = candidate_ids[i : i + _CHUNK]
+                try:
+                    data = await self._make_request(
+                        f"Users/{user.id}/Items",
+                        params={
+                            "Ids": ",".join(chunk),
+                            "Fields": "SeriesId,SeasonId",
+                            "EnableUserData": "false",
+                            "Recursive": "true",
+                        },
+                    )
+                    items = data.get("Items", []) if isinstance(data, dict) else []
+                    for item in items:
+                        item_id = item.get("Id")
+                        series_id = item.get("SeriesId")
+                        season_id = item.get("SeasonId")
+                        if item_id and (series_id or season_id):
+                            mapping[item_id] = (series_id, season_id)
+                            unresolved_ids.discard(item_id)
+                except Exception as e:
+                    LOG.warning(
+                        "Failed to resolve episode IDs chunk to series IDs "
+                        f"for user {user.id}: {e}"
+                    )
+
+        # fallback to non user scoped lookup for servers where user visibility
+        # prevents `Users/{id}/Items` from returning complete parent metadata.
+        if unresolved_ids:
+            candidate_ids = list(unresolved_ids)
+            for i in range(0, len(candidate_ids), _CHUNK):
+                chunk = candidate_ids[i : i + _CHUNK]
+                try:
+                    data = await self._make_request(
+                        "Items",
+                        params={
+                            "Ids": ",".join(chunk),
+                            "Fields": "SeriesId,SeasonId",
+                            "Recursive": "true",
+                        },
+                    )
+                    items = data.get("Items", []) if isinstance(data, dict) else []
+                    for item in items:
+                        item_id = item.get("Id")
+                        series_id = item.get("SeriesId")
+                        season_id = item.get("SeasonId")
+                        if item_id and (series_id or season_id):
+                            mapping[item_id] = (series_id, season_id)
+                            unresolved_ids.discard(item_id)
+                except Exception as e:
+                    LOG.warning(
+                        "Failed non user fallback episode parent lookup "
+                        f"in {self.service_type}: {e}"
+                    )
+
+        if unresolved_ids:
+            LOG.debug(
+                "Unable to resolve parent IDs for "
+                f"{len(unresolved_ids)} episode IDs in {self.service_type}"
+            )
 
         return mapping
 
