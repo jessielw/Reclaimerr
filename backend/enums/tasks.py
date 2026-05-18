@@ -21,6 +21,12 @@ class BackgroundJobStatus(StrEnum):
 class BackgroundJobType(StrEnum):
     SERVICE_TOGGLE = auto()
     TASK_RUN = auto()
+    CANDIDATE_FILE_OP = auto()
+
+
+class CandidateFileOpOperation(StrEnum):
+    DELETE = auto()
+    MOVE = auto()
 
 
 class NotificationType(StrEnum):
