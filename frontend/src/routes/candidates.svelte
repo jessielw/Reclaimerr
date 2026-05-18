@@ -586,16 +586,12 @@
     };
   };
 
-  // After bulk move/request/delete, remove the affected candidates from the current list.
-  // If all candidates on the current page are removed and it's not the first page, load the previous page.
+  // after bulk actions, optimistically remove affected rows, then re-fetch
+  // the current page so it backfills with additional results when available
   const applyBulkRemoval = async (idsToRemove: Set<number>) => {
     if (!data || idsToRemove.size === 0) return;
-    const remaining = data.items.filter((i) => !idsToRemove.has(i.id));
-    if (remaining.length === 0 && currentPage > 1) {
-      await loadCandidates(currentPage - 1);
-      return;
-    }
     removeCandidateIds(idsToRemove);
+    await loadCandidates(currentPage);
   };
 
   const submitSingleDelete = async () => {
