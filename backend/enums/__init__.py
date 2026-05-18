@@ -5,6 +5,7 @@ from .services import SeerrRequestStatus
 from .tasks import (
     BackgroundJobStatus,
     BackgroundJobType,
+    CandidateFileOpOperation,
     NotificationType,
     ScheduleType,
     Task,
@@ -26,6 +27,7 @@ __all__ = [
     "TaskStatus",
     "BackgroundJobStatus",
     "BackgroundJobType",
+    "CandidateFileOpOperation",
     "ScheduleType",
     "Task",
     "NotificationType",

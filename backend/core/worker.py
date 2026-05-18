@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from time import monotonic
 
 from sqlalchemy import select
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import GeneralSettings
+from backend.enums import BackgroundJobType
 from backend.jobs import (
     claim_next_background_job,
     complete_background_job,
@@ -41,7 +43,11 @@ async def _load_worker_poll_settings() -> tuple[float, float]:
     return poll_min_seconds, poll_max_seconds
 
 
-async def worker_loop(worker_id: str) -> None:
+async def worker_loop(
+    worker_id: str,
+    *,
+    allowed_job_types: Collection[BackgroundJobType] | None = None,
+) -> None:
     """Job processing loop. Runs in-process as an asyncio task alongside the API server."""
     poll_min_seconds, poll_max_seconds = await _load_worker_poll_settings()
     idle_poll_delay = poll_min_seconds
@@ -57,7 +63,10 @@ async def worker_loop(worker_id: str) -> None:
                 )
                 next_settings_refresh = monotonic() + POLL_SETTINGS_REFRESH_SECONDS
 
-            job = await claim_next_background_job(worker_id)
+            job = await claim_next_background_job(
+                worker_id,
+                allowed_job_types=allowed_job_types,
+            )
             if job is None:
                 await asyncio.sleep(idle_poll_delay)
                 idle_poll_delay = min(
