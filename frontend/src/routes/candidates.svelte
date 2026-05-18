@@ -33,6 +33,7 @@
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
   import Shield from "@lucide/svelte/icons/shield";
+  import Eraser from "@lucide/svelte/icons/eraser";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import MixedCandidatesView from "$lib/components/candidates/mixed-candidates-view.svelte";
   import MovieCandidatesView from "$lib/components/candidates/movie-candidates-view.svelte";
@@ -298,6 +299,13 @@
   const allPageSelected = $derived(
     allSelectableIds().length > 0 &&
       allSelectableIds().every((id) => selectedIds.has(id)),
+  );
+  const selectableOnPageCount = $derived(allSelectableIds().length);
+  const selectedOnPageCount = $derived(
+    allSelectableIds().filter((id) => selectedIds.has(id)).length,
+  );
+  const allPagePartiallySelected = $derived(
+    selectedOnPageCount > 0 && !allPageSelected,
   );
 
   const selectedEntries = $derived(
@@ -1051,7 +1059,7 @@
 
       <div class="flex flex-1 flex-col gap-2 sm:flex-row">
         <!-- row 1 on mobile: sort by + sort order -->
-        <div class="flex flex-1 gap-2">
+        <div class="flex flex-wrap md:flex-nowrap flex-1 gap-2">
           <Select.Root
             type="single"
             value={mediaFilter}
@@ -1163,6 +1171,30 @@
       </div>
     </div>
 
+    <!-- page level selection control -->
+    {#if canBulkSelect && !loading && selectableOnPageCount > 0}
+      <div
+        class="flex flex-col gap-2 rounded-lg border border-border bg-muted/35 px-4 py-2.5
+          sm:flex-row sm:items-center sm:justify-between"
+      >
+        <label
+          class="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            checked={allPageSelected}
+            indeterminate={allPagePartiallySelected}
+            onchange={toggleSelectAll}
+            class="cursor-pointer accent-primary"
+          />
+          Select all on this page
+        </label>
+        <span class="text-xs text-muted-foreground sm:text-sm">
+          {selectedOnPageCount} of {selectableOnPageCount} selected
+        </span>
+      </div>
+    {/if}
+
     <!-- bulk action bar -->
     {#if canBulkSelect && selectedIds.size > 0}
       <div
@@ -1175,13 +1207,13 @@
             - {formatFileSize(selectedTotalBytes)}
           </span>
         </span>
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2 justify-end">
           <Button
-            variant="outline"
             size="sm"
-            class="cursor-pointer bg-destructive/80 hover:bg-destructive/60"
+            class="cursor-pointer"
             onclick={() => (selectedIds = new Set())}
           >
+            <Eraser class="size-4" />
             Clear
           </Button>
           {#if isAdmin}
@@ -1190,7 +1222,7 @@
               <Tooltip.Trigger>
                 <Button
                   size="sm"
-                  class="cursor-pointer"
+                  class="cursor-pointer bg-green-600/80 hover:bg-green-600/60"
                   onclick={() => (bulkDialogOpen = true)}
                 >
                   <Shield class="size-4" />

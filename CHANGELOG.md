@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add history page - displays reclaimed media and clean up activities with filtering options
   - Add history page to sidebar (nav)
 - Close button to all toasts
+- Select all button in Candidates route for current page
 
 ### Changed
 
@@ -29,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Candidates overflowing on mobile with long rule names
+- Fix mobile menus not wrapping properly in Candidates route
+- Fix bulk select buttons not wrapping properly on mobile in Candidates route
 
 ### Removed
 
