@@ -1059,6 +1059,7 @@ class ReclaimHistory(Base):
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     name: Mapped[str | None] = mapped_column(String(255), default=None)
     size: Mapped[int | None] = mapped_column(Integer, default=None)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     action: Mapped[str] = mapped_column(String(20), default="deleted")
     destination_path: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime | None] = mapped_column(

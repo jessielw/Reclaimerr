@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- File operation queue system
+  - Before when you moved/deleted a file it would be a **blocking** process - which means you'd have to wait until it was complete right on your screen. Now we queue moves/deletes to be done and keeps track of them providing some high level progress of what is being done
+
 ### Changed
 
 - Improve handling of jellyfin/emby playback reporting plugin data retrieval
