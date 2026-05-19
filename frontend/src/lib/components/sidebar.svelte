@@ -1,9 +1,11 @@
 ﻿<script lang="ts">
+  import { onMount } from "svelte";
   import { link, location } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
   import SidebarNotices from "./sidebar-notices.svelte";
   import SidebarCandidatesBadge from "./sidebar-candidates-badge.svelte";
+  import SidebarRequestsBadge from "./sidebar-requests-badge.svelte";
   import logoImage from "$lib/assets/logo.png";
   import { VERSION } from "$lib/version";
   import House from "@lucide/svelte/icons/house";
@@ -27,6 +29,7 @@
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import { Permission } from "$lib/types/shared";
   import { createFilterState } from "$lib/utils/pagination";
+  import { uiIndicators } from "$lib/stores/ui-indicators";
 
   // optional callback to close sidebar on mobile after navigation
   let { onNavigate = () => {} }: { onNavigate?: () => void } = $props();
@@ -201,6 +204,11 @@
     hiddenPaths = normalizeHiddenPaths(scopedStore.getInitial());
     hydratedStorageKey = key;
   });
+
+  onMount(() => {
+    uiIndicators.start();
+    return () => uiIndicators.stop();
+  });
 </script>
 
 <aside class="w-64 bg-card border-r border-border flex flex-col h-full">
@@ -302,6 +310,9 @@
                   <item.icon />
                   <span class="flex items-center gap-2 flex-1 min-w-0">
                     <span class="font-medium">{item.label}</span>
+                    {#if item.path === "/requests"}
+                      <SidebarRequestsBadge />
+                    {/if}
                     {#if item.path === "/candidates"}
                       <SidebarCandidatesBadge />
                     {/if}
@@ -325,6 +336,9 @@
               <item.icon />
               <span class="flex items-center gap-2 flex-1 min-w-0">
                 <span class="font-medium">{item.label}</span>
+                {#if item.path === "/requests"}
+                  <SidebarRequestsBadge />
+                {/if}
                 {#if item.path === "/candidates"}
                   <SidebarCandidatesBadge />
                 {/if}

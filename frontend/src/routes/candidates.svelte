@@ -28,6 +28,7 @@
     PER_PAGE_OPTIONS,
   } from "$lib/utils/pagination";
   import { toast } from "svelte-sonner";
+  import { uiIndicators } from "$lib/stores/ui-indicators";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
@@ -481,6 +482,7 @@
       void watchCandidateJob(response.job_id, async (job) => {
         notifyCandidateJobTerminalState(job);
         await loadCandidates(currentPage);
+        uiIndicators.invalidate();
       });
     }
 

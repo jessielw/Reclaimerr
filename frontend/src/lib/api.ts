@@ -1,5 +1,38 @@
 import { auth } from "./stores/auth";
 
+const UI_INDICATORS_INVALIDATE_EVENT = "reclaimerr:ui-indicators:invalidate";
+
+const UI_INDICATOR_MUTATION_PATH_PREFIXES = [
+  "/api/protection-requests",
+  "/api/delete-requests",
+  "/api/media/candidates/delete",
+  "/api/media/candidates/move",
+];
+
+function shouldInvalidateUiIndicators(url: string): boolean {
+  let pathname = url;
+  try {
+    pathname = new URL(
+      url,
+      typeof window !== "undefined"
+        ? window.location.origin
+        : "http://localhost",
+    ).pathname;
+  } catch {
+    // fallback to raw path
+  }
+  const normalizedPath = pathname.toLowerCase().split("?")[0];
+  return UI_INDICATOR_MUTATION_PATH_PREFIXES.some((prefix) =>
+    normalizedPath.startsWith(prefix),
+  );
+}
+
+function emitUiIndicatorsInvalidate(url: string): void {
+  if (typeof window === "undefined") return;
+  if (!shouldInvalidateUiIndicators(url)) return;
+  window.dispatchEvent(new Event(UI_INDICATORS_INVALIDATE_EVENT));
+}
+
 /**
  * make an authenticated API request
  */
@@ -69,6 +102,7 @@ export async function post_api<T>(url: string, data?: any): Promise<T> {
     );
   }
 
+  emitUiIndicatorsInvalidate(url);
   return response.json();
 }
 
@@ -93,6 +127,7 @@ export async function put_api<T>(url: string, data?: any): Promise<T> {
     );
   }
 
+  emitUiIndicatorsInvalidate(url);
   return response.json();
 }
 
@@ -113,5 +148,6 @@ export async function delete_api<T>(url: string): Promise<T> {
     );
   }
 
+  emitUiIndicatorsInvalidate(url);
   return response.json();
 }

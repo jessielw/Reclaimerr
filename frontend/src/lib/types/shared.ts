@@ -443,6 +443,20 @@ export interface PaginatedResponse<T> {
   total_pages: number;
 }
 
+export interface SidebarIndicatorsResponse {
+  has_candidates: boolean;
+  has_pending_requests: boolean;
+  has_pending_protection_requests: boolean;
+  has_pending_delete_requests: boolean;
+}
+
+export interface UiIndicatorsResponse extends SidebarIndicatorsResponse {
+  update_available: boolean;
+  latest_version: string | null;
+  latest_release_url: string | null;
+  last_checked_at: string | null;
+}
+
 // exception requests
 export enum ProtectionRequestStatus {
   Pending = "pending",
