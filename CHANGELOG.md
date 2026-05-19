@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Add history page to sidebar (nav)
 - Close button to all toasts
 - Select all button in Candidates route for current page
+- Requests now shows a notification dot if there are pending requests
 
 ### Changed
 
