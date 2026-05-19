@@ -316,7 +316,7 @@
       });
       toast.success("Test notification sent successfully!");
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message, { duration: 15000 });
     } finally {
       testingIndex = null;
     }
@@ -348,8 +348,7 @@
     <div
       class="flex p-8 text-center items-center justify-center text-muted-foreground gap-3"
     >
-      <Spinner class="size-5 text-primary" />
-      Loading notifications...
+      <Spinner class="w-12 h-12 text-primary" />
     </div>
   {:else}
     <!-- add notification button -->

@@ -30,6 +30,7 @@ from backend.core.utils.filesystem import (
     resolve_path,
     sibling_cleanup,
 )
+from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
@@ -76,6 +77,39 @@ __all__ = [
 
 ArrDeleteFallback: TypeAlias = Literal["unmonitor", "remove_if_empty"]
 ArrDeleteAction: TypeAlias = Literal["delete", "unmonitor", "remove_if_empty"]
+
+
+def _build_reclaim_history_attributes(
+    *,
+    movie_version: MovieVersion | None = None,
+    season: Season | None = None,
+) -> dict[str, Any] | None:
+    """Attributes relevant for reclaim history from the given media items."""
+    resolution: str | None = None
+    hdr: bool | None = None
+    dolby_vision: bool | None = None
+
+    if movie_version is not None:
+        resolution = movie_version.video_resolution
+        hdr = movie_version.video_hdr
+        dolby_vision = movie_version.video_dolby_vision
+    elif season is not None:
+        resolution = guesstimate_resolution(
+            season.max_video_width,
+            season.max_video_height,
+            None,
+        )
+        hdr = season.has_hdr
+        dolby_vision = season.has_dolby_vision
+
+    if resolution is None and hdr is None and dolby_vision is None:
+        return None
+
+    return {
+        "resolution": resolution,
+        "hdr": hdr,
+        "dolby_vision": dolby_vision,
+    }
 
 
 def _is_series_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
@@ -2243,6 +2277,9 @@ async def _delete_movie_version_candidates(
                         name=movie.title,
                         path=version.path,
                         size=version.size,
+                        attributes=_build_reclaim_history_attributes(
+                            movie_version=version
+                        ),
                     )
                 )
 
@@ -3803,6 +3840,7 @@ async def _delete_season_candidates(
                     tmdb_id=series_obj.tmdb_id,
                     name=f"{series_obj.title} S{season_number:02d}",
                     size=season.size,
+                    attributes=_build_reclaim_history_attributes(season=season),
                     action="unmonitored"
                     if cand_arr_action == "unmonitor"
                     else "deleted",
@@ -4209,6 +4247,7 @@ async def _delete_episode_candidates(
                     tmdb_id=series_obj.tmdb_id,
                     name=f"{series_obj.title} {ep_label}",
                     size=deleted_episode_size,
+                    attributes=_build_reclaim_history_attributes(season=season),
                     action="unmonitored"
                     if cand_arr_action == "unmonitor"
                     else "deleted",
@@ -4776,6 +4815,9 @@ async def move_specific_candidates(
                         name=movie.title,
                         path=version.path,
                         size=version.size,
+                        attributes=_build_reclaim_history_attributes(
+                            movie_version=version
+                        ),
                         action="moved",
                         destination_path=str(dest),
                     )
@@ -5115,6 +5157,9 @@ async def move_specific_candidates(
                             name=history_name,
                             path=series_ref.path,
                             size=history_size,
+                            attributes=_build_reclaim_history_attributes(
+                                season=season if is_season else None
+                            ),
                             action="moved",
                             destination_path=str(dest),
                         )

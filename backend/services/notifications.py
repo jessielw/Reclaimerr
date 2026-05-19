@@ -7,6 +7,7 @@ import apprise
 from sqlalchemy import desc, select
 from sqlalchemy.orm import selectinload
 from tenacity import (
+    RetryError,
     before_sleep_log,
     retry,
     retry_if_exception_type,
@@ -592,11 +593,21 @@ async def notify_task_failure(
 
 async def test_notification_url(
     url: str,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Test a notification by sending a test payload to the provided URL."""
-    return await send_notification(
-        url=url,
-        title="This is a test notification from Reclaimerr",
-        message="If you received this, your notification settings are working correctly!",
-        body_format=_DEFAULT_BODY_FORMAT,
-    )
+    try:
+        return await send_notification(
+            url=url,
+            title="This is a test notification from Reclaimerr",
+            message="If you received this, your notification settings are working correctly!",
+            body_format=_DEFAULT_BODY_FORMAT,
+        ), None
+    except RetryError:
+        LOG.error(f"Failed to send notification after multiple attempts to {url}")
+        return False, (
+            "Failed to send test notification after multiple attempts, check your "
+            "connection/credentials and try again"
+        )
+    except Exception as e:
+        LOG.error(f"Unhandled Error testing notification URL {url}: {e}")
+        return False, str(e)

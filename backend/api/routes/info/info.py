@@ -5,14 +5,23 @@ from random import sample as random_sample
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core import __version__
-from backend.core.auth import get_current_user
+from backend.core.auth import get_current_user, has_permission
 from backend.database import get_db
-from backend.database.models import AppUpdateState, Movie, Series, User
-from backend.enums import UserRole
+from backend.database.models import (
+    AppUpdateState,
+    DeleteRequest,
+    Movie,
+    ProtectionRequest,
+    ReclaimCandidate,
+    Series,
+    User,
+)
+from backend.enums import Permission, ProtectionRequestStatus, UserRole
+from backend.models.info import SidebarIndicatorsResponse, UiIndicatorsResponse
 
 from .default_backdrops import TOP_RATED_BACKDROPS
 
@@ -92,6 +101,13 @@ async def get_update_status(
 ) -> dict:
     """Return update status for sidebar indicators (admin visible only)."""
     state = (await db.execute(select(AppUpdateState))).scalars().first()
+    return _update_status_payload(current_user, state)
+
+
+def _update_status_payload(
+    current_user: User,
+    state: AppUpdateState | None,
+) -> dict[str, bool | str | None]:
     if state is None:
         return {
             "update_available": False,
@@ -118,6 +134,87 @@ async def get_update_status(
         if state.last_checked_at
         else None,
     }
+
+
+async def _compute_sidebar_indicators(
+    current_user: User,
+    db: AsyncSession,
+) -> SidebarIndicatorsResponse:
+    """Compute indicators for sidebar (candidates, pending requests - admin sees all, non admin sees own)."""
+    has_candidates = (
+        await db.execute(select(ReclaimCandidate.id).limit(1))
+    ).scalar_one_or_none() is not None
+
+    can_manage_requests = has_permission(current_user, Permission.MANAGE_REQUESTS)
+    if can_manage_requests:
+        protection_pending_filter = (
+            ProtectionRequest.status == ProtectionRequestStatus.PENDING
+        )
+        delete_pending_filter = DeleteRequest.status == ProtectionRequestStatus.PENDING
+    else:
+        protection_pending_filter = and_(
+            ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+            ProtectionRequest.requested_by_user_id == current_user.id,
+        )
+        delete_pending_filter = and_(
+            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+            DeleteRequest.requested_by_user_id == current_user.id,
+        )
+
+    has_pending_protection_requests = (
+        await db.execute(
+            select(ProtectionRequest.id).where(protection_pending_filter).limit(1)
+        )
+    ).scalar_one_or_none() is not None
+
+    has_pending_delete_requests = (
+        await db.execute(select(DeleteRequest.id).where(delete_pending_filter).limit(1))
+    ).scalar_one_or_none() is not None
+
+    return SidebarIndicatorsResponse(
+        has_candidates=has_candidates,
+        has_pending_requests=(
+            has_pending_protection_requests or has_pending_delete_requests
+        ),
+        has_pending_protection_requests=has_pending_protection_requests,
+        has_pending_delete_requests=has_pending_delete_requests,
+    )
+
+
+@router.get("/sidebar-indicators", response_model=SidebarIndicatorsResponse)
+async def get_sidebar_indicators(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> SidebarIndicatorsResponse:
+    """Return indicators for sidebar (candidates, pending requests - admin sees all, non admin sees own)."""
+    return await _compute_sidebar_indicators(current_user, db)
+
+
+@router.get("/ui-indicators", response_model=UiIndicatorsResponse)
+async def get_ui_indicators(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> UiIndicatorsResponse:
+    """Return indicators for sidebar and update status for UI (admin visible only)."""
+    sidebar = await _compute_sidebar_indicators(current_user, db)
+    update_state = (await db.execute(select(AppUpdateState))).scalars().first()
+    update_status = _update_status_payload(current_user, update_state)
+    return UiIndicatorsResponse(
+        has_candidates=sidebar.has_candidates,
+        has_pending_requests=sidebar.has_pending_requests,
+        has_pending_protection_requests=sidebar.has_pending_protection_requests,
+        has_pending_delete_requests=sidebar.has_pending_delete_requests,
+        update_available=bool(update_status["update_available"]),
+        latest_version=update_status["latest_version"]
+        if isinstance(update_status["latest_version"], str)
+        else None,
+        latest_release_url=update_status["latest_release_url"]
+        if isinstance(update_status["latest_release_url"], str)
+        else None,
+        last_checked_at=update_status["last_checked_at"]
+        if isinstance(update_status["last_checked_at"], str)
+        else None,
+    )
 
 
 @router.get("/changelog")

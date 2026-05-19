@@ -111,7 +111,7 @@ def guesstimate_resolution(
 ) -> str | None:
     """Return the standard resolution label, e.g. ``'1080p'``.
 
-    If fails it'll return ``unknown_label``.
+    If fails it'll return ``unknown_label`` unless ``raise_on_error`` is True.
     """
     try:
         width_int = int(width)

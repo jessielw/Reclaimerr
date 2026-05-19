@@ -424,6 +424,10 @@
 
 <div class="p-2.5 md:p-8">
   <div class="max-w-7xl mx-auto">
+    <div>
+      <h1 class="text-3xl font-bold text-foreground">Rules</h1>
+      <p class="text-muted-foreground">Manage cleanup rules</p>
+    </div>
     {#if $auth.user?.role !== "admin"}
       <div
         class="bg-card rounded-lg border border-border p-8 text-center text-muted-foreground"
@@ -431,11 +435,8 @@
         You do not have access to this page.
       </div>
     {:else if loading}
-      <div
-        class="flex items-center justify-center gap-3 text-muted-foreground p-8"
-      >
-        <Spinner class="size-5 text-primary" />
-        Loading...
+      <div class="flex justify-center py-8">
+        <Spinner class="w-12 h-12 text-primary" />
       </div>
     {:else if showRuleForm}
       <AdvancedRuleEditor
@@ -446,12 +447,7 @@
       />
     {:else}
       <div class="space-y-4">
-        <div>
-          <h1 class="text-3xl font-bold text-foreground">Rules</h1>
-          <p class="text-muted-foreground">Manage cleanup rules</p>
-        </div>
-
-        <div class="flex justify-between items-center mb-3">
+        <div class="flex justify-between items-center mt-3 mb-3">
           <div class="flex items-center flex-wrap gap-3 text-sm">
             <span class="text-muted-foreground">Scan task:</span>
             <Button

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any
 
@@ -107,11 +108,15 @@ async def reset_stale_jobs() -> int:
     return len(stale_ids)
 
 
-async def claim_next_background_job(worker_id: str) -> BackgroundJob | None:
+async def claim_next_background_job(
+    worker_id: str,
+    *,
+    allowed_job_types: Collection[BackgroundJobType] | None = None,
+) -> BackgroundJob | None:
     """Claim the next available background job for processing, marking it as RUNNING."""
     now = datetime.now(UTC)
     async with async_db() as session:
-        result = await session.execute(
+        query = (
             select(BackgroundJob.id)
             .where(
                 BackgroundJob.status == BackgroundJobStatus.PENDING,
@@ -120,6 +125,13 @@ async def claim_next_background_job(worker_id: str) -> BackgroundJob | None:
             .order_by(BackgroundJob.scheduled_at.asc(), BackgroundJob.id.asc())
             .limit(1)
         )
+        if allowed_job_types is not None:
+            allowed_values = tuple(allowed_job_types)
+            if not allowed_values:
+                return None
+            query = query.where(BackgroundJob.job_type.in_(allowed_values))
+
+        result = await session.execute(query)
         job_id = result.scalar_one_or_none()
         if job_id is None:
             return None
@@ -171,6 +183,28 @@ async def complete_background_job(
                 completed_at=datetime.now(UTC),
                 error_message=None,
                 payload=payload,
+            )
+        )
+        await session.commit()
+
+
+async def update_background_job_payload(
+    job_id: int,
+    payload_updates: dict[str, Any],
+) -> None:
+    """Merge payload updates into an existing background job without changing its status."""
+    async with async_db() as session:
+        payload_result = await session.execute(
+            select(BackgroundJob.payload).where(BackgroundJob.id == job_id)
+        )
+        payload = payload_result.scalar_one_or_none() or {}
+        payload = {**payload, **payload_updates}
+        await session.execute(
+            sql_update(BackgroundJob)
+            .where(BackgroundJob.id == job_id)
+            .values(
+                payload=payload,
+                updated_at=datetime.now(UTC),
             )
         )
         await session.commit()

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.22] - 2026-05-19
+
+### Added
+
+- File operation queue system
+  - Before when you moved/deleted a file it would be a **blocking** process - which means you'd have to wait until it was complete right on your screen. Now we queue moves/deletes to be done and keeps track of them providing some high level progress of what is being done
+- Add history page - displays reclaimed media and clean up activities with filtering options
+  - Add history page to sidebar (nav)
+- Close button to all toasts
+- Select all button in Candidates route for current page
+- Requests now shows a notification dot if there are pending requests
+
+### Changed
+
+- Improve handling of jellyfin/emby playback reporting plugin data retrieval
+- Improve grabbing episode data from all users on Emby/Jellyfin
+- Improved error handling for testing notifications
+- History has been moved to it's own dedicated route
+- Improve deletion request handling
+- Enhance user feedback for approved deletion requests
+- Improved access control on navbar
+- Rule editor keys are now grouped and organized in ABC order where needed for easier navigation
+- Optimistically backfill Candidates as they are moved/protected/deleted if available
+- Substantially enhanced the speed/efficiency of checking of status bar updates for notifications
+- Updated numerous backend dependencies (alembic, apprise, argon2-cffi, cryptography, pillow, pydantic-settings, pyjwt, python-dotenv, sqlalchemy[asyncio], and tenacity)
+
+### Fixed
+
+- Candidates overflowing on mobile with long rule names
+- Fix mobile menus not wrapping properly in Candidates route
+- Fix bulk select buttons not wrapping properly on mobile in Candidates route
+- About, Account, General, Notifications, Tasks, and Rule loading spinners was not consistent with the rest of the app
+- Fix on about not showing header during loading like the other routes
+
+### Removed
+
+- Removed history from Settings
+- Removed history from Candidates
+
 ## [0.1.0-beta.21] - 2026-05-17
 
 ### Added

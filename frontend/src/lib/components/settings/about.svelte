@@ -63,8 +63,8 @@
   <hr />
 
   {#if loading}
-    <div class="flex items-center justify-center py-8">
-      <Spinner class="text-primary" />
+    <div class="flex justify-center py-8">
+      <Spinner class="w-12 h-12 text-primary" />
     </div>
   {:else if error}
     <div class="rounded-md border border-destructive/40 bg-destructive/10 p-3">

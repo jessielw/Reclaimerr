@@ -25,10 +25,7 @@
   } from "$lib/components/candidates/view-utils";
   import type {
     DisplayRow,
-    FlatRow,
     GroupRow,
-    MovieGroupRow,
-    SeriesGroupRow,
   } from "$lib/components/candidates/view-types";
 
   interface Props {
@@ -196,8 +193,9 @@
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}
-                      <Badge class="border-primary" variant="secondary"
-                        >{rule}</Badge
+                      <Badge
+                        class="border-primary whitespace-break-spaces"
+                        variant="secondary">{rule}</Badge
                       >
                     {/each}
                   {/if}
@@ -375,8 +373,9 @@
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}
-                      <Badge class="border-primary" variant="secondary"
-                        >{rule}</Badge
+                      <Badge
+                        class="border-primary whitespace-break-spaces"
+                        variant="secondary">{rule}</Badge
                       >
                     {/each}
                   {/if}
