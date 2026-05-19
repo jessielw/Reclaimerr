@@ -101,8 +101,9 @@ def resolve_path(
             mapped = local + media_server_path[len(source) :]
             p = Path(mapped)
             if p.exists():
+                LOG.debug(f"resolve_path: mapped {media_server_path!r} to {p}")
                 return p
-            LOG.debug(
+            LOG.warning(
                 f"resolve_path: mapped path {p} does not exist "
                 f"(source={source!r}, local={local!r})"
             )
