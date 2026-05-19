@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule editor keys are now grouped and organized in ABC order where needed for easier navigation
 - Optimistically backfill Candidates as they are moved/protected/deleted if available
 - Substantially enhanced the speed/efficiency of checking of status bar updates for notifications
+- Updated numerous backend dependencies (alembic, apprise, argon2-cffi, cryptography, pillow, pydantic-settings, pyjwt, python-dotenv, sqlalchemy[asyncio], and tenacity)
 
 ### Fixed
 
