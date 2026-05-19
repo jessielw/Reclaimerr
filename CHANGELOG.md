@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Candidates overflowing on mobile with long rule names
 - Fix mobile menus not wrapping properly in Candidates route
 - Fix bulk select buttons not wrapping properly on mobile in Candidates route
+- About, Account, General, Notifications, Tasks, and Rule loading spinners was not consistent with the rest of the app
+- Fix on about not showing header during loading like the other routes
 
 ### Removed
 

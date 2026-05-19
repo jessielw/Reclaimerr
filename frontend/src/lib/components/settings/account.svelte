@@ -183,27 +183,30 @@
 
 <ErrorBox error={profileError} />
 
-{#if loading}
-  <div class="p-8 text-center text-muted-foreground">
-    <Spinner size="lg" class="text-primary" />
-    <p class="mt-4">Loading profile...</p>
+<div class="space-y-6">
+  <!-- header -->
+  <div class="flex flex-col mb-3">
+    <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
+      {#if svgIcon}
+        {@const Icon = svgIcon}
+        <Icon class="size-5" aria-hidden="true" />
+      {/if}
+      <span class="align-middle">Account</span>
+    </h2>
+    <p class="text-sm text-muted-foreground mt-1">
+      Manage your account settings
+    </p>
   </div>
-{:else if profile}
-  <div class="space-y-6">
-    <!-- header -->
-    <div class="flex flex-col mb-3">
-      <h2 class="flex items-center gap-3 text-xl font-semibold text-foreground">
-        {#if svgIcon}
-          {@const Icon = svgIcon}
-          <Icon class="size-5" aria-hidden="true" />
-        {/if}
-        <span class="align-middle">Account</span>
-      </h2>
-      <p class="text-sm text-muted-foreground mt-1">
-        Manage your account settings
-      </p>
-    </div>
 
+  {#if loading}
+    <div class="flex justify-center py-8">
+      <Spinner class="w-12 h-12 text-primary" />
+    </div>
+  {:else if !profile}
+    <div class="flex justify-center py-8">
+      <p class="text-muted-foreground">Failed to load profile</p>
+    </div>
+  {:else}
     <!-- avatar Section -->
     <div class="bg-card rounded-lg border border-border p-6">
       <h2 class="text-xl font-semibold text-foreground mb-4">
@@ -481,5 +484,5 @@
         </div>
       </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</div>
