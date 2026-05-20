@@ -38,6 +38,7 @@ from backend.models.media import (
     AggregatedSeriesData,
     MovieVersionData,
 )
+from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
@@ -2957,6 +2958,10 @@ async def sync_media_libraries() -> dict[str, Any]:
             # We surface stale-library references through alerts instead of
             # mutating rule definitions during sync.
             affected_rules: list[dict[str, Any]] = []
+            try:
+                await reconcile_stale_library_notice(session)
+            except Exception as e:
+                LOG.warning(f"Failed to reconcile stale-library notice state: {e}")
 
             await session.commit()
 

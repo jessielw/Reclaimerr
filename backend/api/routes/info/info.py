@@ -22,6 +22,7 @@ from backend.database.models import (
 )
 from backend.enums import Permission, ProtectionRequestStatus, UserRole
 from backend.models.info import SidebarIndicatorsResponse, UiIndicatorsResponse
+from backend.services.admin_notices import has_unread_active_notices
 
 from .default_backdrops import TOP_RATED_BACKDROPS
 
@@ -199,6 +200,11 @@ async def get_ui_indicators(
     sidebar = await _compute_sidebar_indicators(current_user, db)
     update_state = (await db.execute(select(AppUpdateState))).scalars().first()
     update_status = _update_status_payload(current_user, update_state)
+    has_unread_notices = (
+        await has_unread_active_notices(db)
+        if current_user.role is UserRole.ADMIN
+        else False
+    )
     return UiIndicatorsResponse(
         has_candidates=sidebar.has_candidates,
         has_pending_requests=sidebar.has_pending_requests,
@@ -214,6 +220,7 @@ async def get_ui_indicators(
         last_checked_at=update_status["last_checked_at"]
         if isinstance(update_status["last_checked_at"], str)
         else None,
+        has_unread_notices=has_unread_notices,
     )
 
 

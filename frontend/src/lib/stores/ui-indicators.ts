@@ -18,6 +18,7 @@ type UiIndicatorsState = {
   latestVersion: string | null;
   latestReleaseUrl: string | null;
   lastCheckedAt: string | null;
+  hasUnreadNotices: boolean;
 };
 
 const initialState = (): UiIndicatorsState => ({
@@ -29,6 +30,7 @@ const initialState = (): UiIndicatorsState => ({
   latestVersion: null,
   latestReleaseUrl: null,
   lastCheckedAt: null,
+  hasUnreadNotices: false,
 });
 
 function createUiIndicatorsStore() {
@@ -74,6 +76,7 @@ function createUiIndicatorsStore() {
           latestVersion: response.latest_version,
           latestReleaseUrl: response.latest_release_url,
           lastCheckedAt: response.last_checked_at,
+          hasUnreadNotices: !!response.has_unread_notices,
         });
       } catch {
         // keep previous state on transient failures

@@ -232,6 +232,44 @@ class AppUpdateState(Base):
     )
 
 
+class AdminNotice(Base):
+    """Persisted admin facing in app notices with global read state."""
+
+    __tablename__ = "admin_notices"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_admin_notices_dedupe_key"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    kind: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16), default="warning")
+    action_label: Mapped[str | None] = mapped_column(String(100), default=None)
+    action_href: Mapped[str | None] = mapped_column(String(500), default=None)
+    context_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    read_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(120), default=None, index=True
+    )
+    last_occurred_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class Movie(Base):
     """Movie availability and metadata."""
 
