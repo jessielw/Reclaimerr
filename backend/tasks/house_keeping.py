@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import delete, select
@@ -8,7 +9,7 @@ from sqlalchemy import delete, select
 from backend.core.logger import LOG
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
-from backend.database.models import BackgroundJob, TaskRun
+from backend.database.models import AdminNotice, BackgroundJob, TaskRun
 from backend.enums import Task
 
 __all__ = ["weekly_house_keeping"]
@@ -54,6 +55,25 @@ async def _trim_background_jobs(keep_recent: int) -> None:
             await session.rollback()
 
 
+async def _trim_admin_notices(retain_days: int) -> None:
+    """Trim old resolved/read admin notices to keep table size bounded."""
+    cutoff = datetime.now(UTC) - timedelta(days=retain_days)
+    async with async_db() as session:
+        try:
+            del_stmt = delete(AdminNotice).where(
+                AdminNotice.updated_at < cutoff,
+                (AdminNotice.is_active == False) | (AdminNotice.is_read == True),
+            )
+            result = await session.execute(del_stmt)
+            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await session.commit()
+            if count > 0:
+                LOG.debug(f"Trimmed {count} old admin notices")
+        except Exception as e:
+            LOG.error(f"Error trimming admin notices: {e}")
+            await session.rollback()
+
+
 class HouseKeepingTask(NamedTuple):
     """Represents a house keeping task (used only internally for this module)."""
 
@@ -74,6 +94,11 @@ _WEEKLY_HOUSE_KEEPING_TASKS = (
         name="Trim old background jobs",
         func=_trim_background_jobs,
         kwargs={"keep_recent": 200},
+    ),
+    HouseKeepingTask(
+        name="Trim old admin notices",
+        func=_trim_admin_notices,
+        kwargs={"retain_days": 90},
     ),
 )
 
