@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Support for Seerr requested by username based rules
   - During rule preview this will be accurate and cached TTL for 5 minutes, during live candidate scans this will be grabbed from Seerr every single run
-  - If you have a rule utilizing this feature and it fails there will be a notification in the UI alerting you that there is an issue communicating with Seerr and the rule will be disregarded until this is resolved
+  - If you have a rule utilizing this feature and it fails there will be a notice in the UI alerting you that there is an issue communicating with Seerr and the rule will be disregarded until this is resolved
   - Users are parsed upon opening a rule (if Seerr is enabled) and will be displayed via a "Seerr User Picker" modal
     - Internally the user IDs from Seerr are utilized but visually you'll be able to see them by name (this was needed in case users names changed on Seerr)
 - New house keeping task to clean up admin notices older than 90 days automatically (read or unread)
@@ -24,11 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Side bar light mode text was barely visible for notification panel
+- Side bar light mode text was barely visible for notices panel
 
 ### Removed
 
-- 
+- System alert banner _(this can be handled via the notices panel)_
 
 ## [0.1.0-beta.22] - 2026-05-19
 
