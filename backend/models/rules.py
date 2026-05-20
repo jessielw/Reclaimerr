@@ -34,3 +34,9 @@ class RulePreviewRequest(BaseModel):
     definition: dict[str, Any]
     page: int = Field(default=1, ge=1)
     per_page: int = Field(default=25, ge=1, le=100)
+
+
+class SeerrUserLookupResponse(BaseModel):
+    id: int
+    username: str | None = None
+    display_name: str | None = None

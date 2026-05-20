@@ -109,6 +109,20 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(_definition("seerr.requested", "greater_than", 1))
 
+    def test_accepts_seerr_requester_ids_list_operator(self) -> None:
+        validate_rule_definition(
+            _definition("seerr.requested_by_user_ids", "contains_any", ["10", "22"])
+        )
+
+    def test_rejects_seerr_requester_ids_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'seerr.requested_by_user_ids'",
+        ):
+            validate_rule_definition(
+                _definition("seerr.requested_by_user_ids", "greater_than", 1)
+            )
+
     def test_rejects_empty_library_list_condition(self) -> None:
         with self.assertRaisesRegex(
             ValueError,

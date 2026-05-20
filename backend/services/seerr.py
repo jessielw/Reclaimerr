@@ -15,10 +15,11 @@ from tenacity import (
 
 from backend.core.utils.request import should_retry_on_status
 from backend.enums import MediaType, SeerrRequestStatus
-from backend.models.services.seerr import SeerrPageInfo, SeerrRequest
+from backend.models.services.seerr import SeerrPageInfo, SeerrRequest, SeerrUser
 
 
 def build_seerr_request_from_dict(data: dict[str, Any]) -> SeerrRequest:
+    """Build SeerrRequest from API response dict."""
     media_type = MediaType.MOVIE if data["type"] == "movie" else MediaType.SERIES
     return SeerrRequest(
         id=data["id"],
@@ -29,6 +30,19 @@ def build_seerr_request_from_dict(data: dict[str, Any]) -> SeerrRequest:
         created_at=datetime.fromisoformat(data["createdAt"]),
         requested_by_id=data["requestedBy"]["id"],
         is_4k=data.get("is4k", False),
+        raw=data,
+    )
+
+
+def build_seerr_user_from_dict(data: dict[str, Any]) -> SeerrUser:
+    """Build SeerrUser from API response dict."""
+    return SeerrUser(
+        id=int(data["id"]),
+        username=(str(data.get("username")) if data.get("username") else None),
+        display_name=(
+            str(data.get("displayName")) if data.get("displayName") else None
+        ),
+        email=(str(data.get("email")) if data.get("email") else None),
         raw=data,
     )
 
@@ -176,6 +190,87 @@ class SeerrClient:
             results=data.get("pageInfo", {}).get("results", 0),
         )
         return page_info, [build_seerr_request_from_dict(req) for req in results]
+
+    async def get_all_requests(self, *, filter: str = "all") -> list[SeerrRequest]:
+        """Fetch all requests via paginated /request."""
+        take = 100
+        skip = 0
+        all_requests: list[SeerrRequest] = []
+        while True:
+            page_info, page_requests = await self.get_requests(
+                take=take,
+                skip=skip,
+                filter=filter,
+            )
+            if not page_requests:
+                break
+            all_requests.extend(page_requests)
+            skip += len(page_requests)
+            if page_info.results and skip >= page_info.results:
+                break
+            if len(page_requests) < take:
+                break
+        return all_requests
+
+    async def get_users(
+        self,
+        *,
+        take: int = 20,
+        skip: int = 0,
+        q: str | None = None,
+        sort: str | None = "displayname",
+    ) -> tuple[SeerrPageInfo, list[SeerrUser]]:
+        """Get users from Seerr's /user endpoint."""
+        params: dict[str, Any] = {"take": take, "skip": skip}
+        if q and q.strip():
+            params["q"] = q.strip()
+        if sort and sort.strip():
+            params["sort"] = sort.strip()
+        _, data = await self._make_request("GET", "user", params=params, timeout=120)
+        if isinstance(data, list):
+            users = [
+                build_seerr_user_from_dict(item)
+                for item in data
+                if isinstance(item, dict)
+            ]
+            return SeerrPageInfo(page=1, pages=1, results=len(users)), users
+
+        if isinstance(data, dict):
+            results = data.get("results")
+            if not isinstance(results, list):
+                # Defensive fallback for non-standard shapes.
+                alt_results = data.get("users")
+                results = alt_results if isinstance(alt_results, list) else []
+            users = [
+                build_seerr_user_from_dict(item)
+                for item in results
+                if isinstance(item, dict)
+            ]
+            page_info = SeerrPageInfo(
+                page=data.get("pageInfo", {}).get("page", 0),
+                pages=data.get("pageInfo", {}).get("pages", 0),
+                results=data.get("pageInfo", {}).get("results", len(users)),
+            )
+            return page_info, users
+
+        return SeerrPageInfo(0, 0, 0), []
+
+    async def get_all_users(self) -> list[SeerrUser]:
+        """Fetch all users via paginated /user."""
+        take = 100
+        skip = 0
+        users: list[SeerrUser] = []
+        while True:
+            page_info, page_users = await self.get_users(take=take, skip=skip)
+            if not page_users:
+                break
+            users.extend(page_users)
+            skip += len(page_users)
+            if page_info.results and skip >= page_info.results:
+                break
+            if len(page_users) < take:
+                break
+        return users
 
     async def get_movie_requests(self, tmdb_id: int) -> list[SeerrRequest]:
         """Get movie requests by TMDB ID.

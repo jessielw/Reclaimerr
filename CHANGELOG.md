@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Support for Seerr requested by username based rules
+  - During rule preview this will be accurate and cached TTL for 5 minutes, during live candidate scans this will be grabbed from Seerr every single run
+  - If you have a rule utilizing this feature and it fails there will be a notification in the UI alerting you that there is an issue communicating with Seerr and the rule will be disregarded until this is resolved
+  - Users are parsed upon opening a rule (if Seerr is enabled) and will be displayed via a "Seerr User Picker" modal
+    - Internally the user IDs from Seerr are utilized but visually you'll be able to see them by name (this was needed in case users names changed on Seerr)
+
 ## [0.1.0-beta.22] - 2026-05-19
 
 ### Added

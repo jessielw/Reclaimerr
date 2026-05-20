@@ -1,5 +1,4 @@
 import shutil
-from asyncio import Semaphore, gather
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
@@ -58,13 +57,19 @@ from backend.enums import (
 )
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.models.post_action_webhooks import PostActionWebhookEvent
+from backend.services.admin_notices import (
+    clear_seerr_rule_skip_notice,
+    set_seerr_rule_skip_notice,
+)
 from backend.services.notifications import (
     build_cleanup_notification_context,
+    notify_admins,
     notify_all_users,
 )
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
+from backend.services.seerr_cache import seerr_snapshot_cache
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -179,7 +184,12 @@ async def collect_rule_preview_matches(
     ).activate()
     await _refresh_arr_tags_for_rules(list(rules))
     await _refresh_arr_monitoring_for_rules(list(rules))
-    await _activate_seerr_request_resolver_for_rules(db, list(rules))
+    await _activate_seerr_request_resolver_for_rules(
+        db,
+        list(rules),
+        require_fresh=False,
+        allow_stale_on_failure=True,
+    )
 
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
@@ -551,28 +561,40 @@ async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
                 )
 
 
-def _rules_use_seerr_requested_field(rules: list[ReclaimRule]) -> bool:
-    """Return True if any rule condition references `seerr.requested`."""
-    for rule in rules:
-        for _ in collect_rule_conditions(rule.definition, field="seerr.requested"):
-            return True
+def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
+    """Return True if the rule conditions reference any Seerr request state fields."""
+    for _ in collect_rule_conditions(rule.definition, field="seerr.requested"):
+        return True
+    for _ in collect_rule_conditions(
+        rule.definition, field="seerr.requested_by_user_ids"
+    ):
+        return True
     return False
 
 
+def _rules_use_seerr_fields(rules: list[ReclaimRule]) -> bool:
+    """Return True if any of the rules reference Seerr request state fields."""
+    return any(_rule_uses_seerr_fields(r) for r in rules)
+
+
 async def _activate_seerr_request_resolver_for_rules(
-    db: AsyncSession, rules: list[ReclaimRule]
-) -> None:
-    """Activate scan-local Seerr request state for rules that reference seerr.requested."""
-    if not _rules_use_seerr_requested_field(rules):
-        return
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    require_fresh: bool,
+    allow_stale_on_failure: bool,
+) -> tuple[bool, str | None]:
+    """Activate scan local Seerr request state for rules that reference Seerr fields."""
+    if not _rules_use_seerr_fields(rules):
+        return True, None
 
     if not service_manager.seerr:
         LOG.warning(
-            "Rule uses seerr.requested but Seerr service is not configured; "
+            "Rule uses Seerr fields but Seerr service is not configured; "
             "Seerr rule conditions will not match"
         )
         SeerrRequestResolver({}).activate()
-        return
+        return False, "Seerr service is not configured"
 
     movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
     series_targets = any(
@@ -595,34 +617,41 @@ async def _activate_seerr_request_resolver_for_rules(
         ).all()
         series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
 
-    requested_by_key: dict[tuple[MediaType, int], bool] = {}
-    sem = Semaphore(10)
+    snapshot, snapshot_error = await seerr_snapshot_cache.get_request_snapshot(
+        require_fresh=require_fresh,
+        allow_stale_on_failure=allow_stale_on_failure,
+    )
+    if snapshot is None:
+        SeerrRequestResolver({}).activate()
+        return False, snapshot_error or "Failed to load Seerr request snapshot"
 
-    async def _fetch_movie(tmdb_id: int) -> None:
-        async with sem:
-            try:
-                requests = await service_manager.seerr.get_movie_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
-                requested_by_key[(MediaType.MOVIE, tmdb_id)] = bool(requests)
-            except Exception as e:
-                LOG.debug(f"Failed Seerr movie request lookup for TMDB {tmdb_id}: {e}")
-                requested_by_key[(MediaType.MOVIE, tmdb_id)] = False
+    requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
+        (MediaType.MOVIE, tmdb_id): set() for tmdb_id in movie_tmdb_ids
+    }
+    requester_ids_by_key.update(
+        {(MediaType.SERIES, tmdb_id): set() for tmdb_id in series_tmdb_ids}
+    )
+    for key, user_ids in snapshot.items():
+        media_type, tmdb_id = key
+        if media_type is MediaType.MOVIE and tmdb_id not in movie_tmdb_ids:
+            continue
+        if media_type is MediaType.SERIES and tmdb_id not in series_tmdb_ids:
+            continue
+        if key not in requester_ids_by_key:
+            continue
+        requester_ids_by_key[key].update(user_ids)
 
-    async def _fetch_series(tmdb_id: int) -> None:
-        async with sem:
-            try:
-                requests = await service_manager.seerr.get_tv_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
-                requested_by_key[(MediaType.SERIES, tmdb_id)] = bool(requests)
-            except Exception as e:
-                LOG.debug(f"Failed Seerr TV request lookup for TMDB {tmdb_id}: {e}")
-                requested_by_key[(MediaType.SERIES, tmdb_id)] = False
-
-    await gather(*[_fetch_movie(tmdb_id) for tmdb_id in movie_tmdb_ids])
-    await gather(*[_fetch_series(tmdb_id) for tmdb_id in series_tmdb_ids])
-    SeerrRequestResolver(requested_by_key).activate()
+    SeerrRequestResolver(requester_ids_by_key).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "
         f"{len(series_tmdb_ids)} series keys"
     )
+    if snapshot_error:
+        LOG.debug(
+            "Activated Seerr request resolver from stale snapshot due to refresh error: "
+            f"{snapshot_error}"
+        )
+    return True, snapshot_error
 
 
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
@@ -635,15 +664,6 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             select(ReclaimRule).where(ReclaimRule.enabled == True)
         )
         rules = result.scalars().all()
-
-        # Separate rules by explicit advanced target. Rules without a valid
-        # advanced definition are skipped by the evaluator and will not match.
-        movie_rules = [
-            r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION
-        ]
-        series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
-        season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
-        episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
         if not rules:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
@@ -661,7 +681,54 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         ).activate()
         await _refresh_arr_tags_for_rules(list(rules))
         await _refresh_arr_monitoring_for_rules(list(rules))
-        await _activate_seerr_request_resolver_for_rules(db, list(rules))
+
+        seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
+            db,
+            list(rules),
+            require_fresh=True,
+            allow_stale_on_failure=False,
+        )
+        if seerr_ready:
+            await clear_seerr_rule_skip_notice(db)
+        else:
+            seerr_dependent_rules = [r for r in rules if _rule_uses_seerr_fields(r)]
+            if seerr_dependent_rules:
+                rules = [r for r in rules if not _rule_uses_seerr_fields(r)]
+                skipped = len(seerr_dependent_rules)
+                reason = seerr_error or "Failed to refresh Seerr request snapshot"
+                await set_seerr_rule_skip_notice(
+                    db,
+                    skipped_rules=skipped,
+                    reason=reason,
+                )
+                LOG.warning(
+                    f"Skipping {skipped} Seerr dependent cleanup rule(s) this run: {reason}"
+                )
+                try:
+                    await notify_admins(
+                        notification_type=NotificationType.ADMIN_MESSAGE,
+                        title="Seerr rules skipped during cleanup scan",
+                        message=(
+                            f"Skipped {skipped} Seerr dependent rule(s) for this cleanup run "
+                            "because Seerr request data could not be refreshed."
+                        ),
+                        context={"reason": reason},
+                    )
+                except Exception as notify_error:
+                    LOG.error(
+                        f"Failed to notify admins about skipped Seerr rules: {notify_error}"
+                    )
+            else:
+                await clear_seerr_rule_skip_notice(db)
+
+        # Separate rules by explicit advanced target. Rules without a valid
+        # advanced definition are skipped by the evaluator and will not match.
+        movie_rules = [
+            r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION
+        ]
+        series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
+        season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
+        episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
         candidates_created = 0
         candidates_updated = 0

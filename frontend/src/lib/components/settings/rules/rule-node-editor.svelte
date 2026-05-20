@@ -3,9 +3,11 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import PathPatternPicker from "$lib/components/settings/rules/path-pattern-picker.svelte";
+  import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Users from "@lucide/svelte/icons/users";
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
   import type {
     MediaType,
@@ -52,6 +54,7 @@
   }: Props = $props();
 
   let pathPickerOpen = $state(false);
+  let seerrPickerOpen = $state(false);
 
   const operatorLabelMap: Record<RuleConditionOperator, string> = {
     equals: "is",
@@ -129,6 +132,15 @@
   const booleanOperators: RuleConditionOperator[] = [
     "is_true",
     "is_false",
+    "exists",
+    "not_exists",
+  ];
+
+  const requesterIdOperators: RuleConditionOperator[] = [
+    "in",
+    "not_in",
+    "contains_any",
+    "not_contains_any",
     "exists",
     "not_exists",
   ];
@@ -473,6 +485,13 @@
       defaultOperator: "is_true",
     },
     {
+      value: "seerr.requested_by_user_ids",
+      label: "Seerr requester IDs",
+      kind: "text",
+      operators: requesterIdOperators,
+      defaultOperator: "contains_any",
+    },
+    {
       value: "disk.free_bytes",
       label: "Disk free (bytes)",
       kind: "number",
@@ -603,6 +622,8 @@
     !valuelessOperators.has(c.operator);
   const valuePlaceholder = (c: RuleCondition) => {
     if (c.operator === "matches_any_regex") return "regex patterns…";
+    if (c.field === "seerr.requested_by_user_ids")
+      return "Seerr user IDs (comma-separated)...";
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";
   };
@@ -727,6 +748,12 @@
       return;
     }
     c.value = cleaned;
+    onChange();
+  };
+
+  const applySeerrUserIds = (c: RuleCondition, ids: string[]) => {
+    if (!listOperators.has(c.operator)) return;
+    c.value = ids;
     onChange();
   };
 
@@ -954,6 +981,17 @@
               value={valueText(node)}
               oninput={(e) => setConditionValue(node, e.currentTarget.value)}
             />
+            {#if node.field === "seerr.requested_by_user_ids" && listOperators.has(node.operator)}
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (seerrPickerOpen = true)}
+              >
+                <Users class="size-3.5" />
+                <span class="hidden sm:inline">Pick Users</span>
+              </Button>
+            {/if}
             {#if node.field === "media.path" && pathPickerMediaType}
               <Button
                 size="sm"
@@ -991,6 +1029,14 @@
       mediaType={pathPickerMediaType}
       libraryIds={pathPickerLibraryIds}
       onSelect={(pattern) => addPathPattern(node, pattern)}
+    />
+  {/if}
+
+  {#if node.field === "seerr.requested_by_user_ids" && listOperators.has(node.operator)}
+    <SeerrUserPicker
+      bind:open={seerrPickerOpen}
+      initialSelectedIds={normalizeValueList(node.value)}
+      onApply={(ids) => applySeerrUserIds(node, ids)}
     />
   {/if}
 {/if}

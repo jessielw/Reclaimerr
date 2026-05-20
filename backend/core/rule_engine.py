@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any
@@ -78,6 +79,7 @@ FIELD_LABELS: dict[str, str] = {
     "arr.tags": "Arr tags",
     "arr.monitored": "Arr monitored",
     "seerr.requested": "Seerr requested",
+    "seerr.requested_by_user_ids": "Seerr requested by user IDs",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -149,6 +151,7 @@ TEXT_FIELDS = {
     "video.color_transfer",
     "video.color_primaries",
     "arr.tags",
+    "seerr.requested_by_user_ids",
 }
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
@@ -197,6 +200,14 @@ LIBRARY_OPERATORS = {
     "not_exists",
 }
 BOOLEAN_OPERATORS = {"is_true", "is_false", "exists", "not_exists"}
+SEERR_REQUESTER_ID_OPERATORS = {
+    "in",
+    "not_in",
+    "contains_any",
+    "not_contains_any",
+    "exists",
+    "not_exists",
+}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -221,6 +232,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(BOOLEAN_OPERATORS) for field in BOOLEAN_FIELDS},
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
+    "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
 }
 
 
@@ -321,22 +333,23 @@ class DiskStatsResolver:
 class SeerrRequestResolver:
     """Holds pre fetched Seerr request state for one scan run.
 
-    State is keyed by ``(media_type, tmdb_id)`` and values are booleans indicating
-    whether that media currently has at least one request in Seerr.
+    State is keyed by ``(media_type, tmdb_id)`` and values are requester id sets.
     """
 
     _ctx: ContextVar[SeerrRequestResolver | None] = ContextVar(
         "seerr_request_resolver", default=None
     )
 
-    __slots__ = ("_requested_by_key",)
+    __slots__ = ("_requester_ids_by_key",)
 
     def __init__(
-        self, requested_by_key: dict[tuple[MediaType, int], bool] | None = None
+        self,
+        requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[int]]
+        | None = None,
     ):
-        self._requested_by_key: dict[tuple[MediaType, int], bool] = (
-            requested_by_key or {}
-        )
+        self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
+        for key, user_ids in (requester_ids_by_key or {}).items():
+            self._requester_ids_by_key[key] = {int(v) for v in user_ids}
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -347,11 +360,23 @@ class SeerrRequestResolver:
         """Return the resolver active in the current async context, or None."""
         return cls._ctx.get()
 
-    def resolve(self, media_type: MediaType, tmdb_id: int | None) -> bool | None:
-        """Return Seerr requested state for the given media key if known."""
+    def resolve_requester_ids(
+        self, media_type: MediaType, tmdb_id: int | None
+    ) -> list[int] | None:
+        """Return Seerr requester IDs for the given media key if known."""
         if tmdb_id is None:
             return None
-        return self._requested_by_key.get((media_type, tmdb_id))
+        ids = self._requester_ids_by_key.get((media_type, tmdb_id))
+        if ids is None:
+            return None
+        return sorted(ids)
+
+    def resolve(self, media_type: MediaType, tmdb_id: int | None) -> bool | None:
+        """Return Seerr requested state for the given media key if known."""
+        requester_ids = self.resolve_requester_ids(media_type, tmdb_id)
+        if requester_ids is None:
+            return None
+        return bool(requester_ids)
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -610,6 +635,11 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requested_by_user_ids": (
+                _seerr_resolver.resolve_requester_ids(MediaType.MOVIE, movie.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -654,6 +684,11 @@ def _build_context(
             "arr.monitored": series.is_monitored,
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requested_by_user_ids": (
+                _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
                 if _seerr_resolver
                 else None
             ),
@@ -717,6 +752,11 @@ def _build_context(
             "arr.monitored": season.is_monitored,
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requested_by_user_ids": (
+                _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
                 if _seerr_resolver
                 else None
             ),
@@ -784,6 +824,11 @@ def _build_context(
             "arr.monitored": season.is_monitored,
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requested_by_user_ids": (
+                _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
                 if _seerr_resolver
                 else None
             ),
