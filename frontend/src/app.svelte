@@ -15,7 +15,6 @@
   import Rules from "./routes/rules.svelte";
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
-  import SystemAlerts from "$lib/components/system-alerts.svelte";
   import { onMount } from "svelte";
   import Menu from "@lucide/svelte/icons/menu";
   import X from "@lucide/svelte/icons/x";
@@ -133,7 +132,6 @@
 
       <!-- main content with top margin on mobile for fixed header -->
       <main class="flex-1 overflow-y-auto mt-16 lg:mt-0">
-        <SystemAlerts />
         <Router {routes} />
         {#if isDevBuild}
           <span
