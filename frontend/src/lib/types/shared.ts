@@ -138,6 +138,7 @@ export interface GeneralSettings {
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
+  add_arr_import_exclusions_on_delete: boolean;
 }
 
 export interface ReclaimRule {

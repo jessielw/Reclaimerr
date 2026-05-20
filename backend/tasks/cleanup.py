@@ -830,13 +830,13 @@ async def _collect_series_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate whole-series rules without mutating persisted candidates."""
-
     # get all media items
-    result = await db.execute(
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs))
     )
+    result = await db.execute(query)
     media_items = result.scalars().all()
 
     LOG.info(f"Processing {len(media_items)} {MediaType.SERIES.value} items")
@@ -972,11 +972,12 @@ async def _collect_movie_version_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate movie-version rules without mutating persisted candidates."""
-    result = await db.execute(
+    query = (
         select(Movie)
         .where(Movie.removed_at.is_(None))
         .options(selectinload(Movie.versions))
     )
+    result = await db.execute(query)
     movies = result.scalars().all()
     LOG.info(f"Processing {len(movies)} movie items at version granularity")
 
@@ -1151,11 +1152,12 @@ async def _collect_season_candidate_records(
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
     # load all non-deleted series with their seasons and service refs
-    result = await db.execute(
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs), selectinload(Series.seasons))
     )
+    result = await db.execute(query)
     all_series = result.scalars().all()
 
     if not all_series:
@@ -1307,7 +1309,7 @@ async def _collect_episode_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate episode rules without mutating persisted candidates."""
-    result = await db.execute(
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(
@@ -1315,6 +1317,7 @@ async def _collect_episode_candidate_records(
             selectinload(Series.seasons).selectinload(Season.episodes),
         )
     )
+    result = await db.execute(query)
     all_series = result.scalars().all()
 
     if not all_series:
@@ -2180,6 +2183,7 @@ async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
     media_server_fallback_enabled: bool = True,
+    add_arr_import_exclusions_on_delete: bool = True,
     rules: dict[int, ReclaimRule] | None = None,
     default_arr_delete_behavior: ArrDeleteFallback = "unmonitor",
 ) -> int:
@@ -2361,7 +2365,11 @@ async def _delete_movie_version_candidates(
                     if not client:
                         continue
                     try:
-                        await client.delete_movies([arr_movie_id], delete_files=False)
+                        await client.delete_movies(
+                            [arr_movie_id],
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
+                        )
                         LOG.info(
                             f"Removed '{movie.title}' from Radarr entirely "
                             f"(no files remaining, config_id={config_id}, arr_id={arr_movie_id})"
@@ -2411,8 +2419,8 @@ async def _delete_movie_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
-        default_arr_delete_behavior = _coerce_arr_delete_fallback(
-            settings_row.default_arr_delete_behavior if settings_row else None
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_movies = (
@@ -2611,6 +2619,7 @@ async def _delete_movie_candidates(
             unmatched_version_candidates,
             approved_by,
             media_server_fallback_enabled,
+            add_arr_import_exclusions_on_delete,
             rules_by_id,
             default_arr_delete_behavior,
         )
@@ -2722,9 +2731,16 @@ async def _delete_movie_candidates(
                                 f"Cannot resolve path for '{m['title']}' ({ver.path!r}); "
                                 f"skipping pre-delete move"
                             )
-                await client.delete_movies(radarr_ids, delete_files=False)
+                await client.delete_movies(
+                    radarr_ids,
+                    delete_files=False,
+                    add_import_exclusion=add_arr_import_exclusions_on_delete,
+                )
             else:
-                await client.delete_movies(radarr_ids)
+                await client.delete_movies(
+                    radarr_ids,
+                    add_import_exclusion=add_arr_import_exclusions_on_delete,
+                )
             movies_to_delete.extend(batch)
             radarr_refresh_after_delete.setdefault(config_id, set()).update(radarr_ids)
         except Exception as e:
@@ -3100,6 +3116,9 @@ async def _delete_series_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
+        )
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_series = (
             settings_row.move_destination_series if settings_row else None
@@ -3290,11 +3309,15 @@ async def _delete_series_candidates(
                             f"skipping pre-delete move"
                         )
                     await client.delete_series(
-                        series_info["sonarr_id"], delete_files=False
+                        series_info["sonarr_id"],
+                        delete_files=False,
+                        add_import_exclusion=add_arr_import_exclusions_on_delete,
                     )
                 else:
                     await client.delete_series(
-                        series_info["sonarr_id"], delete_files=True
+                        series_info["sonarr_id"],
+                        delete_files=True,
+                        add_import_exclusion=add_arr_import_exclusions_on_delete,
                     )
             series_to_delete.extend(batch)
             sonarr_refresh_after_delete.setdefault(config_id, set()).update(
@@ -3590,6 +3613,9 @@ async def _delete_season_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
+        )
 
     async with async_db() as db:
         query = (
@@ -3785,7 +3811,9 @@ async def _delete_season_candidates(
                     )
                     if all_empty:
                         await sonarr_client.delete_series(
-                            sonarr_ref_id, delete_files=False
+                            sonarr_ref_id,
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
                         )
                         LOG.info(
                             f"Removed '{series_obj.title}' from Sonarr entirely "
@@ -3962,6 +3990,9 @@ async def _delete_episode_candidates(
         settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
+        )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
 
     async with async_db() as db:
@@ -4158,7 +4189,9 @@ async def _delete_episode_candidates(
                     )
                     if all_empty:
                         await sonarr_client.delete_series(
-                            sonarr_ref_id, delete_files=False
+                            sonarr_ref_id,
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
                         )
                         LOG.info(
                             f"Removed '{series_obj.title}' from Sonarr entirely "
@@ -4715,9 +4748,8 @@ async def move_specific_candidates(
 
     # load candidates with their version/movie data
     async with async_db() as db:
-        result = await db.execute(
-            select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
-        )
+        query = select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
+        result = await db.execute(query)
         candidates = result.scalars().all()
         candidate_version_ids = [
             c.movie_version_id for c in candidates if c.movie_version_id

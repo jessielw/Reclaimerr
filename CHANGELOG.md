@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Users are parsed upon opening a rule (if Seerr is enabled) and will be displayed via a "Seerr User Picker" modal
     - Internally the user IDs from Seerr are utilized but visually you'll be able to see them by name (this was needed in case users names changed on Seerr)
 - New house keeping task to clean up admin notices older than 90 days automatically (read or unread)
+- Option in **Settings -> General** to add exclusion to the **\*arr** that is enabled by default
+  - With this option on Reclaimerr will now add to the exclusion list for the arr automatically to prevent lists/syncs automatically re-grabbing that title
 
 ### Changed
 

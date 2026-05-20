@@ -51,6 +51,7 @@
   let moveDestinationMovies = $state("");
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
+  let addArrImportExclusionsOnDelete = $state(true);
   let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
     "unmonitor",
   );
@@ -118,6 +119,7 @@
         move_destination_series: moveDestinationSeries,
         media_server_fallback_enabled: mediaServerFallbackEnabled,
         default_arr_delete_behavior: defaultArrDeleteBehavior,
+        add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -324,6 +326,8 @@
           settings.media_server_fallback_enabled ?? true;
         defaultArrDeleteBehavior =
           settings.default_arr_delete_behavior ?? "unmonitor";
+        addArrImportExclusionsOnDelete =
+          settings.add_arr_import_exclusions_on_delete ?? true;
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -963,6 +967,24 @@
         deletion, or the item is not tracked in any arr instance), fall back to
         deleting via the media server (Jellyfin/Emby/Plex) directly. Disable
         this if your media server has read only file access.
+      </p>
+    </div>
+
+    <!-- add Arr import list exclusions on delete -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-semibold text-foreground">
+          Add Arr Import List Exclusions on Delete
+        </h3>
+        <Switch
+          id="addArrImportExclusionsOnDelete"
+          bind:checked={addArrImportExclusionsOnDelete}
+        />
+      </div>
+      <p class="text-muted-foreground text-sm">
+        When enabled, delete actions sent to Radarr/Sonarr also add Arr import
+        list exclusions to reduce automatic re-add/re-import behavior. Unmonitor
+        only actions are not affected.
       </p>
     </div>
 

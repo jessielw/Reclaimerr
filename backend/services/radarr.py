@@ -269,6 +269,7 @@ class RadarrClient:
         self,
         movie_ids: list[int],
         delete_files: bool = True,
+        add_import_exclusion: bool = False,
     ) -> None:
         """Delete multiple movies at once."""
         status_code, _ = await self._make_request(
@@ -277,6 +278,7 @@ class RadarrClient:
             json={
                 "movieIds": movie_ids,
                 "deleteFiles": delete_files,
+                "addImportExclusion": add_import_exclusion,
             },
         )
         if status_code != 200:

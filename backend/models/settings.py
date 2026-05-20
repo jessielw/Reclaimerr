@@ -244,6 +244,7 @@ class GeneralSettingsResponse(BaseModel):
     # deletion routing
     media_server_fallback_enabled: bool = True
     default_arr_delete_behavior: Literal["unmonitor", "remove_if_empty"] = "unmonitor"
+    add_arr_import_exclusions_on_delete: bool = True
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None

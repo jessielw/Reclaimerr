@@ -197,6 +197,9 @@ class GeneralSettings(Base):
     default_arr_delete_behavior: Mapped[str] = mapped_column(
         String(32), default="unmonitor"
     )
+    add_arr_import_exclusions_on_delete: Mapped[bool] = mapped_column(
+        Boolean, default=True
+    )
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(

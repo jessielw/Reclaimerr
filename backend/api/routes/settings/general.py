@@ -80,6 +80,9 @@ async def update_general_settings(
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
     settings.default_arr_delete_behavior = request.default_arr_delete_behavior
+    settings.add_arr_import_exclusions_on_delete = (
+        request.add_arr_import_exclusions_on_delete
+    )
 
     # update metadata
     settings.updated_at = datetime.now(UTC)
