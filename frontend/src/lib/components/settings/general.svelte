@@ -20,6 +20,7 @@
     type PostActionWebhookConfig,
   } from "$lib/types/shared";
   import TestButton from "$lib/components/test-button.svelte";
+  import FavoritesSettings from "$lib/components/settings/general/favorites-settings.svelte";
   import { auth } from "$lib/stores/auth";
 
   // props
@@ -52,6 +53,9 @@
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
   let addArrImportExclusionsOnDelete = $state(true);
+  let favoritesIgnoreEnabled = $state(false);
+  let favoritesProtectAllUsers = $state(false);
+  let favoritesUsernamesInput = $state("");
   let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
     "unmonitor",
   );
@@ -81,6 +85,18 @@
     if (!value.trim()) return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const parseFavoritesUsernames = (value: string): string[] => {
+    const seen = new Set<string>();
+    const usernames: string[] = [];
+    for (const raw of value.split(/[\n,]+/)) {
+      const normalized = raw.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      usernames.push(normalized);
+    }
+    return usernames;
   };
 
   // save settings
@@ -120,6 +136,9 @@
         media_server_fallback_enabled: mediaServerFallbackEnabled,
         default_arr_delete_behavior: defaultArrDeleteBehavior,
         add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
+        favorites_ignore_enabled: favoritesIgnoreEnabled,
+        favorites_protect_all_users: favoritesProtectAllUsers,
+        favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -328,6 +347,12 @@
           settings.default_arr_delete_behavior ?? "unmonitor";
         addArrImportExclusionsOnDelete =
           settings.add_arr_import_exclusions_on_delete ?? true;
+        favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
+        favoritesProtectAllUsers =
+          settings.favorites_protect_all_users ?? false;
+        favoritesUsernamesInput = (settings.favorites_usernames ?? []).join(
+          ", ",
+        );
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -987,6 +1012,12 @@
         only actions are not affected.
       </p>
     </div>
+
+    <FavoritesSettings
+      bind:favoritesIgnoreEnabled
+      bind:favoritesProtectAllUsers
+      bind:favoritesUsernamesInput
+    />
 
     <!-- default ARR delete behavior -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">

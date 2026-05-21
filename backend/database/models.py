@@ -201,6 +201,11 @@ class GeneralSettings(Base):
         Boolean, default=True
     )
 
+    # favorites
+    favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -510,6 +515,44 @@ class SupplementalMediaMatch(Base):
     confidence: Mapped[int] = mapped_column(SmallInteger, default=100)
     signals: Mapped[dict | None] = mapped_column(JSON, default=None)
 
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class MediaFavorite(Base):
+    """Snapshot of user favorites mapped to TMDB IDs across media servers.
+
+    Emby and Jellyfin only for now as Plex doesn't store this data locally.
+    """
+
+    __tablename__ = "media_favorites"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_type",
+            "tmdb_id",
+            "username_normalized",
+            "source_service",
+            "source_service_config_id",
+            name="uq_media_favorites_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
+    username: Mapped[str] = mapped_column(String(255))
+    username_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )

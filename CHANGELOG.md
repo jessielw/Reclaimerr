@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New house keeping task to clean up admin notices older than 90 days automatically (read or unread)
 - Option in **Settings -> General** to add exclusion to the **\*arr** that is enabled by default
   - With this option on Reclaimerr will now add to the exclusion list for the arr automatically to prevent lists/syncs automatically re-grabbing that title
+- Support ignore **Jellyfin/Emby** user favorites _(currently this feature isn't supported on Plex)_
+  - During preview user favorites are snapshot every 10 minutes to avoid hitting the server over and over again while users are testing rules but they will be up to date always during live candidate scans
+  - Added a setting in **Settings -> General** to enable/disable this feature and a box to add the usernames you'd like to automatically ignore their favorites
+    - Supports copy/paste for specific users or all users and displays which users currently has favorites
 
 ### Changed
 

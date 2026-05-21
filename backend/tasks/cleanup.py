@@ -1,8 +1,10 @@
 import shutil
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from alembic.op import f
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,6 +37,7 @@ from backend.database.models import (
     DeleteRequest,
     Episode,
     GeneralSettings,
+    MediaFavorite,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -61,6 +64,7 @@ from backend.services.admin_notices import (
     clear_seerr_rule_skip_notice,
     set_seerr_rule_skip_notice,
 )
+from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.notifications import (
     build_cleanup_notification_context,
     notify_admins,
@@ -129,6 +133,129 @@ def _is_episode_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> A
     return model.episode_id.isnot(None)
 
 
+def _normalize_favorites_username(value: str) -> str:
+    """Normalizer for favorites usernames."""
+    return value.strip().lower()
+
+
+async def _load_favorites_policy(
+    db: AsyncSession,
+) -> tuple[bool, bool, set[str]]:
+    """Load favorites protection settings."""
+    row = (await db.execute(select(GeneralSettings))).scalars().first()
+    if row is None:
+        return False, False, set()
+    usernames = {
+        _normalize_favorites_username(str(raw))
+        for raw in (row.favorites_usernames or [])
+        if str(raw).strip()
+    }
+    return (
+        bool(row.favorites_ignore_enabled),
+        bool(row.favorites_protect_all_users),
+        usernames,
+    )
+
+
+async def _ensure_favorites_snapshot_if_enabled(
+    db: AsyncSession,
+) -> tuple[bool, str | None]:
+    """Ensure favorites snapshot exists/fresh when favorites protection is enabled."""
+    enabled, _, _ = await _load_favorites_policy(db)
+    if not enabled:
+        return True, None
+    ok, error = await media_favorites_snapshot_cache.ensure_fresh_snapshot()
+    if not ok:
+        return False, error
+    return True, error
+
+
+async def _load_favorite_tmdb_ids(
+    db: AsyncSession,
+    *,
+    media_type: MediaType,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> set[int]:
+    """Return protected TMDB IDs from favorites snapshot for the current policy."""
+    if not protect_all_users and not usernames:
+        return set()
+
+    query = select(MediaFavorite.tmdb_id).where(MediaFavorite.media_type == media_type)
+    if not protect_all_users:
+        query = query.where(MediaFavorite.username_normalized.in_(usernames))
+    rows = (await db.execute(query)).scalars().all()
+    return {int(tmdb_id) for tmdb_id in rows if tmdb_id is not None}
+
+
+async def _filter_movie_candidates_by_favorites(
+    db: AsyncSession,
+    candidates: Sequence[ReclaimCandidate],
+    *,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> tuple[Sequence[ReclaimCandidate], int]:
+    movie_ids = {candidate.movie_id for candidate in candidates if candidate.movie_id}
+    if not movie_ids:
+        return candidates, 0
+    favorite_tmdb_ids = await _load_favorite_tmdb_ids(
+        db,
+        media_type=MediaType.MOVIE,
+        protect_all_users=protect_all_users,
+        usernames=usernames,
+    )
+    if not favorite_tmdb_ids:
+        return candidates, 0
+
+    rows = (
+        await db.execute(select(Movie.id, Movie.tmdb_id).where(Movie.id.in_(movie_ids)))
+    ).all()
+    movie_tmdb_map = {movie_id: tmdb_id for movie_id, tmdb_id in rows}
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate.movie_id is None
+        or movie_tmdb_map.get(candidate.movie_id) not in favorite_tmdb_ids
+    ]
+    return filtered, len(candidates) - len(filtered)
+
+
+async def _filter_series_candidates_by_favorites(
+    db: AsyncSession,
+    candidates: Sequence[ReclaimCandidate],
+    *,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> tuple[Sequence[ReclaimCandidate], int]:
+    series_ids = {
+        candidate.series_id for candidate in candidates if candidate.series_id
+    }
+    if not series_ids:
+        return candidates, 0
+    favorite_tmdb_ids = await _load_favorite_tmdb_ids(
+        db,
+        media_type=MediaType.SERIES,
+        protect_all_users=protect_all_users,
+        usernames=usernames,
+    )
+    if not favorite_tmdb_ids:
+        return candidates, 0
+
+    rows = (
+        await db.execute(
+            select(Series.id, Series.tmdb_id).where(Series.id.in_(series_ids))
+        )
+    ).all()
+    series_tmdb_map = {series_id: tmdb_id for series_id, tmdb_id in rows}
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate.series_id is None
+        or series_tmdb_map.get(candidate.series_id) not in favorite_tmdb_ids
+    ]
+    return filtered, len(candidates) - len(filtered)
+
+
 async def _soft_remove_movie_if_empty(
     db: AsyncSession, movie_id: int | None
 ) -> Movie | None:
@@ -178,6 +305,17 @@ async def collect_rule_preview_matches(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
+    favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(db)
+    if not favorites_ready and favorites_error:
+        LOG.warning(
+            "Proceeding with existing favorites snapshot during rule preview: "
+            f"{favorites_error}"
+        )
+    elif favorites_error:
+        LOG.debug(
+            "Using stale favorites snapshot during rule preview due to refresh error: "
+            f"{favorites_error}"
+        )
     DiskStatsResolver(
         arr_entries=await _load_arr_disk_space(),
         path_mappings=await _load_path_mappings(),
@@ -673,6 +811,20 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
 
+        favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(
+            db
+        )
+        if not favorites_ready and favorites_error:
+            LOG.warning(
+                "Favorites snapshot refresh failed for this cleanup scan: "
+                f"{favorites_error}"
+            )
+        elif favorites_error:
+            LOG.debug(
+                "Using stale favorites snapshot for this cleanup scan due to refresh error: "
+                f"{favorites_error}"
+            )
+
         # refresh arr data from Radarr/Sonarr for any labels/fields referenced in active rules
         # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
         DiskStatsResolver(
@@ -829,7 +981,23 @@ async def _collect_series_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
-    """Evaluate whole-series rules without mutating persisted candidates."""
+    """Evaluate whole series rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+
     # get all media items
     query = (
         select(Series)
@@ -863,6 +1031,11 @@ async def _collect_series_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for item in media_items:
+        if favorite_tmdb_ids and item.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {item.title} (TMDB ID: {item.tmdb_id})"
+            )
+            continue
         # skip protected items
         if item.id in protected_ids:
             continue
@@ -972,6 +1145,21 @@ async def _collect_movie_version_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate movie-version rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.MOVIE,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
     query = (
         select(Movie)
         .where(Movie.removed_at.is_(None))
@@ -1010,6 +1198,11 @@ async def _collect_movie_version_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for movie in movies:
+        if favorite_tmdb_ids and movie.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite movie: {movie.title} (TMDB ID: {movie.tmdb_id})"
+            )
+            continue
         if movie.id in protected_movie_ids:
             continue
         if not movie.versions:
@@ -1151,6 +1344,22 @@ async def _collect_season_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+
     # load all non-deleted series with their seasons and service refs
     query = (
         select(Series)
@@ -1200,6 +1409,11 @@ async def _collect_season_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
+        if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
+            )
+            continue
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
@@ -1309,6 +1523,22 @@ async def _collect_episode_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate episode rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+
     query = (
         select(Series)
         .where(Series.removed_at.is_(None))
@@ -1358,6 +1588,11 @@ async def _collect_episode_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
+        if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
+            )
+            continue
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
@@ -2422,6 +2657,19 @@ async def _delete_movie_candidates(
         add_arr_import_exclusions_on_delete = (
             settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_movies = (
             settings_row.move_destination_movies if settings_row else None
@@ -2445,6 +2693,24 @@ async def _delete_movie_candidates(
         if not candidates:
             LOG.debug("No movie candidates to delete")
             return 0
+
+        if favorites_ignore_enabled:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_movie_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} movie candidate(s) due to favorites protection"
+                )
+            if not candidates:
+                LOG.info("All movie candidates skipped due to favorites protection")
+                return 0
 
         LOG.info(f"Found {len(candidates)} movie candidates to evaluate for deletion")
 
@@ -3119,6 +3385,19 @@ async def _delete_series_candidates(
         add_arr_import_exclusions_on_delete = (
             settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_series = (
             settings_row.move_destination_series if settings_row else None
@@ -3143,6 +3422,24 @@ async def _delete_series_candidates(
         if not candidates:
             LOG.debug("No series candidates to delete")
             return 0
+
+        if favorites_ignore_enabled:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} series candidate(s) due to favorites protection"
+                )
+            if not candidates:
+                LOG.info("All series candidates skipped due to favorites protection")
+                return 0
 
         LOG.info(f"Found {len(candidates)} series candidates to evaluate for deletion")
 
@@ -3616,6 +3913,19 @@ async def _delete_season_candidates(
         add_arr_import_exclusions_on_delete = (
             settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
 
     async with async_db() as db:
         query = (
@@ -3629,6 +3939,20 @@ async def _delete_season_candidates(
         if restrict_to_ids:
             query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
         candidates = (await db.execute(query)).scalars().all()
+        if favorites_ignore_enabled and candidates:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} season candidate(s) due to favorites protection"
+                )
 
     if not candidates:
         LOG.debug("No season candidates to delete")
@@ -3994,6 +4318,19 @@ async def _delete_episode_candidates(
         add_arr_import_exclusions_on_delete = (
             settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
 
     async with async_db() as db:
         query = (
@@ -4008,6 +4345,20 @@ async def _delete_episode_candidates(
         if restrict_to_ids:
             query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
         candidates = (await db.execute(query)).scalars().all()
+        if favorites_ignore_enabled and candidates:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} episode candidate(s) due to favorites protection"
+                )
 
     if not candidates:
         LOG.debug("No episode candidates to delete")
@@ -4745,12 +5096,64 @@ async def move_specific_candidates(
     destination_movies_str = gen_settings.move_destination_movies or ""
     destination_series_str = gen_settings.move_destination_series or ""
     path_mappings = gen_settings.path_mappings or []
+    favorites_ignore_enabled = bool(gen_settings.favorites_ignore_enabled)
+    favorites_protect_all_users = bool(gen_settings.favorites_protect_all_users)
+    favorites_usernames = {
+        _normalize_favorites_username(str(raw))
+        for raw in (gen_settings.favorites_usernames or [])
+        if str(raw).strip()
+    }
 
     # load candidates with their version/movie data
     async with async_db() as db:
         query = select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
         result = await db.execute(query)
         candidates = result.scalars().all()
+        if favorites_ignore_enabled and candidates:
+            movie_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.media_type == MediaType.MOVIE
+            ]
+            series_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.media_type == MediaType.SERIES
+            ]
+            (
+                filtered_movie_candidates,
+                skipped_movies,
+            ) = await _filter_movie_candidates_by_favorites(
+                db,
+                movie_candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            (
+                filtered_series_candidates,
+                skipped_series,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                series_candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            allowed_ids = {
+                candidate.id
+                for candidate in [
+                    *filtered_movie_candidates,
+                    *filtered_series_candidates,
+                ]
+            }
+            candidates = [
+                candidate for candidate in candidates if candidate.id in allowed_ids
+            ]
+            skipped_total = skipped_movies + skipped_series
+            if skipped_total:
+                LOG.info(
+                    f"Skipped {skipped_total} move candidate(s) due to favorites protection"
+                )
+
         candidate_version_ids = [
             c.movie_version_id for c in candidates if c.movie_version_id
         ]
