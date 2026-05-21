@@ -173,6 +173,82 @@ class EmbyServiceBase:
             return []
         return [EmbyUserBase(name=user["Name"], id=user["Id"]) for user in users_data]
 
+    async def get_favorite_tmdb_ids_by_user(
+        self, media_type: Literal["movie", "series"]
+    ) -> dict[str, set[int]]:
+        """Return favorite TMDB IDs grouped by username for a media type.
+
+        This intentionally queries each user directly via ``Users/{id}/Items`` so
+        favorites remain user scoped and we can build a cross user snapshot.
+        """
+        include_item_types = "Movie" if media_type == "movie" else "Series"
+        users = await self.get_users()
+        if not users:
+            return {}
+
+        favorite_map: dict[str, set[int]] = {}
+        page_size = 1000
+
+        for user in users:
+            username = (user.name or "").strip()
+            if not username:
+                continue
+
+            start_index = 0
+            user_tmdb_ids: set[int] = set()
+
+            while True:
+                params = {
+                    "IncludeItemTypes": include_item_types,
+                    "Recursive": "true",
+                    "Fields": "ProviderIds",
+                    "IsFavorite": "true",
+                    "Filters": "IsFavorite",
+                    "StartIndex": start_index,
+                    "Limit": page_size,
+                }
+                data = await self._make_request(
+                    f"Users/{user.id}/Items",
+                    params=params,
+                    timeout=300,
+                )
+                if not isinstance(data, dict):
+                    break
+
+                items = data.get("Items", [])
+                if not isinstance(items, list) or not items:
+                    break
+
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    provider_ids = item.get("ProviderIds", {})
+                    if not isinstance(provider_ids, dict):
+                        continue
+                    tmdb_id_raw = provider_ids.get("Tmdb")
+                    if tmdb_id_raw is None:
+                        continue
+                    tmdb_text = str(tmdb_id_raw).strip()
+                    if tmdb_text.isdigit():
+                        user_tmdb_ids.add(int(tmdb_text))
+
+                # paginate
+                total_record_count = data.get("TotalRecordCount")
+                try:
+                    total = (
+                        int(total_record_count) if total_record_count is not None else 0
+                    )
+                except (TypeError, ValueError):
+                    total = 0
+                start_index += len(items)
+                if start_index >= total:
+                    break
+
+            if user_tmdb_ids:
+                favorite_map[username] = user_tmdb_ids
+
+        return favorite_map
+
     async def get_movies_for_user(
         self,
         user_id: str,

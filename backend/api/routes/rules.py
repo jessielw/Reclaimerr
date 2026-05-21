@@ -40,11 +40,14 @@ from backend.models.cleanup import (
 from backend.models.media import PaginatedRulePreviewResponse
 from backend.models.rules import (
     RulePreviewRequest,
+    SeerrUserLookupResponse,
     ValidatePathsRequest,
     ValidatePathsResponse,
     ValidateRegexRequest,
     ValidateRegexResponse,
 )
+from backend.services.admin_notices import reconcile_stale_library_notice
+from backend.services.seerr_cache import seerr_snapshot_cache
 from backend.tasks.cleanup import collect_rule_preview_matches
 
 router = APIRouter(prefix="/api", tags=["rules"])
@@ -122,6 +125,15 @@ def _rule_response(rule: ReclaimRule) -> CleanupRuleResponse:
             "updated_at": rule.updated_at,
         }
     )
+
+
+async def _sync_stale_library_notice(db: AsyncSession) -> None:
+    try:
+        await reconcile_stale_library_notice(db)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        LOG.warning(f"Failed to sync stale-library notice state: {exc}")
 
 
 def _split_ancestors(path: PathLike[str] | str) -> list[str]:
@@ -284,6 +296,38 @@ async def get_path_tree(
     return [build_node(r) for r in roots]
 
 
+@router.get("/rules/seerr-users", response_model=list[SeerrUserLookupResponse])
+async def get_seerr_users(
+    _admin: Annotated[User, Depends(require_admin)],
+    q: Annotated[str, Query()] = "",
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> list[SeerrUserLookupResponse]:
+    """Return cached Seerr users for requester rule picker."""
+    users = await seerr_snapshot_cache.get_users()
+    if not users:
+        # bypass cache retry to recover from transient empty states if needed
+        users = await seerr_snapshot_cache.get_users(force_refresh=True)
+
+    response_users = [
+        SeerrUserLookupResponse(
+            id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+        )
+        for user in users
+    ]
+    needle = q.strip().lower()
+    if needle:
+        response_users = [
+            user
+            for user in response_users
+            if needle in str(user.id)
+            or needle in (user.username or "").lower()
+            or needle in (user.display_name or "").lower()
+        ]
+    return response_users[:limit]
+
+
 @router.get("/rules", response_model=list[CleanupRuleResponse])
 async def get_rules(
     _admin: Annotated[User, Depends(require_admin)],
@@ -334,6 +378,7 @@ async def create_rule(
     db.add(new_rule)
     await db.commit()
     await db.refresh(new_rule)
+    await _sync_stale_library_notice(db)
 
     LOG.info(f"Created cleanup rule: {new_rule.name} (ID: {new_rule.id})")
     return _rule_response(new_rule)
@@ -511,6 +556,7 @@ async def import_rules(
 
     if imported:
         await db.commit()
+        await _sync_stale_library_notice(db)
         LOG.info(f"Imported {imported} cleanup rule(s)")
 
     return RuleImportResponse(imported=imported, errors=errors)
@@ -589,6 +635,7 @@ async def update_rule(
 
     await db.commit()
     await db.refresh(rule)
+    await _sync_stale_library_notice(db)
 
     LOG.info(f"Updated cleanup rule: {rule.name} (ID: {rule.id})")
     return _rule_response(rule)
@@ -613,6 +660,7 @@ async def delete_rule(
     rule_name = rule.name
     await db.delete(rule)
     await db.commit()
+    await _sync_stale_library_notice(db)
 
     msg = f"Deleted cleanup rule: {rule_name} (ID: {rule_id})"
     LOG.info(msg)

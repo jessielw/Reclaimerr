@@ -1,9 +1,10 @@
 import shutil
-from asyncio import Semaphore, gather
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from alembic.op import f
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,6 +28,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    normalize_fpath,
     resolve_path,
     sibling_cleanup,
 )
@@ -36,6 +38,7 @@ from backend.database.models import (
     DeleteRequest,
     Episode,
     GeneralSettings,
+    MediaFavorite,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -58,13 +61,20 @@ from backend.enums import (
 )
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.models.post_action_webhooks import PostActionWebhookEvent
+from backend.services.admin_notices import (
+    clear_seerr_rule_skip_notice,
+    set_seerr_rule_skip_notice,
+)
+from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.notifications import (
     build_cleanup_notification_context,
+    notify_admins,
     notify_all_users,
 )
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
+from backend.services.seerr_cache import seerr_snapshot_cache
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -124,6 +134,129 @@ def _is_episode_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> A
     return model.episode_id.isnot(None)
 
 
+def _normalize_favorites_username(value: str) -> str:
+    """Normalizer for favorites usernames."""
+    return value.strip().lower()
+
+
+async def _load_favorites_policy(
+    db: AsyncSession,
+) -> tuple[bool, bool, set[str]]:
+    """Load favorites protection settings."""
+    row = (await db.execute(select(GeneralSettings))).scalars().first()
+    if row is None:
+        return False, False, set()
+    usernames = {
+        _normalize_favorites_username(str(raw))
+        for raw in (row.favorites_usernames or [])
+        if str(raw).strip()
+    }
+    return (
+        bool(row.favorites_ignore_enabled),
+        bool(row.favorites_protect_all_users),
+        usernames,
+    )
+
+
+async def _ensure_favorites_snapshot_if_enabled(
+    db: AsyncSession,
+) -> tuple[bool, str | None]:
+    """Ensure favorites snapshot exists/fresh when favorites protection is enabled."""
+    enabled, _, _ = await _load_favorites_policy(db)
+    if not enabled:
+        return True, None
+    ok, error = await media_favorites_snapshot_cache.ensure_fresh_snapshot()
+    if not ok:
+        return False, error
+    return True, error
+
+
+async def _load_favorite_tmdb_ids(
+    db: AsyncSession,
+    *,
+    media_type: MediaType,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> set[int]:
+    """Return protected TMDB IDs from favorites snapshot for the current policy."""
+    if not protect_all_users and not usernames:
+        return set()
+
+    query = select(MediaFavorite.tmdb_id).where(MediaFavorite.media_type == media_type)
+    if not protect_all_users:
+        query = query.where(MediaFavorite.username_normalized.in_(usernames))
+    rows = (await db.execute(query)).scalars().all()
+    return {int(tmdb_id) for tmdb_id in rows if tmdb_id is not None}
+
+
+async def _filter_movie_candidates_by_favorites(
+    db: AsyncSession,
+    candidates: Sequence[ReclaimCandidate],
+    *,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> tuple[Sequence[ReclaimCandidate], int]:
+    movie_ids = {candidate.movie_id for candidate in candidates if candidate.movie_id}
+    if not movie_ids:
+        return candidates, 0
+    favorite_tmdb_ids = await _load_favorite_tmdb_ids(
+        db,
+        media_type=MediaType.MOVIE,
+        protect_all_users=protect_all_users,
+        usernames=usernames,
+    )
+    if not favorite_tmdb_ids:
+        return candidates, 0
+
+    rows = (
+        await db.execute(select(Movie.id, Movie.tmdb_id).where(Movie.id.in_(movie_ids)))
+    ).all()
+    movie_tmdb_map = {movie_id: tmdb_id for movie_id, tmdb_id in rows}
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate.movie_id is None
+        or movie_tmdb_map.get(candidate.movie_id) not in favorite_tmdb_ids
+    ]
+    return filtered, len(candidates) - len(filtered)
+
+
+async def _filter_series_candidates_by_favorites(
+    db: AsyncSession,
+    candidates: Sequence[ReclaimCandidate],
+    *,
+    protect_all_users: bool,
+    usernames: set[str],
+) -> tuple[Sequence[ReclaimCandidate], int]:
+    series_ids = {
+        candidate.series_id for candidate in candidates if candidate.series_id
+    }
+    if not series_ids:
+        return candidates, 0
+    favorite_tmdb_ids = await _load_favorite_tmdb_ids(
+        db,
+        media_type=MediaType.SERIES,
+        protect_all_users=protect_all_users,
+        usernames=usernames,
+    )
+    if not favorite_tmdb_ids:
+        return candidates, 0
+
+    rows = (
+        await db.execute(
+            select(Series.id, Series.tmdb_id).where(Series.id.in_(series_ids))
+        )
+    ).all()
+    series_tmdb_map = {series_id: tmdb_id for series_id, tmdb_id in rows}
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate.series_id is None
+        or series_tmdb_map.get(candidate.series_id) not in favorite_tmdb_ids
+    ]
+    return filtered, len(candidates) - len(filtered)
+
+
 async def _soft_remove_movie_if_empty(
     db: AsyncSession, movie_id: int | None
 ) -> Movie | None:
@@ -173,13 +306,29 @@ async def collect_rule_preview_matches(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
+    favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(db)
+    if not favorites_ready and favorites_error:
+        LOG.warning(
+            "Proceeding with existing favorites snapshot during rule preview: "
+            f"{favorites_error}"
+        )
+    elif favorites_error:
+        LOG.debug(
+            "Using stale favorites snapshot during rule preview due to refresh error: "
+            f"{favorites_error}"
+        )
     DiskStatsResolver(
         arr_entries=await _load_arr_disk_space(),
         path_mappings=await _load_path_mappings(),
     ).activate()
     await _refresh_arr_tags_for_rules(list(rules))
     await _refresh_arr_monitoring_for_rules(list(rules))
-    await _activate_seerr_request_resolver_for_rules(db, list(rules))
+    await _activate_seerr_request_resolver_for_rules(
+        db,
+        list(rules),
+        require_fresh=False,
+        allow_stale_on_failure=True,
+    )
 
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
     series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
@@ -551,28 +700,40 @@ async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
                 )
 
 
-def _rules_use_seerr_requested_field(rules: list[ReclaimRule]) -> bool:
-    """Return True if any rule condition references `seerr.requested`."""
-    for rule in rules:
-        for _ in collect_rule_conditions(rule.definition, field="seerr.requested"):
-            return True
+def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
+    """Return True if the rule conditions reference any Seerr request state fields."""
+    for _ in collect_rule_conditions(rule.definition, field="seerr.requested"):
+        return True
+    for _ in collect_rule_conditions(
+        rule.definition, field="seerr.requested_by_user_ids"
+    ):
+        return True
     return False
 
 
+def _rules_use_seerr_fields(rules: list[ReclaimRule]) -> bool:
+    """Return True if any of the rules reference Seerr request state fields."""
+    return any(_rule_uses_seerr_fields(r) for r in rules)
+
+
 async def _activate_seerr_request_resolver_for_rules(
-    db: AsyncSession, rules: list[ReclaimRule]
-) -> None:
-    """Activate scan-local Seerr request state for rules that reference seerr.requested."""
-    if not _rules_use_seerr_requested_field(rules):
-        return
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    require_fresh: bool,
+    allow_stale_on_failure: bool,
+) -> tuple[bool, str | None]:
+    """Activate scan local Seerr request state for rules that reference Seerr fields."""
+    if not _rules_use_seerr_fields(rules):
+        return True, None
 
     if not service_manager.seerr:
         LOG.warning(
-            "Rule uses seerr.requested but Seerr service is not configured; "
+            "Rule uses Seerr fields but Seerr service is not configured; "
             "Seerr rule conditions will not match"
         )
         SeerrRequestResolver({}).activate()
-        return
+        return False, "Seerr service is not configured"
 
     movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
     series_targets = any(
@@ -595,34 +756,41 @@ async def _activate_seerr_request_resolver_for_rules(
         ).all()
         series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
 
-    requested_by_key: dict[tuple[MediaType, int], bool] = {}
-    sem = Semaphore(10)
+    snapshot, snapshot_error = await seerr_snapshot_cache.get_request_snapshot(
+        require_fresh=require_fresh,
+        allow_stale_on_failure=allow_stale_on_failure,
+    )
+    if snapshot is None:
+        SeerrRequestResolver({}).activate()
+        return False, snapshot_error or "Failed to load Seerr request snapshot"
 
-    async def _fetch_movie(tmdb_id: int) -> None:
-        async with sem:
-            try:
-                requests = await service_manager.seerr.get_movie_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
-                requested_by_key[(MediaType.MOVIE, tmdb_id)] = bool(requests)
-            except Exception as e:
-                LOG.debug(f"Failed Seerr movie request lookup for TMDB {tmdb_id}: {e}")
-                requested_by_key[(MediaType.MOVIE, tmdb_id)] = False
+    requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
+        (MediaType.MOVIE, tmdb_id): set() for tmdb_id in movie_tmdb_ids
+    }
+    requester_ids_by_key.update(
+        {(MediaType.SERIES, tmdb_id): set() for tmdb_id in series_tmdb_ids}
+    )
+    for key, user_ids in snapshot.items():
+        media_type, tmdb_id = key
+        if media_type is MediaType.MOVIE and tmdb_id not in movie_tmdb_ids:
+            continue
+        if media_type is MediaType.SERIES and tmdb_id not in series_tmdb_ids:
+            continue
+        if key not in requester_ids_by_key:
+            continue
+        requester_ids_by_key[key].update(user_ids)
 
-    async def _fetch_series(tmdb_id: int) -> None:
-        async with sem:
-            try:
-                requests = await service_manager.seerr.get_tv_requests(tmdb_id)  # type: ignore[reportOptionalMemberAccess]
-                requested_by_key[(MediaType.SERIES, tmdb_id)] = bool(requests)
-            except Exception as e:
-                LOG.debug(f"Failed Seerr TV request lookup for TMDB {tmdb_id}: {e}")
-                requested_by_key[(MediaType.SERIES, tmdb_id)] = False
-
-    await gather(*[_fetch_movie(tmdb_id) for tmdb_id in movie_tmdb_ids])
-    await gather(*[_fetch_series(tmdb_id) for tmdb_id in series_tmdb_ids])
-    SeerrRequestResolver(requested_by_key).activate()
+    SeerrRequestResolver(requester_ids_by_key).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "
         f"{len(series_tmdb_ids)} series keys"
     )
+    if snapshot_error:
+        LOG.debug(
+            "Activated Seerr request resolver from stale snapshot due to refresh error: "
+            f"{snapshot_error}"
+        )
+    return True, snapshot_error
 
 
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
@@ -636,15 +804,6 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         )
         rules = result.scalars().all()
 
-        # Separate rules by explicit advanced target. Rules without a valid
-        # advanced definition are skipped by the evaluator and will not match.
-        movie_rules = [
-            r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION
-        ]
-        series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
-        season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
-        episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
-
         if not rules:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
             await db.execute(delete(ReclaimCandidate))
@@ -652,6 +811,20 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             return
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
+
+        favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(
+            db
+        )
+        if not favorites_ready and favorites_error:
+            LOG.warning(
+                "Favorites snapshot refresh failed for this cleanup scan: "
+                f"{favorites_error}"
+            )
+        elif favorites_error:
+            LOG.debug(
+                "Using stale favorites snapshot for this cleanup scan due to refresh error: "
+                f"{favorites_error}"
+            )
 
         # refresh arr data from Radarr/Sonarr for any labels/fields referenced in active rules
         # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
@@ -661,7 +834,54 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         ).activate()
         await _refresh_arr_tags_for_rules(list(rules))
         await _refresh_arr_monitoring_for_rules(list(rules))
-        await _activate_seerr_request_resolver_for_rules(db, list(rules))
+
+        seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
+            db,
+            list(rules),
+            require_fresh=True,
+            allow_stale_on_failure=False,
+        )
+        if seerr_ready:
+            await clear_seerr_rule_skip_notice(db)
+        else:
+            seerr_dependent_rules = [r for r in rules if _rule_uses_seerr_fields(r)]
+            if seerr_dependent_rules:
+                rules = [r for r in rules if not _rule_uses_seerr_fields(r)]
+                skipped = len(seerr_dependent_rules)
+                reason = seerr_error or "Failed to refresh Seerr request snapshot"
+                await set_seerr_rule_skip_notice(
+                    db,
+                    skipped_rules=skipped,
+                    reason=reason,
+                )
+                LOG.warning(
+                    f"Skipping {skipped} Seerr dependent cleanup rule(s) this run: {reason}"
+                )
+                try:
+                    await notify_admins(
+                        notification_type=NotificationType.ADMIN_MESSAGE,
+                        title="Seerr rules skipped during cleanup scan",
+                        message=(
+                            f"Skipped {skipped} Seerr dependent rule(s) for this cleanup run "
+                            "because Seerr request data could not be refreshed."
+                        ),
+                        context={"reason": reason},
+                    )
+                except Exception as notify_error:
+                    LOG.error(
+                        f"Failed to notify admins about skipped Seerr rules: {notify_error}"
+                    )
+            else:
+                await clear_seerr_rule_skip_notice(db)
+
+        # Separate rules by explicit advanced target. Rules without a valid
+        # advanced definition are skipped by the evaluator and will not match.
+        movie_rules = [
+            r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION
+        ]
+        series_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SERIES]
+        season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
+        episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
         candidates_created = 0
         candidates_updated = 0
@@ -762,14 +982,30 @@ async def _collect_series_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
-    """Evaluate whole-series rules without mutating persisted candidates."""
+    """Evaluate whole series rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
 
     # get all media items
-    result = await db.execute(
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs))
     )
+    result = await db.execute(query)
     media_items = result.scalars().all()
 
     LOG.info(f"Processing {len(media_items)} {MediaType.SERIES.value} items")
@@ -796,6 +1032,11 @@ async def _collect_series_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for item in media_items:
+        if favorite_tmdb_ids and item.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {item.title} (TMDB ID: {item.tmdb_id})"
+            )
+            continue
         # skip protected items
         if item.id in protected_ids:
             continue
@@ -905,11 +1146,27 @@ async def _collect_movie_version_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate movie-version rules without mutating persisted candidates."""
-    result = await db.execute(
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.MOVIE,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+    query = (
         select(Movie)
         .where(Movie.removed_at.is_(None))
         .options(selectinload(Movie.versions))
     )
+    result = await db.execute(query)
     movies = result.scalars().all()
     LOG.info(f"Processing {len(movies)} movie items at version granularity")
 
@@ -942,6 +1199,11 @@ async def _collect_movie_version_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for movie in movies:
+        if favorite_tmdb_ids and movie.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite movie: {movie.title} (TMDB ID: {movie.tmdb_id})"
+            )
+            continue
         if movie.id in protected_movie_ids:
             continue
         if not movie.versions:
@@ -1083,12 +1345,29 @@ async def _collect_season_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+
     # load all non-deleted series with their seasons and service refs
-    result = await db.execute(
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs), selectinload(Series.seasons))
     )
+    result = await db.execute(query)
     all_series = result.scalars().all()
 
     if not all_series:
@@ -1131,6 +1410,11 @@ async def _collect_season_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
+        if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
+            )
+            continue
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
@@ -1240,7 +1524,23 @@ async def _collect_episode_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate episode rules without mutating persisted candidates."""
-    result = await db.execute(
+    (
+        favorites_enabled,
+        favorites_all_users,
+        favorites_usernames,
+    ) = await _load_favorites_policy(db)
+    favorite_tmdb_ids = (
+        await _load_favorite_tmdb_ids(
+            db,
+            media_type=MediaType.SERIES,
+            protect_all_users=favorites_all_users,
+            usernames=favorites_usernames,
+        )
+        if favorites_enabled
+        else set()
+    )
+
+    query = (
         select(Series)
         .where(Series.removed_at.is_(None))
         .options(
@@ -1248,6 +1548,7 @@ async def _collect_episode_candidate_records(
             selectinload(Series.seasons).selectinload(Season.episodes),
         )
     )
+    result = await db.execute(query)
     all_series = result.scalars().all()
 
     if not all_series:
@@ -1288,6 +1589,11 @@ async def _collect_episode_candidate_records(
     records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
+        if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            LOG.info(
+                f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
+            )
+            continue
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
@@ -2113,6 +2419,7 @@ async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
     media_server_fallback_enabled: bool = True,
+    add_arr_import_exclusions_on_delete: bool = True,
     rules: dict[int, ReclaimRule] | None = None,
     default_arr_delete_behavior: ArrDeleteFallback = "unmonitor",
 ) -> int:
@@ -2136,6 +2443,11 @@ async def _delete_movie_version_candidates(
                 )
                 version = result.scalars().first()
                 title = version.movie.title if version and version.movie else "unknown"
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                "Partial movie version delete requires media server fallback, "
+                "or a Radarr delete that covers the full Radarr movie entry",
+            )
             LOG.warning(
                 f"Media server fallback disabled - skipping partial-version deletion "
                 f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
@@ -2294,7 +2606,11 @@ async def _delete_movie_version_candidates(
                     if not client:
                         continue
                     try:
-                        await client.delete_movies([arr_movie_id], delete_files=False)
+                        await client.delete_movies(
+                            [arr_movie_id],
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
+                        )
                         LOG.info(
                             f"Removed '{movie.title}' from Radarr entirely "
                             f"(no files remaining, config_id={config_id}, arr_id={arr_movie_id})"
@@ -2344,9 +2660,22 @@ async def _delete_movie_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
-        default_arr_delete_behavior = _coerce_arr_delete_fallback(
-            settings_row.default_arr_delete_behavior if settings_row else None
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
         )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_movies = (
             settings_row.move_destination_movies if settings_row else None
@@ -2370,6 +2699,24 @@ async def _delete_movie_candidates(
         if not candidates:
             LOG.debug("No movie candidates to delete")
             return 0
+
+        if favorites_ignore_enabled:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_movie_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} movie candidate(s) due to favorites protection"
+                )
+            if not candidates:
+                LOG.info("All movie candidates skipped due to favorites protection")
+                return 0
 
         LOG.info(f"Found {len(candidates)} movie candidates to evaluate for deletion")
 
@@ -2446,7 +2793,7 @@ async def _delete_movie_candidates(
             if config_id is not None and arr_movie_id is not None:
                 info["refs"].append((config_id, arr_movie_id, arr_movie_path))
 
-        # load version paths needed for path-based routing
+        # load version paths needed for path-based routing and safety checks
         version_ids = [
             c.movie_version_id for c in version_candidates if c.movie_version_id
         ]
@@ -2460,6 +2807,20 @@ async def _delete_movie_candidates(
                 )
             ).all()
             version_path_by_id = {ver_id: ver_path for ver_id, ver_path in ver_rows}
+
+        all_version_rows = (
+            await db.execute(
+                select(MovieVersion.movie_id, MovieVersion.id, MovieVersion.path).where(
+                    MovieVersion.movie_id.in_(all_movie_ids)
+                )
+            )
+        ).all()
+        version_paths_by_movie: dict[int, dict[int, str | None]] = {}
+        for movie_id, version_id, version_path in all_version_rows:
+            if movie_id is not None:
+                version_paths_by_movie.setdefault(movie_id, {})[version_id] = (
+                    version_path
+                )
 
     def _match_version_to_arr(
         version_path: str | None,
@@ -2487,6 +2848,54 @@ async def _delete_movie_candidates(
                     matched.add((config_id, arr_movie_id))
         return matched
 
+    def _path_in_arr_folder(path: str | None, arr_movie_path: str | None) -> bool:
+        if not path or not arr_movie_path:
+            return False
+        norm_path = normalize_fpath(path, strip_ending_slash=True)
+        norm_arr = normalize_fpath(arr_movie_path, strip_ending_slash=True)
+        return norm_path == norm_arr or norm_path.startswith(norm_arr + "/")
+
+    def _candidate_covers_full_radarr_entry(
+        movie_id: int,
+        selected_version_ids: set[int],
+        matched_refs: set[tuple[int, int]],
+        refs: list[tuple[int, int, str | None]],
+    ) -> bool:
+        """Return True only when Radarr delete cannot remove unselected versions."""
+        if not selected_version_ids or not matched_refs:
+            return False
+
+        version_paths = version_paths_by_movie.get(movie_id, {})
+        if not version_paths:
+            return False
+
+        refs_by_pair = {
+            (config_id, arr_movie_id): arr_movie_path
+            for config_id, arr_movie_id, arr_movie_path in refs
+        }
+        all_version_ids = set(version_paths)
+
+        for pair in matched_refs:
+            arr_movie_path = refs_by_pair.get(pair)
+            if arr_movie_path:
+                ref_version_ids = {
+                    version_id
+                    for version_id, version_path in version_paths.items()
+                    if _path_in_arr_folder(version_path, arr_movie_path)
+                }
+                if not ref_version_ids:
+                    return False
+                if not ref_version_ids.issubset(selected_version_ids):
+                    return False
+                continue
+
+            # without an arr path, only a single ref movie with all known versions
+            # selected is provably safe to delete through Radarr.
+            if len(refs) != 1 or selected_version_ids != all_version_ids:
+                return False
+
+        return True
+
     # Route each candidate to the correct arr instance(s).
     # movie_id -> set of (config_id, arr_movie_id)
     movie_arr_routing: dict[int, set[tuple[int, int]]] = {}
@@ -2513,8 +2922,25 @@ async def _delete_movie_candidates(
                 movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                 all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
             elif matched and cand_action == "delete":
-                # Radarr cannot delete individual versions; use media-server version delete
-                unmatched_version_candidates.append(cand)
+                selected_version_ids = {
+                    version_id
+                    for version_id in candidate_version_ids_by_movie.get(
+                        cand.movie_id, set()
+                    )
+                    if version_id is not None
+                }
+                if _candidate_covers_full_radarr_entry(
+                    cand.movie_id,
+                    selected_version_ids,
+                    matched,
+                    movie_info["refs"],
+                ):
+                    movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
+                    all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+                else:
+                    # Radarr would remove unselected versions; use media-server
+                    # version delete if fallback is enabled.
+                    unmatched_version_candidates.append(cand)
             else:
                 LOG.warning(
                     f"No Radarr instance found for '{movie_info['title']}' "
@@ -2544,6 +2970,7 @@ async def _delete_movie_candidates(
             unmatched_version_candidates,
             approved_by,
             media_server_fallback_enabled,
+            add_arr_import_exclusions_on_delete,
             rules_by_id,
             default_arr_delete_behavior,
         )
@@ -2655,9 +3082,16 @@ async def _delete_movie_candidates(
                                 f"Cannot resolve path for '{m['title']}' ({ver.path!r}); "
                                 f"skipping pre-delete move"
                             )
-                await client.delete_movies(radarr_ids, delete_files=False)
+                await client.delete_movies(
+                    radarr_ids,
+                    delete_files=False,
+                    add_import_exclusion=add_arr_import_exclusions_on_delete,
+                )
             else:
-                await client.delete_movies(radarr_ids)
+                await client.delete_movies(
+                    radarr_ids,
+                    add_import_exclusion=add_arr_import_exclusions_on_delete,
+                )
             movies_to_delete.extend(batch)
             radarr_refresh_after_delete.setdefault(config_id, set()).update(radarr_ids)
         except Exception as e:
@@ -2686,12 +3120,59 @@ async def _delete_movie_candidates(
                     movie = result.scalar_one_or_none()
 
                     if not already_processed:
+                        history_size = None
+                        history_attributes = None
                         if movie:
-                            movie.removed_at = datetime.now(UTC)
-                            movie.added_at = None
-                            event_versions = [v for v in movie.versions if v.path] or [
-                                None
-                            ]
+                            delete_target_version_ids: set[int | None] = (
+                                movie_info.get("target_version_ids") or set()
+                            )
+                            is_whole_movie = (
+                                not delete_target_version_ids
+                                or None in delete_target_version_ids
+                            )
+                            concrete_delete_target_version_ids = {
+                                version_id
+                                for version_id in delete_target_version_ids
+                                if version_id is not None
+                            }
+                            if is_whole_movie:
+                                event_versions = [
+                                    v for v in movie.versions if v.path
+                                ] or [None]
+                                movie.removed_at = datetime.now(UTC)
+                                movie.added_at = None
+                                history_size = movie.size
+                                history_attributes = None
+                            else:
+                                target_versions = [
+                                    v
+                                    for v in movie.versions
+                                    if v.id in concrete_delete_target_version_ids
+                                ]
+                                event_versions = [
+                                    v for v in target_versions if v.path
+                                ] or [None]
+                                history_size = sum(v.size or 0 for v in target_versions)
+                                history_attributes = (
+                                    _build_reclaim_history_attributes(
+                                        movie_version=target_versions[0]
+                                    )
+                                    if len(target_versions) == 1
+                                    else None
+                                )
+                                if history_size and movie.size is not None:
+                                    movie.size = max(0, movie.size - history_size)
+                                if concrete_delete_target_version_ids:
+                                    await db.execute(
+                                        delete(MovieVersion).where(
+                                            MovieVersion.id.in_(
+                                                concrete_delete_target_version_ids
+                                            )
+                                        )
+                                    )
+                                    await db.flush()
+                                    await _soft_remove_movie_if_empty(db, movie.id)
+
                             for version in event_versions:
                                 movie_events.append(
                                     {
@@ -2735,7 +3216,8 @@ async def _delete_movie_candidates(
                                 media_type=MediaType.MOVIE,
                                 tmdb_id=movie_info.get("tmdb_id"),
                                 name=movie_info.get("title"),
-                                size=movie.size if movie else None,
+                                size=history_size if movie else None,
+                                attributes=history_attributes if movie else None,
                             )
                         )
 
@@ -2808,11 +3290,13 @@ async def _delete_movie_candidates(
                     if not already_processed:
                         if movie:
                             # determine whether this is a whole-movie or version specific operation
-                            target_version_ids: set[int | None] = (
+                            unmonitor_target_version_ids: set[int | None] = (
                                 movie_info.get("target_version_ids") or set()
                             )
+                            concrete_unmonitor_target_version_ids: set[int] = set()
                             is_whole_movie = (
-                                not target_version_ids or None in target_version_ids
+                                not unmonitor_target_version_ids
+                                or None in unmonitor_target_version_ids
                             )
 
                             # delete files from disk (only for candidate version(s)).
@@ -2823,7 +3307,7 @@ async def _delete_movie_candidates(
                                     continue
                                 if (
                                     not is_whole_movie
-                                    and ver.id not in target_version_ids
+                                    and ver.id not in unmonitor_target_version_ids
                                 ):
                                     continue  # preserve non candidate version files
                                 local_path = resolve_path(
@@ -2859,7 +3343,7 @@ async def _delete_movie_candidates(
                                         v
                                         for v in movie.versions
                                         if v.service == unmonitor_service_type
-                                        and v.id in target_version_ids
+                                        and v.id in unmonitor_target_version_ids
                                     ]
                                 deleted_item_ids: set[str] = set()
                                 for ver in service_versions:
@@ -2872,7 +3356,7 @@ async def _delete_movie_candidates(
                                             v.service_item_id == ver.service_item_id
                                             for v in movie.versions
                                             if v.service == unmonitor_service_type
-                                            and v.id not in target_version_ids
+                                            and v.id not in unmonitor_target_version_ids
                                         ):
                                             continue
                                     try:
@@ -2891,17 +3375,17 @@ async def _delete_movie_candidates(
                                 movie.removed_at = datetime.now(UTC)
                                 movie.added_at = None
                             else:
-                                target_version_ids = {
+                                concrete_unmonitor_target_version_ids = {
                                     ver_id
-                                    for ver_id in target_version_ids
+                                    for ver_id in unmonitor_target_version_ids
                                     if ver_id is not None
                                 }
                                 deleted_size = 0
-                                if target_version_ids:
+                                if concrete_unmonitor_target_version_ids:
                                     target_versions = [
                                         v
                                         for v in movie.versions
-                                        if v.id in target_version_ids
+                                        if v.id in concrete_unmonitor_target_version_ids
                                     ]
                                     deleted_size = sum(
                                         v.size or 0 for v in target_versions
@@ -2910,7 +3394,9 @@ async def _delete_movie_candidates(
                                         movie.size = max(0, movie.size - deleted_size)
                                     await db.execute(
                                         delete(MovieVersion).where(
-                                            MovieVersion.id.in_(target_version_ids)
+                                            MovieVersion.id.in_(
+                                                concrete_unmonitor_target_version_ids
+                                            )
                                         )
                                     )
                                     await db.flush()
@@ -2919,7 +3405,10 @@ async def _delete_movie_candidates(
                                 v
                                 for v in movie.versions
                                 if v.path
-                                and (is_whole_movie or v.id in target_version_ids)
+                                and (
+                                    is_whole_movie
+                                    or v.id in concrete_unmonitor_target_version_ids
+                                )
                             ] or [None]
                             for version in event_versions:
                                 unmonitor_events.append(
@@ -3033,6 +3522,22 @@ async def _delete_series_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
+        )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
         move_enabled = settings_row.move_enabled if settings_row else False
         move_destination_series = (
             settings_row.move_destination_series if settings_row else None
@@ -3057,6 +3562,24 @@ async def _delete_series_candidates(
         if not candidates:
             LOG.debug("No series candidates to delete")
             return 0
+
+        if favorites_ignore_enabled:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} series candidate(s) due to favorites protection"
+                )
+            if not candidates:
+                LOG.info("All series candidates skipped due to favorites protection")
+                return 0
 
         LOG.info(f"Found {len(candidates)} series candidates to evaluate for deletion")
 
@@ -3223,11 +3746,15 @@ async def _delete_series_candidates(
                             f"skipping pre-delete move"
                         )
                     await client.delete_series(
-                        series_info["sonarr_id"], delete_files=False
+                        series_info["sonarr_id"],
+                        delete_files=False,
+                        add_import_exclusion=add_arr_import_exclusions_on_delete,
                     )
                 else:
                     await client.delete_series(
-                        series_info["sonarr_id"], delete_files=True
+                        series_info["sonarr_id"],
+                        delete_files=True,
+                        add_import_exclusion=add_arr_import_exclusions_on_delete,
                     )
             series_to_delete.extend(batch)
             sonarr_refresh_after_delete.setdefault(config_id, set()).update(
@@ -3523,6 +4050,22 @@ async def _delete_season_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
+        )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
 
     async with async_db() as db:
         query = (
@@ -3536,6 +4079,20 @@ async def _delete_season_candidates(
         if restrict_to_ids:
             query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
         candidates = (await db.execute(query)).scalars().all()
+        if favorites_ignore_enabled and candidates:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} season candidate(s) due to favorites protection"
+                )
 
     if not candidates:
         LOG.debug("No season candidates to delete")
@@ -3718,7 +4275,9 @@ async def _delete_season_candidates(
                     )
                     if all_empty:
                         await sonarr_client.delete_series(
-                            sonarr_ref_id, delete_files=False
+                            sonarr_ref_id,
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
                         )
                         LOG.info(
                             f"Removed '{series_obj.title}' from Sonarr entirely "
@@ -3896,6 +4455,22 @@ async def _delete_episode_candidates(
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
+        add_arr_import_exclusions_on_delete = (
+            settings_row.add_arr_import_exclusions_on_delete if settings_row else True
+        )
+        favorites_ignore_enabled = (
+            bool(settings_row.favorites_ignore_enabled) if settings_row else False
+        )
+        favorites_protect_all_users = (
+            bool(settings_row.favorites_protect_all_users) if settings_row else False
+        )
+        favorites_usernames = {
+            _normalize_favorites_username(str(raw))
+            for raw in (
+                (settings_row.favorites_usernames or []) if settings_row else []
+            )
+            if str(raw).strip()
+        }
 
     async with async_db() as db:
         query = (
@@ -3910,6 +4485,20 @@ async def _delete_episode_candidates(
         if restrict_to_ids:
             query = query.where(ReclaimCandidate.id.in_(restrict_to_ids))
         candidates = (await db.execute(query)).scalars().all()
+        if favorites_ignore_enabled and candidates:
+            (
+                candidates,
+                skipped_for_favorites,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            if skipped_for_favorites:
+                LOG.info(
+                    f"Skipped {skipped_for_favorites} episode candidate(s) due to favorites protection"
+                )
 
     if not candidates:
         LOG.debug("No episode candidates to delete")
@@ -4091,7 +4680,9 @@ async def _delete_episode_candidates(
                     )
                     if all_empty:
                         await sonarr_client.delete_series(
-                            sonarr_ref_id, delete_files=False
+                            sonarr_ref_id,
+                            delete_files=False,
+                            add_import_exclusion=add_arr_import_exclusions_on_delete,
                         )
                         LOG.info(
                             f"Removed '{series_obj.title}' from Sonarr entirely "
@@ -4645,13 +5236,64 @@ async def move_specific_candidates(
     destination_movies_str = gen_settings.move_destination_movies or ""
     destination_series_str = gen_settings.move_destination_series or ""
     path_mappings = gen_settings.path_mappings or []
+    favorites_ignore_enabled = bool(gen_settings.favorites_ignore_enabled)
+    favorites_protect_all_users = bool(gen_settings.favorites_protect_all_users)
+    favorites_usernames = {
+        _normalize_favorites_username(str(raw))
+        for raw in (gen_settings.favorites_usernames or [])
+        if str(raw).strip()
+    }
 
     # load candidates with their version/movie data
     async with async_db() as db:
-        result = await db.execute(
-            select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
-        )
+        query = select(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
+        result = await db.execute(query)
         candidates = result.scalars().all()
+        if favorites_ignore_enabled and candidates:
+            movie_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.media_type == MediaType.MOVIE
+            ]
+            series_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.media_type == MediaType.SERIES
+            ]
+            (
+                filtered_movie_candidates,
+                skipped_movies,
+            ) = await _filter_movie_candidates_by_favorites(
+                db,
+                movie_candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            (
+                filtered_series_candidates,
+                skipped_series,
+            ) = await _filter_series_candidates_by_favorites(
+                db,
+                series_candidates,
+                protect_all_users=favorites_protect_all_users,
+                usernames=favorites_usernames,
+            )
+            allowed_ids = {
+                candidate.id
+                for candidate in [
+                    *filtered_movie_candidates,
+                    *filtered_series_candidates,
+                ]
+            }
+            candidates = [
+                candidate for candidate in candidates if candidate.id in allowed_ids
+            ]
+            skipped_total = skipped_movies + skipped_series
+            if skipped_total:
+                LOG.info(
+                    f"Skipped {skipped_total} move candidate(s) due to favorites protection"
+                )
+
         candidate_version_ids = [
             c.movie_version_id for c in candidates if c.movie_version_id
         ]

@@ -699,10 +699,44 @@ class CleanupMediaRuleTests(unittest.TestCase):
             action={"candidate": True, "media_server_action": "delete"},
         )
 
-        SeerrRequestResolver({(MediaType.MOVIE, 1): True}).activate()
+        SeerrRequestResolver({(MediaType.MOVIE, 1): {11}}).activate()
         self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
 
-        SeerrRequestResolver({(MediaType.MOVIE, 1): False}).activate()
+        SeerrRequestResolver({(MediaType.MOVIE, 1): set()}).activate()
+        self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_seerr_requester_ids_matches(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = ReclaimRule(
+            name="seerr-requester-rule",
+            media_type=MediaType.MOVIE,
+            enabled=True,
+            target_scope="movie_version",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "seerr.requested_by_user_ids",
+                            "operator": "contains_any",
+                            "value": ["101", "303"],
+                        },
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        SeerrRequestResolver({(MediaType.MOVIE, 1): {101, 202}}).activate()
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+        SeerrRequestResolver({(MediaType.MOVIE, 1): {404}}).activate()
         self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
 
 

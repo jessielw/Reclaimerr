@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.23] - 2026-05-21
+
+### Added
+
+- Support for Seerr requested by username based rules
+  - During rule preview this will be accurate and cached TTL for 5 minutes, during live candidate scans this will be grabbed from Seerr every single run
+  - If you have a rule utilizing this feature and it fails there will be a notice in the UI alerting you that there is an issue communicating with Seerr and the rule will be disregarded until this is resolved
+  - Users are parsed upon opening a rule (if Seerr is enabled) and will be displayed via a "Seerr User Picker" modal
+    - Internally the user IDs from Seerr are utilized but visually you'll be able to see them by name (this was needed in case users names changed on Seerr)
+- New house keeping task to clean up admin notices older than 90 days automatically (read or unread)
+- Option in **Settings -> General** to add exclusion to the **\*arr** that is enabled by default
+  - With this option on Reclaimerr will now add to the exclusion list for the arr automatically to prevent lists/syncs automatically re-grabbing that title
+- Support ignore **Jellyfin/Emby** user favorites _(currently this feature isn't supported on Plex)_
+  - During preview user favorites are snapshot every 10 minutes to avoid hitting the server over and over again while users are testing rules but they will be up to date always during live candidate scans
+  - Added a setting in **Settings -> General** to enable/disable this feature and a box to add the usernames you'd like to automatically ignore their favorites
+    - Supports copy/paste for specific users or all users and displays which users currently has favorites
+
+### Changed
+
+- Rebuilt the admin notice system
+  - Can now mark read/unread on notices
+  - Notices can have context/links etc
+
+### Fixed
+
+- Side bar light mode text was barely visible for notices panel
+- Radarr deletion logic when media deletion is disabled and the user is deleting a movie version. _(Reclaimerr now checks whether a version-scoped movie candidate actually represents the full Radarr movie entry. If it does, for example the movie only has one known version, Reclaimerr safely promotes it to a normal Radarr delete. If it is truly partial, for example one version selected but another version still exists, Reclaimerr will not use Radarr because that could delete files the user did not select)_
+
+### Removed
+
+- System alert banner _(this can be handled via the notices panel)_
+
 ## [0.1.0-beta.22] - 2026-05-19
 
 ### Added

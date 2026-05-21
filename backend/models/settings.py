@@ -226,6 +226,14 @@ class PostActionWebhookTestResponse(BaseModel):
     error: str | None = None
 
 
+class FavoritesUserLookupResponse(BaseModel):
+    username: str
+    has_favorites: bool
+    favorites_count: int
+    source_count: int
+    sources: list[str] = Field(default_factory=list)
+
+
 class GeneralSettingsResponse(BaseModel):
     worker_poll_min_seconds: float | None = None
     worker_poll_max_seconds: float | None = None
@@ -244,6 +252,12 @@ class GeneralSettingsResponse(BaseModel):
     # deletion routing
     media_server_fallback_enabled: bool = True
     default_arr_delete_behavior: Literal["unmonitor", "remove_if_empty"] = "unmonitor"
+    add_arr_import_exclusions_on_delete: bool = True
+
+    # favorites
+    favorites_ignore_enabled: bool = False
+    favorites_protect_all_users: bool = False
+    favorites_usernames: list[str] = Field(default_factory=list)
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -277,6 +291,20 @@ class GeneralSettingsResponse(BaseModel):
                 "worker_poll_range",
                 "Worker poll min seconds cannot be greater than worker poll max seconds",
             )
+        return self
+
+    @model_validator(mode="after")
+    def normalize_usernames(self) -> GeneralSettingsResponse:
+        """Normalize usernames in favorites_usernames."""
+        normalized_usernames: list[str] = []
+        seen: set[str] = set()
+        for raw in self.favorites_usernames:
+            value = str(raw).strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized_usernames.append(value)
+        self.favorites_usernames = normalized_usernames
         return self
 
     model_config = ConfigDict(from_attributes=True)

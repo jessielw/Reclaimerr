@@ -38,8 +38,10 @@ from backend.models.media import (
     AggregatedSeriesData,
     MovieVersionData,
 )
+from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
+from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.plex import PlexService
 from backend.types import MEDIA_SERVERS, MediaServerType
 
@@ -2605,6 +2607,13 @@ async def sync_media() -> dict[str, Any] | None:
                 LOG.debug(f"Linked watch sync from {svr.service_type}")
                 await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
 
+        # refresh favorites snapshot from supported media servers
+        ok, error = await media_favorites_snapshot_cache.refresh_snapshot(
+            all_servers=all_servers
+        )
+        if not ok and error:
+            LOG.warning(f"Favorites snapshot refresh failed during sync: {error}")
+
         # gather supplemental sync data
         await _run_supplemental_syncs()
 
@@ -2957,6 +2966,10 @@ async def sync_media_libraries() -> dict[str, Any]:
             # We surface stale-library references through alerts instead of
             # mutating rule definitions during sync.
             affected_rules: list[dict[str, Any]] = []
+            try:
+                await reconcile_stale_library_notice(session)
+            except Exception as e:
+                LOG.warning(f"Failed to reconcile stale-library notice state: {e}")
 
             await session.commit()
 

@@ -29,6 +29,7 @@ from backend.database.models import (
 )
 from backend.enums import LogLevel, NotificationType, UserRole
 from backend.models.settings import normalize_notification_preferences
+from backend.services.admin_notices import create_event_notice
 
 __all__ = [
     "build_cleanup_notification_context",
@@ -443,6 +444,28 @@ async def notify_admins(
 ) -> dict[str, int]:
     """Send a notification to all admin users who have this notification type enabled."""
     results = {"sent": 0, "failed": 0}
+
+    if notification_type in {
+        NotificationType.ADMIN_MESSAGE,
+        NotificationType.TASK_FAILURE,
+    }:
+        try:
+            async with async_db() as session:
+                await create_event_notice(
+                    session,
+                    kind=f"event_{notification_type.value}",
+                    severity=(
+                        "error"
+                        if notification_type is NotificationType.TASK_FAILURE
+                        else "warning"
+                    ),
+                    title=title,
+                    message=message,
+                    context_json=context,
+                )
+                await session.commit()
+        except Exception as e:
+            LOG.error(f"Failed to persist admin in-app notice: {e}")
 
     async with async_db() as session:
         result = await session.execute(

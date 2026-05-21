@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -21,10 +21,12 @@ from backend.database.models import (
 from backend.enums import MediaType
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
+    FavoritesUserLookupResponse,
     GeneralSettingsResponse,
     PostActionWebhookTestRequest,
     PostActionWebhookTestResponse,
 )
+from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.post_action_webhooks import (
     invalidate_webhook_config_cache,
     send_post_action_webhook,
@@ -80,6 +82,12 @@ async def update_general_settings(
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
     settings.default_arr_delete_behavior = request.default_arr_delete_behavior
+    settings.add_arr_import_exclusions_on_delete = (
+        request.add_arr_import_exclusions_on_delete
+    )
+    settings.favorites_ignore_enabled = request.favorites_ignore_enabled
+    settings.favorites_protect_all_users = request.favorites_protect_all_users
+    settings.favorites_usernames = request.favorites_usernames
 
     # update metadata
     settings.updated_at = datetime.now(UTC)
@@ -90,6 +98,20 @@ async def update_general_settings(
     await db.refresh(settings)
     invalidate_webhook_config_cache()
     return GeneralSettingsResponse.model_validate(settings)
+
+
+@router.get(
+    "/general/favorites-users", response_model=list[FavoritesUserLookupResponse]
+)
+async def get_favorites_users(
+    _admin: Annotated[User, Depends(require_admin)],
+    refresh: Annotated[bool, Query()] = False,
+) -> list[FavoritesUserLookupResponse]:
+    """Get users for media favorites settings."""
+    users = await media_favorites_snapshot_cache.get_favorites_user_lookup(
+        force_refresh=refresh
+    )
+    return [FavoritesUserLookupResponse.model_validate(item) for item in users]
 
 
 @router.post(

@@ -13,6 +13,7 @@ from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
 from backend.database.models import AppUpdateState
 from backend.enums import Task
+from backend.services.admin_notices import sync_update_available_notice
 
 
 def _parse_repo_slug(url: str) -> tuple[str, str]:
@@ -52,6 +53,12 @@ async def _persist_result(
         state.update_available = update_available
         state.last_checked_at = now
         state.last_check_error = error
+        await sync_update_available_notice(
+            db,
+            update_available=update_available,
+            latest_version=latest_version,
+            latest_release_url=latest_release_url,
+        )
         await db.commit()
 
 

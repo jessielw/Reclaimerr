@@ -138,6 +138,10 @@ export interface GeneralSettings {
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
+  add_arr_import_exclusions_on_delete: boolean;
+  favorites_ignore_enabled: boolean;
+  favorites_protect_all_users: boolean;
+  favorites_usernames: string[];
 }
 
 export interface ReclaimRule {
@@ -455,6 +459,28 @@ export interface UiIndicatorsResponse extends SidebarIndicatorsResponse {
   latest_version: string | null;
   latest_release_url: string | null;
   last_checked_at: string | null;
+  has_unread_notices: boolean;
+}
+
+export interface AdminNotice {
+  id: number;
+  kind: string;
+  severity: "warning" | "error" | string;
+  title: string;
+  message: string;
+  action_label: string | null;
+  action_href: string | null;
+  is_read: boolean;
+  is_active: boolean;
+  read_at: string | null;
+  last_occurred_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminNoticesResponse {
+  unread_count: number;
+  items: AdminNotice[];
 }
 
 // exception requests

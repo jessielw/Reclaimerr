@@ -197,6 +197,14 @@ class GeneralSettings(Base):
     default_arr_delete_behavior: Mapped[str] = mapped_column(
         String(32), default="unmonitor"
     )
+    add_arr_import_exclusions_on_delete: Mapped[bool] = mapped_column(
+        Boolean, default=True
+    )
+
+    # favorites
+    favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -224,6 +232,44 @@ class AppUpdateState(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     update_available: Mapped[bool] = mapped_column(Boolean, default=False)
     last_check_error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class AdminNotice(Base):
+    """Persisted admin facing in app notices with global read state."""
+
+    __tablename__ = "admin_notices"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_admin_notices_dedupe_key"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    kind: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16), default="warning")
+    action_label: Mapped[str | None] = mapped_column(String(100), default=None)
+    action_href: Mapped[str | None] = mapped_column(String(500), default=None)
+    context_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    read_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(120), default=None, index=True
+    )
+    last_occurred_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
@@ -469,6 +515,44 @@ class SupplementalMediaMatch(Base):
     confidence: Mapped[int] = mapped_column(SmallInteger, default=100)
     signals: Mapped[dict | None] = mapped_column(JSON, default=None)
 
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class MediaFavorite(Base):
+    """Snapshot of user favorites mapped to TMDB IDs across media servers.
+
+    Emby and Jellyfin only for now as Plex doesn't store this data locally.
+    """
+
+    __tablename__ = "media_favorites"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_type",
+            "tmdb_id",
+            "username_normalized",
+            "source_service",
+            "source_service_config_id",
+            name="uq_media_favorites_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
+    username: Mapped[str] = mapped_column(String(255))
+    username_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
