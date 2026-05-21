@@ -28,6 +28,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    normalize_fpath,
     resolve_path,
     sibling_cleanup,
 )
@@ -2442,6 +2443,11 @@ async def _delete_movie_version_candidates(
                 )
                 version = result.scalars().first()
                 title = version.movie.title if version and version.movie else "unknown"
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                "Partial movie version delete requires media server fallback, "
+                "or a Radarr delete that covers the full Radarr movie entry",
+            )
             LOG.warning(
                 f"Media server fallback disabled - skipping partial-version deletion "
                 f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
@@ -2787,7 +2793,7 @@ async def _delete_movie_candidates(
             if config_id is not None and arr_movie_id is not None:
                 info["refs"].append((config_id, arr_movie_id, arr_movie_path))
 
-        # load version paths needed for path-based routing
+        # load version paths needed for path-based routing and safety checks
         version_ids = [
             c.movie_version_id for c in version_candidates if c.movie_version_id
         ]
@@ -2801,6 +2807,20 @@ async def _delete_movie_candidates(
                 )
             ).all()
             version_path_by_id = {ver_id: ver_path for ver_id, ver_path in ver_rows}
+
+        all_version_rows = (
+            await db.execute(
+                select(MovieVersion.movie_id, MovieVersion.id, MovieVersion.path).where(
+                    MovieVersion.movie_id.in_(all_movie_ids)
+                )
+            )
+        ).all()
+        version_paths_by_movie: dict[int, dict[int, str | None]] = {}
+        for movie_id, version_id, version_path in all_version_rows:
+            if movie_id is not None:
+                version_paths_by_movie.setdefault(movie_id, {})[version_id] = (
+                    version_path
+                )
 
     def _match_version_to_arr(
         version_path: str | None,
@@ -2828,6 +2848,54 @@ async def _delete_movie_candidates(
                     matched.add((config_id, arr_movie_id))
         return matched
 
+    def _path_in_arr_folder(path: str | None, arr_movie_path: str | None) -> bool:
+        if not path or not arr_movie_path:
+            return False
+        norm_path = normalize_fpath(path, strip_ending_slash=True)
+        norm_arr = normalize_fpath(arr_movie_path, strip_ending_slash=True)
+        return norm_path == norm_arr or norm_path.startswith(norm_arr + "/")
+
+    def _candidate_covers_full_radarr_entry(
+        movie_id: int,
+        selected_version_ids: set[int],
+        matched_refs: set[tuple[int, int]],
+        refs: list[tuple[int, int, str | None]],
+    ) -> bool:
+        """Return True only when Radarr delete cannot remove unselected versions."""
+        if not selected_version_ids or not matched_refs:
+            return False
+
+        version_paths = version_paths_by_movie.get(movie_id, {})
+        if not version_paths:
+            return False
+
+        refs_by_pair = {
+            (config_id, arr_movie_id): arr_movie_path
+            for config_id, arr_movie_id, arr_movie_path in refs
+        }
+        all_version_ids = set(version_paths)
+
+        for pair in matched_refs:
+            arr_movie_path = refs_by_pair.get(pair)
+            if arr_movie_path:
+                ref_version_ids = {
+                    version_id
+                    for version_id, version_path in version_paths.items()
+                    if _path_in_arr_folder(version_path, arr_movie_path)
+                }
+                if not ref_version_ids:
+                    return False
+                if not ref_version_ids.issubset(selected_version_ids):
+                    return False
+                continue
+
+            # without an arr path, only a single ref movie with all known versions
+            # selected is provably safe to delete through Radarr.
+            if len(refs) != 1 or selected_version_ids != all_version_ids:
+                return False
+
+        return True
+
     # Route each candidate to the correct arr instance(s).
     # movie_id -> set of (config_id, arr_movie_id)
     movie_arr_routing: dict[int, set[tuple[int, int]]] = {}
@@ -2854,8 +2922,25 @@ async def _delete_movie_candidates(
                 movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                 all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
             elif matched and cand_action == "delete":
-                # Radarr cannot delete individual versions; use media-server version delete
-                unmatched_version_candidates.append(cand)
+                selected_version_ids = {
+                    version_id
+                    for version_id in candidate_version_ids_by_movie.get(
+                        cand.movie_id, set()
+                    )
+                    if version_id is not None
+                }
+                if _candidate_covers_full_radarr_entry(
+                    cand.movie_id,
+                    selected_version_ids,
+                    matched,
+                    movie_info["refs"],
+                ):
+                    movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
+                    all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+                else:
+                    # Radarr would remove unselected versions; use media-server
+                    # version delete if fallback is enabled.
+                    unmatched_version_candidates.append(cand)
             else:
                 LOG.warning(
                     f"No Radarr instance found for '{movie_info['title']}' "
@@ -3035,12 +3120,59 @@ async def _delete_movie_candidates(
                     movie = result.scalar_one_or_none()
 
                     if not already_processed:
+                        history_size = None
+                        history_attributes = None
                         if movie:
-                            movie.removed_at = datetime.now(UTC)
-                            movie.added_at = None
-                            event_versions = [v for v in movie.versions if v.path] or [
-                                None
-                            ]
+                            delete_target_version_ids: set[int | None] = (
+                                movie_info.get("target_version_ids") or set()
+                            )
+                            is_whole_movie = (
+                                not delete_target_version_ids
+                                or None in delete_target_version_ids
+                            )
+                            concrete_delete_target_version_ids = {
+                                version_id
+                                for version_id in delete_target_version_ids
+                                if version_id is not None
+                            }
+                            if is_whole_movie:
+                                event_versions = [
+                                    v for v in movie.versions if v.path
+                                ] or [None]
+                                movie.removed_at = datetime.now(UTC)
+                                movie.added_at = None
+                                history_size = movie.size
+                                history_attributes = None
+                            else:
+                                target_versions = [
+                                    v
+                                    for v in movie.versions
+                                    if v.id in concrete_delete_target_version_ids
+                                ]
+                                event_versions = [
+                                    v for v in target_versions if v.path
+                                ] or [None]
+                                history_size = sum(v.size or 0 for v in target_versions)
+                                history_attributes = (
+                                    _build_reclaim_history_attributes(
+                                        movie_version=target_versions[0]
+                                    )
+                                    if len(target_versions) == 1
+                                    else None
+                                )
+                                if history_size and movie.size is not None:
+                                    movie.size = max(0, movie.size - history_size)
+                                if concrete_delete_target_version_ids:
+                                    await db.execute(
+                                        delete(MovieVersion).where(
+                                            MovieVersion.id.in_(
+                                                concrete_delete_target_version_ids
+                                            )
+                                        )
+                                    )
+                                    await db.flush()
+                                    await _soft_remove_movie_if_empty(db, movie.id)
+
                             for version in event_versions:
                                 movie_events.append(
                                     {
@@ -3084,7 +3216,8 @@ async def _delete_movie_candidates(
                                 media_type=MediaType.MOVIE,
                                 tmdb_id=movie_info.get("tmdb_id"),
                                 name=movie_info.get("title"),
-                                size=movie.size if movie else None,
+                                size=history_size if movie else None,
+                                attributes=history_attributes if movie else None,
                             )
                         )
 
@@ -3157,11 +3290,13 @@ async def _delete_movie_candidates(
                     if not already_processed:
                         if movie:
                             # determine whether this is a whole-movie or version specific operation
-                            target_version_ids: set[int | None] = (
+                            unmonitor_target_version_ids: set[int | None] = (
                                 movie_info.get("target_version_ids") or set()
                             )
+                            concrete_unmonitor_target_version_ids: set[int] = set()
                             is_whole_movie = (
-                                not target_version_ids or None in target_version_ids
+                                not unmonitor_target_version_ids
+                                or None in unmonitor_target_version_ids
                             )
 
                             # delete files from disk (only for candidate version(s)).
@@ -3172,7 +3307,7 @@ async def _delete_movie_candidates(
                                     continue
                                 if (
                                     not is_whole_movie
-                                    and ver.id not in target_version_ids
+                                    and ver.id not in unmonitor_target_version_ids
                                 ):
                                     continue  # preserve non candidate version files
                                 local_path = resolve_path(
@@ -3208,7 +3343,7 @@ async def _delete_movie_candidates(
                                         v
                                         for v in movie.versions
                                         if v.service == unmonitor_service_type
-                                        and v.id in target_version_ids
+                                        and v.id in unmonitor_target_version_ids
                                     ]
                                 deleted_item_ids: set[str] = set()
                                 for ver in service_versions:
@@ -3221,7 +3356,7 @@ async def _delete_movie_candidates(
                                             v.service_item_id == ver.service_item_id
                                             for v in movie.versions
                                             if v.service == unmonitor_service_type
-                                            and v.id not in target_version_ids
+                                            and v.id not in unmonitor_target_version_ids
                                         ):
                                             continue
                                     try:
@@ -3240,17 +3375,17 @@ async def _delete_movie_candidates(
                                 movie.removed_at = datetime.now(UTC)
                                 movie.added_at = None
                             else:
-                                target_version_ids = {
+                                concrete_unmonitor_target_version_ids = {
                                     ver_id
-                                    for ver_id in target_version_ids
+                                    for ver_id in unmonitor_target_version_ids
                                     if ver_id is not None
                                 }
                                 deleted_size = 0
-                                if target_version_ids:
+                                if concrete_unmonitor_target_version_ids:
                                     target_versions = [
                                         v
                                         for v in movie.versions
-                                        if v.id in target_version_ids
+                                        if v.id in concrete_unmonitor_target_version_ids
                                     ]
                                     deleted_size = sum(
                                         v.size or 0 for v in target_versions
@@ -3259,7 +3394,9 @@ async def _delete_movie_candidates(
                                         movie.size = max(0, movie.size - deleted_size)
                                     await db.execute(
                                         delete(MovieVersion).where(
-                                            MovieVersion.id.in_(target_version_ids)
+                                            MovieVersion.id.in_(
+                                                concrete_unmonitor_target_version_ids
+                                            )
                                         )
                                     )
                                     await db.flush()
@@ -3268,7 +3405,10 @@ async def _delete_movie_candidates(
                                 v
                                 for v in movie.versions
                                 if v.path
-                                and (is_whole_movie or v.id in target_version_ids)
+                                and (
+                                    is_whole_movie
+                                    or v.id in concrete_unmonitor_target_version_ids
+                                )
                             ] or [None]
                             for version in event_versions:
                                 unmonitor_events.append(

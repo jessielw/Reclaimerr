@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Side bar light mode text was barely visible for notices panel
+- Radarr deletion logic when media deletion is disabled and the user is deleting a movie version. _(Reclaimerr now checks whether a version-scoped movie candidate actually represents the full Radarr movie entry. If it does, for example the movie only has one known version, Reclaimerr safely promotes it to a normal Radarr delete. If it is truly partial, for example one version selected but another version still exists, Reclaimerr will not use Radarr because that could delete files the user did not select)_
 
 ### Removed
 
