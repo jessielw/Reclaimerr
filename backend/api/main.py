@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
     scheduler_started = False
 
     try:
+        LOG.set_log_level(settings.log_level_enum)
         LOG.info("Starting reclaimerr API server")
         LOG.info(f"Log level: {settings.log_level_enum}")
 
