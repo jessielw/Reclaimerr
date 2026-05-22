@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IMDb ratings
+  - IMDb vote count & rating to the engine
+  - New task to refresh IMDb ratings daily (can be disabled if the user does not want IMDb)
+    - This task daily will grab IMDb official rating data sets and update the database with the current ratings (these data sets are only refreshed once every 24 hours so running this task more than that is fruitless). There are guards that check the hash/304 not modified header that will prevent running if nothing has changed.
+
+### Changed
+
 -
 
 ### Fixed
