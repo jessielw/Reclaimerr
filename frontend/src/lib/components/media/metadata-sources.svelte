@@ -84,12 +84,18 @@
           {#if tmdbRatingFmt}
             <Tooltip.Root>
               <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
-                <span class="inline-flex items-center gap-1 text-xs">
-                  <Star
-                    class={`${compact ? "size-3" : "size-3.5"} fill-yellow-400 text-yellow-400`}
-                  />
-                  {tmdbRatingFmt}
-                </span>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Star
+                      class={`${compact ? "size-3" : "size-3.5"} fill-yellow-400 text-yellow-400`}
+                    />
+                    {tmdbRatingFmt}
+                  </span>
+                {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content><p>TMDB rating</p></Tooltip.Content>
             </Tooltip.Root>
@@ -98,10 +104,16 @@
           {#if tmdbVotesFmt}
             <Tooltip.Root>
               <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
-                <span class="inline-flex items-center gap-1 text-xs">
-                  <Users class={`${compact ? "size-3" : "size-3.5"}`} />
-                  {tmdbVotesFmt}
-                </span>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Users class={`${compact ? "size-3" : "size-3.5"}`} />
+                    {tmdbVotesFmt}
+                  </span>
+                {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content><p>TMDB vote count</p></Tooltip.Content>
             </Tooltip.Root>
@@ -110,12 +122,18 @@
           {#if showTmdbPopularity && tmdbPopularityFmt}
             <Tooltip.Root>
               <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
-                <span class="inline-flex items-center gap-0.5 text-xs">
-                  <Flame
-                    class={`${compact ? "size-3" : "size-3.5"} fill-orange-400 text-orange-700`}
-                  />
-                  {tmdbPopularityFmt}
-                </span>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-0.5 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Flame
+                      class={`${compact ? "size-3" : "size-3.5"} fill-orange-400 text-orange-700`}
+                    />
+                    {tmdbPopularityFmt}
+                  </span>
+                {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content><p>TMDB popularity</p></Tooltip.Content>
             </Tooltip.Root>
@@ -139,20 +157,26 @@
     {#if hasImdbMeta}
       <div class="flex items-center gap-2 px-2 py-1.5">
         <span
-          class={`${compact ? "text-[11px] min-w-12" : "text-xs min-w-14"} font-semibold tracking-wide text-(--color-imdb)`}
-          >IMDb</span
+          class={`${compact ? "text-[11px] min-w-12" : "text-xs min-w-14"} font-semibold tracking-wide 
+            text-imdb`}>IMDb</span
         >
 
         <div class="flex flex-1 flex-wrap items-center gap-x-3 gap-y-1">
           {#if imdbRatingFmt}
             <Tooltip.Root>
               <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
-                <span class="inline-flex items-center gap-1 text-xs">
-                  <Star
-                    class={`${compact ? "size-3" : "size-3.5"} fill-yellow-400 text-yellow-400`}
-                  />
-                  {imdbRatingFmt}
-                </span>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Star
+                      class={`${compact ? "size-3" : "size-3.5"} fill-yellow-400 text-yellow-400`}
+                    />
+                    {imdbRatingFmt}
+                  </span>
+                {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content><p>IMDb rating</p></Tooltip.Content>
             </Tooltip.Root>
@@ -161,10 +185,16 @@
           {#if imdbVotesFmt}
             <Tooltip.Root>
               <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
-                <span class="inline-flex items-center gap-1 text-xs">
-                  <Users class={`${compact ? "size-3" : "size-3.5"}`} />
-                  {imdbVotesFmt}
-                </span>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Users class={`${compact ? "size-3" : "size-3.5"}`} />
+                    {imdbVotesFmt}
+                  </span>
+                {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content><p>IMDb vote count</p></Tooltip.Content>
             </Tooltip.Root>
