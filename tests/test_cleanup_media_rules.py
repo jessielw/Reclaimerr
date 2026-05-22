@@ -12,18 +12,22 @@ from backend.api.candidate_views import build_rule_preview_items
 from backend.core.rule_engine import SeerrRequestResolver
 from backend.database import Base
 from backend.database.models import (
+    Episode,
     Movie,
     MovieVersion,
+    ProtectedMedia,
     ReclaimCandidate,
     ReclaimRule,
     Season,
     Series,
     SeriesServiceRef,
+    User,
 )
 from backend.enums import MediaType, Service
 from backend.tasks.cleanup import (
     _evaluate_movie_rule,
     _evaluate_rule_for_season,
+    _process_series_episodes,
     _process_series_seasons,
     _scan_with_db,
     collect_rule_preview_matches,
@@ -468,7 +472,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
         self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
 
-    def test_evaluate_rule_for_season_days_since_air_date_passes_and_fails(self) -> None:
+    def test_evaluate_rule_for_season_days_since_air_date_passes_and_fails(
+        self,
+    ) -> None:
         now = datetime.now(UTC)
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
         series.service_refs = [_make_series_ref(service_id="sr-1")]
@@ -928,6 +934,169 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 .all()
             )
             self.assertEqual(remaining_season_candidates, [])
+
+    async def test_process_series_episode_candidates_skip_protected_episode(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(
+                MediaType.SERIES,
+                target_scope="episode",
+                min_size=1,
+            )
+            user = User(username="admin", password_hash="x")
+            series = Series(title="Series", tmdb_id=2101, size=8 * 1024**3)
+            db.add_all([rule, user, series])
+            await db.flush()
+
+            season = Season(series_id=series.id, season_number=1, size=4 * 1024**3)
+            db.add(season)
+            await db.flush()
+
+            protected_episode = Episode(
+                season_id=season.id,
+                episode_number=1,
+                size=2 * 1024**3,
+            )
+            unprotected_episode = Episode(
+                season_id=season.id,
+                episode_number=2,
+                size=2 * 1024**3,
+            )
+            db.add_all([protected_episode, unprotected_episode])
+            await db.flush()
+
+            db.add(
+                ProtectedMedia(
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    season_id=season.id,
+                    episode_id=protected_episode.id,
+                    protected_by_user_id=user.id,
+                    reason="protected",
+                )
+            )
+            await db.commit()
+            unprotected_episode_id = unprotected_episode.id
+
+        async with self._sessionmaker() as db:
+            rule = (
+                await db.execute(
+                    select(ReclaimRule).where(
+                        ReclaimRule.media_type == MediaType.SERIES
+                    )
+                )
+            ).scalar_one()
+            result = await _process_series_episodes(db, [rule])
+            self.assertEqual(result, (1, 0, 0))
+
+            candidates = (
+                (
+                    await db.execute(
+                        select(ReclaimCandidate).where(
+                            ReclaimCandidate.media_type == MediaType.SERIES,
+                            ReclaimCandidate.episode_id.is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].episode_id, unprotected_episode_id)
+
+    async def test_process_series_episode_candidates_remove_stale_protected_episode(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(
+                MediaType.SERIES,
+                target_scope="episode",
+                min_size=1,
+            )
+            user = User(username="admin", password_hash="x")
+            series = Series(title="Series", tmdb_id=2201, size=8 * 1024**3)
+            db.add_all([rule, user, series])
+            await db.flush()
+
+            season = Season(series_id=series.id, season_number=1, size=4 * 1024**3)
+            db.add(season)
+            await db.flush()
+
+            episode_one = Episode(
+                season_id=season.id,
+                episode_number=1,
+                size=2 * 1024**3,
+            )
+            episode_two = Episode(
+                season_id=season.id,
+                episode_number=2,
+                size=2 * 1024**3,
+            )
+            db.add_all([episode_one, episode_two])
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            rule = (
+                await db.execute(
+                    select(ReclaimRule).where(
+                        ReclaimRule.media_type == MediaType.SERIES
+                    )
+                )
+            ).scalar_one()
+            first = await _process_series_episodes(db, [rule])
+            self.assertEqual(first, (2, 0, 0))
+
+        async with self._sessionmaker() as db:
+            episode_one = (
+                await db.execute(select(Episode).where(Episode.episode_number == 1))
+            ).scalar_one()
+            season = (
+                await db.execute(
+                    select(Season).where(Season.id == episode_one.season_id)
+                )
+            ).scalar_one()
+            series = (
+                await db.execute(select(Series).where(Series.id == season.series_id))
+            ).scalar_one()
+            user = (await db.execute(select(User))).scalar_one()
+            db.add(
+                ProtectedMedia(
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    season_id=season.id,
+                    episode_id=episode_one.id,
+                    protected_by_user_id=user.id,
+                    reason="protected",
+                )
+            )
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            rule = (
+                await db.execute(
+                    select(ReclaimRule).where(
+                        ReclaimRule.media_type == MediaType.SERIES
+                    )
+                )
+            ).scalar_one()
+            second = await _process_series_episodes(db, [rule])
+            self.assertEqual(second, (0, 1, 1))
+
+            remaining_candidates = (
+                (
+                    await db.execute(
+                        select(ReclaimCandidate).where(
+                            ReclaimCandidate.media_type == MediaType.SERIES,
+                            ReclaimCandidate.episode_id.is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            self.assertEqual(len(remaining_candidates), 1)
+            self.assertNotEqual(remaining_candidates[0].episode_id, episode_one.id)
 
     async def test_collect_rule_preview_matches_does_not_persist_candidates(
         self,

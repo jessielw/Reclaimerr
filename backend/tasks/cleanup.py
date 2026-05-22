@@ -1586,6 +1586,21 @@ async def _collect_episode_candidate_records(
         b.season_id for b in protected_season_result.scalars().all()
     }
 
+    protected_episode_result = await db.execute(
+        select(ProtectedMedia).where(
+            ProtectedMedia.media_type == MediaType.SERIES,
+            _is_episode_scope(ProtectedMedia),
+            or_(
+                ProtectedMedia.permanent.is_(True),
+                ProtectedMedia.expires_at.is_(None),
+                ProtectedMedia.expires_at > now,
+            ),
+        )
+    )
+    protected_episode_ids = {
+        b.episode_id for b in protected_episode_result.scalars().all()
+    }
+
     records: list[MatchedCandidateRecord] = []
 
     for series in all_series:
@@ -1606,6 +1621,9 @@ async def _collect_episode_candidate_records(
                 continue
 
             for episode in season.episodes:
+                if episode.id in protected_episode_ids:
+                    continue
+
                 matched_rules: list[int] = []
                 matched_criteria: dict = {}
                 reasons: list[dict[str, Any]] = []
