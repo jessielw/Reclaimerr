@@ -13,10 +13,10 @@
 </script>
 
 <div
-  class={`mb-5 flex flex-wrap items-end justify-between gap-3 rounded-md border 
+  class={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-md border 
     border-border bg-background/50 p-3 ${className}`}
 >
-  <div class="flex min-w-0 flex-1 items-end gap-3">
+  <div class="flex flex-wrap min-w-0 items-center gap-3">
     {@render selector?.()}
   </div>
   <div class="flex flex-wrap items-center gap-2">

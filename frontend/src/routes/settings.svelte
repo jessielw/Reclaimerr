@@ -725,7 +725,7 @@
                         value ? Number(value) : null,
                       )}
                   >
-                    <Select.Trigger class="min-w-56 text-left">
+                    <Select.Trigger size="sm" class="w-40 md:min-w-56">
                       {#if serviceState[activeTab].config.id !== null}
                         {getArrInstanceName(
                           activeTab,

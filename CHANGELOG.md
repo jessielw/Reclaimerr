@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Log level not being passed through from env
+- Arr instance selector in mobile was too large
+- Arr instance in mobile buttons was not centered vertically
 
 ### Removed
 
