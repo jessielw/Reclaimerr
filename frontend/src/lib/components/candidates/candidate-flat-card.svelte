@@ -66,6 +66,7 @@
           posterUrl={entry.poster_url}
           {posterSize}
           {tailWindElSize}
+          showMediaType={true}
         />
         <div class="min-w-0">
           <div class="text-sm font-medium text-foreground">

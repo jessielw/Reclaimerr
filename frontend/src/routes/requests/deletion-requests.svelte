@@ -278,6 +278,9 @@
                 <PosterThumb
                   mediaType={req.media_type}
                   posterUrl={req.poster_url}
+                  posterSize={"154"}
+                  tailWindElSize="w-28"
+                  showMediaType={true}
                 />
                 <div class="min-w-0 flex-1">
                   <div class="flex items-start justify-between gap-2">

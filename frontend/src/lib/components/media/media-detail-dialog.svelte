@@ -2,7 +2,6 @@
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
-  import Star from "@lucide/svelte/icons/star";
   import Clock from "@lucide/svelte/icons/clock";
   import Calendar from "@lucide/svelte/icons/calendar";
   import ListX from "@lucide/svelte/icons/list-x";
@@ -18,6 +17,7 @@
     MovieWithStatus,
     SeriesWithStatus,
   } from "$lib/types/shared";
+  import MetadataSources from "$lib/components/media/metadata-sources.svelte";
   import { Permission } from "$lib/types/shared";
   import { formatFileSize, formatRuntime } from "$lib/utils/formatters";
   import { formatDateToLocaleString } from "$lib/utils/date";
@@ -77,6 +77,8 @@
       ($auth.user?.permissions ?? []).includes(Permission.Request) ||
       ($auth.user?.permissions ?? []).includes(Permission.AutoApprove),
   );
+
+  const tmdbMediaType = $derived(mediaType === "series" ? "tv" : "movie");
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => !isOpen && handleClose()}>
@@ -228,16 +230,20 @@
                       <span>{media.season_count} Seasons</span>
                     </div>
                   {/if}
-                  {#if media.vote_average}
-                    <div class="flex items-center gap-1">
-                      <Star class="w-4 h-4 fill-yellow-500 text-yellow-500" />
-                      <span>{media.vote_average.toFixed(1)}/10</span>
-                      {#if media.vote_count}
-                        <span class="text-xs">({media.vote_count} votes)</span>
-                      {/if}
-                    </div>
-                  {/if}
                 </div>
+
+                {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null}
+                  <MetadataSources
+                    tmdbId={media.tmdb_id}
+                    {tmdbMediaType}
+                    tmdbRating={media.vote_average}
+                    tmdbVoteCount={media.vote_count}
+                    imdbId={media.imdb_id}
+                    imdbRating={media.imdb_rating}
+                    imdbVoteCount={media.imdb_vote_count}
+                    class="mt-2"
+                  />
+                {/if}
               </div>
 
               <!-- genres -->

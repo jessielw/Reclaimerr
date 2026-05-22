@@ -12,15 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IMDb ratings
   - IMDb vote count & rating to the engine
   - New task to refresh IMDb ratings daily (can be disabled if the user does not want IMDb)
-    - This task daily will grab IMDb official rating data sets and update the database with the current ratings (these data sets are only refreshed once every 24 hours so running this task more than that is fruitless). There are guards that check the hash/304 not modified header that will prevent running if nothing has changed.
+    - This task daily will grab IMDb official rating data sets and update the database with the current ratings (these data sets are only refreshed once every 24 hours so running this task more than that is fruitless). There are guards that check the hash/304 not modified header that will prevent running if nothing has changed
 
 ### Changed
 
--
+- Now shows IMDb rating data on candidates, protected pages, and movie/series information modals
+- Border of posters have been themed based on media type
+- Slightly increased the size for some of the posters
+- Now displays IMDb rating data with TMDB data
 
 ### Fixed
 
 - Log level not being passed through from env
+
+### Removed
+
+- Media type badge from Protected
 
 ## [0.1.0-beta.23] - 2026-05-21
 

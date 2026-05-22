@@ -347,6 +347,9 @@ export interface MovieWithStatus {
   versions: MovieVersion[];
   arr_refs: ArrRef[];
   imdb_id: string | null;
+  imdb_rating: number | null;
+  imdb_vote_count: number | null;
+  imdb_ratings_refreshed_at: string | null;
   tmdb_title: string | null;
   original_title: string | null;
   tmdb_release_date: string | null;
@@ -383,6 +386,9 @@ export interface SeriesWithStatus {
   service_refs: SeriesServiceRef[];
   arr_refs: ArrRef[];
   imdb_id: string | null;
+  imdb_rating: number | null;
+  imdb_vote_count: number | null;
+  imdb_ratings_refreshed_at: string | null;
   tvdb_id: string | null;
   tmdb_title: string | null;
   original_title: string | null;
@@ -597,6 +603,12 @@ export interface ProtectedEntry {
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
+  tmdb_id: number | null;
+  vote_average: number | null;
+  vote_count: number | null;
+  imdb_id: string | null;
+  imdb_rating: number | null;
+  imdb_vote_count: number | null;
   reason: string | null;
   protected_by_user_id: number;
   protected_by_username: string;
@@ -615,6 +627,9 @@ export interface ReclaimCandidateEntry {
   media_year: number | null;
   poster_url: string | null;
   tmdb_id: number | null;
+  imdb_id: string | null;
+  imdb_rating: number | null;
+  imdb_vote_count: number | null;
   genres: string[] | null;
   popularity: number | null;
   vote_average: number | null;

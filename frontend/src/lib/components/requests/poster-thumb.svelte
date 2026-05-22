@@ -17,12 +17,23 @@
     posterUrl,
     posterSize = "92",
     tailWindElSize = "w-16",
+    showMediaType = false,
   }: {
     mediaType: MediaType;
     posterUrl?: string | null;
     posterSize?: TMDBPosterSizeOption | number;
     tailWindElSize?: string;
+    showMediaType?: boolean;
   } = $props();
+
+  // border based on media type
+  const borderColor = $derived.by(() => {
+    const defaultColor = "border bg-gray-800 dark:border-gray-700";
+    if (!showMediaType) return defaultColor;
+    if (mediaType === "movie") return "border-2 border-movie";
+    if (mediaType === "series") return "border-2 border-series";
+    return defaultColor;
+  });
 
   // ensure posterUrl is normalized to start with a slash if it exists
   let normalizedPosterUrl = $derived.by(() => {
@@ -33,8 +44,7 @@
 
 <div
   class="{tailWindElSize} shrink-0 self-start rounded-md bg-muted/40 flex items-center justify-center
-    aspect-2/3 border-2 transition-transform duration-150 border-gray-400 dark:border-gray-700
-    hover:scale-105 cursor-default"
+    aspect-2/3 transition-transform duration-150 {borderColor} hover:scale-105 cursor-default"
 >
   {#if normalizedPosterUrl}
     <img

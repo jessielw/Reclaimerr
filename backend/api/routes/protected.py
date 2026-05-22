@@ -130,9 +130,21 @@ async def get_protected_entries(
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
             Movie.poster_url.label("movie_poster_url"),
+            Movie.tmdb_id.label("movie_tmdb_id"),
+            Movie.vote_average.label("movie_vote_average"),
+            Movie.vote_count.label("movie_vote_count"),
+            Movie.imdb_id.label("movie_imdb_id"),
+            Movie.imdb_rating.label("movie_imdb_rating"),
+            Movie.imdb_vote_count.label("movie_imdb_vote_count"),
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
+            Series.tmdb_id.label("series_tmdb_id"),
+            Series.vote_average.label("series_vote_average"),
+            Series.vote_count.label("series_vote_count"),
+            Series.imdb_id.label("series_imdb_id"),
+            Series.imdb_rating.label("series_imdb_rating"),
+            Series.imdb_vote_count.label("series_imdb_vote_count"),
             Season.season_number.label("season_number"),
             Episode.episode_number.label("episode_number"),
             Episode.name.label("episode_name"),
@@ -216,6 +228,36 @@ async def get_protected_entries(
             if entry.media_type is MediaType.MOVIE
             else row.series_poster_url
         )
+        tmdb_id = (
+            row.movie_tmdb_id
+            if entry.media_type is MediaType.MOVIE
+            else row.series_tmdb_id
+        )
+        vote_average = (
+            row.movie_vote_average
+            if entry.media_type is MediaType.MOVIE
+            else row.series_vote_average
+        )
+        vote_count = (
+            row.movie_vote_count
+            if entry.media_type is MediaType.MOVIE
+            else row.series_vote_count
+        )
+        imdb_id = (
+            row.movie_imdb_id
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_id
+        )
+        imdb_rating = (
+            row.movie_imdb_rating
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_rating
+        )
+        imdb_vote_count = (
+            row.movie_imdb_vote_count
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_vote_count
+        )
         media_id = (
             entry.movie_id if entry.media_type is MediaType.MOVIE else entry.series_id
         )
@@ -237,6 +279,12 @@ async def get_protected_entries(
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
+                tmdb_id=tmdb_id,
+                vote_average=vote_average,
+                vote_count=vote_count,
+                imdb_id=imdb_id,
+                imdb_rating=imdb_rating,
+                imdb_vote_count=imdb_vote_count,
                 reason=entry.reason,
                 protected_by_user_id=entry.protected_by_user_id,
                 protected_by_username=row.actor_username or "Unknown",
@@ -391,6 +439,12 @@ async def create_protection_entry(
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
+        tmdb_id=media.tmdb_id,
+        vote_average=media.vote_average,
+        vote_count=media.vote_count,
+        imdb_id=media.imdb_id,
+        imdb_rating=media.imdb_rating,
+        imdb_vote_count=media.imdb_vote_count,
         reason=new_entry.reason,
         protected_by_user_id=user.id,
         protected_by_username=user.username,
@@ -485,6 +539,12 @@ async def update_protection_duration(
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
+        tmdb_id=media.tmdb_id,
+        vote_average=media.vote_average,
+        vote_count=media.vote_count,
+        imdb_id=media.imdb_id,
+        imdb_rating=media.imdb_rating,
+        imdb_vote_count=media.imdb_vote_count,
         reason=entry.reason,
         protected_by_user_id=entry.protected_by_user_id,
         protected_by_username=actor.username if actor else "Unknown",

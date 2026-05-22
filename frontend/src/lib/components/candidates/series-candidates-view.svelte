@@ -145,6 +145,7 @@
                 posterUrl={row.poster_url}
                 posterSize={"154"}
                 tailWindElSize="w-28"
+                showMediaType={true}
               />
               <div class="min-w-0">
                 <div class="text-sm font-medium text-foreground">

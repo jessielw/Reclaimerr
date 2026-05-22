@@ -593,6 +593,11 @@ async def get_movies(
                 for ref in movie_arr_refs
             ],
             "imdb_id": movie.imdb_id,
+            "imdb_rating": movie.imdb_rating,
+            "imdb_vote_count": movie.imdb_vote_count,
+            "imdb_ratings_refreshed_at": to_utc_isoformat(
+                movie.imdb_ratings_refreshed_at
+            ),
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
             "tmdb_release_date": to_utc_isoformat(movie.tmdb_release_date),
@@ -823,6 +828,11 @@ async def get_series(
                 for ref in series_arr_refs
             ],
             "imdb_id": series.imdb_id,
+            "imdb_rating": series.imdb_rating,
+            "imdb_vote_count": series.imdb_vote_count,
+            "imdb_ratings_refreshed_at": to_utc_isoformat(
+                series.imdb_ratings_refreshed_at
+            ),
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
             "original_title": series.original_title,
@@ -1192,6 +1202,9 @@ async def get_candidates(
             Movie.size.label("movie_size"),
             # movie tmdb data
             Movie.tmdb_id.label("movie_tmdb_id"),
+            Movie.imdb_id.label("movie_imdb_id"),
+            Movie.imdb_rating.label("movie_imdb_rating"),
+            Movie.imdb_vote_count.label("movie_imdb_vote_count"),
             Movie.poster_url.label("movie_poster_url"),
             Movie.genres.label("movie_genres"),
             Movie.popularity.label("movie_popularity"),
@@ -1232,6 +1245,9 @@ async def get_candidates(
             Season.subtitle_languages.label("season_subtitle_languages"),
             # series tmdb data
             Series.tmdb_id.label("series_tmdb_id"),
+            Series.imdb_id.label("series_imdb_id"),
+            Series.imdb_rating.label("series_imdb_rating"),
+            Series.imdb_vote_count.label("series_imdb_vote_count"),
             Series.genres.label("series_genres"),
             Series.popularity.label("series_popularity"),
             Series.vote_average.label("series_vote_average"),
@@ -1383,6 +1399,11 @@ async def get_candidates(
         media_year = row.movie_year if is_movie else row.series_year
         poster_url = row.movie_poster_url if is_movie else row.series_poster_url
         tmdb_id = row.movie_tmdb_id if is_movie else row.series_tmdb_id
+        imdb_id = row.movie_imdb_id if is_movie else row.series_imdb_id
+        imdb_rating = row.movie_imdb_rating if is_movie else row.series_imdb_rating
+        imdb_vote_count = (
+            row.movie_imdb_vote_count if is_movie else row.series_imdb_vote_count
+        )
         genres = extract_genre_names(
             row.movie_genres if is_movie else row.series_genres  # type: ignore[arg-type]
         )
@@ -1453,6 +1474,9 @@ async def get_candidates(
                 media_title=media_title,
                 media_year=media_year,
                 tmdb_id=tmdb_id,
+                imdb_id=imdb_id,
+                imdb_rating=imdb_rating,
+                imdb_vote_count=imdb_vote_count,
                 poster_url=poster_url,
                 genres=genres,
                 popularity=popularity,

@@ -25,8 +25,6 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { cleanResolutionString } from "$lib/utils/formatters";
 
-  const TMDB_POSTER_WIDTH = 92;
-
   type StatusFilter = "all" | ProtectionRequestStatus;
   type SortOrder = "desc" | "asc";
 
@@ -833,7 +831,9 @@
                   <PosterThumb
                     mediaType={req.media_type}
                     posterUrl={req.poster_url}
-                    posterSize={TMDB_POSTER_WIDTH}
+                    posterSize={"154"}
+                    tailWindElSize="w-28"
+                    showMediaType={true}
                   />
                   <div class="flex-1 min-w-0">
                     <div class="min-w-0">
@@ -1052,7 +1052,9 @@
               <PosterThumb
                 mediaType={req.media_type}
                 posterUrl={req.poster_url}
-                posterSize={TMDB_POSTER_WIDTH}
+                posterSize={"154"}
+                tailWindElSize="w-28"
+                showMediaType={true}
               />
               <div class="min-w-0 flex-1">
                 <h3

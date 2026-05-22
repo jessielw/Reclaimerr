@@ -16,6 +16,12 @@ class ProtectedEntryResponse(BaseModel):
     media_title: str
     media_year: int | None
     poster_url: str | None
+    tmdb_id: int | None = None
+    vote_average: float | None = None
+    vote_count: int | None = None
+    imdb_id: str | None = None
+    imdb_rating: float | None = None
+    imdb_vote_count: int | None = None
     reason: str | None
     protected_by_user_id: int
     protected_by_username: str
