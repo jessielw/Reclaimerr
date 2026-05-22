@@ -4,6 +4,31 @@ import type { ReclaimCandidateEntry } from "$lib/types/shared";
 
 export const UNKNOWN_VALUE = "Unknown";
 
+const candidateCreatedAtEpoch = (createdAt: string): number => {
+  const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(createdAt);
+  const parsed = Date.parse(hasTimezone ? createdAt : `${createdAt}Z`);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+};
+
+export const newestCandidateCreatedAt = (
+  entries: ReclaimCandidateEntry[],
+): string | null => {
+  if (entries.length === 0) return null;
+
+  let newest = entries[0].created_at;
+  let newestEpoch = candidateCreatedAtEpoch(newest);
+
+  for (const entry of entries) {
+    const epoch = candidateCreatedAtEpoch(entry.created_at);
+    if (epoch > newestEpoch) {
+      newest = entry.created_at;
+      newestEpoch = epoch;
+    }
+  }
+
+  return newest;
+};
+
 export const movieSummaryChips = (entry: ReclaimCandidateEntry): string[] => {
   const chips: string[] = [];
   if (entry.version_video_width && entry.version_video_height) {
@@ -41,13 +66,6 @@ export const candidateFileName = (
   path: string | null,
   fallbackFileName: string | null = null,
 ): string => fileNameFromPath(path, fallbackFileName);
-
-export const seriesGroupSummary = (
-  totalBytes: number,
-  createdAt: string,
-  formatDate: (value: string) => string,
-): string =>
-  `Total: ${formatFileSize(totalBytes)} - Flagged: ${formatDate(createdAt)}`;
 
 export const seriesGroupCountLabel = (
   entries: ReclaimCandidateEntry[],
