@@ -20,12 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Border of posters have been themed based on media type
 - Slightly increased the size for some of the posters
 - Now displays IMDb rating data with TMDB data
+- Improved how candidates are scoped at the episode level, will now group if all episodes in a season or all seasons in a series are selected in the bulk selector to protect
+- Bulk selector modal is now blocked during processing until it's completed
 
 ### Fixed
 
 - Log level not being passed through from env
 - Arr instance selector in mobile was too large
 - Arr instance in mobile buttons was not centered vertically
+- Bug protecting episode scoped candidates
 
 ### Removed
 
