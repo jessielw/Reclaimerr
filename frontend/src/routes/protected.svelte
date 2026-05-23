@@ -593,7 +593,7 @@
                         anilistPopularity={entry.anilist_popularity}
                         anilistFavourites={entry.anilist_favourites}
                         compact={true}
-                        class="mt-2 w-64"
+                        class="mt-2 w-40 md:w-64"
                       />
                     </div>
                   </div>
