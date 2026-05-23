@@ -20,7 +20,7 @@
 
 I explored numerous open source applications for server cleanup, and [Maintainerr](https://github.com/Maintainerr/Maintainerr) stood out as a major inspiration for Reclaimerr's design. When I began development, Maintainerr didn't support Jellyfin or Emby, though support was added to Jellyfin in [v3.0.0](https://github.com/Maintainerr/Maintainerr/releases/tag/v3.0.0), it still didn't fully meet my needs.
 
-I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support. Same as with Maintainerr - Reclaimerr can also be run without Sonarr/Radarr, directly integrated with Jellyfin/Plex.
+I needed a solution to manage a single physical media library while utilizing both Jellyfin and Plex to run filters and rules. I considered contributing to Maintainerr, but its codebase was undergoing a major refactor to add Jellyfin support.
 
 Driven by the increasing cost of storage and the need to reclaim used disk space, inspired by Maintainerr, **Reclaimerr** was born.
 
@@ -253,4 +253,7 @@ The backend is available at [http://localhost:8000](http://localhost:8000) and t
 
 - [Maintainerr](https://github.com/Maintainerr/Maintainerr) and [Seerr](https://github.com/seerr-team/seerr) for inspiration
 - [TheMovieDB](https://www.themoviedb.org/)
+- [IMDb](https://www.imdb.com/)
+- [AniList](https://anilist.co)
+- [AniBridge Mappings](https://github.com/anibridge/anibridge-mappings)
 - Numerous community dependencies (see [pyproject](pyproject.toml) and [package](frontend/package.json))
