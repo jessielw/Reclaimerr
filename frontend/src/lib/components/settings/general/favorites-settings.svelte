@@ -1,22 +1,31 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { get_api } from "$lib/api";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
+  import CompactPagination from "$lib/components/compact-pagination.svelte";
+  import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Copy from "@lucide/svelte/icons/copy";
   import UserStar from "@lucide/svelte/icons/user-star";
   import { toast } from "svelte-sonner";
+  import {
+    MediaType,
+    type FavoritesMediaEntry,
+    type FavoritesUserLookup,
+    type PaginatedFavoritesMediaResponse,
+  } from "$lib/types/shared";
+  import Spinner from "$lib/components/ui/spinner/spinner.svelte";
 
-  interface FavoritesUserLookup {
-    username: string;
-    has_favorites: boolean;
-    favorites_count: number;
-    source_count: number;
-    sources: string[];
-  }
+  const FAVORITES_MEDIA_PER_PAGE = 25;
+  const FAVORITES_MEDIA_VISIBLE_USERS = 5;
 
   interface Props {
     favoritesIgnoreEnabled?: boolean;
@@ -35,6 +44,15 @@
   let favoritesUsersError = $state<string | null>(null);
   let favoritesUsers = $state<FavoritesUserLookup[]>([]);
   let usersQuery = $state("");
+  let favoritesMediaOpen = $state(false);
+  let favoritesMediaLoading = $state(false);
+  let favoritesMediaError = $state<string | null>(null);
+  let favoritesMediaData = $state<PaginatedFavoritesMediaResponse | null>(null);
+  let favoritesMediaSearch = $state("");
+  let favoritesMediaUsername = $state("");
+  let favoritesMediaType = $state<"all" | MediaType>("all");
+  let favoritesMediaPage = $state(1);
+  let favoritesMediaSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
   const filteredUsers = $derived.by(() => {
     const needle = usersQuery.trim().toLowerCase();
@@ -101,6 +119,61 @@
     }
   };
 
+  const loadFavoritesMedia = async (
+    page: number = favoritesMediaPage,
+    forceRefresh = false,
+  ) => {
+    favoritesMediaLoading = true;
+    favoritesMediaError = null;
+    favoritesMediaPage = page;
+    try {
+      const params = new URLSearchParams({
+        page: page.toString(),
+        per_page: FAVORITES_MEDIA_PER_PAGE.toString(),
+      });
+      const search = favoritesMediaSearch.trim();
+      if (search) params.set("search", search);
+      const username = favoritesMediaUsername.trim();
+      if (username) params.set("username", username);
+      if (favoritesMediaType !== "all") {
+        params.set("media_type", favoritesMediaType);
+      }
+      if (forceRefresh) params.set("refresh", "true");
+      favoritesMediaData = await get_api<PaginatedFavoritesMediaResponse>(
+        `/api/settings/general/favorites-media?${params.toString()}`,
+      );
+    } catch (error) {
+      favoritesMediaError =
+        error instanceof Error
+          ? error.message
+          : "Failed to load favorites media";
+      favoritesMediaData = null;
+    } finally {
+      favoritesMediaLoading = false;
+    }
+  };
+
+  const toggleFavoritesMediaPanel = async () => {
+    favoritesMediaOpen = !favoritesMediaOpen;
+    if (favoritesMediaOpen && !favoritesMediaData) {
+      await loadFavoritesMedia(1);
+    }
+  };
+
+  const scheduleFavoritesMediaFilterReload = () => {
+    if (favoritesMediaSearchTimer) clearTimeout(favoritesMediaSearchTimer);
+    favoritesMediaSearchTimer = setTimeout(() => {
+      if (!favoritesMediaOpen) return;
+      loadFavoritesMedia(1);
+    }, 300);
+  };
+
+  const visibleFavoriteUsers = (entry: FavoritesMediaEntry) =>
+    entry.favorite_users.slice(0, FAVORITES_MEDIA_VISIBLE_USERS);
+
+  const hiddenFavoriteUsers = (entry: FavoritesMediaEntry) =>
+    entry.favorite_users.slice(FAVORITES_MEDIA_VISIBLE_USERS);
+
   const copySingleUser = async (username: string) => {
     try {
       await navigator.clipboard.writeText(username);
@@ -109,6 +182,10 @@
       toast.error("Failed to copy username.");
     }
   };
+
+  onDestroy(() => {
+    if (favoritesMediaSearchTimer) clearTimeout(favoritesMediaSearchTimer);
+  });
 </script>
 
 <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
@@ -143,8 +220,12 @@
               class="cursor-pointer gap-1"
               onclick={toggleFavoritesUsersPanel}
             >
-              <Eye class="size-4" />
-              {favoritesUsersOpen ? "Hide users" : "Show users"}
+              {#if favoritesUsersOpen}
+                <EyeOff class="size-4" />
+              {:else}
+                <Eye class="size-4" />
+              {/if}
+              Users
             </Button>
           </div>
           <textarea
@@ -153,7 +234,7 @@
               px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
             placeholder="user1, user2"
             bind:value={favoritesUsernamesInput}
-            disabled={!favoritesProtectAllUsers}
+            disabled={favoritesProtectAllUsers}
           ></textarea>
           <p class="text-xs text-muted-foreground mt-1">
             Comma or newline separated. Matching is case-insensitive.
@@ -260,4 +341,191 @@
       {/if}
     </div>
   {/if}
+
+  <hr class="my-4" />
+
+  <div class="space-y-2">
+    <div class="flex items-center justify-between gap-2">
+      <h4 class="text-sm font-medium text-foreground">
+        Favorites Media Snapshot
+      </h4>
+      <Button
+        size="sm"
+        class="cursor-pointer gap-1"
+        onclick={toggleFavoritesMediaPanel}
+      >
+        {#if favoritesMediaOpen}
+          <EyeOff class="size-4" />
+        {:else}
+          <Eye class="size-4" />
+        {/if}
+        Favorites
+      </Button>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      Browse all media currently seen in favorites snapshots from Emby/Jellyfin.
+    </p>
+
+    {#if favoritesMediaOpen}
+      <div
+        class="rounded-md border border-border bg-background/40 p-3 space-y-3"
+      >
+        <div class="flex flex-wrap gap-2 items-center">
+          <Input
+            type="text"
+            class="text-sm md:flex-1"
+            placeholder="Search title..."
+            bind:value={favoritesMediaSearch}
+            oninput={scheduleFavoritesMediaFilterReload}
+          />
+
+          <Input
+            type="text"
+            class="text-sm md:flex-1"
+            placeholder="Filter username..."
+            bind:value={favoritesMediaUsername}
+            oninput={scheduleFavoritesMediaFilterReload}
+          />
+
+          <Select.Root
+            type="single"
+            bind:value={favoritesMediaType}
+            onValueChange={() => loadFavoritesMedia(1)}
+            disabled={favoritesMediaLoading}
+          >
+            <Select.Trigger
+              class="flex-1 md:w-fit bg-card text-card-foreground"
+            >
+              {favoritesMediaType === "all"
+                ? "All media types"
+                : favoritesMediaType === MediaType.Movie
+                  ? "Movies"
+                  : "Series"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="all"
+                label="All media types"
+                class="text-card-foreground"
+              >
+                All media types
+              </Select.Item>
+              <Select.Item
+                value={MediaType.Movie}
+                label="Movies"
+                class="text-card-foreground"
+              >
+                Movies
+              </Select.Item>
+              <Select.Item
+                value={MediaType.Series}
+                label="Series"
+                class="text-card-foreground"
+              >
+                Series
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+
+          <Button
+            size="icon-sm"
+            class="cursor-pointer"
+            onclick={() => loadFavoritesMedia(1, true)}
+            disabled={favoritesMediaLoading}
+          >
+            <RotateCcw class="size-4" />
+          </Button>
+        </div>
+
+        {#if favoritesMediaLoading}
+          <span class="inline-flex gap-3 text-sm text-muted-foreground">
+            <Spinner class="h-[1.2rem] w-[1.2rem] text-primary" /> Loading favorites
+            media...
+          </span>
+        {:else if favoritesMediaError}
+          <p class="text-sm text-destructive">{favoritesMediaError}</p>
+        {:else if !favoritesMediaData || favoritesMediaData.items.length === 0}
+          <p class="text-sm text-muted-foreground">No favorites media found.</p>
+        {:else}
+          <div class="space-y-2">
+            {#each favoritesMediaData.items as entry (`${entry.media_type}-${entry.tmdb_id}`)}
+              <div
+                class="rounded-md border border-border bg-background/70 px-3 py-2"
+              >
+                <div class="flex gap-3">
+                  <PosterThumb
+                    mediaType={entry.media_type}
+                    posterUrl={entry.poster_url}
+                    posterSize={"92"}
+                    tailWindElSize={"w-12"}
+                    showMediaType={true}
+                  />
+                  <div class="min-w-0 flex-1 space-y-1">
+                    <div class="text-sm font-medium text-foreground truncate">
+                      {entry.title}{entry.year ? ` (${entry.year})` : ""}
+                    </div>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <span class="text-xs text-muted-foreground"
+                        >Favorited by</span
+                      >
+                      {#each visibleFavoriteUsers(entry) as username (username)}
+                        <Badge variant="outline" class="text-[11px]">
+                          {username}
+                        </Badge>
+                      {/each}
+                      {#if hiddenFavoriteUsers(entry).length > 0}
+                        <Tooltip.Root>
+                          <Tooltip.Trigger>
+                            <Badge
+                              variant="outline"
+                              class="text-[11px] cursor-help"
+                            >
+                              +{hiddenFavoriteUsers(entry).length}
+                            </Badge>
+                          </Tooltip.Trigger>
+                          <Tooltip.Content>
+                            <p>{hiddenFavoriteUsers(entry).join(", ")}</p>
+                          </Tooltip.Content>
+                        </Tooltip.Root>
+                      {/if}
+                      <span class="text-[11px] text-muted-foreground">
+                        ({entry.favorite_user_count})
+                      </span>
+                    </div>
+                    {#if entry.is_missing_metadata}
+                      <p class="text-[11px] text-amber-500">
+                        Local metadata missing for TMDB {entry.tmdb_id}
+                      </p>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+
+          {#if favoritesMediaData.total_pages > 1}
+            <div
+              class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+            >
+              <p class="text-xs text-muted-foreground">
+                Showing {(favoritesMediaData.page - 1) *
+                  favoritesMediaData.per_page +
+                  1}
+                to {Math.min(
+                  favoritesMediaData.page * favoritesMediaData.per_page,
+                  favoritesMediaData.total,
+                )} of {favoritesMediaData.total}
+              </p>
+              <CompactPagination
+                currentPage={favoritesMediaData.page}
+                totalPages={favoritesMediaData.total_pages}
+                maxVisiblePages={3}
+                onPageChange={(page) => loadFavoritesMedia(page)}
+              />
+            </div>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+  </div>
 </div>

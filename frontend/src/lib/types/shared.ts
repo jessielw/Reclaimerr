@@ -144,6 +144,33 @@ export interface GeneralSettings {
   favorites_usernames: string[];
 }
 
+export interface FavoritesUserLookup {
+  username: string;
+  has_favorites: boolean;
+  favorites_count: number;
+  source_count: number;
+  sources: string[];
+}
+
+export interface FavoritesMediaEntry {
+  media_type: MediaType;
+  tmdb_id: number;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  favorite_user_count: number;
+  favorite_users: string[];
+  is_missing_metadata: boolean;
+}
+
+export interface PaginatedFavoritesMediaResponse {
+  items: FavoritesMediaEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
 export interface ReclaimRule {
   id: number;
   name: string;

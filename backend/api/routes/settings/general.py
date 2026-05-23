@@ -5,7 +5,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from backend.core.auth import require_admin
@@ -13,7 +13,10 @@ from backend.core.utils.filesystem import normalize_fpath
 from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
+    MediaFavorite,
+    Movie,
     MovieVersion,
+    Series,
     SeriesServiceRef,
     ServiceConfig,
     User,
@@ -21,8 +24,10 @@ from backend.database.models import (
 from backend.enums import MediaType
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
+    FavoritesMediaEntryResponse,
     FavoritesUserLookupResponse,
     GeneralSettingsResponse,
+    PaginatedFavoritesMediaResponse,
     PostActionWebhookTestRequest,
     PostActionWebhookTestResponse,
 )
@@ -112,6 +117,167 @@ async def get_favorites_users(
         force_refresh=refresh
     )
     return [FavoritesUserLookupResponse.model_validate(item) for item in users]
+
+
+@router.get("/general/favorites-media", response_model=PaginatedFavoritesMediaResponse)
+async def get_favorites_media(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    media_type: Annotated[MediaType | None, Query()] = None,
+    username: Annotated[str | None, Query(max_length=255)] = None,
+    refresh: Annotated[bool, Query()] = False,
+) -> PaginatedFavoritesMediaResponse:
+    """Get paginated favorite media snapshot entries."""
+    await media_favorites_snapshot_cache.ensure_fresh_snapshot(force=refresh)
+
+    filters = []
+    if media_type is not None:
+        filters.append(MediaFavorite.media_type == media_type)
+
+    username_filter = (username or "").strip().lower()
+    if username_filter:
+        filters.append(
+            func.lower(MediaFavorite.username_normalized).contains(username_filter)
+        )
+
+    search_filter = (search or "").strip().lower()
+    title_expr = func.coalesce(Movie.title, Series.title)
+    if search_filter:
+        filters.append(
+            or_(
+                func.lower(func.coalesce(Movie.title, "")).contains(search_filter),
+                func.lower(func.coalesce(Series.title, "")).contains(search_filter),
+            )
+        )
+
+    base_query = (
+        select(
+            MediaFavorite.media_type.label("media_type"),
+            MediaFavorite.tmdb_id.label("tmdb_id"),
+            Movie.title.label("movie_title"),
+            Movie.year.label("movie_year"),
+            Movie.poster_url.label("movie_poster_url"),
+            Series.title.label("series_title"),
+            Series.year.label("series_year"),
+            Series.poster_url.label("series_poster_url"),
+            func.count(func.distinct(MediaFavorite.username_normalized)).label(
+                "favorite_user_count"
+            ),
+        )
+        .outerjoin(
+            Movie,
+            and_(
+                MediaFavorite.media_type == MediaType.MOVIE,
+                MediaFavorite.tmdb_id == Movie.tmdb_id,
+            ),
+        )
+        .outerjoin(
+            Series,
+            and_(
+                MediaFavorite.media_type == MediaType.SERIES,
+                MediaFavorite.tmdb_id == Series.tmdb_id,
+            ),
+        )
+        .where(*filters)
+        .group_by(
+            MediaFavorite.media_type,
+            MediaFavorite.tmdb_id,
+            Movie.title,
+            Movie.year,
+            Movie.poster_url,
+            Series.title,
+            Series.year,
+            Series.poster_url,
+        )
+    )
+
+    total_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
+    total = int(total_result.scalar() or 0)
+
+    offset = (page - 1) * per_page
+    rows = (
+        await db.execute(
+            base_query.order_by(
+                func.count(func.distinct(MediaFavorite.username_normalized)).desc(),
+                func.lower(func.coalesce(title_expr, "")).asc(),
+                MediaFavorite.tmdb_id.asc(),
+            )
+            .offset(offset)
+            .limit(per_page)
+        )
+    ).all()
+
+    key_pairs = [(row.media_type, row.tmdb_id) for row in rows]
+    favorites_users_by_key: dict[tuple[MediaType, int], set[str]] = {}
+    if key_pairs:
+        username_rows = (
+            await db.execute(
+                select(
+                    MediaFavorite.media_type,
+                    MediaFavorite.tmdb_id,
+                    MediaFavorite.username,
+                ).where(
+                    tuple_(MediaFavorite.media_type, MediaFavorite.tmdb_id).in_(
+                        key_pairs
+                    )
+                )
+            )
+        ).all()
+
+        for item_media_type, item_tmdb_id, item_username in username_rows:
+            key = (item_media_type, int(item_tmdb_id))
+            if key not in favorites_users_by_key:
+                favorites_users_by_key[key] = set()
+            if item_username:
+                favorites_users_by_key[key].add(str(item_username).strip())
+
+    items: list[FavoritesMediaEntryResponse] = []
+    for row in rows:
+        if row.media_type == MediaType.MOVIE:
+            title = row.movie_title
+            year = row.movie_year
+            poster_url = row.movie_poster_url
+        else:
+            title = row.series_title
+            year = row.series_year
+            poster_url = row.series_poster_url
+
+        is_missing_metadata = not bool(title)
+        display_title = (
+            str(title).strip() if title else f"Unknown Media (TMDB {int(row.tmdb_id)})"
+        )
+        key = (row.media_type, int(row.tmdb_id))
+        favorite_users = sorted(
+            favorites_users_by_key.get(key, set()),
+            key=lambda value: value.lower(),
+        )
+
+        items.append(
+            FavoritesMediaEntryResponse(
+                media_type=row.media_type,
+                tmdb_id=int(row.tmdb_id),
+                title=display_title,
+                year=year,
+                poster_url=poster_url,
+                favorite_user_count=int(row.favorite_user_count or 0),
+                favorite_users=favorite_users,
+                is_missing_metadata=is_missing_metadata,
+            )
+        )
+
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    return PaginatedFavoritesMediaResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
 
 
 @router.post(

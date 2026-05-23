@@ -234,6 +234,25 @@ class FavoritesUserLookupResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class FavoritesMediaEntryResponse(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_url: str | None = None
+    favorite_user_count: int
+    favorite_users: list[str] = Field(default_factory=list)
+    is_missing_metadata: bool = False
+
+
+class PaginatedFavoritesMediaResponse(BaseModel):
+    items: list[FavoritesMediaEntryResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
 class GeneralSettingsResponse(BaseModel):
     worker_poll_min_seconds: float | None = None
     worker_poll_max_seconds: float | None = None
