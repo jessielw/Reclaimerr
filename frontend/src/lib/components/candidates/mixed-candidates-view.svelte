@@ -114,7 +114,7 @@
         {moveEnabled}
         {formatDate}
         posterSize={"154"}
-        tailWindElSize="w-24"
+        tailWindElSize="w-28"
       >
         {#snippet summary()}
           {#if entry.media_type === MediaType.Movie}
