@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Candidates and Protected mobile view had some visual bugs
+- Rebuilt media detail modal to look much nicer on mobile
 
 ## [0.1.0-beta.24] - 2026-05-23
 
