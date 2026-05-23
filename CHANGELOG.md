@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Now shows IMDb rating data on candidates, protected pages, and movie/series information modals
+- Now shows AniList rating data on candidates, protected pages, and movie/series information modals
 - Border of posters have been themed based on media type
 - Slightly increased the size for some of the posters
-- Now displays IMDb rating data with TMDB data
 - Improved how candidates are scoped at the episode level, will now group if all episodes in a season or all seasons in a series are selected in the bulk selector to protect
 - Bulk selector modal is now blocked during processing until it's completed
 
