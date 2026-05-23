@@ -100,6 +100,24 @@ DEFAULT_SCHEDULES = (
         "default_schedule_value": "3600",
         "enabled": True,
     },
+    {
+        "task": Task.IMDB_RATINGS_REFRESH,
+        "description": "Refreshes IMDb ratings dataset and updates cached IMDb ratings",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 4 * * *",  # daily at 4 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 4 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.ANILIST_RATINGS_REFRESH,
+        "description": "Refreshes AniBridge mappings and updates AniList supplemental ratings",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 5 * * *",  # daily at 5 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 5 * * *",
+        "enabled": True,
+    },
 )
 
 
@@ -117,18 +135,18 @@ async def ensure_default_schedules(db: AsyncSession) -> None:
             if existing.description != default["description"]:
                 existing.description = default["description"]
                 updated = True
-            if existing.schedule_type != default["default_schedule_type"]:
-                existing.schedule_type = default["default_schedule_type"]
+            # keep user-edited active schedule settings stable across restarts;
+            # update only the reset-to-default metadata.
+            if existing.default_schedule_type != default["default_schedule_type"]:
+                existing.default_schedule_type = default["default_schedule_type"]
                 updated = True
-            if existing.schedule_value != default["default_schedule_value"]:
-                existing.schedule_value = default["default_schedule_value"]
+            if existing.default_schedule_value != default["default_schedule_value"]:
+                existing.default_schedule_value = default["default_schedule_value"]
                 updated = True
             # do not override enabled
             if updated:
                 db.add(existing)
-                LOG.info(
-                    f"Updated existing schedule for {task.friendly_name()} with default values"
-                )
+                LOG.info(f"Updated schedule defaults for {task.friendly_name()}")
         else:
             task_schedule = TaskSchedule(**default)
             db.add(task_schedule)

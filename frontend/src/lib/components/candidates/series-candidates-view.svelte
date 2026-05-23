@@ -17,8 +17,8 @@
   import {
     UNKNOWN_VALUE,
     groupEpisodesBySeason,
+    newestCandidateCreatedAt,
     seriesGroupCountLabel,
-    seriesGroupSummary,
   } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
@@ -107,7 +107,7 @@
         {moveEnabled}
         {formatDate}
         posterSize={"154"}
-        tailWindElSize="w-24"
+        tailWindElSize="w-28"
       >
         {#snippet summary()}
           <span
@@ -123,6 +123,9 @@
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.seasons)}
       {@const groupCountLabel = seriesGroupCountLabel(row.seasons)}
+      {@const groupDateAdded = newestCandidateCreatedAt(
+        row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
+      )}
       <div class="p-4 space-y-3">
         <div class="flex gap-3">
           {#if canBulkSelect}
@@ -145,6 +148,7 @@
                 posterUrl={row.poster_url}
                 posterSize={"154"}
                 tailWindElSize="w-28"
+                showMediaType={true}
               />
               <div class="min-w-0">
                 <div class="text-sm font-medium text-foreground">
@@ -164,12 +168,13 @@
                   />
                 </div>
                 <div class="mt-2 text-xs text-muted-foreground">
-                  {seriesGroupSummary(
-                    groupTotalBytes(row),
-                    row.seasons[0].created_at,
-                    formatDate,
-                  )}
+                  Total: {formatFileSize(groupTotalBytes(row))}
                 </div>
+                {#if groupDateAdded}
+                  <div class="mt-1 text-xs text-muted-foreground">
+                    Date Added: {formatDate(groupDateAdded)}
+                  </div>
+                {/if}
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}

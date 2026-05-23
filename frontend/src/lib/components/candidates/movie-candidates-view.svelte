@@ -14,7 +14,10 @@
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import CandidateVersionInfoDialog from "$lib/components/candidates/candidate-version-info-dialog.svelte";
   import CandidateFlatCard from "$lib/components/candidates/candidate-flat-card.svelte";
-  import { movieSummaryChips } from "$lib/components/candidates/view-utils";
+  import {
+    movieSummaryChips,
+    newestCandidateCreatedAt,
+  } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
     MovieGroupRow,
@@ -106,6 +109,7 @@
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.versions)}
+      {@const groupDateAdded = newestCandidateCreatedAt(row.versions)}
       <div class="p-4 space-y-3">
         <div class="flex gap-3">
           {#if canBulkSelect}
@@ -128,6 +132,7 @@
                 posterUrl={row.poster_url}
                 posterSize={"154"}
                 tailWindElSize="w-28"
+                showMediaType={true}
               />
               <div class="min-w-0">
                 <div class="text-sm font-medium text-foreground">
@@ -157,6 +162,11 @@
                     </span>
                   {/each}
                 </div>
+                {#if groupDateAdded}
+                  <div class="mt-2 text-xs text-muted-foreground">
+                    Date Added: {formatDate(groupDateAdded)}
+                  </div>
+                {/if}
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}

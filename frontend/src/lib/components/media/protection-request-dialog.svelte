@@ -183,6 +183,89 @@
         (scopeMode === "episodes" && selectedEpisodeIds.size > 0)),
   );
 
+  const selectedSingleScopePayload = (): {
+    season_id?: number;
+    episode_id?: number;
+  } => {
+    if (episodeId != null) return { episode_id: episodeId };
+    if (seasonId != null) return { season_id: seasonId };
+    return {};
+  };
+
+  type ScopeExtra = { season_id?: number; episode_id?: number };
+
+  const isEpisodeCoveredBySelectionOrExisting = (episode: EpisodeWithStatus) =>
+    selectedEpisodeIds.has(episode.id) ||
+    episode.status.is_protected ||
+    episode.status.has_pending_request;
+
+  const isSeasonCoveredBySelectionOrExisting = (season: SeasonWithStatus) =>
+    selectedSeasonIds.has(season.id) ||
+    season.status.is_protected ||
+    season.status.has_pending_request;
+
+  const normalizedSeasonScopeItems = (): ScopeExtra[] => {
+    if (selectedSeasonIds.size === 0) return [];
+    const allSeriesCovered =
+      seasons.length > 0 && seasons.every(isSeasonCoveredBySelectionOrExisting);
+    if (allSeriesCovered) return [{}];
+    return Array.from(selectedSeasonIds).map((seasonId) => ({
+      season_id: seasonId,
+    }));
+  };
+
+  const normalizedEpisodeScopeItems = (): ScopeExtra[] => {
+    const selectedEpisodes = episodes.filter((episode) =>
+      selectedEpisodeIds.has(episode.id),
+    );
+    if (selectedEpisodes.length === 0) return [];
+
+    const episodesBySeasonId = new Map<number, EpisodeWithStatus[]>();
+    for (const episode of episodes) {
+      const seasonEpisodes = episodesBySeasonId.get(episode.season_id) ?? [];
+      seasonEpisodes.push(episode);
+      episodesBySeasonId.set(episode.season_id, seasonEpisodes);
+    }
+
+    const isSeasonCovered = (season: SeasonWithStatus) => {
+      if (season.status.is_protected || season.status.has_pending_request) {
+        return true;
+      }
+      const seasonEpisodes = episodesBySeasonId.get(season.id) ?? [];
+      return (
+        seasonEpisodes.length > 0 &&
+        seasonEpisodes.every(isEpisodeCoveredBySelectionOrExisting)
+      );
+    };
+
+    const allSeriesCovered =
+      seasons.length > 0
+        ? seasons.every(isSeasonCovered)
+        : episodes.length > 0 &&
+          episodes.every(isEpisodeCoveredBySelectionOrExisting);
+    if (allSeriesCovered) return [{}];
+
+    const selectedBySeasonId = new Map<number, EpisodeWithStatus[]>();
+    for (const episode of selectedEpisodes) {
+      const seasonEpisodes = selectedBySeasonId.get(episode.season_id) ?? [];
+      seasonEpisodes.push(episode);
+      selectedBySeasonId.set(episode.season_id, seasonEpisodes);
+    }
+
+    const scopeItems: ScopeExtra[] = [];
+    for (const [selectedSeasonId, seasonEpisodes] of selectedBySeasonId) {
+      const season = seasons.find((item) => item.id === selectedSeasonId);
+      if (season && isSeasonCovered(season)) {
+        scopeItems.push({ season_id: selectedSeasonId });
+        continue;
+      }
+      for (const episode of seasonEpisodes) {
+        scopeItems.push({ episode_id: episode.id });
+      }
+    }
+    return scopeItems;
+  };
+
   const handleSubmit = async () => {
     if (!media || !canSubmit) return;
     submitting = true;
@@ -216,17 +299,13 @@
       };
 
       if (showScopePicker) {
-        // submit one request per checked scope item
-        type ScopeExtra = { season_id?: number; episode_id?: number };
         const scopeItems: ScopeExtra[] = [];
         if (scopeMode === "series") {
           scopeItems.push({});
         } else if (scopeMode === "seasons") {
-          for (const sid of selectedSeasonIds)
-            scopeItems.push({ season_id: sid });
+          scopeItems.push(...normalizedSeasonScopeItems());
         } else {
-          for (const eid of selectedEpisodeIds)
-            scopeItems.push({ episode_id: eid });
+          scopeItems.push(...normalizedEpisodeScopeItems());
         }
 
         const results = await Promise.allSettled(
@@ -262,8 +341,7 @@
           "/api/protection-requests",
           {
             ...basePayload,
-            ...(seasonId != null ? { season_id: seasonId } : {}),
-            ...(episodeId != null ? { episode_id: episodeId } : {}),
+            ...selectedSingleScopePayload(),
           },
         );
 

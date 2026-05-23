@@ -27,8 +27,8 @@
   import Search from "@lucide/svelte/icons/search";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
-  import MediaTypeBadge from "$lib/components/requests/media-type-badge.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
+  import MetadataSources from "$lib/components/media/metadata-sources.svelte";
 
   // state
   let data = $state<PaginatedResponse<ProtectedEntry> | null>(null);
@@ -564,8 +564,10 @@
                       <PosterThumb
                         mediaType={entry.media_type}
                         posterUrl={entry.poster_url}
+                        posterSize={"154"}
+                        tailWindElSize={"w-20"}
+                        showMediaType={true}
                       />
-                      <MediaTypeBadge mediaType={entry.media_type} />
                     </div>
                     <div>
                       <div class="text-sm font-medium text-foreground">
@@ -576,6 +578,23 @@
                       <div class="text-xs text-muted-foreground mt-1">
                         {formatTarget(entry)}
                       </div>
+                      <MetadataSources
+                        tmdbId={entry.tmdb_id}
+                        tmdbMediaType={entry.media_type === MediaType.Series
+                          ? "tv"
+                          : "movie"}
+                        tmdbRating={entry.vote_average}
+                        tmdbVoteCount={entry.vote_count}
+                        imdbId={entry.imdb_id}
+                        imdbRating={entry.imdb_rating}
+                        imdbVoteCount={entry.imdb_vote_count}
+                        anilistId={entry.anilist_id}
+                        anilistScore={entry.anilist_score}
+                        anilistPopularity={entry.anilist_popularity}
+                        anilistFavourites={entry.anilist_favourites}
+                        compact={true}
+                        class="mt-2 w-64"
+                      />
                     </div>
                   </div>
                   {#if entry.reason}
@@ -609,7 +628,7 @@
                     <div class="flex justify-end gap-2">
                       <Button
                         type="button"
-                        size="icon"
+                        size="icon-sm"
                         class="rounded-full cursor-pointer"
                         onclick={() => openEditDuration(entry)}
                       >
@@ -617,7 +636,7 @@
                       </Button>
                       <Button
                         type="button"
-                        size="icon"
+                        size="icon-sm"
                         class="rounded-full cursor-pointer hover:bg-destructive-secondary 
                         bg-destructive text-destructive-foreground"
                         onclick={() => openRemoveDialog(entry)}

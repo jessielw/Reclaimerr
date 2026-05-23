@@ -130,9 +130,29 @@ async def get_protected_entries(
             Movie.title.label("movie_title"),
             Movie.year.label("movie_year"),
             Movie.poster_url.label("movie_poster_url"),
+            Movie.tmdb_id.label("movie_tmdb_id"),
+            Movie.vote_average.label("movie_vote_average"),
+            Movie.vote_count.label("movie_vote_count"),
+            Movie.imdb_id.label("movie_imdb_id"),
+            Movie.imdb_rating.label("movie_imdb_rating"),
+            Movie.imdb_vote_count.label("movie_imdb_vote_count"),
+            Movie.anilist_id.label("movie_anilist_id"),
+            Movie.anilist_score.label("movie_anilist_score"),
+            Movie.anilist_popularity.label("movie_anilist_popularity"),
+            Movie.anilist_favourites.label("movie_anilist_favourites"),
             Series.title.label("series_title"),
             Series.year.label("series_year"),
             Series.poster_url.label("series_poster_url"),
+            Series.tmdb_id.label("series_tmdb_id"),
+            Series.vote_average.label("series_vote_average"),
+            Series.vote_count.label("series_vote_count"),
+            Series.imdb_id.label("series_imdb_id"),
+            Series.imdb_rating.label("series_imdb_rating"),
+            Series.imdb_vote_count.label("series_imdb_vote_count"),
+            Series.anilist_id.label("series_anilist_id"),
+            Series.anilist_score.label("series_anilist_score"),
+            Series.anilist_popularity.label("series_anilist_popularity"),
+            Series.anilist_favourites.label("series_anilist_favourites"),
             Season.season_number.label("season_number"),
             Episode.episode_number.label("episode_number"),
             Episode.name.label("episode_name"),
@@ -216,6 +236,56 @@ async def get_protected_entries(
             if entry.media_type is MediaType.MOVIE
             else row.series_poster_url
         )
+        tmdb_id = (
+            row.movie_tmdb_id
+            if entry.media_type is MediaType.MOVIE
+            else row.series_tmdb_id
+        )
+        vote_average = (
+            row.movie_vote_average
+            if entry.media_type is MediaType.MOVIE
+            else row.series_vote_average
+        )
+        vote_count = (
+            row.movie_vote_count
+            if entry.media_type is MediaType.MOVIE
+            else row.series_vote_count
+        )
+        imdb_id = (
+            row.movie_imdb_id
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_id
+        )
+        imdb_rating = (
+            row.movie_imdb_rating
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_rating
+        )
+        imdb_vote_count = (
+            row.movie_imdb_vote_count
+            if entry.media_type is MediaType.MOVIE
+            else row.series_imdb_vote_count
+        )
+        anilist_id = (
+            row.movie_anilist_id
+            if entry.media_type is MediaType.MOVIE
+            else row.series_anilist_id
+        )
+        anilist_score = (
+            row.movie_anilist_score
+            if entry.media_type is MediaType.MOVIE
+            else row.series_anilist_score
+        )
+        anilist_popularity = (
+            row.movie_anilist_popularity
+            if entry.media_type is MediaType.MOVIE
+            else row.series_anilist_popularity
+        )
+        anilist_favourites = (
+            row.movie_anilist_favourites
+            if entry.media_type is MediaType.MOVIE
+            else row.series_anilist_favourites
+        )
         media_id = (
             entry.movie_id if entry.media_type is MediaType.MOVIE else entry.series_id
         )
@@ -237,6 +307,16 @@ async def get_protected_entries(
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
+                tmdb_id=tmdb_id,
+                vote_average=vote_average,
+                vote_count=vote_count,
+                imdb_id=imdb_id,
+                imdb_rating=imdb_rating,
+                imdb_vote_count=imdb_vote_count,
+                anilist_id=anilist_id,
+                anilist_score=anilist_score,
+                anilist_popularity=anilist_popularity,
+                anilist_favourites=anilist_favourites,
                 reason=entry.reason,
                 protected_by_user_id=entry.protected_by_user_id,
                 protected_by_username=row.actor_username or "Unknown",
@@ -391,6 +471,16 @@ async def create_protection_entry(
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
+        tmdb_id=media.tmdb_id,
+        vote_average=media.vote_average,
+        vote_count=media.vote_count,
+        imdb_id=media.imdb_id,
+        imdb_rating=media.imdb_rating,
+        imdb_vote_count=media.imdb_vote_count,
+        anilist_id=media.anilist_id,
+        anilist_score=media.anilist_score,
+        anilist_popularity=media.anilist_popularity,
+        anilist_favourites=media.anilist_favourites,
         reason=new_entry.reason,
         protected_by_user_id=user.id,
         protected_by_username=user.username,
@@ -485,6 +575,16 @@ async def update_protection_duration(
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
+        tmdb_id=media.tmdb_id,
+        vote_average=media.vote_average,
+        vote_count=media.vote_count,
+        imdb_id=media.imdb_id,
+        imdb_rating=media.imdb_rating,
+        imdb_vote_count=media.imdb_vote_count,
+        anilist_id=media.anilist_id,
+        anilist_score=media.anilist_score,
+        anilist_popularity=media.anilist_popularity,
+        anilist_favourites=media.anilist_favourites,
         reason=entry.reason,
         protected_by_user_id=entry.protected_by_user_id,
         protected_by_username=actor.username if actor else "Unknown",

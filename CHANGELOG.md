@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.24] - 2026-05-23
+
+### Added
+
+- IMDb ratings
+  - IMDb vote count & rating to the rule engine
+  - New task to refresh IMDb ratings daily (can be disabled if the user does not want IMDb)
+    - This task daily will grab IMDb official rating data sets and update the database with the current ratings (these data sets are only refreshed once every 24 hours so running this task more than that is fruitless). There are guards that check the hash/304 not modified header that will prevent running if nothing has changed
+- AniList anime ratings
+  - Vote count, popularity, and favorites to the rule engine
+  - New task to refresh AniList ratings daily (can be disabled if the user does not want AniList)
+- Candidates view now shows date added metadata
+
+### Changed
+
+- Now shows IMDb rating data on candidates, protected pages, and movie/series information modals
+- Now shows AniList rating data on candidates, protected pages, and movie/series information modals
+- Border of posters have been themed based on media type
+- Slightly increased the size for some of the posters
+- Improved how candidates are scoped at the episode level, will now group if all episodes in a season or all seasons in a series are selected in the bulk selector to protect
+- Bulk selector modal is now blocked during processing until it's completed
+
+### Fixed
+
+- Log level not being passed through from env
+- Arr instance selector in mobile was too large
+- Arr instance in mobile buttons was not centered vertically
+- Bug protecting episode scoped candidates
+
+### Removed
+
+- Media type badge from Protected
+
 ## [0.1.0-beta.23] - 2026-05-21
 
 ### Added

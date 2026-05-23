@@ -70,6 +70,20 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
     bravo = Movie(title="Bravo Movie", tmdb_id=102, year=2002, size=1000)
     charlie = Series(title="Charlie Show", tmdb_id=201, year=2010, size=500)
     delta = Series(title="Delta Show", tmdb_id=202, year=2011, size=900)
+    alpha.imdb_id = "tt0000101"
+    alpha.imdb_rating = 7.4
+    alpha.imdb_vote_count = 12500
+    alpha.anilist_id = 16498
+    alpha.anilist_score = 85
+    alpha.anilist_popularity = 998866
+    alpha.anilist_favourites = 79392
+    delta.imdb_id = "tt0000202"
+    delta.imdb_rating = 8.1
+    delta.imdb_vote_count = 9200
+    delta.anilist_id = 21459
+    delta.anilist_score = 90
+    delta.anilist_popularity = 543210
+    delta.anilist_favourites = 40000
     db.add_all([alpha, bravo, charlie, delta])
     await db.flush()
 
@@ -293,6 +307,64 @@ def test_get_candidates_presence_reports_existing_candidates() -> None:
                 _admin_user(), db_session
             )
             assert populated_response.has_candidates is True
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_includes_imdb_fields() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+
+            movie_response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search="Alpha",
+                media_type=MediaType.MOVIE,
+            )
+            assert movie_response.total == 1
+            movie_entry = movie_response.items[0]
+            assert movie_entry.id == ids["alpha_candidate_id"]
+            assert movie_entry.imdb_id == "tt0000101"
+            assert movie_entry.imdb_rating == 7.4
+            assert movie_entry.imdb_vote_count == 12500
+            assert movie_entry.anilist_id == 16498
+            assert movie_entry.anilist_score == 85
+            assert movie_entry.anilist_popularity == 998866
+            assert movie_entry.anilist_favourites == 79392
+
+            series_response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search="Delta",
+                media_type=MediaType.SERIES,
+            )
+            assert series_response.total == 1
+            series_entry = series_response.items[0]
+            assert series_entry.id == ids["delta_candidate_id"]
+            assert series_entry.imdb_id == "tt0000202"
+            assert series_entry.imdb_rating == 8.1
+            assert series_entry.imdb_vote_count == 9200
+            assert series_entry.anilist_id == 21459
+            assert series_entry.anilist_score == 90
+            assert series_entry.anilist_popularity == 543210
+            assert series_entry.anilist_favourites == 40000
+
         await engine.dispose()
 
     asyncio.run(run())

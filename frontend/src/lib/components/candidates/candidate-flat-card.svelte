@@ -66,6 +66,7 @@
           posterUrl={entry.poster_url}
           {posterSize}
           {tailWindElSize}
+          showMediaType={true}
         />
         <div class="min-w-0">
           <div class="text-sm font-medium text-foreground">
@@ -81,7 +82,7 @@
             {@render summary()}
           </div>
           <div class="mt-2 text-xs text-muted-foreground">
-            {formatDate(entry.created_at)}
+            Date Added: {formatDate(entry.created_at)}
           </div>
           <CandidateTmdbMeta {entry} />
         </div>

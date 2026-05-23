@@ -16,7 +16,9 @@
     UserRole,
     Permission,
     type BackgroundJobRecord,
+    type EpisodeWithStatus,
     type ReclaimCandidateEntry,
+    type SeasonWithStatus,
     type ProtectionRequest,
     type PaginatedResponse,
   } from "$lib/types/shared";
@@ -695,15 +697,190 @@
     };
   };
 
+  interface BulkProtectionRequestItem {
+    candidateIds: number[];
+    payload: {
+      media_type: MediaType;
+      media_id: number;
+      movie_version_id?: number;
+      season_id?: number;
+      episode_id?: number;
+      reason: string;
+      duration_days: number | null;
+    };
+  }
+
+  const groupBy = <T, K>(items: T[], keyFor: (item: T) => K) => {
+    const grouped = new Map<K, T[]>();
+    for (const item of items) {
+      const key = keyFor(item);
+      const group = grouped.get(key) ?? [];
+      group.push(item);
+      grouped.set(key, group);
+    }
+    return grouped;
+  };
+
+  const buildSeriesBulkProtectionRequests = async (
+    seriesId: number,
+    entriesForSeries: ReclaimCandidateEntry[],
+    durationDays: number | null,
+  ): Promise<BulkProtectionRequestItem[]> => {
+    const basePayload = {
+      media_type: MediaType.Series,
+      media_id: seriesId,
+      reason: "Admin decision",
+      duration_days: durationDays,
+    };
+
+    const wholeSeriesEntry = entriesForSeries.find(
+      (entry) => entry.season_id == null && entry.episode_id == null,
+    );
+    if (wholeSeriesEntry) {
+      return [
+        {
+          candidateIds: entriesForSeries.map((entry) => entry.id),
+          payload: basePayload,
+        },
+      ];
+    }
+
+    const seasons = await get_api<SeasonWithStatus[]>(
+      `/api/media/series/${seriesId}/seasons`,
+    );
+    const episodes = await get_api<EpisodeWithStatus[]>(
+      `/api/media/series/${seriesId}/episodes`,
+    );
+    const episodesBySeasonId = groupBy(
+      episodes,
+      (episode) => episode.season_id,
+    );
+    const selectedSeasonIds = new Set(
+      entriesForSeries
+        .filter((entry) => entry.season_id != null && entry.episode_id == null)
+        .map((entry) => entry.season_id as number),
+    );
+    const selectedEpisodeIds = new Set(
+      entriesForSeries
+        .filter((entry) => entry.episode_id != null)
+        .map((entry) => entry.episode_id as number),
+    );
+
+    const selectedCandidateIdsBySeasonId = new Map<number, number[]>();
+    for (const entry of entriesForSeries) {
+      if (entry.season_id == null) continue;
+      const allIds = selectedCandidateIdsBySeasonId.get(entry.season_id) ?? [];
+      allIds.push(entry.id);
+      selectedCandidateIdsBySeasonId.set(entry.season_id, allIds);
+    }
+
+    const isEpisodeCovered = (episode: EpisodeWithStatus) =>
+      selectedEpisodeIds.has(episode.id) ||
+      episode.status.is_protected ||
+      episode.status.has_pending_request;
+
+    const isSeasonCovered = (season: SeasonWithStatus) => {
+      if (
+        selectedSeasonIds.has(season.id) ||
+        season.status.is_protected ||
+        season.status.has_pending_request
+      ) {
+        return true;
+      }
+      const seasonEpisodes = episodesBySeasonId.get(season.id) ?? [];
+      return (
+        seasonEpisodes.length > 0 && seasonEpisodes.every(isEpisodeCovered)
+      );
+    };
+
+    const allSeriesCovered =
+      seasons.length > 0
+        ? seasons.every(isSeasonCovered)
+        : episodes.length > 0 && episodes.every(isEpisodeCovered);
+    if (allSeriesCovered) {
+      return [
+        {
+          candidateIds: entriesForSeries.map((entry) => entry.id),
+          payload: basePayload,
+        },
+      ];
+    }
+
+    const requests: BulkProtectionRequestItem[] = [];
+    const selectedEntriesBySeasonId = groupBy(
+      entriesForSeries.filter((entry) => entry.season_id != null),
+      (entry) => entry.season_id as number,
+    );
+
+    for (const [seasonId, seasonEntries] of selectedEntriesBySeasonId) {
+      const season = seasons.find((item) => item.id === seasonId);
+      const hasSelectedSeason = selectedSeasonIds.has(seasonId);
+      if (hasSelectedSeason || (season && isSeasonCovered(season))) {
+        requests.push({
+          candidateIds:
+            selectedCandidateIdsBySeasonId.get(seasonId) ??
+            seasonEntries.map((entry) => entry.id),
+          payload: { ...basePayload, season_id: seasonId },
+        });
+        continue;
+      }
+
+      for (const entry of seasonEntries) {
+        if (entry.episode_id == null) continue;
+        requests.push({
+          candidateIds: [entry.id],
+          payload: { ...basePayload, episode_id: entry.episode_id },
+        });
+      }
+    }
+
+    return requests;
+  };
+
+  const buildBulkProtectionRequests = async (
+    selected: ReclaimCandidateEntry[],
+    durationDays: number | null,
+  ): Promise<BulkProtectionRequestItem[]> => {
+    const requests: BulkProtectionRequestItem[] = [];
+    const movieEntries = selected.filter(
+      (entry) => entry.media_type === MediaType.Movie,
+    );
+    const seriesEntriesById = groupBy(
+      selected.filter((entry) => entry.media_type === MediaType.Series),
+      (entry) => entry.media_id,
+    );
+
+    for (const entry of movieEntries) {
+      requests.push({
+        candidateIds: [entry.id],
+        payload: {
+          media_type: entry.media_type,
+          media_id: entry.media_id,
+          movie_version_id: entry.movie_version_id ?? undefined,
+          reason: "Admin decision",
+          duration_days: durationDays,
+        },
+      });
+    }
+
+    for (const [seriesId, entriesForSeries] of seriesEntriesById) {
+      requests.push(
+        ...(await buildSeriesBulkProtectionRequests(
+          seriesId,
+          entriesForSeries,
+          durationDays,
+        )),
+      );
+    }
+
+    return requests;
+  };
+
   // Submit bulk protection request for all selected candidates. Duration is determined by the
   // bulkDuration state (either a preset duration, custom number of days, or permanent).
   const submitBulkRequest = async () => {
     if (selectedEntries.length === 0) return;
     bulkSubmitting = true;
-    const selectedWithIds = selectedEntries.map((entry) => ({
-      candidateId: entry.id,
-      entry,
-    }));
 
     let durationDays: number | null = null;
     if (bulkDuration === "permanent") {
@@ -720,44 +897,45 @@
       durationDays = Number(bulkDuration);
     }
 
-    const results = await Promise.allSettled(
-      selectedWithIds.map(({ entry }) =>
-        post_api<ProtectionRequest>("/api/protection-requests", {
-          media_type: entry.media_type,
-          media_id: entry.media_id,
-          movie_version_id: entry.movie_version_id ?? undefined,
-          season_id: entry.season_id ?? undefined,
-          episode_id: entry.episode_id ?? undefined,
-          reason: "Admin decision",
-          duration_days: durationDays,
-        }),
-      ),
-    );
-
-    // All requests that were successfully submitted (regardless of auto-approval)
-    // should be removed from the candidate list, since they now have pending requests
-    // and can't be submitted again until those are resolved.
-    const succeededIds = selectedWithIds
-      .map((item, idx) => ({ item, result: results[idx] }))
-      .filter(({ result }) => result.status === "fulfilled")
-      .map(({ item }) => item.candidateId);
-    const succeeded = succeededIds.length;
-    const failed = results.length - succeeded;
-
-    if (succeeded > 0)
-      toast.success(
-        `Submitted ${succeeded} protection request${succeeded !== 1 ? "s" : ""}`,
+    try {
+      const requestItems = await buildBulkProtectionRequests(
+        selectedEntries,
+        durationDays,
       );
-    if (failed > 0)
-      toast.error(`${failed} request${failed !== 1 ? "s" : ""} failed`);
+      const results = await Promise.allSettled(
+        requestItems.map((item) =>
+          post_api<ProtectionRequest>("/api/protection-requests", item.payload),
+        ),
+      );
 
-    if (succeededIds.length > 0) {
-      await applyBulkRemoval(new Set(succeededIds));
+      const succeededIds = requestItems
+        .map((item, idx) => ({ item, result: results[idx] }))
+        .filter(({ result }) => result.status === "fulfilled")
+        .flatMap(({ item }) => item.candidateIds);
+      // const succeeded = succeededIds.length;
+      const submitted = results.filter(
+        (result) => result.status === "fulfilled",
+      ).length;
+      const failed = results.length - submitted;
+
+      if (submitted > 0)
+        toast.success(
+          `Submitted ${submitted} protection request${submitted !== 1 ? "s" : ""}`,
+        );
+      if (failed > 0)
+        toast.error(`${failed} request${failed !== 1 ? "s" : ""} failed`);
+
+      if (succeededIds.length > 0) {
+        await applyBulkRemoval(new Set(succeededIds));
+      }
+
+      selectedIds = new Set();
+      bulkDialogOpen = false;
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to submit protection requests.");
+    } finally {
+      bulkSubmitting = false;
     }
-
-    selectedIds = new Set();
-    bulkDialogOpen = false;
-    bulkSubmitting = false;
   };
 
   const toMediaLike = (entry: ReclaimCandidateEntry) => ({
@@ -953,8 +1131,19 @@
 </AlertDialog.Root>
 
 <!-- bulk request dialog -->
-<Dialog.Root bind:open={bulkDialogOpen}>
-  <Dialog.Content class="sm:max-w-md text-foreground">
+<Dialog.Root
+  open={bulkDialogOpen}
+  onOpenChange={(open) => {
+    if (!bulkSubmitting) bulkDialogOpen = open;
+  }}
+>
+  <Dialog.Content
+    class="sm:max-w-md text-foreground"
+    showCloseButton={!bulkSubmitting}
+    onInteractOutside={(event) => {
+      if (bulkSubmitting) event.preventDefault();
+    }}
+  >
     <Dialog.Header>
       <Dialog.Title
         >Request Exception for {selectedEntries.length} Items</Dialog.Title

@@ -134,7 +134,7 @@
         value={String(selectedIndex)}
         onValueChange={(v) => (selectedIndex = Number(v))}
       >
-        <Select.Trigger class="w-1/3 cursor-pointer text-foreground">
+        <Select.Trigger class="cursor-pointer text-foreground">
           {#if selected}
             <span class="flex items-center gap-2">
               {selected.version}

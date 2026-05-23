@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,12 +46,6 @@ async def _resolve_series_scope(
     episode_id: int | None,
 ) -> tuple[Season | None, Episode | None]:
     """Validate and resolve season/episode scope for a series level request."""
-    if season_id is not None and episode_id is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Specify either season_id or episode_id, not both",
-        )
-
     if episode_id is not None:
         episode_result = await db.execute(
             select(Episode, Season)
@@ -66,6 +60,11 @@ async def _resolve_series_scope(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Episode not found",
+            )
+        if season_id is not None and row.Season.id != season_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="season_id does not match episode_id",
             )
         return row.Season, row.Episode
 
@@ -98,6 +97,19 @@ def _series_scope_exact_clause(
     if season_id is not None:
         return and_(model.season_id == season_id, model.episode_id.is_(None))
     return and_(model.season_id.is_(None), model.episode_id.is_(None))
+
+
+def _series_scope_covered_candidate_clause(
+    *,
+    season_id: int | None,
+    episode_id: int | None,
+):
+    """Match candidate rows covered by a newly approved series protection scope."""
+    if episode_id is not None:
+        return ReclaimCandidate.episode_id == episode_id
+    if season_id is not None:
+        return ReclaimCandidate.season_id == season_id
+    return true()
 
 
 def _series_scope_overlap_clause(
@@ -461,7 +473,7 @@ async def create_protection_request(
         season_number_snapshot=season.season_number if season else None,
         episode_number_snapshot=episode.episode_number if episode else None,
         episode_name_snapshot=episode.name if episode else None,
-        candidate_id=candidate.id if candidate else None,
+        candidate_id=candidate.id if candidate and not auto_approve else None,
         requested_by_user_id=user.id,
         reason=request_data.reason,
         requested_expires_at=requested_expires_at,
@@ -501,9 +513,20 @@ async def create_protection_request(
         )
         db.add(protection_entry)
 
-        # remove from candidates if present
-        if candidate:
-            await db.delete(candidate)
+        if request_data.media_type is MediaType.MOVIE:
+            if candidate:
+                await db.delete(candidate)
+        else:
+            await db.execute(
+                delete(ReclaimCandidate).where(
+                    ReclaimCandidate.media_type == MediaType.SERIES,
+                    ReclaimCandidate.series_id == request_data.media_id,
+                    _series_scope_covered_candidate_clause(
+                        season_id=season.id if season else None,
+                        episode_id=episode.id if episode else None,
+                    ),
+                )
+            )
 
     await db.commit()
     await db.refresh(protection_request)

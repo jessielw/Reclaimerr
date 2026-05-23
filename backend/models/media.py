@@ -275,6 +275,14 @@ class MovieWithStatus(BaseModel):
     # arr instance refs
     arr_refs: list[ArrRefResponse]
     imdb_id: str | None
+    imdb_rating: float | None = None
+    imdb_vote_count: int | None = None
+    imdb_ratings_refreshed_at: str | None = None
+    anilist_id: int | None = None
+    anilist_score: int | None = None
+    anilist_popularity: int | None = None
+    anilist_favourites: int | None = None
+    anilist_refreshed_at: str | None = None
 
     # TMDB metadata
     tmdb_title: str | None
@@ -328,6 +336,14 @@ class SeriesWithStatus(BaseModel):
     # arr instance refs
     arr_refs: list[ArrRefResponse]
     imdb_id: str | None
+    imdb_rating: float | None = None
+    imdb_vote_count: int | None = None
+    imdb_ratings_refreshed_at: str | None = None
+    anilist_id: int | None = None
+    anilist_score: int | None = None
+    anilist_popularity: int | None = None
+    anilist_favourites: int | None = None
+    anilist_refreshed_at: str | None = None
     tvdb_id: str | None
 
     # TMDB metadata
@@ -465,6 +481,13 @@ class CandidateEntryBase(BaseModel):
     media_year: int | None
     poster_url: str | None
     tmdb_id: int | None = None
+    imdb_id: str | None = None
+    imdb_rating: float | None = None
+    imdb_vote_count: int | None = None
+    anilist_id: int | None = None
+    anilist_score: int | None = None
+    anilist_popularity: int | None = None
+    anilist_favourites: int | None = None
     genres: list[str] | None = None
     popularity: float | None = None
     vote_average: float | None = None

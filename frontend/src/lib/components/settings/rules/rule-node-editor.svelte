@@ -352,6 +352,41 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "imdb.rating",
+      label: "IMDb rating",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "imdb.vote_count",
+      label: "IMDb votes",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "anilist.score",
+      label: "AniList score",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "anilist.popularity",
+      label: "AniList popularity",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "anilist.favourites",
+      label: "AniList favourites",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
       value: "series.status",
       label: "Series status",
       kind: "text",
@@ -518,6 +553,8 @@
     "watch.last_viewed_at",
     "series.status",
     "tmdb.vote_average",
+    "imdb.rating",
+    "anilist.score",
     "disk.free_percent",
   ]);
 
@@ -535,6 +572,10 @@
         return "Watch";
       case "tmdb":
         return "TMDB";
+      case "imdb":
+        return "IMDb";
+      case "anilist":
+        return "AniList";
       case "season":
         return "Season";
       case "episode":
