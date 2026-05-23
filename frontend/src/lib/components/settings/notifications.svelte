@@ -516,7 +516,6 @@
                       class="cursor-pointer"
                     >
                       <Trash2 />
-                      Delete
                     </Button>
                   </div>
                 </div>
