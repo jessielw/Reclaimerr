@@ -350,6 +350,11 @@ export interface MovieWithStatus {
   imdb_rating: number | null;
   imdb_vote_count: number | null;
   imdb_ratings_refreshed_at: string | null;
+  anilist_id: number | null;
+  anilist_score: number | null;
+  anilist_popularity: number | null;
+  anilist_favourites: number | null;
+  anilist_refreshed_at: string | null;
   tmdb_title: string | null;
   original_title: string | null;
   tmdb_release_date: string | null;
@@ -389,6 +394,11 @@ export interface SeriesWithStatus {
   imdb_rating: number | null;
   imdb_vote_count: number | null;
   imdb_ratings_refreshed_at: string | null;
+  anilist_id: number | null;
+  anilist_score: number | null;
+  anilist_popularity: number | null;
+  anilist_favourites: number | null;
+  anilist_refreshed_at: string | null;
   tvdb_id: string | null;
   tmdb_title: string | null;
   original_title: string | null;
@@ -609,6 +619,10 @@ export interface ProtectedEntry {
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
+  anilist_id: number | null;
+  anilist_score: number | null;
+  anilist_popularity: number | null;
+  anilist_favourites: number | null;
   reason: string | null;
   protected_by_user_id: number;
   protected_by_username: string;
@@ -630,6 +644,10 @@ export interface ReclaimCandidateEntry {
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
+  anilist_id: number | null;
+  anilist_score: number | null;
+  anilist_popularity: number | null;
+  anilist_favourites: number | null;
   genres: string[] | null;
   popularity: number | null;
   vote_average: number | null;

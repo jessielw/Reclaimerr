@@ -109,6 +109,15 @@ DEFAULT_SCHEDULES = (
         "default_schedule_value": "0 4 * * *",
         "enabled": True,
     },
+    {
+        "task": Task.ANILIST_RATINGS_REFRESH,
+        "description": "Refreshes AniBridge mappings and updates AniList supplemental ratings",
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 5 * * *",  # daily at 5 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 5 * * *",
+        "enabled": True,
+    },
 )
 
 

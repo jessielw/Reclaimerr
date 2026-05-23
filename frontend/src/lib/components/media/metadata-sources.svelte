@@ -1,6 +1,7 @@
 <script lang="ts">
   import Star from "@lucide/svelte/icons/star";
   import Users from "@lucide/svelte/icons/users";
+  import Heart from "@lucide/svelte/icons/heart";
   import Flame from "@lucide/svelte/icons/flame";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
@@ -18,6 +19,10 @@
     imdbId?: string | null;
     imdbRating?: number | null;
     imdbVoteCount?: number | null;
+    anilistId?: number | null;
+    anilistScore?: number | null;
+    anilistPopularity?: number | null;
+    anilistFavourites?: number | null;
     compact?: boolean;
     class?: string;
   }
@@ -35,6 +40,10 @@
     imdbId = null,
     imdbRating = null,
     imdbVoteCount = null,
+    anilistId = null,
+    anilistScore = null,
+    anilistPopularity = null,
+    anilistFavourites = null,
     compact = false,
     class: className = "",
   }: Props = $props();
@@ -59,6 +68,11 @@
     imdbRating != null ? `${imdbRating.toFixed(1)}/10` : null,
   );
   const imdbVotesFmt = $derived(formatCompactVotes(imdbVoteCount));
+  const anilistScoreFmt = $derived.by(() =>
+    anilistScore != null ? `${Math.round(anilistScore)}%` : null,
+  );
+  const anilistPopularityFmt = $derived(formatCompactVotes(anilistPopularity));
+  const anilistFavouritesFmt = $derived(formatCompactVotes(anilistFavourites));
 
   const hasTmdbMeta = $derived(
     tmdbRatingFmt != null ||
@@ -67,9 +81,14 @@
       (showTmdbStatus && tmdbStatus != null),
   );
   const hasImdbMeta = $derived(imdbRatingFmt != null || imdbVotesFmt != null);
+  const hasAniListMeta = $derived(
+    anilistScoreFmt != null ||
+      anilistPopularityFmt != null ||
+      anilistFavouritesFmt != null,
+  );
 </script>
 
-{#if hasTmdbMeta || hasImdbMeta}
+{#if hasTmdbMeta || hasImdbMeta || hasAniListMeta}
   <div
     class={`rounded-md border border-border/60 bg-muted/40 text-foreground/90 divide-y divide-border/60 ${className}`}
   >
@@ -204,6 +223,87 @@
         {#if imdbId}
           <a
             href={`https://www.imdb.com/title/${imdbId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <ExternalLink
+              class={`${compact ? "size-3.5" : "size-4"} opacity-75 hover:opacity-100 hover:text-primary`}
+            />
+          </a>
+        {/if}
+      </div>
+    {/if}
+
+    {#if hasAniListMeta}
+      <div class="flex items-center gap-2 px-2 py-1.5">
+        <span
+          class={`${compact ? "text-[11px] min-w-12" : "text-xs min-w-14"} font-semibold tracking-wide 
+            text-primary`}>AniList</span
+        >
+
+        <div class="flex flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          {#if anilistScoreFmt}
+            <Tooltip.Root>
+              <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Star
+                      class={`${compact ? "size-3" : "size-3.5"} fill-yellow-400 text-yellow-400`}
+                    />
+                    {anilistScoreFmt}
+                  </span>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content><p>AniList score</p></Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
+
+          {#if anilistPopularityFmt}
+            <Tooltip.Root>
+              <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Users class={`${compact ? "size-3" : "size-3.5"}`} />
+                    {anilistPopularityFmt}
+                  </span>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content><p>AniList popularity</p></Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
+
+          {#if anilistFavouritesFmt}
+            <Tooltip.Root>
+              <Tooltip.Trigger class="inline-flex max-w-fit cursor-help">
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    class="inline-flex items-center gap-1 text-xs cursor-help"
+                    tabindex="-1"
+                  >
+                    <Heart
+                      class={`${compact ? "size-3" : "size-3.5"} fill-pink-400 text-pink-500`}
+                    />
+                    {anilistFavouritesFmt}
+                  </span>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content><p>AniList favourites</p></Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
+        </div>
+
+        {#if anilistId}
+          <a
+            href={`https://anilist.co/anime/${anilistId}`}
             target="_blank"
             rel="noopener noreferrer"
           >

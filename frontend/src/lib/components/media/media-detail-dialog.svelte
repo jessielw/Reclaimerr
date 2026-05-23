@@ -232,7 +232,7 @@
                   {/if}
                 </div>
 
-                {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null}
+                {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null || media.anilist_score != null || media.anilist_popularity != null || media.anilist_favourites != null}
                   <MetadataSources
                     tmdbId={media.tmdb_id}
                     {tmdbMediaType}
@@ -241,6 +241,10 @@
                     imdbId={media.imdb_id}
                     imdbRating={media.imdb_rating}
                     imdbVoteCount={media.imdb_vote_count}
+                    anilistId={media.anilist_id}
+                    anilistScore={media.anilist_score}
+                    anilistPopularity={media.anilist_popularity}
+                    anilistFavourites={media.anilist_favourites}
                     class="mt-2"
                   />
                 {/if}

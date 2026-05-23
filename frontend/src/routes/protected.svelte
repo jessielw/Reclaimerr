@@ -588,6 +588,10 @@
                         imdbId={entry.imdb_id}
                         imdbRating={entry.imdb_rating}
                         imdbVoteCount={entry.imdb_vote_count}
+                        anilistId={entry.anilist_id}
+                        anilistScore={entry.anilist_score}
+                        anilistPopularity={entry.anilist_popularity}
+                        anilistFavourites={entry.anilist_favourites}
                         compact={true}
                         class="mt-2 w-64"
                       />

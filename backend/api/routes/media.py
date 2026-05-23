@@ -598,6 +598,11 @@ async def get_movies(
             "imdb_ratings_refreshed_at": to_utc_isoformat(
                 movie.imdb_ratings_refreshed_at
             ),
+            "anilist_id": movie.anilist_id,
+            "anilist_score": movie.anilist_score,
+            "anilist_popularity": movie.anilist_popularity,
+            "anilist_favourites": movie.anilist_favourites,
+            "anilist_refreshed_at": to_utc_isoformat(movie.anilist_refreshed_at),
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
             "tmdb_release_date": to_utc_isoformat(movie.tmdb_release_date),
@@ -833,6 +838,11 @@ async def get_series(
             "imdb_ratings_refreshed_at": to_utc_isoformat(
                 series.imdb_ratings_refreshed_at
             ),
+            "anilist_id": series.anilist_id,
+            "anilist_score": series.anilist_score,
+            "anilist_popularity": series.anilist_popularity,
+            "anilist_favourites": series.anilist_favourites,
+            "anilist_refreshed_at": to_utc_isoformat(series.anilist_refreshed_at),
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
             "original_title": series.original_title,
@@ -1205,6 +1215,10 @@ async def get_candidates(
             Movie.imdb_id.label("movie_imdb_id"),
             Movie.imdb_rating.label("movie_imdb_rating"),
             Movie.imdb_vote_count.label("movie_imdb_vote_count"),
+            Movie.anilist_id.label("movie_anilist_id"),
+            Movie.anilist_score.label("movie_anilist_score"),
+            Movie.anilist_popularity.label("movie_anilist_popularity"),
+            Movie.anilist_favourites.label("movie_anilist_favourites"),
             Movie.poster_url.label("movie_poster_url"),
             Movie.genres.label("movie_genres"),
             Movie.popularity.label("movie_popularity"),
@@ -1248,6 +1262,10 @@ async def get_candidates(
             Series.imdb_id.label("series_imdb_id"),
             Series.imdb_rating.label("series_imdb_rating"),
             Series.imdb_vote_count.label("series_imdb_vote_count"),
+            Series.anilist_id.label("series_anilist_id"),
+            Series.anilist_score.label("series_anilist_score"),
+            Series.anilist_popularity.label("series_anilist_popularity"),
+            Series.anilist_favourites.label("series_anilist_favourites"),
             Series.genres.label("series_genres"),
             Series.popularity.label("series_popularity"),
             Series.vote_average.label("series_vote_average"),
@@ -1404,6 +1422,16 @@ async def get_candidates(
         imdb_vote_count = (
             row.movie_imdb_vote_count if is_movie else row.series_imdb_vote_count
         )
+        anilist_id = row.movie_anilist_id if is_movie else row.series_anilist_id
+        anilist_score = (
+            row.movie_anilist_score if is_movie else row.series_anilist_score
+        )
+        anilist_popularity = (
+            row.movie_anilist_popularity if is_movie else row.series_anilist_popularity
+        )
+        anilist_favourites = (
+            row.movie_anilist_favourites if is_movie else row.series_anilist_favourites
+        )
         genres = extract_genre_names(
             row.movie_genres if is_movie else row.series_genres  # type: ignore[arg-type]
         )
@@ -1477,6 +1505,10 @@ async def get_candidates(
                 imdb_id=imdb_id,
                 imdb_rating=imdb_rating,
                 imdb_vote_count=imdb_vote_count,
+                anilist_id=anilist_id,
+                anilist_score=anilist_score,
+                anilist_popularity=anilist_popularity,
+                anilist_favourites=anilist_favourites,
                 poster_url=poster_url,
                 genres=genres,
                 popularity=popularity,

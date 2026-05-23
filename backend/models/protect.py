@@ -22,6 +22,10 @@ class ProtectedEntryResponse(BaseModel):
     imdb_id: str | None = None
     imdb_rating: float | None = None
     imdb_vote_count: int | None = None
+    anilist_id: int | None = None
+    anilist_score: int | None = None
+    anilist_popularity: int | None = None
+    anilist_favourites: int | None = None
     reason: str | None
     protected_by_user_id: int
     protected_by_username: str

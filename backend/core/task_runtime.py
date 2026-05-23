@@ -11,6 +11,7 @@ from backend.database.models import BackgroundJob, ServiceConfig, TaskSchedule
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
 from backend.jobs import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
+from backend.tasks.anilist import refresh_anilist_ratings
 from backend.tasks.cleanup import scan_cleanup_candidates, tag_cleanup_candidates
 from backend.tasks.house_keeping import weekly_house_keeping
 from backend.tasks.imdb import refresh_imdb_ratings
@@ -36,7 +37,11 @@ MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
 
 # any tasks that can be disabled by the user (e.g. via config or UI toggle) should be added to this set
 DISABLE_ABLE_TASKS: frozenset[Task] = frozenset(
-    {Task.CHECK_APP_UPDATES, Task.IMDB_RATINGS_REFRESH}
+    {
+        Task.CHECK_APP_UPDATES,
+        Task.IMDB_RATINGS_REFRESH,
+        Task.ANILIST_RATINGS_REFRESH,
+    }
 )
 
 
@@ -161,6 +166,9 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
         return
     if task is Task.IMDB_RATINGS_REFRESH:
         await refresh_imdb_ratings()
+        return
+    if task is Task.ANILIST_RATINGS_REFRESH:
+        await refresh_anilist_ratings()
         return
 
     raise ValueError(f"Unsupported task for background execution: {task}")

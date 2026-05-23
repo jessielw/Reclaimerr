@@ -73,9 +73,17 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
     alpha.imdb_id = "tt0000101"
     alpha.imdb_rating = 7.4
     alpha.imdb_vote_count = 12500
+    alpha.anilist_id = 16498
+    alpha.anilist_score = 85
+    alpha.anilist_popularity = 998866
+    alpha.anilist_favourites = 79392
     delta.imdb_id = "tt0000202"
     delta.imdb_rating = 8.1
     delta.imdb_vote_count = 9200
+    delta.anilist_id = 21459
+    delta.anilist_score = 90
+    delta.anilist_popularity = 543210
+    delta.anilist_favourites = 40000
     db.add_all([alpha, bravo, charlie, delta])
     await db.flush()
 
@@ -331,6 +339,10 @@ def test_get_candidates_includes_imdb_fields() -> None:
             assert movie_entry.imdb_id == "tt0000101"
             assert movie_entry.imdb_rating == 7.4
             assert movie_entry.imdb_vote_count == 12500
+            assert movie_entry.anilist_id == 16498
+            assert movie_entry.anilist_score == 85
+            assert movie_entry.anilist_popularity == 998866
+            assert movie_entry.anilist_favourites == 79392
 
             series_response = await get_candidates(
                 _admin_user(),
@@ -348,6 +360,10 @@ def test_get_candidates_includes_imdb_fields() -> None:
             assert series_entry.imdb_id == "tt0000202"
             assert series_entry.imdb_rating == 8.1
             assert series_entry.imdb_vote_count == 9200
+            assert series_entry.anilist_id == 21459
+            assert series_entry.anilist_score == 90
+            assert series_entry.anilist_popularity == 543210
+            assert series_entry.anilist_favourites == 40000
 
         await engine.dispose()
 

@@ -94,6 +94,20 @@ class RuleDefinitionValidationTests(unittest.TestCase):
                 _definition("imdb.rating", "before", "2026-01-01"),
             )
 
+    def test_accepts_anilist_score_numeric_operator(self) -> None:
+        validate_rule_definition(
+            _definition("anilist.score", "greater_than_or_equal", 80),
+        )
+
+    def test_rejects_anilist_score_temporal_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'before' for field 'anilist.score'",
+        ):
+            validate_rule_definition(
+                _definition("anilist.score", "before", "2026-01-01"),
+            )
+
     def test_rejects_numeric_field_with_temporal_operator(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
