@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Built inline compact favorites viewer to browse what titles your users have favorited (this is accessible via the ignored favorites block in settings)
 
+### Changed
+
+- Updated dep FastAPI
+
 ### Fixed
 
 - Candidates and Protected mobile view had some visual bugs
