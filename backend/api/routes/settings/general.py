@@ -14,6 +14,7 @@ from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
     MediaFavorite,
+    MediaWatchUser,
     Movie,
     MovieVersion,
     Series,
@@ -30,8 +31,10 @@ from backend.models.settings import (
     PaginatedFavoritesMediaResponse,
     PostActionWebhookTestRequest,
     PostActionWebhookTestResponse,
+    WatchUserLookupResponse,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
+from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.post_action_webhooks import (
     invalidate_webhook_config_cache,
     send_post_action_webhook,
@@ -93,6 +96,10 @@ async def update_general_settings(
     settings.favorites_ignore_enabled = request.favorites_ignore_enabled
     settings.favorites_protect_all_users = request.favorites_protect_all_users
     settings.favorites_usernames = request.favorites_usernames
+    settings.requester_watch_user_mappings = [
+        mapping.model_dump(mode="json")
+        for mapping in request.requester_watch_user_mappings
+    ]
 
     # update metadata
     settings.updated_at = datetime.now(UTC)
@@ -117,6 +124,63 @@ async def get_favorites_users(
         force_refresh=refresh
     )
     return [FavoritesUserLookupResponse.model_validate(item) for item in users]
+
+
+@router.get("/general/watch-users", response_model=list[WatchUserLookupResponse])
+async def get_watch_users(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    refresh: Annotated[bool, Query()] = False,
+) -> list[WatchUserLookupResponse]:
+    """Get distinct known watch-user keys from media watch snapshots."""
+    if refresh:
+        ok, error = await media_watch_snapshot_cache.refresh_snapshot()
+        if not ok:
+            raise HTTPException(
+                status_code=503,
+                detail=error or "Failed to refresh watch snapshot",
+            )
+
+    rows = (
+        await db.execute(
+            select(
+                MediaWatchUser.source_service,
+                MediaWatchUser.watch_user_key,
+                MediaWatchUser.watch_user_key_normalized,
+            )
+            .distinct()
+            .order_by(
+                func.lower(MediaWatchUser.watch_user_key_normalized).asc(),
+                func.lower(MediaWatchUser.watch_user_key).asc(),
+                MediaWatchUser.source_service.asc(),
+            )
+        )
+    ).all()
+
+    by_key: dict[str, WatchUserLookupResponse] = {}
+    for source_service, user_key, user_key_normalized in rows:
+        normalized = str(user_key_normalized or "").strip().lower()
+        if not normalized:
+            continue
+        display_key = str(user_key or "").strip() or normalized
+        existing = by_key.get(normalized)
+        if existing is None:
+            by_key[normalized] = WatchUserLookupResponse(
+                user_key=display_key,
+                user_key_normalized=normalized,
+                source_services=[source_service],
+            )
+            continue
+        if source_service not in existing.source_services:
+            existing.source_services.append(source_service)
+
+    result = list(by_key.values())
+    for item in result:
+        item.source_services = sorted(
+            item.source_services,
+            key=lambda service: str(service.value),
+        )
+    return result
 
 
 @router.get("/general/favorites-media", response_model=PaginatedFavoritesMediaResponse)

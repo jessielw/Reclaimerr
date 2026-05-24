@@ -24,7 +24,9 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, Service
+from backend.services.seerr_cache import SeerrRequestSnapshot
 from backend.tasks.cleanup import (
+    _compute_requester_has_watched_for_key,
     _evaluate_movie_rule,
     _evaluate_rule_for_season,
     _process_series_episodes,
@@ -744,6 +746,42 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         SeerrRequestResolver({(MediaType.MOVIE, 1): {404}}).activate()
         self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_compute_requester_has_watched_handles_mixed_timezone_datetimes(
+        self,
+    ) -> None:
+        media_key: tuple[MediaType, int] = (MediaType.MOVIE, 1)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={
+                media_key: {101: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
+            },
+            requester_identity_keys_by_user_id={101: {"alice"}},
+        )
+        watch_by_service_and_user: dict[
+            tuple[MediaType, int], dict[Service, dict[str, datetime]]
+        ] = {media_key: {Service.PLEX: {"alice": datetime(2026, 1, 1, 13, 0)}}}
+
+        self.assertTrue(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watch_by_service_and_user,
+                mappings=[],
+            )
+        )
+
+        watch_by_service_and_user[media_key][Service.PLEX]["alice"] = datetime(
+            2026, 1, 1, 11, 0
+        )
+        self.assertFalse(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watch_by_service_and_user,
+                mappings=[],
+            )
+        )
 
 
 if __name__ == "__main__":

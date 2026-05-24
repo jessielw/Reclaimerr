@@ -23,7 +23,7 @@ from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.enums import Service
+from backend.enums import MediaType, Service
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -890,6 +890,145 @@ class EmbyServiceBase:
             return series_watch_dates
         except Exception:
             return {}
+
+    @staticmethod
+    def _normalized_user_key(user_name: str | None) -> str | None:
+        key = str(user_name or "").strip()
+        return key or None
+
+    @staticmethod
+    def _safe_tmdb_id(provider_ids: dict[str, Any] | None) -> int | None:
+        raw = (provider_ids or {}).get("Tmdb")
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text or not text.lstrip("-").isdigit():
+            return None
+        return int(text)
+
+    @staticmethod
+    def _safe_iso_datetime(raw: Any) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw))
+        except Exception:
+            return None
+
+    async def _get_series_tmdb_map_for_user(self, user_id: str) -> dict[str, int]:
+        """Return service seriesId -> TMDB map for one user."""
+        mapping: dict[str, int] = {}
+        start_index = 0
+        limit = 500
+        while True:
+            params = {
+                "userId": user_id,
+                "includeItemTypes": "Series",
+                "recursive": "true",
+                "Fields": "ProviderIds",
+                "StartIndex": str(start_index),
+                "Limit": str(limit),
+            }
+            data = await self._make_request("Items", params=params, timeout=60)
+            if not isinstance(data, dict):
+                break
+            items = data.get("Items", [])
+            if not items:
+                break
+            for item in items:
+                series_id = str(item.get("Id", "")).strip()
+                tmdb_id = self._safe_tmdb_id(item.get("ProviderIds", {}))
+                if series_id and tmdb_id is not None:
+                    mapping[series_id] = tmdb_id
+            total_record_count = int(data.get("TotalRecordCount", 0) or 0)
+            start_index += len(items)
+            if len(items) < limit or (
+                total_record_count and start_index >= total_record_count
+            ):
+                break
+        return mapping
+
+    async def get_watched_user_snapshots(
+        self,
+    ) -> list[tuple[MediaType, int, str, datetime, int | None]]:
+        """Return per-user watched snapshots mapped to TMDB IDs."""
+        users = await self.get_users()
+        if not users:
+            return []
+
+        results: dict[tuple[MediaType, int, str], tuple[datetime, int | None]] = {}
+        for user in users:
+            watch_user_key = self._normalized_user_key(user.name)
+            if not watch_user_key:
+                continue
+
+            movie_start = 0
+            movie_limit = 500
+            while True:
+                movie_params = {
+                    "userId": user.id,
+                    "includeItemTypes": "Movie",
+                    "recursive": "true",
+                    "Filters": "IsPlayed",
+                    "Fields": "ProviderIds,UserData,UserDataLastPlayedDate,UserDataPlayCount",
+                    "StartIndex": str(movie_start),
+                    "Limit": str(movie_limit),
+                }
+                movie_data = await self._make_request(
+                    "Items", params=movie_params, timeout=60
+                )
+                if not isinstance(movie_data, dict):
+                    break
+                movie_items = movie_data.get("Items", [])
+                if not movie_items:
+                    break
+                for item in movie_items:
+                    tmdb_id = self._safe_tmdb_id(item.get("ProviderIds", {}))
+                    if tmdb_id is None:
+                        continue
+                    user_data = (
+                        item.get("UserData", {}) if isinstance(item, dict) else {}
+                    )
+                    last_played = self._safe_iso_datetime(
+                        user_data.get("LastPlayedDate")
+                    )
+                    if last_played is None:
+                        continue
+                    play_count_raw = user_data.get("PlayCount", 0)
+                    play_count = (
+                        int(play_count_raw or 0)
+                        if str(play_count_raw).isdigit()
+                        else None
+                    )
+                    key = (MediaType.MOVIE, tmdb_id, watch_user_key)
+                    prev = results.get(key)
+                    if prev is None or last_played > prev[0]:
+                        results[key] = (last_played, play_count)
+                movie_total = int(movie_data.get("TotalRecordCount", 0) or 0)
+                movie_start += len(movie_items)
+                if len(movie_items) < movie_limit or (
+                    movie_total and movie_start >= movie_total
+                ):
+                    break
+
+            series_tmdb_map = await self._get_series_tmdb_map_for_user(user.id)
+            watched_series = await self.get_all_watched_episodes_for_user(user.id)
+            for series_id, last_watched_at in watched_series.items():
+                tmdb_id = series_tmdb_map.get(series_id)
+                if tmdb_id is None:
+                    continue
+                key = (MediaType.SERIES, tmdb_id, watch_user_key)
+                prev = results.get(key)
+                if prev is None or last_watched_at > prev[0]:
+                    results[key] = (last_watched_at, None)
+
+        return [
+            (media_type, tmdb_id, user_key, last_watched_at, play_count)
+            for (media_type, tmdb_id, user_key), (
+                last_watched_at,
+                play_count,
+            ) in results.items()
+        ]
 
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None

@@ -300,7 +300,7 @@ async def get_path_tree(
 async def get_seerr_users(
     _admin: Annotated[User, Depends(require_admin)],
     q: Annotated[str, Query()] = "",
-    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    limit: Annotated[int, Query(ge=1, le=500)] = 25,
 ) -> list[SeerrUserLookupResponse]:
     """Return cached Seerr users for requester rule picker."""
     users = await seerr_snapshot_cache.get_users()

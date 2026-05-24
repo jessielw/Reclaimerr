@@ -2,12 +2,21 @@ from __future__ import annotations
 
 from asyncio import Lock, create_task
 from asyncio import Task as AsyncTask
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.enums import MediaType
 from backend.models.services.seerr import SeerrRequest, SeerrUser
+
+
+@dataclass(slots=True)
+class SeerrRequestSnapshot:
+    requester_ids_by_key: dict[tuple[MediaType, int], set[int]]
+    latest_request_at_by_key_user: dict[tuple[MediaType, int], dict[int, datetime]]
+    requester_identity_keys_by_user_id: dict[int, set[str]]
 
 
 class SeerrSnapshotCache:
@@ -40,7 +49,7 @@ class SeerrSnapshotCache:
         self._users_ttl = users_ttl
         self._users_empty_ttl = users_empty_ttl
 
-        self._request_snapshot: dict[tuple[MediaType, int], set[int]] | None = None
+        self._request_snapshot: SeerrRequestSnapshot | None = None
         self._request_expires_at: datetime | None = None
         self._request_last_error: str | None = None
         self._request_lock = Lock()
@@ -92,6 +101,11 @@ class SeerrSnapshotCache:
             and now < self._request_expires_at
         )
 
+    @staticmethod
+    def _normalize_identity_key(raw: Any) -> str | None:
+        value = str(raw or "").strip().lower()
+        return value if value else None
+
     async def _refresh_request_snapshot(self) -> tuple[bool, str | None]:
         async with self._request_lock:
             if not service_manager.seerr:
@@ -99,16 +113,55 @@ class SeerrSnapshotCache:
                 return False, self._request_last_error
             try:
                 requests = await service_manager.seerr.get_all_requests(filter="all")
-                snapshot: dict[tuple[MediaType, int], set[int]] = {}
+                requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
+                latest_request_at_by_key_user: dict[
+                    tuple[MediaType, int], dict[int, datetime]
+                ] = {}
+                requester_identity_keys_by_user_id: dict[int, set[str]] = {}
                 for req in requests:
                     key = (req.media_type, req.tmdb_id)
-                    bucket = snapshot.get(key)
+                    bucket = requester_ids_by_key.get(key)
                     if bucket is None:
                         bucket = set()
-                        snapshot[key] = bucket
+                        requester_ids_by_key[key] = bucket
                     bucket.add(req.requested_by_id)
+
+                    request_by_user = latest_request_at_by_key_user.get(key)
+                    if request_by_user is None:
+                        request_by_user = {}
+                        latest_request_at_by_key_user[key] = request_by_user
+                    existing = request_by_user.get(req.requested_by_id)
+                    if existing is None or req.created_at > existing:
+                        request_by_user[req.requested_by_id] = req.created_at
+
+                    raw_requested_by = (
+                        req.raw.get("requestedBy", {})
+                        if isinstance(req.raw, dict)
+                        else {}
+                    )
+                    identity_bucket = requester_identity_keys_by_user_id.get(
+                        req.requested_by_id
+                    )
+                    if identity_bucket is None:
+                        identity_bucket = set()
+                        requester_identity_keys_by_user_id[req.requested_by_id] = (
+                            identity_bucket
+                        )
+                    for candidate in (
+                        raw_requested_by.get("username"),
+                        raw_requested_by.get("displayName"),
+                        raw_requested_by.get("email"),
+                    ):
+                        normalized = self._normalize_identity_key(candidate)
+                        if normalized:
+                            identity_bucket.add(normalized)
+
                 now = datetime.now(UTC)
-                self._request_snapshot = snapshot
+                self._request_snapshot = SeerrRequestSnapshot(
+                    requester_ids_by_key=requester_ids_by_key,
+                    latest_request_at_by_key_user=latest_request_at_by_key_user,
+                    requester_identity_keys_by_user_id=requester_identity_keys_by_user_id,
+                )
                 self._request_expires_at = (
                     now.replace(microsecond=0) + self._request_ttl
                 )
@@ -141,7 +194,7 @@ class SeerrSnapshotCache:
         *,
         require_fresh: bool,
         allow_stale_on_failure: bool,
-    ) -> tuple[dict[tuple[MediaType, int], set[int]] | None, str | None]:
+    ) -> tuple[SeerrRequestSnapshot | None, str | None]:
         now = datetime.now(UTC)
 
         if not require_fresh and self._request_snapshot_is_fresh(now):

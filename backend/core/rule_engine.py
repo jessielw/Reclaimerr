@@ -85,6 +85,7 @@ FIELD_LABELS: dict[str, str] = {
     "arr.monitored": "Arr monitored",
     "seerr.requested": "Seerr requested",
     "seerr.requested_by_user_ids": "Seerr requested by user IDs",
+    "seerr.requester_has_watched": "Seerr requester has watched",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -171,6 +172,7 @@ BOOLEAN_FIELDS = {
     "watch.never_watched",
     "arr.monitored",
     "seerr.requested",
+    "seerr.requester_has_watched",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -350,16 +352,22 @@ class SeerrRequestResolver:
         "seerr_request_resolver", default=None
     )
 
-    __slots__ = ("_requester_ids_by_key",)
+    __slots__ = ("_requester_ids_by_key", "_requester_has_watched_by_key")
 
     def __init__(
         self,
         requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[int]]
         | None = None,
+        requester_has_watched_by_key: Mapping[tuple[MediaType, int], bool]
+        | None = None,
     ):
         self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
         for key, user_ids in (requester_ids_by_key or {}).items():
             self._requester_ids_by_key[key] = {int(v) for v in user_ids}
+        self._requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {
+            key: bool(value)
+            for key, value in (requester_has_watched_by_key or {}).items()
+        }
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -387,6 +395,17 @@ class SeerrRequestResolver:
         if requester_ids is None:
             return None
         return bool(requester_ids)
+
+    def resolve_requester_has_watched(
+        self, media_type: MediaType, tmdb_id: int | None
+    ) -> bool | None:
+        """Return requester watched state for the given media key if known."""
+        if tmdb_id is None:
+            return None
+        value = self._requester_has_watched_by_key.get((media_type, tmdb_id))
+        if value is None:
+            return None
+        return bool(value)
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -655,6 +674,13 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.MOVIE, movie.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -709,6 +735,13 @@ def _build_context(
             ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
                 if _seerr_resolver
                 else None
             ),
@@ -782,6 +815,13 @@ def _build_context(
             ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
                 if _seerr_resolver
                 else None
             ),
@@ -859,6 +899,13 @@ def _build_context(
             ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
                 if _seerr_resolver
                 else None
             ),
