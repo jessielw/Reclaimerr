@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -25,7 +26,7 @@ from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
 from backend.core.utils.request import should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.enums import Service
+from backend.enums import MediaType, Service
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -45,16 +46,39 @@ _EPISODE_METADATA_BATCH_SIZE = 100
 class PlexService:
     """Plex media server backend."""
 
-    __slots__ = ("token", "plex_url", "session")
+    __slots__ = (
+        "token",
+        "plex_url",
+        "session",
+        "_plex_client_identifier",
+        "_plex_user_map_cache",
+        "_plex_user_map_expires_at",
+        "_plex_user_map_ttl",
+        "_history_records_cache",
+        "_history_records_cache_expires_at",
+        "_history_records_ttl",
+    )
 
     def __init__(self, token: str, plex_url: str) -> None:
         self.token = token
         self.plex_url = plex_url.rstrip("/")
+        self._plex_client_identifier = "reclaimerr"
+        self._plex_user_map_cache: dict[str, str] | None = None
+        self._plex_user_map_expires_at: datetime | None = None
+        self._plex_user_map_ttl = timedelta(minutes=15)
+        self._history_records_cache: dict[
+            tuple[tuple[str, ...], int], list[dict[str, Any]]
+        ] = {}
+        self._history_records_cache_expires_at: dict[
+            tuple[tuple[str, ...], int], datetime
+        ] = {}
+        self._history_records_ttl = timedelta(minutes=2)
 
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
                 "X-Plex-Token": self.token,
+                "X-Plex-Client-Identifier": self._plex_client_identifier,
                 "Accept": "application/json",
             }
         )
@@ -1001,71 +1025,326 @@ class PlexService:
             Dict mapping the chosen key field value to
             (total_view_count, max_last_viewed_at, distinct_user_count).
         """
+        records = await self._get_all_history_records(
+            library_section_ids=library_section_ids,
+            page_size=page_size,
+        )
         # key -> [view_count, max_lva, set(accountIDs)]
-        aggregated: dict[str, list] = {}
+        aggregated: dict[str, list[Any]] = {}
+        for record in records:
+            key = str(record.get(key_field, ""))
+            if not key:
+                continue
+            if rating_keys is not None and key not in rating_keys:
+                continue
 
-        # iterate each section separately, or do one global pass if no sections given
+            viewed_at = self._fromtimestamp(record.get("viewedAt"))
+            account_id = str(record.get("accountID", ""))
+
+            if key not in aggregated:
+                aggregated[key] = [0, None, set()]
+
+            aggregated[key][0] += 1  # each history record = one play
+            if viewed_at:
+                if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
+                    aggregated[key][1] = viewed_at
+            if account_id:
+                aggregated[key][2].add(account_id)
+
+        return {k: (v[0], v[1], len(v[2])) for k, v in aggregated.items()}
+
+    @staticmethod
+    def _history_cache_key(
+        library_section_ids: list[str] | None, page_size: int
+    ) -> tuple[tuple[str, ...], int]:
+        if not library_section_ids:
+            return (("__all__",), page_size)
+        normalized = tuple(
+            sorted({str(section_id) for section_id in library_section_ids})
+        )
+        return (normalized, page_size)
+
+    async def _fetch_all_history_records(
+        self,
+        *,
+        library_section_ids: list[str] | None = None,
+        page_size: int = 1000,
+        viewed_at_gte: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch raw watch history records for all users (uncached)."""
+        records_out: list[dict[str, Any]] = []
+        cutoff_ts = (
+            int(viewed_at_gte.astimezone(UTC).timestamp())
+            if viewed_at_gte is not None
+            else None
+        )
         sections_to_fetch: Sequence[str | None] = (
             library_section_ids if library_section_ids else [None]
         )
-
         for section_id in sections_to_fetch:
             container_start = 0
             while True:
-                params: dict = {
+                params: dict[str, Any] = {
                     "X-Plex-Container-Start": container_start,
                     "X-Plex-Container-Size": page_size,
                     "sort": "viewedAt:desc",
                 }
                 if section_id is not None:
                     params["librarySectionID"] = section_id
-
                 try:
                     data, _ = await self._make_request(
                         "status/sessions/history/all", params=params, timeout=300
                     )
                 except Exception as e:
                     LOG.warning(
-                        f"Plex history fetch failed at offset {container_start} "
+                        f"Plex history records fetch failed at offset {container_start} "
                         f"section={section_id}: {e}"
                     )
                     break
-
                 if not isinstance(data, dict):
                     break
-
                 container = data.get("MediaContainer", {})
                 records = container.get("Metadata", [])
                 if not records:
                     break
-
-                for record in records:
-                    key = str(record.get(key_field, ""))
-                    if not key:
-                        continue
-                    if rating_keys is not None and key not in rating_keys:
-                        continue
-
-                    viewed_at = self._fromtimestamp(record.get("viewedAt"))
-                    account_id = str(record.get("accountID", ""))
-
-                    if key not in aggregated:
-                        aggregated[key] = [0, None, set()]
-
-                    aggregated[key][0] += 1  # each history record = one play
-                    if viewed_at:
-                        if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
-                            aggregated[key][1] = viewed_at
-                    if account_id:
-                        aggregated[key][2].add(account_id)
-
-                # paginate until all records for this section are consumed
+                page_records = [
+                    record for record in records if isinstance(record, dict)
+                ]
+                if cutoff_ts is not None:
+                    filtered_records: list[dict[str, Any]] = []
+                    hit_older_record = False
+                    for record in page_records:
+                        raw_viewed_at = record.get("viewedAt")
+                        try:
+                            viewed_at_ts = int(raw_viewed_at) if raw_viewed_at else 0
+                        except (TypeError, ValueError):
+                            viewed_at_ts = 0
+                        if viewed_at_ts >= cutoff_ts:
+                            filtered_records.append(record)
+                        else:
+                            # endpoint is requested sorted desc by viewedAt; once we
+                            # hit an older row, subsequent pages will also be older.
+                            hit_older_record = True
+                    records_out.extend(filtered_records)
+                    if hit_older_record:
+                        break
+                else:
+                    records_out.extend(page_records)
                 total_size = container.get("totalSize", len(records))
                 container_start += len(records)
                 if container_start >= total_size:
                     break
+        return records_out
 
-        return {k: (v[0], v[1], len(v[2])) for k, v in aggregated.items()}
+    async def _get_all_history_records(
+        self,
+        *,
+        library_section_ids: list[str] | None = None,
+        page_size: int = 1000,
+        viewed_at_gte: datetime | None = None,
+        use_cache: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fetch raw watch history records for all users (cached)."""
+        if viewed_at_gte is not None or not use_cache:
+            return await self._fetch_all_history_records(
+                library_section_ids=library_section_ids,
+                page_size=page_size,
+                viewed_at_gte=viewed_at_gte,
+            )
+
+        cache_key = self._history_cache_key(library_section_ids, page_size)
+        now = datetime.now(UTC)
+        expires_at = self._history_records_cache_expires_at.get(cache_key)
+        if (
+            expires_at is not None
+            and now < expires_at
+            and cache_key in self._history_records_cache
+        ):
+            return list(self._history_records_cache[cache_key])
+
+        records_out = await self._fetch_all_history_records(
+            library_section_ids=library_section_ids,
+            page_size=page_size,
+            viewed_at_gte=None,
+        )
+        self._history_records_cache[cache_key] = records_out
+        self._history_records_cache_expires_at[cache_key] = (
+            now + self._history_records_ttl
+        )
+        return list(records_out)
+
+    @staticmethod
+    def _parse_plex_users_xml(payload: str) -> dict[str, str]:
+        """Parse Plex.tv users XML and return accountID -> best display name."""
+        users_by_id: dict[str, str] = {}
+        if not payload:
+            return users_by_id
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError:
+            return users_by_id
+
+        for elem in root.iter():
+            tag = str(elem.tag).split("}")[-1].lower()
+            if tag != "user":
+                continue
+            attrs = elem.attrib if isinstance(elem.attrib, Mapping) else {}
+            account_id = str(attrs.get("id", "")).strip()
+            if not account_id:
+                continue
+            username = str(attrs.get("username", "")).strip()
+            title = str(attrs.get("title", "")).strip()
+            friendly = str(attrs.get("friendlyName", "")).strip()
+            email = str(attrs.get("email", "")).strip()
+            # Keep the most stable identity first; fallback to title/friendly/email.
+            display = username or title or friendly or email
+            if not display:
+                continue
+            users_by_id[account_id] = display
+        return users_by_id
+
+    async def _fetch_plex_tv_user_map(self) -> dict[str, str]:
+        """Fetch Plex account users from Plex.tv and map accountID -> display name."""
+        try:
+            response = await self.session.get(
+                "https://plex.tv/api/users",
+                params={
+                    "X-Plex-Client-Identifier": self._plex_client_identifier,
+                    "X-Plex-Token": self.token,
+                },
+                headers={"Accept": "application/xml"},
+                timeout=60,
+            )
+            response.raise_for_status()
+            user_map = self._parse_plex_users_xml(response.text or "")
+            if not user_map:
+                LOG.debug("Plex.tv user lookup returned no mappable users")
+            return user_map
+        except Exception as e:
+            LOG.warning(f"Plex.tv user lookup failed: {e}")
+            return {}
+
+    async def _get_plex_tv_user_map(self) -> dict[str, str]:
+        """Return cached Plex.tv user map, refreshing when TTL expires."""
+        now = datetime.now(UTC)
+        if (
+            self._plex_user_map_cache is not None
+            and self._plex_user_map_expires_at is not None
+            and now < self._plex_user_map_expires_at
+        ):
+            return dict(self._plex_user_map_cache)
+
+        refreshed = await self._fetch_plex_tv_user_map()
+        if refreshed:
+            self._plex_user_map_cache = dict(refreshed)
+            self._plex_user_map_expires_at = now + self._plex_user_map_ttl
+            return dict(refreshed)
+
+        if self._plex_user_map_cache is not None:
+            # Keep stale cache as best-effort fallback if refresh fails.
+            return dict(self._plex_user_map_cache)
+        return {}
+
+    @staticmethod
+    def _pick_watch_user_key(
+        record: dict[str, Any], plex_users_by_account_id: Mapping[str, str]
+    ) -> str | None:
+        for field in (
+            "user",
+            "username",
+            "accountTitle",
+            "accountName",
+            "friendlyName",
+        ):
+            raw = str(record.get(field, "")).strip()
+            if raw:
+                return raw
+        account_id = str(record.get("accountID", "")).strip()
+        if not account_id:
+            return None
+        return plex_users_by_account_id.get(account_id) or account_id
+
+    async def get_watched_user_snapshots(
+        self,
+        included_libraries: list[str] | None = None,
+    ) -> list[tuple[MediaType, int, str, datetime, int | None]]:
+        """Return per-user watched snapshots mapped to TMDB IDs."""
+        snapshots, _ = await self.get_watched_user_snapshots_with_cursor(
+            included_libraries=included_libraries
+        )
+        return snapshots
+
+    async def get_watched_user_snapshots_with_cursor(
+        self,
+        included_libraries: list[str] | None = None,
+        *,
+        viewed_at_gte: datetime | None = None,
+        use_cache: bool = True,
+    ) -> tuple[list[tuple[MediaType, int, str, datetime, int | None]], datetime | None]:
+        """Return per-user watched snapshots mapped to TMDB IDs, plus max viewedAt."""
+        movies = await self.get_movies(included_libraries=included_libraries)
+        series = await self.get_series(included_libraries=included_libraries)
+        movie_tmdb_by_rating_key: dict[str, int] = {}
+        series_tmdb_by_rating_key: dict[str, int] = {}
+        for movie in movies:
+            tmdb_id = movie.external_ids.tmdb if movie.external_ids else None
+            if tmdb_id is not None:
+                movie_tmdb_by_rating_key[str(movie.id)] = int(tmdb_id)
+        for show in series:
+            tmdb_id = show.external_ids.tmdb if show.external_ids else None
+            if tmdb_id is not None:
+                series_tmdb_by_rating_key[str(show.id)] = int(tmdb_id)
+
+        sections = await self.get_library_sections()
+        scoped_sections = sections
+        if included_libraries:
+            scoped_sections = [
+                s for s in sections if s.get("title") in included_libraries
+            ]
+        section_ids = [s["key"] for s in scoped_sections if s.get("key")]
+        history_records = await self._get_all_history_records(
+            library_section_ids=section_ids,
+            viewed_at_gte=viewed_at_gte,
+            use_cache=use_cache,
+        )
+        plex_users_by_account_id = await self._get_plex_tv_user_map()
+
+        merged: dict[tuple[MediaType, int, str], tuple[datetime, int | None]] = {}
+        max_viewed_at: datetime | None = None
+        for record in history_records:
+            watched_at = self._fromtimestamp(record.get("viewedAt"))
+            if watched_at is None:
+                continue
+            if max_viewed_at is None or watched_at > max_viewed_at:
+                max_viewed_at = watched_at
+            watch_user_key = self._pick_watch_user_key(record, plex_users_by_account_id)
+            if not watch_user_key:
+                continue
+
+            movie_key = str(record.get("ratingKey", "")).strip()
+            tmdb_movie = movie_tmdb_by_rating_key.get(movie_key)
+            if tmdb_movie is not None:
+                key = (MediaType.MOVIE, tmdb_movie, watch_user_key)
+                prev = merged.get(key)
+                if prev is None or watched_at > prev[0]:
+                    merged[key] = (watched_at, None)
+
+            series_key = str(record.get("grandparentRatingKey", "")).strip()
+            tmdb_series = series_tmdb_by_rating_key.get(series_key)
+            if tmdb_series is not None:
+                key = (MediaType.SERIES, tmdb_series, watch_user_key)
+                prev = merged.get(key)
+                if prev is None or watched_at > prev[0]:
+                    merged[key] = (watched_at, None)
+
+        snapshots = [
+            (media_type, tmdb_id, user_key, watched_at, play_count)
+            for (media_type, tmdb_id, user_key), (
+                watched_at,
+                play_count,
+            ) in merged.items()
+        ]
+        return snapshots, max_viewed_at
 
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None

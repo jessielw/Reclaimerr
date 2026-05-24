@@ -205,6 +205,9 @@ class GeneralSettings(Base):
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    requester_watch_user_mappings: Mapped[list] = mapped_column(
+        JSON, default_factory=list
+    )
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -642,6 +645,40 @@ class MediaFavorite(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class MediaWatchUser(Base):
+    """User watch snapshot rows mapped to TMDB IDs across media servers."""
+
+    __tablename__ = "media_watch_users"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_type",
+            "tmdb_id",
+            "watch_user_key_normalized",
+            "source_service",
+            "source_service_config_id",
+            name="uq_media_watch_users_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
+    watch_user_key: Mapped[str] = mapped_column(String(255))
+    watch_user_key_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    last_watched_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    play_count: Mapped[int | None] = mapped_column(Integer, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )

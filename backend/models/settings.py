@@ -162,6 +162,32 @@ class PathMappingItem(BaseModel):
         return self
 
 
+class RequesterWatchUserMapping(BaseModel):
+    """Map Seerr requester identities to media server watch user keys."""
+
+    seerr_user_id: int | None = None
+    seerr_username: str | None = None
+    media_user_key: str
+    service_type: Service | None = None
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> RequesterWatchUserMapping:
+        if self.seerr_username is not None:
+            self.seerr_username = self.seerr_username.strip().lower() or None
+        self.media_user_key = self.media_user_key.strip()
+        if not self.media_user_key:
+            raise PydanticCustomError(
+                "requester_watch_user_mapping",
+                "media_user_key is required",
+            )
+        if self.seerr_user_id is None and self.seerr_username is None:
+            raise PydanticCustomError(
+                "requester_watch_user_mapping",
+                "Either seerr_user_id or seerr_username is required",
+            )
+        return self
+
+
 class PostActionWebhookHeader(BaseModel):
     name: str
     value: str
@@ -234,6 +260,12 @@ class FavoritesUserLookupResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class WatchUserLookupResponse(BaseModel):
+    user_key: str
+    user_key_normalized: str
+    source_services: list[Service] = Field(default_factory=list)
+
+
 class FavoritesMediaEntryResponse(BaseModel):
     media_type: MediaType
     tmdb_id: int
@@ -277,6 +309,9 @@ class GeneralSettingsResponse(BaseModel):
     favorites_ignore_enabled: bool = False
     favorites_protect_all_users: bool = False
     favorites_usernames: list[str] = Field(default_factory=list)
+    requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
+        default_factory=list
+    )
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -324,6 +359,25 @@ class GeneralSettingsResponse(BaseModel):
             seen.add(value)
             normalized_usernames.append(value)
         self.favorites_usernames = normalized_usernames
+        return self
+
+    @model_validator(mode="after")
+    def normalize_requester_watch_user_mappings(self) -> GeneralSettingsResponse:
+        """Normalize and dedupe requester watch user mappings."""
+        deduped: list[RequesterWatchUserMapping] = []
+        seen: set[tuple[int | None, str | None, str, Service | None]] = set()
+        for mapping in self.requester_watch_user_mappings:
+            key = (
+                mapping.seerr_user_id,
+                mapping.seerr_username,
+                mapping.media_user_key.strip().lower(),
+                mapping.service_type,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(mapping)
+        self.requester_watch_user_mappings = deduped
         return self
 
     model_config = ConfigDict(from_attributes=True)

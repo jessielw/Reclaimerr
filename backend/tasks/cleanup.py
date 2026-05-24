@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
-from alembic.op import f
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +22,7 @@ from backend.core.rule_engine import (
 )
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
+from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import (
     find_season_folder,
     move_directory,
@@ -39,6 +39,7 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     MediaFavorite,
+    MediaWatchUser,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -74,7 +75,7 @@ from backend.services.notifications import (
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
-from backend.services.seerr_cache import seerr_snapshot_cache
+from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -708,12 +709,111 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
         rule.definition, field="seerr.requested_by_user_ids"
     ):
         return True
+    for _ in collect_rule_conditions(
+        rule.definition, field="seerr.requester_has_watched"
+    ):
+        return True
     return False
 
 
 def _rules_use_seerr_fields(rules: list[ReclaimRule]) -> bool:
     """Return True if any of the rules reference Seerr request state fields."""
     return any(_rule_uses_seerr_fields(r) for r in rules)
+
+
+def _normalize_watch_key(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    return normalized or None
+
+
+def _extract_requester_mapping_identity(
+    requester_id: int,
+    requester_identity_keys: set[str],
+    mapping: dict[str, Any],
+) -> bool:
+    raw_id = mapping.get("seerr_user_id")
+    if raw_id is not None:
+        try:
+            return int(raw_id) == requester_id
+        except Exception:
+            return False
+    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
+    return bool(raw_name and raw_name in requester_identity_keys)
+
+
+def _extract_mapping_service(mapping: dict[str, Any]) -> Service | None:
+    raw_service = mapping.get("service_type")
+    if raw_service is None:
+        return None
+    try:
+        if isinstance(raw_service, Service):
+            return raw_service
+        return Service(str(raw_service))
+    except Exception:
+        return None
+
+
+def _build_watch_keys_for_requester(
+    *,
+    requester_id: int,
+    requester_identity_keys: set[str],
+    target_service: Service,
+    mappings: list[dict[str, Any]],
+) -> set[str]:
+    keys: set[str] = set()
+    for mapping in mappings:
+        if not _extract_requester_mapping_identity(
+            requester_id, requester_identity_keys, mapping
+        ):
+            continue
+        service_scope = _extract_mapping_service(mapping)
+        if service_scope is not None and service_scope is not target_service:
+            continue
+        media_user_key = _normalize_watch_key(mapping.get("media_user_key"))
+        if media_user_key:
+            keys.add(media_user_key)
+
+    # fallback by direct normalized identity keys
+    keys.update(requester_identity_keys)
+    return keys
+
+
+def _compute_requester_has_watched_for_key(
+    *,
+    media_key: tuple[MediaType, int],
+    snapshot: SeerrRequestSnapshot,
+    watch_by_service_and_user: dict[
+        tuple[MediaType, int], dict[Service, dict[str, datetime]]
+    ],
+    mappings: list[dict[str, Any]],
+) -> bool:
+    watches_for_key = watch_by_service_and_user.get(media_key)
+    if not watches_for_key:
+        return False
+    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
+    if not requester_times:
+        return False
+
+    for requester_id, requested_at in requester_times.items():
+        requested_at_utc = ensure_utc(requested_at)
+        requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
+            requester_id, set()
+        )
+        if not requester_identity_keys:
+            # retain user-id path if username/display_name wasn't present in request payload
+            requester_identity_keys = {str(requester_id)}
+        for watch_service, watch_by_user in watches_for_key.items():
+            candidate_keys = _build_watch_keys_for_requester(
+                requester_id=requester_id,
+                requester_identity_keys=requester_identity_keys,
+                target_service=watch_service,
+                mappings=mappings,
+            )
+            for watch_key in candidate_keys:
+                watched_at = watch_by_user.get(watch_key)
+                if watched_at is not None and ensure_utc(watched_at) > requested_at_utc:
+                    return True
+    return False
 
 
 async def _activate_seerr_request_resolver_for_rules(
@@ -732,7 +832,7 @@ async def _activate_seerr_request_resolver_for_rules(
             "Rule uses Seerr fields but Seerr service is not configured; "
             "Seerr rule conditions will not match"
         )
-        SeerrRequestResolver({}).activate()
+        SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, "Seerr service is not configured"
 
     movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
@@ -761,7 +861,7 @@ async def _activate_seerr_request_resolver_for_rules(
         allow_stale_on_failure=allow_stale_on_failure,
     )
     if snapshot is None:
-        SeerrRequestResolver({}).activate()
+        SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, snapshot_error or "Failed to load Seerr request snapshot"
 
     requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
@@ -770,7 +870,7 @@ async def _activate_seerr_request_resolver_for_rules(
     requester_ids_by_key.update(
         {(MediaType.SERIES, tmdb_id): set() for tmdb_id in series_tmdb_ids}
     )
-    for key, user_ids in snapshot.items():
+    for key, user_ids in snapshot.requester_ids_by_key.items():
         media_type, tmdb_id = key
         if media_type is MediaType.MOVIE and tmdb_id not in movie_tmdb_ids:
             continue
@@ -780,7 +880,64 @@ async def _activate_seerr_request_resolver_for_rules(
             continue
         requester_ids_by_key[key].update(user_ids)
 
-    SeerrRequestResolver(requester_ids_by_key).activate()
+    relevant_keys = set(requester_ids_by_key.keys())
+    watch_rows = (
+        await db.execute(
+            select(
+                MediaWatchUser.media_type,
+                MediaWatchUser.tmdb_id,
+                MediaWatchUser.source_service,
+                MediaWatchUser.watch_user_key_normalized,
+                MediaWatchUser.last_watched_at,
+            ).where(
+                or_(
+                    and_(
+                        MediaWatchUser.media_type == MediaType.MOVIE,
+                        MediaWatchUser.tmdb_id.in_(movie_tmdb_ids),
+                    ),
+                    and_(
+                        MediaWatchUser.media_type == MediaType.SERIES,
+                        MediaWatchUser.tmdb_id.in_(series_tmdb_ids),
+                    ),
+                )
+            )
+        )
+    ).all()
+    watch_by_service_and_user: dict[
+        tuple[MediaType, int], dict[Service, dict[str, datetime]]
+    ] = {}
+    for media_type, tmdb_id, source_service, user_key, last_watched_at in watch_rows:
+        key = (media_type, int(tmdb_id))
+        if key not in relevant_keys:
+            continue
+        normalized_key = _normalize_watch_key(user_key)
+        if not normalized_key or last_watched_at is None:
+            continue
+        last_watched_at_utc = ensure_utc(last_watched_at)
+        by_service = watch_by_service_and_user.setdefault(key, {})
+        by_user = by_service.setdefault(source_service, {})
+        existing = by_user.get(normalized_key)
+        if existing is None or last_watched_at_utc > existing:
+            by_user[normalized_key] = last_watched_at_utc
+
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    raw_mappings = (
+        settings_row.requester_watch_user_mappings if settings_row is not None else []
+    )
+    mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {}
+    for key in relevant_keys:
+        requester_has_watched_by_key[key] = _compute_requester_has_watched_for_key(
+            media_key=key,
+            snapshot=snapshot,
+            watch_by_service_and_user=watch_by_service_and_user,
+            mappings=mappings,
+        )
+
+    SeerrRequestResolver(
+        requester_ids_by_key,
+        requester_has_watched_by_key=requester_has_watched_by_key,
+    ).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "
         f"{len(series_tmdb_ids)} series keys"
