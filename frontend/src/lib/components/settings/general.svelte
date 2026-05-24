@@ -18,9 +18,9 @@
     type GeneralSettings,
     type PathMapping,
     type PostActionWebhookConfig,
+    type RequesterWatchUserMapping,
   } from "$lib/types/shared";
   import TestButton from "$lib/components/test-button.svelte";
-  import FavoritesSettings from "$lib/components/settings/general/favorites-settings.svelte";
   import { auth } from "$lib/stores/auth";
 
   // props
@@ -56,6 +56,7 @@
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
+  let requesterWatchUserMappings = $state<RequesterWatchUserMapping[]>([]);
   let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
     "unmonitor",
   );
@@ -139,6 +140,7 @@
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
+        requester_watch_user_mappings: requesterWatchUserMappings,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -353,6 +355,8 @@
         favoritesUsernamesInput = (settings.favorites_usernames ?? []).join(
           ", ",
         );
+        requesterWatchUserMappings =
+          settings.requester_watch_user_mappings ?? [];
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -1012,12 +1016,6 @@
         only actions are not affected.
       </p>
     </div>
-
-    <FavoritesSettings
-      bind:favoritesIgnoreEnabled
-      bind:favoritesProtectAllUsers
-      bind:favoritesUsernamesInput
-    />
 
     <!-- default ARR delete behavior -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">

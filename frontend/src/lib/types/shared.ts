@@ -47,6 +47,7 @@ export enum SettingsTab {
   Seerr = "seerr",
   Tautulli = "tautulli",
   General = "general",
+  UserSignals = "user_signals",
   Tasks = "tasks",
   Notifications = "notifications",
   Account = "account",
@@ -128,6 +129,25 @@ export interface PostActionWebhookConfig {
   timeout_seconds: number;
 }
 
+export interface RequesterWatchUserMapping {
+  seerr_user_id: number | null;
+  seerr_username: string | null;
+  media_user_key: string;
+  service_type: string | null;
+}
+
+export interface WatchUserLookup {
+  user_key: string;
+  user_key_normalized: string;
+  source_services: string[];
+}
+
+export interface SeerrUserLookup {
+  id: number;
+  username: string | null;
+  display_name: string | null;
+}
+
 export interface GeneralSettings {
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
@@ -142,6 +162,7 @@ export interface GeneralSettings {
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
+  requester_watch_user_mappings: RequesterWatchUserMapping[];
 }
 
 export interface FavoritesUserLookup {

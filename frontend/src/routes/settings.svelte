@@ -10,6 +10,7 @@
   import Users from "$lib/components/settings/users.svelte";
   import About from "$lib/components/settings/about.svelte";
   import General from "$lib/components/settings/general.svelte";
+  import UserSignals from "$lib/components/settings/user-signals.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
@@ -138,6 +139,12 @@
           adminOnly: true,
         },
         {
+          id: SettingsTab.UserSignals,
+          label: "User Signals",
+          icon: UserCog,
+          adminOnly: true,
+        },
+        {
           id: SettingsTab.Tasks,
           label: "Tasks",
           icon: CalendarClock,
@@ -199,6 +206,7 @@
     [SettingsTab.Emby]: "idle",
     [SettingsTab.Plex]: "idle",
     [SettingsTab.General]: "idle",
+    [SettingsTab.UserSignals]: "idle",
     [SettingsTab.Tasks]: "idle",
     [SettingsTab.Notifications]: "idle",
     [SettingsTab.Account]: "idle",
@@ -831,6 +839,10 @@
             <!-- general settings -->
           {:else if activeTab === SettingsTab.General}
             <General svgIcon={getTabIcon(activeTab)} />
+
+            <!-- user signals settings -->
+          {:else if activeTab === SettingsTab.UserSignals}
+            <UserSignals svgIcon={getTabIcon(activeTab)} />
 
             <!-- tasks -->
           {:else if activeTab === SettingsTab.Tasks}
