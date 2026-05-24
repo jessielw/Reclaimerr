@@ -520,6 +520,13 @@
       defaultOperator: "is_true",
     },
     {
+      value: "seerr.requester_has_watched",
+      label: "Seerr requester has watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "seerr.requested_by_user_ids",
       label: "Seerr requester IDs",
       kind: "text",
