@@ -716,6 +716,20 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
     return False
 
 
+def _rule_uses_season_episode_watch_fields(rule: ReclaimRule) -> bool:
+    """Return True if the rule references season episode-level watch progress fields."""
+    for _ in collect_rule_conditions(rule.definition, field="season.fully_watched"):
+        return True
+    for _ in collect_rule_conditions(rule.definition, field="season.watched_percent"):
+        return True
+    return False
+
+
+def _rules_use_season_episode_watch_fields(rules: list[ReclaimRule]) -> bool:
+    """Return True if any rule references season episode-level watch progress fields."""
+    return any(_rule_uses_season_episode_watch_fields(r) for r in rules)
+
+
 def _rules_use_seerr_fields(rules: list[ReclaimRule]) -> bool:
     """Return True if any of the rules reference Seerr request state fields."""
     return any(_rule_uses_seerr_fields(r) for r in rules)
@@ -1502,6 +1516,7 @@ async def _collect_season_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
+    include_episodes = _rules_use_season_episode_watch_fields(rules)
     (
         favorites_enabled,
         favorites_all_users,
@@ -1519,10 +1534,13 @@ async def _collect_season_candidate_records(
     )
 
     # load all non-deleted series with their seasons and service refs
+    season_loader = selectinload(Series.seasons)
+    if include_episodes:
+        season_loader = season_loader.selectinload(Season.episodes)
     query = (
         select(Series)
         .where(Series.removed_at.is_(None))
-        .options(selectinload(Series.service_refs), selectinload(Series.seasons))
+        .options(selectinload(Series.service_refs), season_loader)
     )
     result = await db.execute(query)
     all_series = result.scalars().all()

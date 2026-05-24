@@ -552,6 +552,225 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
         self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
 
+    def test_evaluate_rule_for_season_fully_watched_matches_all_watched(self) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.added_at = now - timedelta(days=10)
+        season.episodes = [
+            Episode(season_id=1, episode_number=1, view_count=1),
+            Episode(
+                season_id=1,
+                episode_number=2,
+                view_count=0,
+                last_viewed_at=now - timedelta(days=1),
+            ),
+        ]
+        rule = ReclaimRule(
+            name="season-fully-watched",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watched_percent_matches_partial(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.episodes = [
+            Episode(season_id=1, episode_number=1, view_count=1),
+            Episode(season_id=1, episode_number=2, view_count=0),
+        ]
+        pass_rule = ReclaimRule(
+            name="season-watched-pct-pass",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "greater_than_or_equal",
+                            "value": 50,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        fail_rule = ReclaimRule(
+            name="season-watched-pct-fail",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "equals",
+                            "value": 100,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
+        self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
+
+    def test_evaluate_rule_for_season_watched_progress_ignores_stale_watch_data(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.added_at = now
+        season.episodes = [
+            Episode(
+                season_id=1,
+                episode_number=1,
+                view_count=1,
+                last_viewed_at=now - timedelta(days=1),
+            )
+        ]
+        fully_watched_rule = ReclaimRule(
+            name="season-fully-watched-stale",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        watched_percent_zero_rule = ReclaimRule(
+            name="season-watched-zero",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "equals",
+                            "value": 0,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertFalse(
+            _evaluate_rule_for_season(series, season, fully_watched_rule, {}, [])
+        )
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, watched_percent_zero_rule, {}, [])
+        )
+
+    def test_evaluate_rule_for_season_watched_progress_unknown_without_episodes(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+
+        is_true_rule = ReclaimRule(
+            name="season-fully-watched-unknown-true",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        not_exists_rule = ReclaimRule(
+            name="season-fully-watched-unknown-missing",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "not_exists",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertFalse(
+            _evaluate_rule_for_season(series, season, is_true_rule, {}, [])
+        )
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, not_exists_rule, {}, [])
+        )
+
     def test_evaluate_movie_rule_combined_criteria_populates_reasons(self) -> None:
         now = datetime.now(UTC)
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)

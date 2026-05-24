@@ -282,6 +282,20 @@
       defaultOperator: "less_than",
     },
     {
+      value: "season.fully_watched",
+      label: "Season fully watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "season.watched_percent",
+      label: "Season watched (%)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
       value: "season.is_latest_season",
       label: "Is latest season",
       kind: "boolean",
