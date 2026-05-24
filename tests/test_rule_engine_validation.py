@@ -129,6 +129,32 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(_definition("library.id", "equals", "lib-1"))
 
+    def test_accepts_season_fully_watched_boolean_operator(self) -> None:
+        validate_rule_definition(_definition("season.fully_watched", "is_true"))
+
+    def test_rejects_season_fully_watched_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'season.fully_watched'",
+        ):
+            validate_rule_definition(
+                _definition("season.fully_watched", "greater_than", 1)
+            )
+
+    def test_accepts_season_watched_percent_numeric_operator(self) -> None:
+        validate_rule_definition(
+            _definition("season.watched_percent", "greater_than_or_equal", 100),
+        )
+
+    def test_rejects_season_watched_percent_list_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'contains_any' for field 'season.watched_percent'",
+        ):
+            validate_rule_definition(
+                _definition("season.watched_percent", "contains_any", ["100"]),
+            )
+
     def test_accepts_seerr_requested_boolean_operator(self) -> None:
         validate_rule_definition(_definition("seerr.requested", "is_true"))
 

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule
   - **Seerr requester has watched**
     - Makes it possible for deletions when movies/episodes are watched by the requester so they can automatically be cleaned up after
+  - **Season watch percentage**
+  - **Season fully watched**
 - Added new settings tab **User Signals**
   - Built inline compact favorites viewer to browse what titles your users have favorited
   - Can now map Seerr users to their media server usernames via a new mapping component

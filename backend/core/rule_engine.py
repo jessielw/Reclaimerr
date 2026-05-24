@@ -50,6 +50,8 @@ FIELD_LABELS: dict[str, str] = {
     "season.days_since_air_date": "Days since season aired",
     "season.season_number": "Season number",
     "season.episode_count": "Episode count",
+    "season.fully_watched": "Season fully watched",
+    "season.watched_percent": "Season watched (%)",
     "season.is_latest_season": "Is latest season",
     "season.seasons_from_latest": "Seasons from latest",
     "episode.number": "Episode number",
@@ -131,6 +133,7 @@ NUMERIC_FIELDS = {
     "season.days_since_air_date",
     "season.season_number",
     "season.episode_count",
+    "season.watched_percent",
     "season.seasons_from_latest",
     "episode.number",
     "episode.season_number",
@@ -168,6 +171,7 @@ LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
     "video.hdr",
     "video.dolby_vision",
+    "season.fully_watched",
     "season.is_latest_season",
     "watch.never_watched",
     "arr.monitored",
@@ -754,6 +758,7 @@ def _build_context(
         non_special_nums = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
         )
+        season_fully_watched, season_watched_percent = _season_watch_progress(season)
         max_season = non_special_nums[-1] if non_special_nums else 0
         if season.season_number > 0 and season.season_number in non_special_nums:
             seasons_from_latest: int | None = (
@@ -778,6 +783,8 @@ def _build_context(
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
+            "season.fully_watched": season_fully_watched,
+            "season.watched_percent": season_watched_percent,
             "season.is_latest_season": is_latest_season,
             "season.seasons_from_latest": seasons_from_latest,
             "tmdb.first_air_date": series.tmdb_first_air_date,
@@ -831,6 +838,9 @@ def _build_context(
 
     if target_scope == TARGET_EPISODE and series and season and episode:
         refs = series.service_refs or []
+        season_fully_watched_ep, season_watched_percent_ep = _season_watch_progress(
+            season
+        )
         non_special_nums_ep = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
         )
@@ -869,6 +879,8 @@ def _build_context(
             "episode.days_since_air_date": _days_between(episode.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
+            "season.fully_watched": season_fully_watched_ep,
+            "season.watched_percent": season_watched_percent_ep,
             "season.is_latest_season": is_latest_season_ep,
             "season.seasons_from_latest": seasons_from_latest_ep,
             "season.air_date": season.air_date,
@@ -1008,8 +1020,16 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     if left is None or right is None:
         return False
     if operator == "equals":
+        left_number = _number(left)
+        right_number = _number(right)
+        if left_number is not None and right_number is not None:
+            return left_number == right_number
         return _normalize(left) == _normalize(right)
     if operator == "not_equals":
+        left_number = _number(left)
+        right_number = _number(right)
+        if left_number is not None and right_number is not None:
+            return left_number != right_number
         return _normalize(left) != _normalize(right)
 
     left_number = _number(left)
@@ -1072,6 +1092,32 @@ def _effective_last_viewed(
     if last_viewed_at and added_at and added_at > last_viewed_at:
         return None
     return last_viewed_at
+
+
+def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
+    """Return season watch completion as (fully_watched, watched_percent).
+
+    Uses episode level watch state when episode rows are present. If no episodes are
+    available in the loaded season relationship, both values are treated as unknown.
+    """
+    episodes = season.episodes or []
+    total_episodes = len(episodes)
+    if total_episodes == 0:
+        return None, None
+
+    watched_episodes = 0
+    for episode in episodes:
+        effective_last_viewed = _effective_last_viewed(
+            episode.last_viewed_at, season.added_at
+        )
+        if effective_last_viewed is not None:
+            watched_episodes += 1
+            continue
+        if episode.last_viewed_at is None and (episode.view_count or 0) > 0:
+            watched_episodes += 1
+
+    watched_percent = round((watched_episodes / total_episodes) * 100, 2)
+    return watched_episodes == total_episodes, watched_percent
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

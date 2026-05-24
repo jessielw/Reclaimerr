@@ -24,7 +24,7 @@ class MediaWatchSnapshotCache:
     """Refreshes per user watch snapshot rows used by rule evaluation."""
 
     __slots__ = ("_refresh_lock",)
-    
+
     _PLEX_SYNC_STATE_KEY = "watch_snapshot_sync"
     _PLEX_LAST_VIEWED_AT_KEY = "plex_last_viewed_at"
     _PLEX_LAST_FULL_SYNC_AT_KEY = "plex_last_full_sync_at"
