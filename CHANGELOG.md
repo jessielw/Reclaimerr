@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Automatically refreshes this during candidate syncs
   - Allows renaming the base (keeps track of it to update/clean up the old name)
   - Cleans up the collection when Leaving Soon is disabled
+- Added session management
 
 ### Changed
 

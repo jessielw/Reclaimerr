@@ -123,6 +123,7 @@ class SlidingSessionMiddleware(BaseHTTPMiddleware):
                 new_token = create_access_token(
                     data={"sub": payload["sub"]},
                     token_version=payload.get("tv", 0),
+                    session_id=payload.get("sid"),
                 )
                 response.set_cookie(
                     key=COOKIE_NAME,

@@ -32,6 +32,16 @@ export interface UserProfile extends User {
   created_at: string;
 }
 
+export interface AccountSession {
+  session_id: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+  expires_at: string;
+  is_current: boolean;
+}
+
 export enum MediaType {
   Movie = "movie",
   Series = "series",

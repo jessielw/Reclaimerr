@@ -2,14 +2,17 @@
   import { onMount } from "svelte";
   import { auth } from "$lib/stores/auth";
   import type { Component } from "svelte";
-  import { get_api, post_api } from "$lib/api";
+  import { delete_api, get_api, post_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { toast } from "svelte-sonner";
-  import type { UserProfile } from "$lib/types/shared";
+  import type { AccountSession, UserProfile } from "$lib/types/shared";
   import Save from "@lucide/svelte/icons/save";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import DoorClosed from "@lucide/svelte/icons/door-closed";
+  import DoorClosedLocked from "@lucide/svelte/icons/door-closed-locked";
+  import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Avatar from "$lib/components/ui/avatar/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
@@ -31,6 +34,11 @@
   let profileUpdating = $state(false);
   let passwordUpdating = $state(false);
   let profileError = $state("");
+  let sessionsError = $state("");
+  let sessionsLoading = $state(false);
+  let sessions = $state<AccountSession[]>([]);
+  let revokingSessionIds = $state<string[]>([]);
+  let revokingOtherSessions = $state(false);
 
   // profile form
   let profileForm = $state({
@@ -108,7 +116,7 @@
       const response: {
         message: string;
       } = await post_api("/api/account/change-password", {
-        current_password: passwordForm.current_password,
+        old_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
       });
 
@@ -175,9 +183,75 @@
     }
   }
 
+  function formatSessionDate(date: string | null): string {
+    if (!date) return "Never";
+    return new Date(date).toLocaleString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function isSessionBeingRevoked(sessionId: string): boolean {
+    return revokingSessionIds.includes(sessionId);
+  }
+
+  async function loadSessions() {
+    try {
+      sessionsLoading = true;
+      sessionsError = "";
+      sessions = await get_api<AccountSession[]>("/api/account/sessions");
+    } catch (err: any) {
+      sessionsError = err.message;
+    } finally {
+      sessionsLoading = false;
+    }
+  }
+
+  async function revokeSession(sessionId: string) {
+    if (isSessionBeingRevoked(sessionId)) return;
+
+    try {
+      revokingSessionIds = [...revokingSessionIds, sessionId];
+      const response: { message: string; revoked_current: boolean } =
+        await delete_api(
+          `/api/account/sessions/${encodeURIComponent(sessionId)}`,
+        );
+      toast.success(response.message);
+
+      if (response.revoked_current) {
+        auth.logout();
+        return;
+      }
+
+      await loadSessions();
+    } catch (err: any) {
+      toast.error(`Error revoking session: ${err.message}`);
+    } finally {
+      revokingSessionIds = revokingSessionIds.filter((id) => id !== sessionId);
+    }
+  }
+
+  async function revokeOtherSessions() {
+    try {
+      revokingOtherSessions = true;
+      const response: { message: string; revoked_count: number } =
+        await post_api("/api/account/sessions/revoke-others");
+      toast.success(`${response.message} (${response.revoked_count} revoked)`);
+      await loadSessions();
+    } catch (err: any) {
+      toast.error(`Error revoking other sessions: ${err.message}`);
+    } finally {
+      revokingOtherSessions = false;
+    }
+  }
+
   // load profile on mount
   onMount(() => {
     loadProfile();
+    loadSessions();
   });
 </script>
 
@@ -460,6 +534,99 @@
           </Button>
         </div>
       </form>
+    </div>
+
+    <!-- session management -->
+    <div class="bg-card rounded-lg border border-border p-6">
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-xl font-semibold text-foreground">Active Sessions</h2>
+          <p class="mt-1 text-sm text-muted-foreground">
+            Review where you are logged in and revoke sessions.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <!-- sign out of other sessions -->
+          <Button
+            size="sm"
+            class="cursor-pointer bg-destructive/70 hover:bg-destructive/80"
+            disabled={revokingOtherSessions ||
+              sessionsLoading ||
+              sessions.filter((session) => !session.is_current).length === 0}
+            onclick={() => revokeOtherSessions()}
+          >
+            {#if revokingOtherSessions}
+              <Spinner class="w-4 h-4" />
+            {:else}
+              Sign Out Others
+            {/if}
+          </Button>
+
+          <!-- refresh sessions -->
+          <Button
+            size="sm"
+            class="cursor-pointer"
+            disabled={sessionsLoading}
+            onclick={() => loadSessions()}
+          >
+            <RotateCw class="size-4" /> Refresh
+          </Button>
+        </div>
+      </div>
+
+      {#if sessionsLoading}
+        <div class="py-4 flex justify-center">
+          <Spinner class="size-5 text-primary" />
+        </div>
+      {:else if sessionsError}
+        <p class="text-sm text-destructive">{sessionsError}</p>
+      {:else if sessions.length === 0}
+        <p class="text-sm text-muted-foreground">No active sessions found.</p>
+      {:else}
+        <div class="space-y-3">
+          {#each sessions as session (session.session_id)}
+            <div class="rounded-md border border-border p-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0 space-y-1">
+                  <p class="text-sm font-medium text-foreground">
+                    {#if session.is_current}
+                      Current Session
+                    {:else}
+                      Active Session
+                    {/if}
+                  </p>
+                  <p class="text-xs text-muted-foreground break-all font-mono">
+                    {session.user_agent || "Unknown device"}
+                  </p>
+                  <p class="text-xs text-muted-foreground font-mono">
+                    IP: {session.ip_address || "Unknown"}
+                  </p>
+                  <p class="text-xs text-muted-foreground font-mono">
+                    Last seen: {formatSessionDate(session.last_seen_at)}
+                  </p>
+                  <p class="text-xs text-muted-foreground font-mono">
+                    Expires: {formatSessionDate(session.expires_at)}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  class="cursor-pointer bg-destructive/70 hover:bg-destructive/80"
+                  disabled={isSessionBeingRevoked(session.session_id)}
+                  onclick={() => revokeSession(session.session_id)}
+                >
+                  {#if isSessionBeingRevoked(session.session_id)}
+                    <Spinner class="w-4 h-4" />
+                  {:else if session.is_current}
+                    <DoorClosed class="size-4" /> Sign Out
+                  {:else}
+                    <DoorClosedLocked class="size-4" /> Revoke
+                  {/if}
+                </Button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- account info -->

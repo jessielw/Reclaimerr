@@ -7,12 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.auth import (
     COOKIE_NAME,
     SESSION_TTL_SECONDS,
+    build_session_expires_at,
     create_access_token,
+    decode_token,
+    generate_session_id,
+    get_request_client_ip,
+    get_request_user_agent,
+    get_session_id_from_payload,
     verify_password,
 )
 from backend.core.settings import settings
 from backend.database import get_db
-from backend.database.models import User
+from backend.database.models import User, UserSession
 from backend.models.auth import (
     AuthResponse,
     LoginRequest,
@@ -55,13 +61,26 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled"
         )
 
-    user.last_login_at = datetime.now(UTC)
+    session_id = generate_session_id()
+    now = datetime.now(UTC)
+    user.last_login_at = now
+    user_session = UserSession(
+        user_id=user.id,
+        session_id=session_id,
+        expires_at=build_session_expires_at(),
+        user_agent=get_request_user_agent(request),
+        ip_address=get_request_client_ip(request),
+        last_seen_at=now,
+    )
+    db.add(user_session)
+
     await db.commit()
     await db.refresh(user)
 
     access_token = create_access_token(
         data={"sub": str(user.id)},
         token_version=user.token_version,
+        session_id=session_id,
     )
 
     # set HttpOnly cookie
@@ -81,8 +100,30 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
     """Logout and clear authentication cookie."""
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        try:
+            payload = decode_token(token)
+            session_id = get_session_id_from_payload(payload)
+            if session_id is not None:
+                result = await db.execute(
+                    select(UserSession).where(UserSession.session_id == session_id)
+                )
+                current_session = result.scalar_one_or_none()
+                if current_session is not None and current_session.revoked_at is None:
+                    current_session.revoked_at = datetime.now(UTC)
+                    current_session.revoked_reason = "logout"
+                    await db.commit()
+        except HTTPException:
+            # invalid/expired tokens are effectively logged out once cookie is removed
+            pass
+
     response.delete_cookie(
         key=COOKIE_NAME,
         httponly=True,

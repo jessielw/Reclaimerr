@@ -69,6 +69,9 @@ class User(Base):
     notification_settings: Mapped[list[NotificationSetting]] = relationship(
         back_populates="user", default_factory=list, lazy="noload", repr=False
     )
+    sessions: Mapped[list[UserSession]] = relationship(
+        back_populates="user", default_factory=list, lazy="noload", repr=False
+    )
 
     def bump_token_version(self) -> None:
         """
@@ -77,6 +80,33 @@ class User(Base):
         Must be called within a session commit block to take effect.
         """
         self.token_version += 1
+
+
+class UserSession(Base):
+    """Tracked login session for a user."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), default=None)
+    ip_address: Mapped[str | None] = mapped_column(String(64), default=None)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+
+    user: Mapped[User] = relationship(
+        back_populates="sessions", init=False, lazy="noload", repr=False
+    )
 
 
 class NotificationSetting(Base):

@@ -171,6 +171,26 @@ class AuthResponse(BaseModel):
     user: UserInfo
 
 
+class UserSessionInfo(BaseModel):
+    session_id: str
+    user_agent: str | None
+    ip_address: str | None
+    created_at: datetime
+    last_seen_at: datetime | None
+    expires_at: datetime
+    is_current: bool
+
+
+class RevokeSessionResponse(BaseModel):
+    message: str
+    revoked_current: bool
+
+
+class RevokeOtherSessionsResponse(BaseModel):
+    message: str
+    revoked_count: int
+
+
 class CreateUserRequest(
     BaseModel, UsernameMixin, DisplayNameMixin, PasswordValidationMixin
 ):

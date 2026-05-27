@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -7,17 +8,19 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     status,
 )
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
     COOKIE_NAME,
     get_current_user,
     get_password_hash,
+    get_request_session_id,
     require_permission,
     verify_password,
 )
@@ -25,17 +28,43 @@ from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.utils.image_handling import save_picture_from_bytes
 from backend.database import get_db
-from backend.database.models import User
+from backend.database.models import User, UserSession
 from backend.enums import Permission, UserRole
 from backend.models.auth import (
     ChangePasswordRequest,
     ChangeProfileInfoRequest,
     CreateUserRequest,
+    RevokeOtherSessionsResponse,
+    RevokeSessionResponse,
     UpdateUserRequest,
     UserInfo,
+    UserSessionInfo,
 )
 
 router = APIRouter(prefix="/api/account", tags=["account"])
+
+
+async def _revoke_user_sessions(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    reason: str,
+    exclude_session_id: str | None = None,
+) -> int:
+    """Mark active sessions revoked for a user."""
+    statement = (
+        update(UserSession)
+        .where(
+            UserSession.user_id == user_id,
+            UserSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC), revoked_reason=reason)
+    )
+    if exclude_session_id:
+        statement = statement.where(UserSession.session_id != exclude_session_id)
+
+    result = await db.execute(statement)
+    return result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
 
 
 @router.get("/me", response_model=UserInfo)
@@ -95,6 +124,11 @@ async def change_password(
     current_user.password_hash = get_password_hash(request.new_password)
     current_user.require_password_change = False
     current_user.bump_token_version()
+    await _revoke_user_sessions(
+        db,
+        user_id=current_user.id,
+        reason="password_changed",
+    )
     await db.commit()
 
     # clear cookie so client is forced to re-login with the new password
@@ -253,12 +287,121 @@ async def update_user(
         user.password_hash = get_password_hash(request.password)
         # invalidate all existing sessions for this user
         user.bump_token_version()
+        await _revoke_user_sessions(
+            db,
+            user_id=user.id,
+            reason="password_reset_by_admin",
+        )
 
     await db.commit()
 
     LOG.info(f"User manager {actor.username} updated user {user.username}")
 
     return {"message": "User updated successfully"}
+
+
+@router.get("/sessions", response_model=list[UserSessionInfo])
+async def list_sessions(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """List active sessions for the current user."""
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(UserSession)
+        .where(
+            UserSession.user_id == current_user.id,
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > now,
+        )
+        .order_by(UserSession.last_seen_at.desc(), UserSession.created_at.desc())
+    )
+    sessions = result.scalars().all()
+    current_session_id = get_request_session_id(request)
+
+    return [
+        UserSessionInfo(
+            session_id=session.session_id,
+            user_agent=session.user_agent,
+            ip_address=session.ip_address,
+            created_at=session.created_at,
+            last_seen_at=session.last_seen_at,
+            expires_at=session.expires_at,
+            is_current=session.session_id == current_session_id,
+        )
+        for session in sessions
+    ]
+
+
+@router.delete("/sessions/{session_id}", response_model=RevokeSessionResponse)
+async def revoke_session(
+    session_id: str,
+    request: Request,
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a single session for the current user."""
+    result = await db.execute(
+        select(UserSession).where(
+            UserSession.user_id == current_user.id,
+            UserSession.session_id == session_id,
+        )
+    )
+    user_session = result.scalar_one_or_none()
+    if user_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+
+    revoked_current = get_request_session_id(request) == session_id
+    if user_session.revoked_at is None:
+        user_session.revoked_at = datetime.now(UTC)
+        user_session.revoked_reason = "user_revoked"
+        await db.commit()
+
+    if revoked_current:
+        response.delete_cookie(
+            key=COOKIE_NAME,
+            httponly=True,
+            secure=settings.cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+
+    return RevokeSessionResponse(
+        message="Session revoked successfully",
+        revoked_current=revoked_current,
+    )
+
+
+@router.post("/sessions/revoke-others", response_model=RevokeOtherSessionsResponse)
+async def revoke_other_sessions(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke all other sessions for the current user."""
+    current_session_id = get_request_session_id(request)
+    if current_session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current session is not available",
+        )
+
+    revoked_count = await _revoke_user_sessions(
+        db,
+        user_id=current_user.id,
+        reason="user_revoked_others",
+        exclude_session_id=current_session_id,
+    )
+    await db.commit()
+
+    return RevokeOtherSessionsResponse(
+        message="Other sessions revoked successfully",
+        revoked_count=revoked_count,
+    )
 
 
 @router.post("/avatar")

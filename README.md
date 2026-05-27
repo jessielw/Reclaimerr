@@ -75,6 +75,7 @@ As a result, this project will close pull requests that appear to be mostly or w
 - Powerful logical rule system
 - IMDb, TMDB, and AniList metadata
 - Last chance/Leaving soon (displayed on servers for media soon to be deleted)
+- Session management
 
 # Additional Info
 
