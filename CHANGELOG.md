@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added new settings tab **User Signals**
   - Built inline compact favorites viewer to browse what titles your users have favorited
   - Can now map Seerr users to their media server usernames via a new mapping component
+- Added the ability to support **Leaving Soon**
+  - Works on Jellyfin, Emby, and Plex
+    - Plex displays the titles in the collection based on the library where as the others put it in a single place
+  - Automatically refreshes this during candidate syncs
+  - Allows renaming the base (keeps track of it to update/clean up the old name)
+  - Cleans up the collection when Leaving Soon is disabled
 
 ### Changed
 

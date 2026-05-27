@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from backend.core.auth import require_admin
+from backend.core.logger import LOG
+from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import normalize_fpath
 from backend.database import get_db
 from backend.database.models import (
@@ -22,7 +25,7 @@ from backend.database.models import (
     ServiceConfig,
     User,
 )
-from backend.enums import MediaType
+from backend.enums import MediaType, Service
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
     FavoritesMediaEntryResponse,
@@ -39,8 +42,89 @@ from backend.services.post_action_webhooks import (
     invalidate_webhook_config_cache,
     send_post_action_webhook,
 )
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 router = APIRouter(tags=["settings", "general"])
+
+
+_LEAVING_SOON_MEDIA_SERVICES = {
+    Service.PLEX,
+    Service.JELLYFIN,
+    Service.EMBY,
+}
+
+
+def _normalize_leaving_soon_last_success_titles(
+    raw_titles: object,
+) -> dict[Service, str]:
+    if not isinstance(raw_titles, Mapping):
+        return {}
+    normalized_titles: dict[Service, str] = {}
+    for raw_service, raw_title in raw_titles.items():
+        try:
+            service = Service(str(raw_service))
+        except Exception:
+            continue
+        if service not in _LEAVING_SOON_MEDIA_SERVICES:
+            continue
+        normalized_titles[service] = normalize_leaving_soon_collection_title(
+            str(raw_title)
+        )
+    return normalized_titles
+
+
+async def _cleanup_leaving_soon_collections_on_disable(
+    settings: GeneralSettings,
+) -> None:
+    normalized_titles = _normalize_leaving_soon_last_success_titles(
+        settings.leaving_soon_last_success_titles
+    )
+    if not normalized_titles:
+        return
+
+    updated_titles = dict(normalized_titles)
+    titles_changed = False
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+    for service_type, service_client in service_clients:
+        previous_success_title = updated_titles.get(service_type)
+        if previous_success_title is None:
+            continue
+        if service_client is None:
+            continue
+
+        delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
+        if not callable(delete_method):
+            LOG.warning(
+                "Leaving Soon cleanup method missing for "
+                f"{service_type.value}; cannot remove title "
+                f"{previous_success_title!r} on disable"
+            )
+            continue
+        delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
+        try:
+            await delete_func(base_title=previous_success_title)
+        except Exception as e:
+            LOG.warning(
+                "Failed cleaning Leaving Soon collections for "
+                f"{service_type.value} on disable (title "
+                f"{previous_success_title!r}): {e}"
+            )
+            continue
+
+        del updated_titles[service_type]
+        titles_changed = True
+
+    if not titles_changed:
+        return
+    settings.leaving_soon_last_success_titles = {
+        service.value: title
+        for service, title in updated_titles.items()
+        if service in _LEAVING_SOON_MEDIA_SERVICES
+    }
 
 
 @router.get("/general")
@@ -78,6 +162,11 @@ async def update_general_settings(
     if not settings:
         raise HTTPException(status_code=404, detail="General settings not found")
 
+    current_leaving_soon_title = normalize_leaving_soon_collection_title(
+        request.leaving_soon_collection_title
+    )
+    was_leaving_soon_enabled = bool(settings.leaving_soon_enabled)
+
     # update fields
     settings.worker_poll_min_seconds = request.worker_poll_min_seconds
     settings.worker_poll_max_seconds = request.worker_poll_max_seconds
@@ -100,6 +189,10 @@ async def update_general_settings(
         mapping.model_dump(mode="json")
         for mapping in request.requester_watch_user_mappings
     ]
+    settings.leaving_soon_enabled = request.leaving_soon_enabled
+    settings.leaving_soon_collection_title = current_leaving_soon_title
+    if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
+        await _cleanup_leaving_soon_collections_on_disable(settings)
 
     # update metadata
     settings.updated_at = datetime.now(UTC)

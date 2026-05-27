@@ -1,8 +1,8 @@
 import shutil
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,7 @@ from backend.database.models import (
     Series,
     SeriesArrRef,
     SeriesServiceRef,
+    SupplementalMediaMatch,
 )
 from backend.enums import (
     MediaType,
@@ -76,6 +77,7 @@ from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -796,8 +798,8 @@ def _compute_requester_has_watched_for_key(
     *,
     media_key: tuple[MediaType, int],
     snapshot: SeerrRequestSnapshot,
-    watch_by_service_and_user: dict[
-        tuple[MediaType, int], dict[Service, dict[str, datetime]]
+    watch_by_service_and_user: Mapping[
+        tuple[MediaType, int], Mapping[Service, Mapping[str, datetime]]
     ],
     mappings: list[dict[str, Any]],
 ) -> bool:
@@ -964,6 +966,349 @@ async def _activate_seerr_request_resolver_for_rules(
     return True, snapshot_error
 
 
+_LEAVING_SOON_MEDIA_SERVICES = {
+    Service.PLEX,
+    Service.JELLYFIN,
+    Service.EMBY,
+}
+
+
+def _normalize_leaving_soon_last_success_titles(
+    raw_titles: object,
+) -> dict[Service, str]:
+    if not isinstance(raw_titles, Mapping):
+        return {}
+    normalized_titles: dict[Service, str] = {}
+    for raw_service, raw_title in raw_titles.items():
+        try:
+            service = Service(str(raw_service))
+        except Exception:
+            continue
+        if service not in _LEAVING_SOON_MEDIA_SERVICES:
+            continue
+        normalized_titles[service] = normalize_leaving_soon_collection_title(
+            str(raw_title)
+        )
+    return normalized_titles
+
+
+async def _load_leaving_soon_collection_settings(
+    db: AsyncSession,
+) -> tuple[GeneralSettings | None, bool, str, dict[Service, str]]:
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    if settings_row is None:
+        return None, False, "Leaving Soon", {}
+    collection_base_title = normalize_leaving_soon_collection_title(
+        settings_row.leaving_soon_collection_title
+    )
+    last_success_titles = _normalize_leaving_soon_last_success_titles(
+        settings_row.leaving_soon_last_success_titles
+    )
+    return (
+        settings_row,
+        bool(settings_row.leaving_soon_enabled),
+        collection_base_title,
+        last_success_titles,
+    )
+
+
+def _append_service_item_id(
+    expected_items_by_service: dict[Service, set[str]],
+    *,
+    service: Service,
+    item_id: str | None,
+) -> None:
+    if service not in _LEAVING_SOON_MEDIA_SERVICES:
+        return
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_item_id:
+        return
+    expected_items_by_service.setdefault(service, set()).add(normalized_item_id)
+
+
+async def _build_leaving_soon_expected_item_ids(
+    db: AsyncSession,
+) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
+    movie_expected_by_service: dict[Service, set[str]] = {}
+    series_expected_by_service: dict[Service, set[str]] = {}
+
+    candidate_rows = (
+        await db.execute(
+            select(
+                ReclaimCandidate.media_type,
+                ReclaimCandidate.movie_id,
+                ReclaimCandidate.movie_version_id,
+                ReclaimCandidate.series_id,
+            )
+        )
+    ).all()
+    if not candidate_rows:
+        return movie_expected_by_service, series_expected_by_service
+
+    movie_candidate_version_ids: set[int] = set()
+    movie_candidate_ids: set[int] = set()
+    series_candidate_ids: set[int] = set()
+    for media_type, movie_id, movie_version_id, series_id in candidate_rows:
+        if media_type == MediaType.MOVIE:
+            if movie_id is not None:
+                movie_candidate_ids.add(int(movie_id))
+            if movie_version_id is not None:
+                movie_candidate_version_ids.add(int(movie_version_id))
+            continue
+        if media_type == MediaType.SERIES and series_id is not None:
+            series_candidate_ids.add(int(series_id))
+
+    if movie_candidate_version_ids:
+        version_rows = (
+            await db.execute(
+                select(
+                    MovieVersion.service,
+                    MovieVersion.service_item_id,
+                    MovieVersion.movie_id,
+                ).where(MovieVersion.id.in_(movie_candidate_version_ids))
+            )
+        ).all()
+        for service, service_item_id, movie_id in version_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=service,
+                item_id=service_item_id,
+            )
+            movie_candidate_ids.add(int(movie_id))
+
+    if movie_candidate_ids:
+        movie_version_rows = (
+            await db.execute(
+                select(MovieVersion.service, MovieVersion.service_item_id).where(
+                    MovieVersion.movie_id.in_(movie_candidate_ids)
+                )
+            )
+        ).all()
+        for service, service_item_id in movie_version_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=service,
+                item_id=service_item_id,
+            )
+
+        supplemental_movie_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.MOVIE,
+                    SupplementalMediaMatch.movie_id.in_(movie_candidate_ids),
+                )
+            )
+        ).all()
+        for source_service, source_item_id in supplemental_movie_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=source_service,
+                item_id=source_item_id,
+            )
+
+    if series_candidate_ids:
+        series_ref_rows = (
+            await db.execute(
+                select(SeriesServiceRef.service, SeriesServiceRef.service_id).where(
+                    SeriesServiceRef.series_id.in_(series_candidate_ids)
+                )
+            )
+        ).all()
+        for service, service_id in series_ref_rows:
+            _append_service_item_id(
+                series_expected_by_service,
+                service=service,
+                item_id=service_id,
+            )
+
+        supplemental_series_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.SERIES,
+                    SupplementalMediaMatch.series_id.in_(series_candidate_ids),
+                )
+            )
+        ).all()
+        for source_service, source_item_id in supplemental_series_rows:
+            _append_service_item_id(
+                series_expected_by_service,
+                service=source_service,
+                item_id=source_item_id,
+            )
+
+    return movie_expected_by_service, series_expected_by_service
+
+
+async def _cleanup_disabled_leaving_soon_collections(
+    db: AsyncSession,
+    *,
+    settings_row: GeneralSettings | None,
+    last_success_titles_by_service: Mapping[Service, str],
+) -> None:
+    if settings_row is None or not last_success_titles_by_service:
+        return
+
+    updated_last_success_titles = dict(last_success_titles_by_service)
+    last_success_changed = False
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+
+    for service_type, service_client in service_clients:
+        previous_success_title = updated_last_success_titles.get(service_type)
+        if previous_success_title is None:
+            continue
+        if service_client is None:
+            # keep title for retry while service is unavailable
+            continue
+
+        delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
+        if not callable(delete_method):
+            LOG.warning(
+                "Leaving Soon cleanup method missing for "
+                f"{service_type.value}; cannot remove title "
+                f"{previous_success_title!r} while Leaving Soon is disabled"
+            )
+            continue
+        delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
+        try:
+            await delete_func(base_title=previous_success_title)
+        except Exception as e:
+            LOG.warning(
+                "Failed cleaning Leaving Soon collections for "
+                f"{service_type.value} while disabled (title "
+                f"{previous_success_title!r}): {e}"
+            )
+            continue
+
+        del updated_last_success_titles[service_type]
+        last_success_changed = True
+
+    if not last_success_changed:
+        return
+
+    settings_row.leaving_soon_last_success_titles = {
+        service.value: title
+        for service, title in updated_last_success_titles.items()
+        if service in _LEAVING_SOON_MEDIA_SERVICES
+    }
+    db.add(settings_row)
+    await db.commit()
+
+
+async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
+    (
+        settings_row,
+        enabled,
+        collection_base_title,
+        last_success_titles_by_service,
+    ) = await _load_leaving_soon_collection_settings(db)
+    if not enabled:
+        await _cleanup_disabled_leaving_soon_collections(
+            db,
+            settings_row=settings_row,
+            last_success_titles_by_service=last_success_titles_by_service,
+        )
+        return
+
+    movie_expected_by_service: dict[Service, set[str]] = {}
+    series_expected_by_service: dict[Service, set[str]] = {}
+    (
+        movie_expected_by_service,
+        series_expected_by_service,
+    ) = await _build_leaving_soon_expected_item_ids(db)
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+    updated_last_success_titles = dict(last_success_titles_by_service)
+    last_success_changed = False
+
+    for service_type, service_client in service_clients:
+        if service_client is None:
+            continue
+        previous_success_title = updated_last_success_titles.get(service_type)
+        service_success = True
+
+        # if this service last synced under a different title, clean it first.
+        if (
+            previous_success_title is not None
+            and previous_success_title != collection_base_title
+        ):
+            delete_method = getattr(
+                service_client, "delete_leaving_soon_collections", None
+            )
+            if not callable(delete_method):
+                service_success = False
+                LOG.warning(
+                    "Leaving Soon cleanup method missing for "
+                    f"{service_type.value}; cannot remove previous title "
+                    f"{previous_success_title!r}"
+                )
+            else:
+                delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
+                try:
+                    await delete_func(base_title=previous_success_title)
+                except Exception as e:
+                    service_success = False
+                    LOG.warning(
+                        "Failed cleaning previous Leaving Soon collections for "
+                        f"{service_type.value} (title {previous_success_title!r}): {e}"
+                    )
+
+        sync_method = getattr(service_client, "sync_leaving_soon_collections", None)
+        if not callable(sync_method):
+            LOG.warning(
+                "Leaving Soon sync method missing for "
+                f"{service_type.value}; skipping service sync"
+            )
+            continue
+        sync_func = cast(Callable[..., Awaitable[Any]], sync_method)
+        movie_item_ids = movie_expected_by_service.get(service_type, set())
+        series_item_ids = series_expected_by_service.get(service_type, set())
+        try:
+            await sync_func(
+                base_title=collection_base_title,
+                movie_item_ids=movie_item_ids,
+                series_item_ids=series_item_ids,
+            )
+        except Exception as e:
+            service_success = False
+            LOG.warning(
+                f"Failed syncing Leaving Soon collections for {service_type.value}: {e}"
+            )
+
+        if not service_success:
+            continue
+        if previous_success_title == collection_base_title:
+            continue
+
+        updated_last_success_titles[service_type] = collection_base_title
+        last_success_changed = True
+
+    if not last_success_changed:
+        return
+    if settings_row is None:
+        return
+
+    settings_row.leaving_soon_last_success_titles = {
+        service.value: title
+        for service, title in updated_last_success_titles.items()
+        if service in _LEAVING_SOON_MEDIA_SERVICES
+    }
+    db.add(settings_row)
+    await db.commit()
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -979,6 +1324,10 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
             await db.execute(delete(ReclaimCandidate))
             await db.commit()
+            try:
+                await _sync_leaving_soon_collections(db)
+            except Exception as e:
+                LOG.warning(f"Leaving Soon collection sync failed: {e}")
             return
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
@@ -1123,6 +1472,11 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
             await db.commit()
+
+        try:
+            await _sync_leaving_soon_collections(db)
+        except Exception as e:
+            LOG.warning(f"Leaving Soon collection sync failed: {e}")
 
         LOG.info(
             f"Cleanup scan completed: {candidates_created} new candidates, "
@@ -2447,10 +2801,10 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
 async def _load_path_mappings() -> list[dict]:
     """Load path mappings from GeneralSettings (returns empty list if unset)."""
     async with async_db() as db:
-        result = await db.execute(select(GeneralSettings))
-        settings = result.scalars().first()
-        if settings and settings.path_mappings:
-            return settings.path_mappings
+        result = await db.execute(select(GeneralSettings.path_mappings))
+        path_mappings = result.scalars().first()
+        if path_mappings:
+            return path_mappings
     return []
 
 

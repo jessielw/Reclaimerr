@@ -13,6 +13,7 @@ from backend.core.rule_engine import SeerrRequestResolver
 from backend.database import Base
 from backend.database.models import (
     Episode,
+    GeneralSettings,
     Movie,
     MovieVersion,
     ProtectedMedia,
@@ -25,6 +26,7 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, Service
 from backend.services.seerr_cache import SeerrRequestSnapshot
+from backend.tasks import cleanup as cleanup_tasks
 from backend.tasks.cleanup import (
     _compute_requester_has_watched_for_key,
     _evaluate_movie_rule,
@@ -34,6 +36,7 @@ from backend.tasks.cleanup import (
     _scan_with_db,
     collect_rule_preview_matches,
 )
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
 def _make_rule(media_type: MediaType, **overrides: object) -> ReclaimRule:
@@ -202,6 +205,42 @@ def _make_series_ref(
     )
     ref.path = path
     return ref
+
+
+class _LeavingSoonSyncServiceFake:
+    def __init__(
+        self,
+        *,
+        fail_sync: bool = False,
+        fail_delete_titles: set[str] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.delete_calls: list[str] = []
+        self._fail_sync = fail_sync
+        self._fail_delete_titles = set(fail_delete_titles or set())
+
+    async def sync_leaving_soon_collections(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        if self._fail_sync:
+            raise RuntimeError("sync failure")
+        self.calls.append(
+            {
+                "base_title": base_title,
+                "movie_item_ids": set(movie_item_ids),
+                "series_item_ids": set(series_item_ids),
+            }
+        )
+
+    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
+        normalized = normalize_leaving_soon_collection_title(base_title)
+        self.delete_calls.append(normalized)
+        if normalized in self._fail_delete_titles:
+            raise RuntimeError(f"delete failure for {normalized}")
 
 
 class CleanupMediaRuleTests(unittest.TestCase):
@@ -1411,3 +1450,410 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(preview_items[0].media_title, "Preview Movie")
             self.assertEqual(preview_items[0].version_video_resolution, "2160p")
             self.assertTrue(preview_items[0].reason_tokens)
+
+    async def test_scan_syncs_leaving_soon_collections_when_enabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5001, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5001",
+                service_item_id="plex-item-5001",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["base_title"], "Leaving Soon")
+        self.assertEqual(call["movie_item_ids"], {"plex-item-5001"})
+        self.assertEqual(call["series_item_ids"], set())
+        self.assertEqual(fake_plex.delete_calls, [])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Leaving Soon"},
+            )
+
+    async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5002, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5002",
+                service_item_id="plex-item-5002",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+
+    async def test_scan_cleans_leaving_soon_collections_when_disabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=50021, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-50021",
+                service_item_id="plex-item-50021",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(settings.leaving_soon_last_success_titles, {})
+
+    async def test_scan_keeps_leaving_soon_titles_when_disabled_cleanup_fails(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=50022, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-50022",
+                service_item_id="plex-item-50022",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Leaving Soon"})
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Leaving Soon"},
+            )
+
+    async def test_scan_maps_season_candidates_to_series_leaving_soon_items(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.SERIES,
+                target_scope="season",
+                min_size=1,
+                include_never_watched=True,
+            )
+            series = Series(title="Series", tmdb_id=5003, size=5 * 1024**3)
+            db.add_all([settings, rule, series])
+            await db.flush()
+
+            series_ref = _make_series_ref(
+                service_id="plex-series-5003",
+                library_id="lib-series",
+                library_name="TV",
+            )
+            series_ref.series_id = series.id
+            db.add(series_ref)
+            db.add(
+                Season(
+                    series_id=series.id,
+                    season_number=1,
+                    size=2 * 1024**3,
+                )
+            )
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["movie_item_ids"], set())
+        self.assertEqual(call["series_item_ids"], {"plex-series-5003"})
+
+    async def test_scan_renames_using_last_success_title(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5004, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5004",
+                service_item_id="plex-item-5004",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Latest Soon"},
+            )
+
+    async def test_scan_keeps_last_success_title_when_old_cleanup_fails(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5005, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5005",
+                service_item_id="plex-item-5005",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Old A"})
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+        self.assertEqual(len(fake_plex.calls), 1)
+        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Old A"},
+            )
+
+    async def test_scan_keeps_last_success_title_when_current_sync_fails(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5006, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5006",
+                service_item_id="plex-item-5006",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_sync=True)
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Old A"},
+            )

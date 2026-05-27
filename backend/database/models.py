@@ -209,6 +209,15 @@ class GeneralSettings(Base):
         JSON, default_factory=list
     )
 
+    # leaving soon collection sync
+    leaving_soon_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    leaving_soon_collection_title: Mapped[str] = mapped_column(
+        String(255), default="Leaving Soon"
+    )
+    leaving_soon_last_success_titles: Mapped[dict[str, str]] = mapped_column(
+        JSON, default_factory=dict
+    )
+
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False

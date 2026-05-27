@@ -7,7 +7,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 import niquests
-from niquests.exceptions import ReadTimeout
+from niquests.exceptions import HTTPError, ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -36,6 +36,7 @@ from backend.models.media import (
     MovieVersionData,
 )
 from backend.models.services.plex import PlexMovie, PlexSeries
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
@@ -148,6 +149,229 @@ class PlexService:
             raise ValueError(
                 f"Failed to delete Plex media item {media_item_id} from {rating_key}: {e}"
             )
+
+    async def sync_leaving_soon_collections(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        """Sync managed Leaving Soon collections for movies and series."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._sync_leaving_soon_collection_for_type(
+            section_type="movie",
+            collection_title=f"{collection_base} [Movies]",
+            expected_item_ids=movie_item_ids,
+        )
+        await self._sync_leaving_soon_collection_for_type(
+            section_type="show",
+            collection_title=f"{collection_base} [Series]",
+            expected_item_ids=series_item_ids,
+        )
+
+    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
+        """Delete managed Leaving Soon collections for a specific base title."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._sync_leaving_soon_collection_for_type(
+            section_type="movie",
+            collection_title=f"{collection_base} [Movies]",
+            expected_item_ids=set(),
+        )
+        await self._sync_leaving_soon_collection_for_type(
+            section_type="show",
+            collection_title=f"{collection_base} [Series]",
+            expected_item_ids=set(),
+        )
+
+    async def _sync_leaving_soon_collection_for_type(
+        self,
+        *,
+        section_type: str,
+        collection_title: str,
+        expected_item_ids: set[str],
+    ) -> None:
+        section_ids = await self._get_section_ids_by_type(section_type)
+        if not section_ids:
+            return
+
+        normalized_expected_ids = {
+            str(item_id).strip()
+            for item_id in expected_item_ids
+            if str(item_id).strip()
+        }
+        expected_section_by_item_id = await self._resolve_item_section_ids(
+            normalized_expected_ids
+        )
+        for section_id in section_ids:
+            section_expected_ids = {
+                item_id
+                for item_id in normalized_expected_ids
+                if expected_section_by_item_id.get(item_id) == section_id
+            }
+            existing_collection_ids = await self._find_collection_ids_by_title(
+                section_id=section_id,
+                collection_title=collection_title,
+            )
+            for collection_id in existing_collection_ids:
+                await self._delete_collection(
+                    section_id=section_id, collection_id=collection_id
+                )
+
+            if not section_expected_ids:
+                continue
+
+            await self._create_collection(
+                section_id=section_id,
+                section_type=section_type,
+                collection_title=collection_title,
+                item_ids=section_expected_ids,
+            )
+
+    async def _get_section_ids_by_type(self, section_type: str) -> list[str]:
+        sections = await self.get_library_sections()
+        section_ids: list[str] = []
+        for section in sections:
+            if str(section.get("type", "")).strip().lower() != section_type:
+                continue
+            section_key = str(section.get("key", "")).strip()
+            if section_key:
+                section_ids.append(section_key)
+        return section_ids
+
+    async def _find_collection_ids_by_title(
+        self, *, section_id: str, collection_title: str
+    ) -> list[str]:
+        data, _ = await self._make_request(
+            f"library/sections/{section_id}/all",
+            params={"type": 18},
+            timeout=60,
+        )
+        collections = self._extract_metadata_items(data)
+        normalized_title = collection_title.strip().lower()
+        collection_ids: list[str] = []
+        for collection in collections:
+            if str(collection.get("title", "")).strip().lower() != normalized_title:
+                continue
+            collection_id = str(collection.get("ratingKey", "")).strip()
+            if collection_id:
+                collection_ids.append(collection_id)
+        return collection_ids
+
+    async def _create_collection(
+        self,
+        *,
+        section_id: str,
+        section_type: str,
+        collection_title: str,
+        item_ids: set[str],
+    ) -> None:
+        if not item_ids:
+            return
+        uri = await self._build_item_uri(item_ids)
+        collection_type = 1 if section_type == "movie" else 2
+        response = await self.session.post(
+            f"{self.plex_url}/library/collections",
+            params={
+                "type": str(collection_type),
+                "title": collection_title,
+                "smart": "0",
+                "sectionId": section_id,
+                "uri": uri,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    async def _delete_collection(self, *, section_id: str, collection_id: str) -> None:
+        # Preferred endpoint: collection is a metadata item, delete by ratingKey.
+        try:
+            response = await self.session.delete(
+                f"{self.plex_url}/library/metadata/{collection_id}",
+                timeout=60,
+            )
+            response.raise_for_status()
+            return
+        except HTTPError as e:
+            status_code = e.response.status_code if e.response else None
+            if status_code != 404:
+                raise
+
+        # backward compatibility fallback for older/custom builds (likely won't hit this)
+        response = await self.session.delete(
+            f"{self.plex_url}/library/sections/{section_id}/collection/{collection_id}",
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    async def _build_item_uri(self, item_ids: set[str]) -> str:
+        identity, _ = await self._make_request("identity")
+        media_container = (
+            identity.get("MediaContainer", {}) if isinstance(identity, dict) else {}
+        )
+        machine_id = str(media_container.get("machineIdentifier", "")).strip()
+        if not machine_id:
+            raise ValueError("Missing Plex machine identifier")
+        sorted_item_ids = sorted({str(item_id).strip() for item_id in item_ids})
+        return (
+            f"server://{machine_id}/com.plexapp.plugins.library/library/metadata/"
+            + ",".join(sorted_item_ids)
+        )
+
+    async def _resolve_item_section_ids(self, item_ids: set[str]) -> dict[str, str]:
+        item_section_ids: dict[str, str] = {}
+        if not item_ids:
+            return item_section_ids
+
+        sorted_item_ids = sorted(item_id for item_id in item_ids if item_id)
+        chunk_size = 100
+        for idx in range(0, len(sorted_item_ids), chunk_size):
+            chunk = sorted_item_ids[idx : idx + chunk_size]
+            if not chunk:
+                continue
+            data, _ = await self._make_request(
+                f"library/metadata/{','.join(chunk)}",
+                timeout=60,
+            )
+            for item in self._extract_metadata_items(data):
+                item_id = str(item.get("ratingKey", "")).strip()
+                library_section_id = str(item.get("librarySectionID", "")).strip()
+                if item_id and library_section_id:
+                    item_section_ids[item_id] = library_section_id
+
+        unresolved_item_ids = [
+            item_id for item_id in sorted_item_ids if item_id not in item_section_ids
+        ]
+        for item_id in unresolved_item_ids:
+            try:
+                data, _ = await self._make_request(
+                    f"library/metadata/{item_id}",
+                    timeout=60,
+                )
+            except Exception:
+                continue
+            items = self._extract_metadata_items(data)
+            if not items:
+                continue
+            first = items[0]
+            resolved_item_id = str(first.get("ratingKey", "")).strip() or item_id
+            library_section_id = str(first.get("librarySectionID", "")).strip()
+            if library_section_id:
+                item_section_ids[resolved_item_id] = library_section_id
+
+        return item_section_ids
+
+    @staticmethod
+    def _extract_metadata_items(payload: dict | list) -> list[dict[str, Any]]:
+        if isinstance(payload, dict):
+            media_container = payload.get("MediaContainer", {})
+            if isinstance(media_container, dict):
+                metadata = media_container.get("Metadata", [])
+                if isinstance(metadata, list):
+                    return [item for item in metadata if isinstance(item, dict)]
+                if isinstance(metadata, dict):
+                    return [metadata]
+        return []
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Scan a specific item path in Plex library.

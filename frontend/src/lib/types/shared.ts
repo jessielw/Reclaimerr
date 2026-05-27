@@ -163,6 +163,8 @@ export interface GeneralSettings {
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
   requester_watch_user_mappings: RequesterWatchUserMapping[];
+  leaving_soon_enabled: boolean;
+  leaving_soon_collection_title: string;
 }
 
 export interface FavoritesUserLookup {

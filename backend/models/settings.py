@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 from backend.database.models import User
 from backend.enums import MediaType, NotificationType, Service
 from backend.types import MEDIA_SERVERS, MediaServerType
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
 def _validate_notification_url(url: str) -> None:
@@ -312,6 +313,8 @@ class GeneralSettingsResponse(BaseModel):
     requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
         default_factory=list
     )
+    leaving_soon_enabled: bool = False
+    leaving_soon_collection_title: str = "Leaving Soon"
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -359,6 +362,14 @@ class GeneralSettingsResponse(BaseModel):
             seen.add(value)
             normalized_usernames.append(value)
         self.favorites_usernames = normalized_usernames
+        return self
+
+    @model_validator(mode="after")
+    def normalize_leaving_soon_title(self) -> GeneralSettingsResponse:
+        title = normalize_leaving_soon_collection_title(
+            self.leaving_soon_collection_title
+        )
+        self.leaving_soon_collection_title = title
         return self
 
     @model_validator(mode="after")

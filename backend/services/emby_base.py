@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
 
 import niquests
-from niquests.exceptions import ReadTimeout
+from niquests.exceptions import HTTPError, ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -38,6 +38,7 @@ from backend.models.services.emby_base import (
     EmbyUserBase,
     EmbyUserDataBase,
 )
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 RawSQL: TypeAlias = str
 
@@ -118,6 +119,204 @@ class EmbyServiceBase:
         a single version by deleting that specific item id.
         """
         await self.delete_item(item_id)
+
+    async def sync_leaving_soon_collections(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        """Sync managed Leaving Soon collections for movies and series."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._sync_leaving_soon_collection(
+            collection_title=f"{collection_base} [Movies]",
+            expected_item_ids=movie_item_ids,
+            include_item_types="Movie",
+        )
+        await self._sync_leaving_soon_collection(
+            collection_title=f"{collection_base} [Series]",
+            expected_item_ids=series_item_ids,
+            include_item_types="Series",
+        )
+
+    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
+        """Delete managed Leaving Soon collections for a specific base title."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._sync_leaving_soon_collection(
+            collection_title=f"{collection_base} [Movies]",
+            expected_item_ids=set(),
+            include_item_types="Movie",
+        )
+        await self._sync_leaving_soon_collection(
+            collection_title=f"{collection_base} [Series]",
+            expected_item_ids=set(),
+            include_item_types="Series",
+        )
+
+    async def _sync_leaving_soon_collection(
+        self,
+        *,
+        collection_title: str,
+        expected_item_ids: set[str],
+        include_item_types: str,
+    ) -> None:
+        normalized_expected_ids = {
+            str(item_id).strip()
+            for item_id in expected_item_ids
+            if str(item_id).strip()
+        }
+        existing_collection_ids = await self._find_collection_ids_by_title(
+            collection_title
+        )
+
+        if not normalized_expected_ids:
+            for collection_id in existing_collection_ids:
+                await self._delete_collection(collection_id)
+            return
+
+        collection_id = existing_collection_ids[0] if existing_collection_ids else None
+        if collection_id is None:
+            await self._create_collection(
+                collection_title=collection_title,
+                item_ids=normalized_expected_ids,
+            )
+            for stale_collection_id in existing_collection_ids[1:]:
+                await self._delete_collection(stale_collection_id)
+            return
+
+        current_item_ids = await self._get_collection_item_ids(
+            collection_id=collection_id,
+            include_item_types=include_item_types,
+        )
+        items_to_add = normalized_expected_ids - current_item_ids
+        items_to_remove = current_item_ids - normalized_expected_ids
+
+        if items_to_add:
+            await self._add_items_to_collection(
+                collection_id=collection_id,
+                item_ids=items_to_add,
+            )
+        if items_to_remove:
+            await self._remove_items_from_collection(
+                collection_id=collection_id,
+                item_ids=items_to_remove,
+            )
+
+        for stale_collection_id in existing_collection_ids[1:]:
+            await self._delete_collection(stale_collection_id)
+
+    async def _find_collection_ids_by_title(self, collection_title: str) -> list[str]:
+        data = await self._make_request(
+            "Items",
+            params={
+                "IncludeItemTypes": "BoxSet",
+                "Recursive": "true",
+                "Limit": 1000,
+                "Fields": "CollectionType",
+            },
+            timeout=300,
+        )
+        if not isinstance(data, dict):
+            return []
+        items = data.get("Items", [])
+        if not isinstance(items, list):
+            return []
+        normalized_title = collection_title.strip().lower()
+        collection_ids: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("Name", "")).strip().lower() != normalized_title:
+                continue
+            collection_id = str(item.get("Id", "")).strip()
+            if collection_id:
+                collection_ids.append(collection_id)
+        return collection_ids
+
+    async def _get_collection_item_ids(
+        self, *, collection_id: str, include_item_types: str
+    ) -> set[str]:
+        data = await self._make_request(
+            "Items",
+            params={
+                "ParentId": collection_id,
+                "IncludeItemTypes": include_item_types,
+                "Recursive": "true",
+                "Limit": 1000,
+            },
+            timeout=300,
+        )
+        if not isinstance(data, dict):
+            return set()
+        items = data.get("Items", [])
+        if not isinstance(items, list):
+            return set()
+        item_ids: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("Id", "")).strip()
+            if item_id:
+                item_ids.add(item_id)
+        return item_ids
+
+    async def _create_collection(
+        self, *, collection_title: str, item_ids: set[str]
+    ) -> None:
+        response = await self.session.post(
+            f"{self.service_url}/Collections",
+            params={
+                "Name": collection_title,
+                "Ids": ",".join(sorted(item_ids)),
+                "IsLocked": "false",
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    async def _add_items_to_collection(
+        self, *, collection_id: str, item_ids: set[str]
+    ) -> None:
+        response = await self.session.post(
+            f"{self.service_url}/Collections/{collection_id}/Items",
+            params={"Ids": ",".join(sorted(item_ids))},
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    async def _remove_items_from_collection(
+        self, *, collection_id: str, item_ids: set[str]
+    ) -> None:
+        # Preferred endpoint for Jellyfin/Emby:
+        # DELETE /Collections/{Id}/Items?Ids=id1,id2
+        response = await self.session.delete(
+            f"{self.service_url}/Collections/{collection_id}/Items",
+            params={"Ids": ",".join(sorted(item_ids))},
+            timeout=60,
+        )
+        try:
+            response.raise_for_status()
+            return
+        except HTTPError as e:
+            status_code = e.response.status_code if e.response else None
+            if status_code != 404:
+                raise
+
+        # compatibility fallback used by some older server builds (likely will never hit it)
+        fallback_response = await self.session.post(
+            f"{self.service_url}/Collections/{collection_id}/Items/Delete",
+            params={"Ids": ",".join(sorted(item_ids))},
+            timeout=60,
+        )
+        fallback_response.raise_for_status()
+
+    async def _delete_collection(self, collection_id: str) -> None:
+        response = await self.session.delete(
+            f"{self.service_url}/Items/{collection_id}",
+            timeout=60,
+        )
+        response.raise_for_status()
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.
