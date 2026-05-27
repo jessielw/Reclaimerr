@@ -44,6 +44,8 @@
     favorites_protect_all_users: false,
     favorites_usernames: [],
     requester_watch_user_mappings: [],
+    leaving_soon_enabled: false,
+    leaving_soon_collection_title: "Leaving Soon",
   };
 
   let loading = $state(true);
