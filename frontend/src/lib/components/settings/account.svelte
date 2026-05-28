@@ -39,6 +39,9 @@
   let sessions = $state<AccountSession[]>([]);
   let revokingSessionIds = $state<string[]>([]);
   let revokingOtherSessions = $state(false);
+  const mustProvideCurrentPassword = $derived.by(() =>
+    Boolean(profile?.has_local_password && !profile?.require_password_change),
+  );
 
   // profile form
   let profileForm = $state({
@@ -116,7 +119,9 @@
       const response: {
         message: string;
       } = await post_api("/api/account/change-password", {
-        old_password: passwordForm.current_password,
+        old_password: mustProvideCurrentPassword
+          ? passwordForm.current_password
+          : undefined,
         new_password: passwordForm.new_password,
       });
 
@@ -126,6 +131,14 @@
         new_password: "",
         confirm_password: "",
       };
+
+      if (profile) {
+        profile = {
+          ...profile,
+          has_local_password: true,
+          require_password_change: false,
+        };
+      }
 
       toast.success(response.message);
     } catch (err: any) {
@@ -451,6 +464,12 @@
       <h2 class="text-xl font-semibold text-foreground mb-4">
         Change Password
       </h2>
+      {#if !mustProvideCurrentPassword}
+        <p class="mb-4 text-sm text-muted-foreground">
+          You do not have a local password yet. Set one now to enable local
+          username/password sign-in.
+        </p>
+      {/if}
       <form
         onsubmit={(e) => {
           e.preventDefault();
@@ -459,25 +478,27 @@
         class="space-y-4"
         autocomplete="off"
       >
-        <div>
-          <label
-            for="current_password"
-            class="block text-sm font-medium text-foreground mb-2"
-          >
-            Current Password
-          </label>
-          <Input
-            type="password"
-            bind:value={passwordForm.current_password}
-            required
-            class="input-hover-el"
-            placeholder="Enter current password"
-            id="current_password"
-            disabled={passwordUpdating}
-            minlength={3}
-            maxlength={64}
-          />
-        </div>
+        {#if mustProvideCurrentPassword}
+          <div>
+            <label
+              for="current_password"
+              class="block text-sm font-medium text-foreground mb-2"
+            >
+              Current Password
+            </label>
+            <Input
+              type="password"
+              bind:value={passwordForm.current_password}
+              required
+              class="input-hover-el"
+              placeholder="Enter current password"
+              id="current_password"
+              disabled={passwordUpdating}
+              minlength={3}
+              maxlength={64}
+            />
+          </div>
+        {/if}
 
         <div>
           <label

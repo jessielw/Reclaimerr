@@ -5,6 +5,8 @@
   import { get_api, post_api, delete_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import {
+    type MediaIdentityItem,
+    type MediaIdentityListResponse,
     Permission,
     type UserProfile as User,
     UserRole,
@@ -22,6 +24,9 @@
   import UserPlus from "@lucide/svelte/icons/user-plus";
   import UserPen from "@lucide/svelte/icons/user-pen";
   import UserX from "@lucide/svelte/icons/user-x";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import Link2 from "@lucide/svelte/icons/link-2";
+  import X from "@lucide/svelte/icons/x";
 
   interface Props {
     svgIcon: Component | null;
@@ -29,6 +34,27 @@
   let { svgIcon }: Props = $props();
 
   let users: User[] = $state([]);
+  let mediaIdentities: MediaIdentityItem[] = $state([]);
+  let mediaIdentitiesLoading = $state(false);
+  let mediaIdentitiesError = $state("");
+  let identitySearch = $state("");
+  let identityBusyIds = $state<number[]>([]);
+  let linkTargets = $state<Record<number, string>>({});
+  const filteredMediaIdentities = $derived.by(() => {
+    const query = identitySearch.trim().toLowerCase();
+    if (!query) return mediaIdentities;
+    return mediaIdentities.filter((item) => {
+      return (
+        item.source_service_name.toLowerCase().includes(query) ||
+        item.source_service.toLowerCase().includes(query) ||
+        item.username.toLowerCase().includes(query) ||
+        item.source_user_id.toLowerCase().includes(query) ||
+        (item.email || "").toLowerCase().includes(query) ||
+        (item.user_username || "").toLowerCase().includes(query) ||
+        (item.user_display_name || "").toLowerCase().includes(query)
+      );
+    });
+  });
   const isAdmin = $derived($auth.user?.role === "admin");
   const canManageUsers = $derived(
     isAdmin || ($auth.user?.permissions ?? []).includes(Permission.ManageUsers),
@@ -94,6 +120,42 @@
   // helper to check if a permission can be edited based on current user's role
   const canEditPermission = (_permission: Permission): boolean => true;
 
+  const isIdentityBusy = (identityId: number) =>
+    identityBusyIds.includes(identityId);
+
+  const seedLinkTargets = () => {
+    const next: Record<number, string> = { ...linkTargets };
+    for (const identity of mediaIdentities) {
+      if (identity.user_id) {
+        next[identity.id] = String(identity.user_id);
+        continue;
+      }
+      if (next[identity.id]) continue;
+
+      const usernameMatch = users.find(
+        (user) =>
+          user.username.toLowerCase() ===
+          identity.username_normalized.toLowerCase(),
+      );
+      if (usernameMatch) {
+        next[identity.id] = String(usernameMatch.id);
+        continue;
+      }
+
+      if (identity.email) {
+        const emailMatch = users.find(
+          (user) =>
+            user.email &&
+            user.email.toLowerCase() === identity.email?.toLowerCase(),
+        );
+        if (emailMatch) {
+          next[identity.id] = String(emailMatch.id);
+        }
+      }
+    }
+    linkTargets = next;
+  };
+
   // toggle permission in create user form
   const toggleCreatePermission = (permission: Permission, checked: boolean) => {
     if (checked) {
@@ -119,10 +181,67 @@
     try {
       profileError = "";
       users = await get_api<User[]>("/api/account/users");
+      seedLinkTargets();
     } catch (err: any) {
       profileError = err.message;
     } finally {
       loading = false;
+    }
+  };
+
+  const loadMediaIdentities = async () => {
+    try {
+      mediaIdentitiesLoading = true;
+      mediaIdentitiesError = "";
+      const response = await get_api<MediaIdentityListResponse>(
+        "/api/account/users/media-identities",
+      );
+      mediaIdentities = response.items;
+      seedLinkTargets();
+    } catch (err: any) {
+      mediaIdentitiesError = err.message;
+    } finally {
+      mediaIdentitiesLoading = false;
+    }
+  };
+
+  const linkIdentity = async (identity: MediaIdentityItem) => {
+    const targetValue = linkTargets[identity.id];
+    const targetUserId = Number(targetValue);
+    if (!targetUserId || Number.isNaN(targetUserId)) {
+      toast.warning("Select a local user to link this media identity.");
+      return;
+    }
+
+    try {
+      identityBusyIds = [...identityBusyIds, identity.id];
+      await post_api(
+        `/api/account/users/media-identities/${identity.id}/link`,
+        {
+          target_user_id: targetUserId,
+        },
+      );
+      await loadMediaIdentities();
+      toast.success("Media identity linked.");
+    } catch (err: any) {
+      toast.warning(err.message);
+    } finally {
+      identityBusyIds = identityBusyIds.filter((id) => id !== identity.id);
+    }
+  };
+
+  const unlinkIdentity = async (identity: MediaIdentityItem) => {
+    try {
+      identityBusyIds = [...identityBusyIds, identity.id];
+      await post_api(
+        `/api/account/users/media-identities/${identity.id}/unlink`,
+      );
+      await loadMediaIdentities();
+      toast.success("Media identity unlinked.");
+    } catch (err: any) {
+      toast.warning(err.message);
+    } finally {
+      identityBusyIds = identityBusyIds.filter((id) => id !== identity.id);
     }
   };
 
@@ -132,7 +251,7 @@
       await post_api("/api/account/users", newUser);
       showCreateModal = false;
       resetForm();
-      await loadUsers();
+      await Promise.all([loadUsers(), loadMediaIdentities()]);
     } catch (err: any) {
       toast.warning(err.message);
     }
@@ -143,7 +262,7 @@
     try {
       profileError = "";
       await delete_api(`/api/account/users/${userId}`);
-      await loadUsers();
+      await Promise.all([loadUsers(), loadMediaIdentities()]);
       toast.success(`User "${username}" has been deleted.`);
     } catch (err: any) {
       profileError = err.message;
@@ -221,7 +340,7 @@
       const preEditedUser = { ...editingUser }; // keep a copy since closeEditModal will reset editingUser
       await post_api(`/api/account/users/${editingUser.id}`, updateData);
       closeEditModal();
-      await loadUsers();
+      await Promise.all([loadUsers(), loadMediaIdentities()]);
       toast.success(`User "${preEditedUser.username}" has been updated.`);
     } catch (err: any) {
       toast.warning(err.message);
@@ -248,6 +367,7 @@
 
   onMount(() => {
     loadUsers();
+    loadMediaIdentities();
   });
 </script>
 
@@ -387,6 +507,172 @@
                     onclick={() => openDeleteDialog(user)}
                     disabled={user.id === $auth.user?.id}><UserX /></Button
                   >
+                {/if}
+              </div>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+</div>
+
+<!-- media identity linking -->
+<div class="mt-6 bg-card rounded-lg border border-border overflow-x-auto">
+  <div class="p-4 border-b border-border flex flex-wrap items-end gap-3">
+    <div class="grow">
+      <h3 class="text-base font-semibold text-foreground">
+        Media Identity Links
+      </h3>
+      <p class="text-sm text-muted-foreground">
+        Review media server users and link them to local accounts.
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      <Input
+        type="text"
+        placeholder="Search identities"
+        bind:value={identitySearch}
+        class="w-full sm:w-72 input-hover-el"
+      />
+      <Button
+        type="button"
+        size="sm"
+        class="cursor-pointer"
+        disabled={mediaIdentitiesLoading}
+        onclick={() => loadMediaIdentities()}
+      >
+        <RefreshCw class="size-4" />
+        Refresh
+      </Button>
+    </div>
+  </div>
+
+  {#if mediaIdentitiesLoading}
+    <div class="p-6 text-sm text-muted-foreground">
+      Loading media identities...
+    </div>
+  {:else if mediaIdentitiesError}
+    <div class="p-6 text-sm text-destructive">{mediaIdentitiesError}</div>
+  {:else if filteredMediaIdentities.length === 0}
+    <div class="p-6 text-sm text-muted-foreground">
+      No media identities found.
+    </div>
+  {:else}
+    <table class="w-full">
+      <thead class="bg-muted/40">
+        <tr>
+          <th
+            class="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          >
+            Source
+          </th>
+          <th
+            class="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          >
+            Media User
+          </th>
+          <th
+            class="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          >
+            Linked User
+          </th>
+          <th
+            class="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          >
+            Actions
+          </th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {#each filteredMediaIdentities as identity (identity.id)}
+          <tr class="hover:bg-muted/20 transition-colors">
+            <td class="px-4 py-3 align-top min-w-44">
+              <div class="text-sm text-foreground">
+                {identity.source_service_name}
+              </div>
+            </td>
+            <td class="px-4 py-3 align-top min-w-72">
+              <div class="text-sm text-foreground">{identity.username}</div>
+              {#if identity.email}
+                <div class="text-xs text-muted-foreground">
+                  {identity.email}
+                </div>
+              {/if}
+              <div class="text-xs text-muted-foreground break-all font-mono">
+                ID: {identity.source_user_id}
+              </div>
+            </td>
+            <td class="px-4 py-3 align-top min-w-72">
+              {#if identity.user_id}
+                <div class="text-sm text-foreground">
+                  {identity.user_display_name || identity.user_username}
+                </div>
+                <div class="text-xs text-muted-foreground">
+                  @{identity.user_username}
+                </div>
+              {:else}
+                <div class="text-sm text-amber-400">Unlinked</div>
+              {/if}
+
+              <div class="mt-2 text-foreground">
+                <Select.Root
+                  type="single"
+                  bind:value={linkTargets[identity.id]}
+                >
+                  <Select.Trigger
+                    class="w-full max-w-80 focus:ring-2 focus:ring-ring"
+                  >
+                    {#if linkTargets[identity.id]}
+                      {@const selectedUser = users.find(
+                        (user) => String(user.id) === linkTargets[identity.id],
+                      )}
+                      {selectedUser
+                        ? `${selectedUser.display_name || selectedUser.username} (@${selectedUser.username})`
+                        : "Select local user"}
+                    {:else}
+                      Select local user
+                    {/if}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each users as user (user.id)}
+                      <Select.Item
+                        value={String(user.id)}
+                        label={`${user.display_name || user.username} (@${user.username})`}
+                      >
+                        {user.display_name || user.username} (@{user.username})
+                      </Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+              </div>
+            </td>
+            <td class="px-4 py-3 align-top text-right min-w-52">
+              <div class="flex items-center justify-end gap-2">
+                {#if identity.user_id}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    class="cursor-pointer"
+                    disabled={isIdentityBusy(identity.id)}
+                    onclick={() => unlinkIdentity(identity)}
+                  >
+                    <X class="size-4" />
+                    Unlink
+                  </Button>
+                {:else}
+                  <Button
+                    type="button"
+                    size="sm"
+                    class="cursor-pointer"
+                    disabled={isIdentityBusy(identity.id) ||
+                      !linkTargets[identity.id]}
+                    onclick={() => linkIdentity(identity)}
+                  >
+                    <Link2 class="size-4" />
+                    Link
+                  </Button>
                 {/if}
               </div>
             </td>

@@ -10,6 +10,8 @@ export interface User {
   email: string | null;
   role: UserRole;
   permissions: Permission[];
+  has_local_password: boolean;
+  require_password_change: boolean;
 }
 
 export enum AlertLevel {
@@ -40,6 +42,40 @@ export interface AccountSession {
   last_seen_at: string | null;
   expires_at: string;
   is_current: boolean;
+}
+
+export interface MediaAuthProvider {
+  service_config_id: number;
+  service_type: string;
+  name: string;
+  auth_mode: "credentials" | "redirect";
+}
+
+export interface MediaAuthProvidersResponse {
+  providers: MediaAuthProvider[];
+  default_service_config_id: number | null;
+}
+
+export interface MediaIdentityItem {
+  id: number;
+  source_service: string;
+  source_service_config_id: number;
+  source_service_name: string;
+  source_user_id: string;
+  username: string;
+  username_normalized: string;
+  email: string | null;
+  display_name: string | null;
+  user_id: number | null;
+  user_username: string | null;
+  user_display_name: string | null;
+  last_seen_at: string;
+  linked_at: string | null;
+}
+
+export interface MediaIdentityListResponse {
+  items: MediaIdentityItem[];
+  total: number;
 }
 
 export enum MediaType {
