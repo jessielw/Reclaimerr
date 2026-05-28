@@ -10,6 +10,7 @@
   import Users from "$lib/components/settings/users.svelte";
   import About from "$lib/components/settings/about.svelte";
   import General from "$lib/components/settings/general.svelte";
+  import Authentication from "$lib/components/settings/authentication.svelte";
   import UserSignals from "$lib/components/settings/user-signals.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -30,6 +31,7 @@
   import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
+  import KeyRound from "@lucide/svelte/icons/key-round";
   import { toast } from "svelte-sonner";
   import { toTitleCase } from "$lib/utils/strings";
   import { SettingsTab, Permission, MEDIA_SERVERS } from "$lib/types/shared";
@@ -139,6 +141,12 @@
           adminOnly: true,
         },
         {
+          id: SettingsTab.Authentication,
+          label: "Authentication",
+          icon: KeyRound,
+          adminOnly: true,
+        },
+        {
           id: SettingsTab.UserSignals,
           label: "User Signals",
           icon: UserCog,
@@ -206,6 +214,7 @@
     [SettingsTab.Emby]: "idle",
     [SettingsTab.Plex]: "idle",
     [SettingsTab.General]: "idle",
+    [SettingsTab.Authentication]: "idle",
     [SettingsTab.UserSignals]: "idle",
     [SettingsTab.Tasks]: "idle",
     [SettingsTab.Notifications]: "idle",
@@ -839,6 +848,10 @@
             <!-- general settings -->
           {:else if activeTab === SettingsTab.General}
             <General svgIcon={getTabIcon(activeTab)} />
+
+            <!-- authentication settings -->
+          {:else if activeTab === SettingsTab.Authentication}
+            <Authentication svgIcon={getTabIcon(activeTab)} />
 
             <!-- user signals settings -->
           {:else if activeTab === SettingsTab.UserSignals}

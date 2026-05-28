@@ -57,6 +57,7 @@ export enum SettingsTab {
   Seerr = "seerr",
   Tautulli = "tautulli",
   General = "general",
+  Authentication = "authentication",
   UserSignals = "user_signals",
   Tasks = "tasks",
   Notifications = "notifications",
@@ -175,6 +176,17 @@ export interface GeneralSettings {
   requester_watch_user_mappings: RequesterWatchUserMapping[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
+}
+
+export interface OIDCSettings {
+  enabled: boolean;
+  issuer_url: string;
+  client_id: string;
+  scopes: string;
+  email_claim: string;
+  token_endpoint_auth_method: "client_secret_basic" | "client_secret_post";
+  redirect_uri_override: string | null;
+  client_secret_configured: boolean;
 }
 
 export interface FavoritesUserLookup {

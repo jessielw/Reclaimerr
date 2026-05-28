@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from backend.core.auth import COOKIE_NAME, SESSION_TTL_SECONDS, create_access_token
 from backend.core.logger import LOG
@@ -15,6 +16,7 @@ from backend.core.setup_state import setup_state
 
 __all__ = [
     "cors_middleware",
+    "oidc_session_middleware",
     "security_headers_middleware",
     "setup_guard_middleware",
     "sliding_session_middleware",
@@ -70,6 +72,18 @@ def cors_middleware(app: FastAPI) -> None:
 def security_headers_middleware(app: FastAPI) -> None:
     """Add security headers middleware to the app."""
     app.add_middleware(SecurityHeadersMiddleware)
+
+
+def oidc_session_middleware(app: FastAPI) -> None:
+    """Add short lived signed cookie sessions for Authlib OIDC state."""
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.jwt_secret,
+        session_cookie="oidc_state",
+        max_age=10 * 60,
+        same_site="lax",
+        https_only=settings.cookie_secure,
+    )
 
 
 def sliding_session_middleware(app: FastAPI) -> None:

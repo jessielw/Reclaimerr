@@ -28,6 +28,7 @@ from backend.api.routes.tasks import router as tasks_router
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
     cors_middleware,
+    oidc_session_middleware,
     security_headers_middleware,
     setup_guard_middleware,
     sliding_session_middleware,
@@ -145,6 +146,7 @@ app.state.limiter = limiter
 # add middleware (order matters: outermost middleware added last)
 cors_middleware(app)
 security_headers_middleware(app)
+oidc_session_middleware(app)
 sliding_session_middleware(app)
 setup_guard_middleware(app)
 

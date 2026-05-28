@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Cleans up the collection when Leaving Soon is disabled
 - Added session management
   - Added new house keeping task to trim old sessions
+- Added generic OIDC support
+  - Button in the login screen that will show up if it's been enabled by the administrator
+  - Added new settings tab to setup OIDC
 
 ### Changed
 

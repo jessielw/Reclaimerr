@@ -171,6 +171,10 @@ class AuthResponse(BaseModel):
     user: UserInfo
 
 
+class OIDCAuthStatusResponse(BaseModel):
+    enabled: bool
+
+
 class UserSessionInfo(BaseModel):
     session_id: str
     user_agent: str | None

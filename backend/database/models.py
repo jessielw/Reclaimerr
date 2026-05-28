@@ -39,6 +39,13 @@ class User(Base):
     """User account for Reclaimerr."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint(
+            "oidc_issuer",
+            "oidc_subject",
+            name="uq_users_oidc_identity",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -47,6 +54,12 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), init=True)
     email: Mapped[str | None] = mapped_column(String(120), unique=True, default=None)
     display_name: Mapped[str | None] = mapped_column(String(32), default=None)
+    oidc_issuer: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
+    oidc_subject: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
 
     # permissions
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
@@ -249,6 +262,32 @@ class GeneralSettings(Base):
     )
 
     # timestamps
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+class OIDCSettings(Base):
+    """OIDC provider configuration (singleton row)."""
+
+    __tablename__ = "oidc_settings"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    issuer_url: Mapped[str] = mapped_column(String(500), default="")
+    client_id: Mapped[str] = mapped_column(String(255), default="")
+    client_secret: Mapped[str] = mapped_column(Text, default="")
+    scopes: Mapped[str] = mapped_column(String(255), default="openid profile email")
+    email_claim: Mapped[str] = mapped_column(String(64), default="email")
+    token_endpoint_auth_method: Mapped[str] = mapped_column(
+        String(32), default="client_secret_basic"
+    )
+    redirect_uri_override: Mapped[str | None] = mapped_column(String(500), default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )

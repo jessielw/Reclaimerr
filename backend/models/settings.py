@@ -392,3 +392,69 @@ class GeneralSettingsResponse(BaseModel):
         return self
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OIDCSettingsResponse(BaseModel):
+    enabled: bool = False
+    issuer_url: str = ""
+    client_id: str = ""
+    scopes: str = "openid profile email"
+    email_claim: str = "email"
+    token_endpoint_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
+        "client_secret_basic"
+    )
+    redirect_uri_override: str | None = None
+    client_secret_configured: bool = False
+    updated_at: datetime | None = None
+    updated_by: User | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> OIDCSettingsResponse:
+        self.issuer_url = self.issuer_url.strip().rstrip("/")
+        self.client_id = self.client_id.strip()
+        self.scopes = " ".join(self.scopes.split()) or "openid profile email"
+        self.email_claim = self.email_claim.strip() or "email"
+        self.redirect_uri_override = (
+            self.redirect_uri_override.strip()
+            if self.redirect_uri_override is not None
+            else None
+        ) or None
+        return self
+
+
+class OIDCSettingsUpdate(BaseModel):
+    enabled: bool = False
+    issuer_url: str = ""
+    client_id: str = ""
+    client_secret: str | None = None  # None = keep existing secret
+    scopes: str = "openid profile email"
+    email_claim: str = "email"
+    token_endpoint_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
+        "client_secret_basic"
+    )
+    redirect_uri_override: str | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> OIDCSettingsUpdate:
+        self.issuer_url = self.issuer_url.strip().rstrip("/")
+        self.client_id = self.client_id.strip()
+        self.client_secret = (
+            self.client_secret.strip() if self.client_secret is not None else None
+        ) or None
+        self.scopes = " ".join(self.scopes.split()) or "openid profile email"
+        self.email_claim = self.email_claim.strip() or "email"
+        self.redirect_uri_override = (
+            self.redirect_uri_override.strip()
+            if self.redirect_uri_override is not None
+            else None
+        ) or None
+        return self
+
+
+class OIDCTestResponse(BaseModel):
+    success: bool
+    issuer: str | None = None
+    authorization_endpoint: str | None = None
+    token_endpoint: str | None = None
+    jwks_uri: str | None = None
+    userinfo_endpoint: str | None = None

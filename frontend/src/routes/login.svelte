@@ -6,6 +6,8 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import DoorOpen from "@lucide/svelte/icons/door-open";
   import DoorClosed from "@lucide/svelte/icons/door-closed";
+  import Lock from "@lucide/svelte/icons/lock";
+  import LockOpen from "@lucide/svelte/icons/lock-open";
   import { get_api } from "$lib/api";
   import { shuffleArray } from "$lib/utils/array";
   import { TOP_RATED_BACKDROPS } from "$lib/misc/tmdb-images";
@@ -15,6 +17,9 @@
   let error = $state("");
   let loading = $state(false);
   let loginHovered = $state(false);
+
+  let oidcEnabled = $state(false);
+  let oidcHovered = $state(false);
 
   // TMDB image base URLs for different sizes
   const TMDB_BASE_URL_ORIGINAL = "https://image.tmdb.org/t/p/original";
@@ -54,6 +59,10 @@
     if (event.key === "Enter") {
       handleLogin();
     }
+  };
+
+  const startOidcLogin = () => {
+    window.location.href = "/api/auth/oidc/start";
   };
 
   // update image base URL based on container width
@@ -103,6 +112,30 @@
   };
 
   onMount(async () => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const authError = params.get("auth_error");
+      if (authError) {
+        error = authError;
+        params.delete("auth_error");
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+        window.history.replaceState({}, "", nextUrl);
+      }
+    }
+
+    try {
+      const response = await fetch("/api/auth/oidc/status", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        oidcEnabled = Boolean(payload?.enabled);
+      }
+    } catch {
+      oidcEnabled = false;
+    }
+
     overlay = document.getElementById("login-bg-overlay");
     container = (overlay?.parentElement as HTMLElement) || document.body;
 
@@ -216,6 +249,31 @@
             >{loading ? "Signing in..." : "Sign In"}</span
           >
         </Button>
+
+        {#if oidcEnabled}
+          <div class="flex items-center my-4 text-gray-400">
+            <hr class="grow border-gray-700" />
+            <span class="px-2">OR</span>
+            <hr class="grow border-gray-700" />
+          </div>
+
+          <Button
+            disabled={loading}
+            onmouseenter={() => (oidcHovered = true)}
+            onmouseleave={() => (oidcHovered = false)}
+            size="lg"
+            class="flex justify-center w-full py-2 px-4 text-foreground font-mediumcursor-pointer
+              bg-primary hover:bg-primary-hover cursor-pointer transition-colors"
+            onclick={startOidcLogin}
+          >
+            {#if oidcHovered}
+              <LockOpen class="size-5" />
+            {:else}
+              <Lock class="size-5" />
+            {/if}
+            <span class="font-medium">Sign In with SSO</span>
+          </Button>
+        {/if}
       </form>
     </div>
   </div>
