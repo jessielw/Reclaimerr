@@ -85,6 +85,9 @@ class User(Base):
     sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user", default_factory=list, lazy="noload", repr=False
     )
+    media_identities: Mapped[list[MediaUserIdentity]] = relationship(
+        back_populates="user", default_factory=list, lazy="noload", repr=False
+    )
 
     def bump_token_version(self) -> None:
         """
@@ -204,6 +207,53 @@ class ServiceMediaLibrary(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class MediaUserIdentity(Base):
+    """Media-server identity linked to a local user account."""
+
+    __tablename__ = "media_user_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service",
+            "source_service_config_id",
+            "source_user_id",
+            name="uq_media_user_identities_source_user",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_user_id: Mapped[str] = mapped_column(String(255))
+    username: Mapped[str] = mapped_column(String(255))
+    username_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None, index=True
+    )
+    email: Mapped[str | None] = mapped_column(String(255), default=None, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    raw: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    user: Mapped[User | None] = relationship(
+        back_populates="media_identities",
+        init=False,
+        lazy="noload",
+        repr=False,
     )
 
 

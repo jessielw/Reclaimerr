@@ -28,12 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added generic OIDC support
   - Button in the login screen that will show up if it's been enabled by the administrator
   - Added new settings tab to setup OIDC
+- Added media-server account sign-in and identity linking
+  - Added login-time authentication for **Jellyfin/Emby** (username/password)
+  - Added login-time authentication for **Plex** via PIN redirect/callback flow
+  - Added persistent `media_user_identities` storage to track source identities per media server
+  - Added automatic account resolution/linking at sign-in (existing link, email match, case-insensitive username match, or create user)
+  - Added admin notice generation when a media identity matches multiple local users and requires manual linking
+  - Added admin APIs for media identity management
+    - List identities
+    - Link identity to a local user
+    - Unlink identity from a local user
+  - Added media identity linking controls to **Settings -> Users**
+  - Added media auth provider discovery endpoint for the login screen
 
 ### Changed
 
 - Updated dep FastAPI
 - Each media server now keeps a snapshot for who watched what
   - Snapshots are now gathered during syncs and as needed
+- Reworked login UI to use a compact method switcher instead of stacked auth sections
+  - Local / Media / SSO modes now render one active flow at a time
+  - Media provider selector now uses service SVGs and cleaner labels
+- Updated account password behavior for media-auth users without local passwords
+  - Users without a local password can set one without entering a current password
 
 ### Fixed
 

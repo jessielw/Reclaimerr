@@ -8,12 +8,13 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
     status,
 )
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
@@ -28,18 +29,23 @@ from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.utils.image_handling import save_picture_from_bytes
 from backend.database import get_db
-from backend.database.models import User, UserSession
+from backend.database.models import MediaUserIdentity, ServiceConfig, User, UserSession
 from backend.enums import Permission, UserRole
 from backend.models.auth import (
     ChangePasswordRequest,
     ChangeProfileInfoRequest,
     CreateUserRequest,
+    MediaIdentityItem,
+    MediaIdentityLinkRequest,
+    MediaIdentityListResponse,
     RevokeOtherSessionsResponse,
     RevokeSessionResponse,
     UpdateUserRequest,
     UserInfo,
     UserSessionInfo,
 )
+from backend.services.admin_notices import resolve_singleton_notice
+from backend.services.media_auth import media_auth_conflict_notice_key_for_source
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
@@ -65,6 +71,29 @@ async def _revoke_user_sessions(
 
     result = await db.execute(statement)
     return result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def _serialize_media_identity(
+    identity: MediaUserIdentity,
+    linked_user: User | None,
+    source_service_name: str | None,
+) -> MediaIdentityItem:
+    return MediaIdentityItem(
+        id=identity.id,
+        source_service=identity.source_service.value,
+        source_service_config_id=identity.source_service_config_id,
+        source_service_name=source_service_name or identity.source_service.value,
+        source_user_id=identity.source_user_id,
+        username=identity.username,
+        username_normalized=identity.username_normalized,
+        email=identity.email,
+        display_name=identity.display_name,
+        user_id=linked_user.id if linked_user else None,
+        user_username=linked_user.username if linked_user else None,
+        user_display_name=linked_user.display_name if linked_user else None,
+        last_seen_at=identity.last_seen_at,
+        linked_at=identity.linked_at,
+    )
 
 
 @router.get("/me", response_model=UserInfo)
@@ -113,7 +142,10 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Change password."""
-    if not current_user.require_password_change:
+    requires_old_password = bool(current_user.password_hash) and not bool(
+        current_user.require_password_change
+    )
+    if requires_old_password:
         if not request.old_password or not verify_password(
             request.old_password, current_user.password_hash
         ):
@@ -141,6 +173,134 @@ async def change_password(
     )
 
     return {"message": "Password changed successfully"}
+
+
+@router.get("/users/media-identities", response_model=MediaIdentityListResponse)
+async def list_media_identities(
+    _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    q: str | None = Query(default=None, min_length=1, max_length=255),
+    linked: bool | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> MediaIdentityListResponse:
+    """List media identities with optional filtering by linked status and search query."""
+    stmt = (
+        select(MediaUserIdentity, User, ServiceConfig.name)
+        .outerjoin(User, User.id == MediaUserIdentity.user_id)
+        .outerjoin(
+            ServiceConfig,
+            ServiceConfig.id == MediaUserIdentity.source_service_config_id,
+        )
+    )
+
+    if linked is True:
+        stmt = stmt.where(MediaUserIdentity.user_id.isnot(None))
+    elif linked is False:
+        stmt = stmt.where(MediaUserIdentity.user_id.is_(None))
+
+    query = (q or "").strip().lower()
+    if query:
+        like_query = f"%{query}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(MediaUserIdentity.username).like(like_query),
+                func.lower(MediaUserIdentity.source_user_id).like(like_query),
+                func.lower(func.coalesce(MediaUserIdentity.email, "")).like(like_query),
+                func.lower(func.coalesce(User.username, "")).like(like_query),
+                func.lower(func.coalesce(User.display_name, "")).like(like_query),
+                func.lower(func.coalesce(ServiceConfig.name, "")).like(like_query),
+            )
+        )
+
+    result = await db.execute(
+        stmt.order_by(
+            MediaUserIdentity.last_seen_at.desc(), MediaUserIdentity.id.desc()
+        )
+    )
+    items = [
+        _serialize_media_identity(identity, linked_user, service_name)
+        for identity, linked_user, service_name in result.all()
+    ]
+    return MediaIdentityListResponse(items=items, total=len(items))
+
+
+@router.post(
+    "/users/media-identities/{identity_id}/link",
+    response_model=MediaIdentityItem,
+)
+async def link_media_identity(
+    identity_id: int,
+    body: MediaIdentityLinkRequest,
+    _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> MediaIdentityItem:
+    """Link a media identity to a user account."""
+    identity = await db.get(MediaUserIdentity, identity_id)
+    if identity is None:
+        raise HTTPException(status_code=404, detail="Media identity not found")
+
+    target_user = await db.get(User, body.target_user_id)
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="Target user not found")
+
+    identity.user_id = target_user.id
+    if identity.linked_at is None:
+        identity.linked_at = datetime.now(UTC)
+
+    await resolve_singleton_notice(
+        db,
+        dedupe_key=media_auth_conflict_notice_key_for_source(
+            identity.source_service,
+            identity.source_service_config_id,
+            identity.source_user_id,
+        ),
+    )
+    await db.commit()
+
+    refreshed = await db.execute(
+        select(MediaUserIdentity, User, ServiceConfig.name)
+        .outerjoin(User, User.id == MediaUserIdentity.user_id)
+        .outerjoin(
+            ServiceConfig,
+            ServiceConfig.id == MediaUserIdentity.source_service_config_id,
+        )
+        .where(MediaUserIdentity.id == identity_id)
+    )
+    row = refreshed.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Media identity not found")
+    return _serialize_media_identity(row[0], row[1], row[2])
+
+
+@router.post(
+    "/users/media-identities/{identity_id}/unlink",
+    response_model=MediaIdentityItem,
+)
+async def unlink_media_identity(
+    identity_id: int,
+    _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> MediaIdentityItem:
+    """Unlink a media identity from a user account."""
+    identity = await db.get(MediaUserIdentity, identity_id)
+    if identity is None:
+        raise HTTPException(status_code=404, detail="Media identity not found")
+
+    identity.user_id = None
+    await db.commit()
+
+    refreshed = await db.execute(
+        select(MediaUserIdentity, User, ServiceConfig.name)
+        .outerjoin(User, User.id == MediaUserIdentity.user_id)
+        .outerjoin(
+            ServiceConfig,
+            ServiceConfig.id == MediaUserIdentity.source_service_config_id,
+        )
+        .where(MediaUserIdentity.id == identity_id)
+    )
+    row = refreshed.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Media identity not found")
+    return _serialize_media_identity(row[0], row[1], row[2])
 
 
 @router.post("/users", response_model=UserInfo)

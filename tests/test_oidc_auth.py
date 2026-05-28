@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import HTTPException
@@ -13,9 +14,13 @@ from backend.api.routes.settings.oidc import update_oidc_settings
 from backend.core.encryption import fer_encrypt
 from backend.core.oidc import OIDCProviderMetadata, extract_userinfo
 from backend.database import Base
-from backend.database.models import OIDCSettings, User, UserSession
-from backend.enums import UserRole
+from backend.database.models import OIDCSettings, ServiceConfig, User, UserSession
+from backend.enums import Service, UserRole
 from backend.models.settings import OIDCSettingsUpdate
+from backend.services.media_auth import (
+    DiscoveredMediaUser,
+    PlexPendingAuth,
+)
 
 
 def _make_callback_request() -> Request:
@@ -28,6 +33,23 @@ def _make_callback_request() -> Request:
         "path": "/api/auth/oidc/callback",
         "headers": headers,
         "query_string": b"code=test-code&state=expected-state",
+        "client": ("127.0.0.1", 4242),
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
+def _make_plex_callback_request(state: str = "expected-state") -> Request:
+    headers = [
+        (b"host", b"testserver"),
+    ]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/auth/media/plex/callback",
+        "headers": headers,
+        "query_string": f"state={state}".encode(),
         "client": ("127.0.0.1", 4242),
         "scheme": "http",
         "server": ("testserver", 80),
@@ -250,6 +272,125 @@ def test_oidc_callback_links_existing_user_by_email(monkeypatch) -> None:
                 .all()
             )
             assert len(sessions) == 1
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_callback_redirects_on_success(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            user = _new_user(
+                username="plexmember",
+                email="plexmember@example.com",
+                role=UserRole.USER,
+            )
+            service = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex.local",
+                api_key="server-token",
+                name="plex-main",
+                enabled=True,
+            )
+            db_session.add_all([user, service])
+            await db_session.commit()
+            await db_session.refresh(user)
+            await db_session.refresh(service)
+
+            def fake_pop_pending_plex_auth(state: str) -> PlexPendingAuth:
+                return PlexPendingAuth(
+                    state=state,
+                    service_config_id=service.id,
+                    client_identifier="plex-client-id",
+                    pin_id=123,
+                    pin_code="abcd",
+                    return_to="http://localhost:3000/",
+                    created_at=datetime.now(UTC),
+                )
+
+            async def fake_exchange_plex_pin_for_token(
+                pending: PlexPendingAuth,
+            ) -> str:
+                assert pending.service_config_id == service.id
+                return "plex-user-token"
+
+            async def fake_authenticate_plex_token(
+                db: AsyncSession,
+                *,
+                provider: object,
+                plex_user_token: str,
+            ) -> DiscoveredMediaUser:
+                assert db is db_session
+                assert plex_user_token == "plex-user-token"
+                return DiscoveredMediaUser(
+                    source_service=Service.PLEX,
+                    source_service_config_id=service.id,
+                    source_service_name="plex-main",
+                    source_user_id="plex-user-42",
+                    username="plexmember",
+                    username_normalized="plexmember",
+                    email="plexmember@example.com",
+                    display_name="Plex Member",
+                    raw={"source": "plex"},
+                )
+
+            async def fake_resolve_or_create_user_for_identity(
+                db: AsyncSession,
+                *,
+                identity: DiscoveredMediaUser,
+            ) -> User:
+                assert db is db_session
+                assert identity.source_service == Service.PLEX
+                return user
+
+            async def fake_issue_login_session(**_: object) -> None:
+                return None
+
+            monkeypatch.setattr(
+                auth_routes,
+                "pop_pending_plex_auth",
+                fake_pop_pending_plex_auth,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "exchange_plex_pin_for_token",
+                fake_exchange_plex_pin_for_token,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "authenticate_plex_token",
+                fake_authenticate_plex_token,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "resolve_or_create_user_for_identity",
+                fake_resolve_or_create_user_for_identity,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "_issue_login_session",
+                fake_issue_login_session,
+            )
+
+            request = _make_plex_callback_request()
+            response = await auth_routes.media_plex_callback(
+                request=request,
+                state="expected-state",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location") == "http://localhost:3000/"
 
         await engine.dispose()
 
