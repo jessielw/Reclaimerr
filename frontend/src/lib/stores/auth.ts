@@ -59,9 +59,19 @@ function createAuthStore() {
     });
   }
 
+  const applyAuthResponse = (data: { user: UserProfile }) => {
+    set({
+      isAuthenticated: true,
+      user: data.user,
+      loading: false,
+    });
+    return data;
+  };
+
   return {
     subscribe,
     init,
+    applyAuthResponse,
     // login
     login: async (username: string, password: string) => {
       const response = await fetch("/api/auth/login", {
@@ -79,14 +89,34 @@ function createAuthStore() {
       }
 
       const data = await response.json();
+      return applyAuthResponse(data);
+    },
 
-      set({
-        isAuthenticated: true,
-        user: data.user,
-        loading: false,
+    loginMedia: async (
+      serviceConfigId: number,
+      username: string,
+      password: string,
+    ) => {
+      const response = await fetch("/api/auth/media/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          service_config_id: serviceConfigId,
+          username,
+          password,
+        }),
+        credentials: "include",
       });
 
-      return data;
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Media sign-in failed");
+      }
+
+      const data = await response.json();
+      return applyAuthResponse(data);
     },
 
     // logout

@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -104,6 +104,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
     role: UserRole
     permissions: list[Permission] = []
     created_at: datetime
+    has_local_password: bool
     require_password_change: bool
 
     @field_validator("username")
@@ -163,6 +164,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
             role=user.role,
             permissions=cls.coerce_permissions(user.permissions),
             created_at=user.created_at,
+            has_local_password=bool(user.password_hash),
             require_password_change=user.require_password_change or False,
         )
 
@@ -173,6 +175,35 @@ class AuthResponse(BaseModel):
 
 class OIDCAuthStatusResponse(BaseModel):
     enabled: bool
+
+
+class MediaAuthProvider(BaseModel):
+    service_config_id: int
+    service_type: str
+    name: str
+    auth_mode: Literal["credentials", "redirect"]
+
+
+class MediaAuthProvidersResponse(BaseModel):
+    providers: list[MediaAuthProvider]
+    default_service_config_id: int | None = None
+
+
+class MediaLoginRequest(BaseModel):
+    service_config_id: int
+    username: str
+    password: str
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> "MediaLoginRequest":
+        self.username = self.username.strip()
+        self.password = self.password.strip()
+        if not self.username or not self.password:
+            raise PydanticCustomError(
+                "media_credentials",
+                "Username and password are required",
+            )
+        return self
 
 
 class UserSessionInfo(BaseModel):
@@ -193,6 +224,32 @@ class RevokeSessionResponse(BaseModel):
 class RevokeOtherSessionsResponse(BaseModel):
     message: str
     revoked_count: int
+
+
+class MediaIdentityItem(BaseModel):
+    id: int
+    source_service: str
+    source_service_config_id: int
+    source_service_name: str
+    source_user_id: str
+    username: str
+    username_normalized: str
+    email: str | None = None
+    display_name: str | None = None
+    user_id: int | None = None
+    user_username: str | None = None
+    user_display_name: str | None = None
+    last_seen_at: datetime
+    linked_at: datetime | None = None
+
+
+class MediaIdentityListResponse(BaseModel):
+    items: list[MediaIdentityItem]
+    total: int
+
+
+class MediaIdentityLinkRequest(BaseModel):
+    target_user_id: int
 
 
 class CreateUserRequest(

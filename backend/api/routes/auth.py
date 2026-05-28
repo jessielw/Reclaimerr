@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from authlib.integrations.base_client import OAuthError
 from fastapi import (
@@ -46,11 +46,34 @@ from backend.core.oidc import (
 from backend.core.settings import settings
 from backend.database import get_db
 from backend.database.models import OIDCSettings, User, UserSession
+from backend.enums import Service
 from backend.models.auth import (
     AuthResponse,
     LoginRequest,
+    MediaAuthProvidersResponse,
+    MediaLoginRequest,
     OIDCAuthStatusResponse,
     UserInfo,
+)
+from backend.models.auth import (
+    MediaAuthProvider as MediaAuthProviderResponse,
+)
+from backend.services.media_auth import (
+    MediaAuthAccessDeniedError,
+    MediaAuthConflictError,
+    MediaAuthCredentialsError,
+    MediaAuthProviderError,
+    authenticate_emby_family_credentials,
+    authenticate_plex_token,
+    exchange_plex_pin_for_token,
+    get_media_auth_provider,
+    list_media_auth_providers,
+    pop_pending_plex_auth,
+    resolve_or_create_user_for_identity,
+    start_plex_pin_flow,
+)
+from backend.services.media_auth import (
+    MediaAuthProvider as MediaAuthProviderConfig,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -117,10 +140,95 @@ def _oidc_callback_redirect_uri(
     return str(request.url_for("oidc_callback"))
 
 
-def _auth_error_redirect(message: str) -> RedirectResponse:
+def _default_frontend_redirect() -> str:
+    for origin in settings.cors_origins_list:
+        if origin == "*":
+            continue
+        try:
+            parsed = urlsplit(origin.strip())
+        except ValueError:
+            continue
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
+    return "/"
+
+
+def _is_allowed_return_to_url(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not parsed.netloc:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = str(parsed.hostname or "").lower()
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+
+    candidate = (parsed.scheme.lower(), parsed.netloc.lower())
+    for origin in settings.cors_origins_list:
+        if origin == "*":
+            continue
+        try:
+            allowed = urlsplit(origin.strip())
+        except ValueError:
+            continue
+        if not allowed.netloc or allowed.scheme not in {"http", "https"}:
+            continue
+        if candidate == (allowed.scheme.lower(), allowed.netloc.lower()):
+            return True
+    return False
+
+
+def _resolve_post_auth_redirect(value: str | None) -> str:
+    if _is_allowed_return_to_url(value):
+        return str(value).strip()
+    return _default_frontend_redirect()
+
+
+def _with_auth_error(url: str, message: str) -> str:
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["auth_error"] = message
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path or "/",
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _auth_error_redirect(
+    message: str, *, redirect_to: str | None = None
+) -> RedirectResponse:
+    target = redirect_to or "/"
+    if target == "/":
+        return RedirectResponse(
+            url=f"/?auth_error={quote_plus(message)}",
+            status_code=status.HTTP_302_FOUND,
+        )
     return RedirectResponse(
-        url=f"/?auth_error={quote_plus(message)}",
+        url=_with_auth_error(target, message),
         status_code=status.HTTP_302_FOUND,
+    )
+
+
+def _serialize_media_provider(
+    provider: MediaAuthProviderConfig,
+) -> MediaAuthProviderResponse:
+    return MediaAuthProviderResponse(
+        service_config_id=provider.service_config_id,
+        service_type=provider.service_type.value,
+        name=provider.name,
+        auth_mode=provider.auth_mode,
     )
 
 
@@ -312,6 +420,194 @@ async def login(
 
     await _issue_login_session(request=request, response=response, user=user, db=db)
     return AuthResponse(user=UserInfo.from_user(user))
+
+
+@router.get("/media/providers", response_model=MediaAuthProvidersResponse)
+async def list_media_auth_login_providers(
+    db: AsyncSession = Depends(get_db),
+) -> MediaAuthProvidersResponse:
+    providers = await list_media_auth_providers(db)
+    payload = [_serialize_media_provider(provider) for provider in providers]
+    default_service_config_id = payload[0].service_config_id if payload else None
+    return MediaAuthProvidersResponse(
+        providers=payload,
+        default_service_config_id=default_service_config_id,
+    )
+
+
+@router.post("/media/login", response_model=AuthResponse)
+@limiter.limit("5/minute")
+async def media_login(
+    body: MediaLoginRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Login with media server credentials for providers that support it (e.g. Emby/Jellyfin family users)."""
+    provider = await get_media_auth_provider(
+        db,
+        service_config_id=body.service_config_id,
+    )
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media login provider was not found or is disabled",
+        )
+    if provider.auth_mode != "credentials":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected provider requires browser redirect sign-in",
+        )
+    if provider.service_type not in (Service.JELLYFIN, Service.EMBY):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected provider does not support credentials sign-in",
+        )
+
+    try:
+        identity = await authenticate_emby_family_credentials(
+            provider=provider,
+            username=body.username,
+            password=body.password,
+        )
+        user = await resolve_or_create_user_for_identity(db, identity=identity)
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is disabled",
+            )
+    except MediaAuthCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid media server credentials",
+        ) from exc
+    except MediaAuthAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except MediaAuthConflictError as exc:
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Your media account matches multiple local users and needs an "
+                "admin to link it before sign-in."
+            ),
+        ) from exc
+    except MediaAuthProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    await _issue_login_session(request=request, response=response, user=user, db=db)
+    return AuthResponse(user=UserInfo.from_user(user))
+
+
+@router.get("/media/plex/start")
+async def media_plex_start(
+    request: Request,
+    service_config_id: int = Query(..., ge=1),
+    return_to: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start Plex login flow by requesting a PIN and redirecting user to Plex auth page."""
+    provider = await get_media_auth_provider(
+        db,
+        service_config_id=service_config_id,
+    )
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Plex login provider was not found or is disabled",
+        )
+    if provider.service_type is not Service.PLEX:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected provider is not a Plex server",
+        )
+
+    callback_url = str(request.url_for("media_plex_callback"))
+    redirect_target = _resolve_post_auth_redirect(return_to)
+    try:
+        redirect_url = await start_plex_pin_flow(
+            provider=provider,
+            callback_url=callback_url,
+            return_to=redirect_target,
+        )
+    except MediaAuthProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/media/plex/callback", name="media_plex_callback")
+async def media_plex_callback(
+    request: Request,
+    state: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle callback from Plex after user authorizes PIN login. Exchange PIN for token, authenticate,
+    and issue session cookie."""
+    if not state:
+        return _auth_error_redirect("Plex callback is missing state")
+
+    pending = pop_pending_plex_auth(state)
+    if pending is None:
+        return _auth_error_redirect("Plex login session expired. Please try again.")
+    redirect_target = _resolve_post_auth_redirect(pending.return_to)
+
+    provider = await get_media_auth_provider(
+        db,
+        service_config_id=pending.service_config_id,
+    )
+    if provider is None:
+        return _auth_error_redirect(
+            "Plex login provider is unavailable",
+            redirect_to=redirect_target,
+        )
+
+    try:
+        plex_user_token = await exchange_plex_pin_for_token(pending)
+        identity = await authenticate_plex_token(
+            db,
+            provider=provider,
+            plex_user_token=plex_user_token,
+        )
+        user = await resolve_or_create_user_for_identity(db, identity=identity)
+        if not user.is_active:
+            return _auth_error_redirect(
+                "Account is disabled", redirect_to=redirect_target
+            )
+    except MediaAuthCredentialsError:
+        return _auth_error_redirect(
+            "Plex sign-in was not approved",
+            redirect_to=redirect_target,
+        )
+    except MediaAuthAccessDeniedError:
+        return _auth_error_redirect(
+            "Your Plex account does not have access to this server",
+            redirect_to=redirect_target,
+        )
+    except MediaAuthConflictError:
+        await db.commit()
+        return _auth_error_redirect(
+            "Your media account needs an admin link before sign-in",
+            redirect_to=redirect_target,
+        )
+    except MediaAuthProviderError:
+        return _auth_error_redirect(
+            "Plex sign-in failed. Please try again.",
+            redirect_to=redirect_target,
+        )
+
+    response = RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
+    await _issue_login_session(request=request, response=response, user=user, db=db)
+    return response
 
 
 @router.post("/logout")
