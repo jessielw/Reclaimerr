@@ -1240,7 +1240,7 @@
                 <span class="hidden sm:inline">Pick Users</span>
               </Button>
             {/if}
-            {#if node.field === "media.path" && pathPickerMediaType}
+            {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
               <Button
                 size="sm"
                 variant="secondary"
@@ -1277,7 +1277,7 @@
     </div>
   </div>
 
-  {#if node.field === "media.path" && pathPickerMediaType}
+  {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
     <PathPatternPicker
       bind:open={pathPickerOpen}
       mediaType={pathPickerMediaType}

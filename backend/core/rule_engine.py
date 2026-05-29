@@ -629,16 +629,54 @@ def collect_rule_conditions(
     return list(_iter_condition_nodes(root, field=field))
 
 
-def collect_rule_path_patterns(definition: RuleDefinition | None) -> list[str]:
-    """Collect all unique path patterns from media.path conditions in the rule definition."""
-    seen: set[str] = set()
-    patterns: list[str] = []
-    for condition in collect_rule_conditions(definition, field="media.path"):
+def collect_rule_path_conditions(
+    definition: RuleDefinition | None,
+) -> list[dict[str, str]]:
+    """Collect normalized path/filename conditions from a rule definition.
+
+    Returns a deduplicated list of objects with ``field``, ``operator``, and ``value``.
+    Valueless operators are skipped.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    conditions: list[dict[str, str]] = []
+    for condition in collect_rule_conditions(definition):
+        field = str(condition.get("field", ""))
+        if field not in PATH_FIELDS:
+            continue
+        operator = str(condition.get("operator", "")).lower()
+        if operator not in PATH_OPERATORS or operator in VALUELESS_OPERATORS:
+            continue
         for value in _normalize_condition_values(condition.get("value")):
-            if value in seen:
+            key = (field, operator, value)
+            if key in seen:
                 continue
-            seen.add(value)
-            patterns.append(value)
+            seen.add(key)
+            conditions.append(
+                {
+                    "field": field,
+                    "operator": operator,
+                    "value": value,
+                }
+            )
+    return conditions
+
+
+def collect_rule_path_patterns(definition: RuleDefinition | None) -> list[str]:
+    """Collect all unique media.path values from a rule definition.
+
+    This helper is kept for backward compatibility with older call sites that
+    only consume path pattern strings.
+    """
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for condition in collect_rule_path_conditions(definition):
+        if condition["field"] != "media.path":
+            continue
+        value = condition["value"]
+        if value in seen:
+            continue
+        seen.add(value)
+        patterns.append(value)
     return patterns
 
 
@@ -831,10 +869,11 @@ def _build_context(
         )
         _added = version.added_at or movie.added_at
         _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
+        _file_name = version.file_name or _path_basename(version.path)
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
-            "media.file_name": [version.file_name] if version.file_name else [],
+            "media.file_name": [_file_name] if _file_name else [],
             "media.size": size,
             "media.days_since_added": _days_between(
                 version.added_at or movie.added_at, now
@@ -894,6 +933,11 @@ def _build_context(
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
         _series_path = next((ref.path for ref in refs if ref.path), None)
+        _series_file_names = [
+            file_name
+            for file_name in (_path_basename(ref.path) for ref in refs)
+            if file_name
+        ]
         _disk = (
             _resolver.resolve(_series_path) if (_resolver and _series_path) else None
         )
@@ -901,7 +945,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
-            "media.file_name": [],
+            "media.file_name": _series_file_names,
             "media.size": series.size,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
@@ -958,6 +1002,7 @@ def _build_context(
 
     if target_scope == TARGET_SEASON and series and season:
         refs = series.service_refs or []
+        _season_file_name = _path_basename(season.path)
         non_special_nums = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
         )
@@ -976,7 +1021,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
-            "media.file_name": [season.path.rsplit("/", 1)[-1]] if season.path else [],
+            "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
@@ -1043,6 +1088,7 @@ def _build_context(
 
     if target_scope == TARGET_EPISODE and series and season and episode:
         refs = series.service_refs or []
+        _episode_file_name = _path_basename(episode.path)
         season_fully_watched_ep, season_watched_percent_ep = _season_watch_progress(
             season
         )
@@ -1069,9 +1115,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [episode.path] if episode.path else [],
-            "media.file_name": [episode.path.rsplit("/", 1)[-1]]
-            if episode.path
-            else [],
+            "media.file_name": [_episode_file_name] if _episode_file_name else [],
             "media.size": episode.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": episode.view_count,
@@ -1184,14 +1228,16 @@ def _evaluate_condition(
     operator = str(condition.get("operator", ""))
     expected = condition.get("value")
     actual = context.get(field)
-    if not _matches_operator(actual, operator, expected):
+    if not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))
     return True
 
 
-def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
+def _matches_operator(
+    actual: Any, operator: str, expected: Any, *, field: str | None = None
+) -> bool:
     """Evaluate a single condition operator against the provided actual and expected values."""
     if operator == "exists":
         return _exists(actual)
@@ -1204,7 +1250,7 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     if operator == "matches_any_regex":
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
-        return _matches_list_operator(actual, operator, expected)
+        return _matches_list_operator(actual, operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
         left_date = _date_value(_first_scalar(actual))
         right_date = _date_value(_first_scalar(expected))
@@ -1225,12 +1271,16 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     if left is None or right is None:
         return False
     if operator == "equals":
+        if field == "media.path":
+            return _matches_path_prefix(left, right)
         left_number = _number(left)
         right_number = _number(right)
         if left_number is not None and right_number is not None:
             return left_number == right_number
         return _normalize(left) == _normalize(right)
     if operator == "not_equals":
+        if field == "media.path":
+            return not _matches_path_prefix(left, right)
         left_number = _number(left)
         right_number = _number(right)
         if left_number is not None and right_number is not None:
@@ -1252,8 +1302,38 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     return False
 
 
-def _matches_list_operator(actual: Any, operator: str, expected: Any) -> bool:
+def _matches_list_operator(
+    actual: Any,
+    operator: str,
+    expected: Any,
+    *,
+    field: str | None = None,
+) -> bool:
     """Evaluate a list operator against the provided actual and expected values."""
+    if field == "media.path":
+        actual_paths = [
+            normalize_fpath(value, lower=True)
+            for value in _as_list(actual)
+            if _exists(value)
+        ]
+        expected_paths = [
+            normalize_fpath(value, lower=True, strip_ending_slash=True)
+            for value in _as_list(expected)
+            if _exists(value)
+        ]
+        if not expected_paths:
+            return False
+        has_any = any(
+            _matches_path_prefix(actual_path, expected_path)
+            for actual_path in actual_paths
+            for expected_path in expected_paths
+        )
+        if operator in {"in", "contains_any"}:
+            return has_any
+        if operator in {"not_in", "not_contains_any"}:
+            return not has_any
+        return False
+
     actual_values = {_normalize(value) for value in _as_list(actual) if _exists(value)}
     expected_values = {
         _normalize(value) for value in _as_list(expected) if _exists(value)
@@ -1266,6 +1346,15 @@ def _matches_list_operator(actual: Any, operator: str, expected: Any) -> bool:
     if operator in {"not_in", "not_contains_any"}:
         return not has_any
     return False
+
+
+def _matches_path_prefix(actual: Any, expected: Any) -> bool:
+    """Return True when ``actual`` is exactly ``expected`` or a child path of it."""
+    actual_path = normalize_fpath(actual, lower=True)
+    expected_path = normalize_fpath(expected, lower=True, strip_ending_slash=True)
+    if not actual_path or not expected_path:
+        return False
+    return actual_path == expected_path or actual_path.startswith(f"{expected_path}/")
 
 
 def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
@@ -1281,6 +1370,17 @@ def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
         if any(regex.search(value) for value in normalized_values):
             return True
     return False
+
+
+def _path_basename(path: str | None) -> str | None:
+    """Return the basename component of a path, normalized for slash style."""
+    if not path:
+        return None
+    normalized = normalize_fpath(path)
+    if not normalized:
+        return None
+    name = normalized.rsplit("/", 1)[-1].strip()
+    return name or None
 
 
 def _effective_last_viewed(

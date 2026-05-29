@@ -236,6 +236,26 @@ def _make_single_condition_rule(
     )
 
 
+def _make_multi_condition_rule(
+    *,
+    name: str,
+    media_type: MediaType,
+    target_scope: str,
+    conditions: list[dict[str, object]],
+) -> ReclaimRule:
+    return ReclaimRule(
+        name=name,
+        media_type=media_type,
+        enabled=True,
+        target_scope=target_scope,
+        definition={
+            "version": 1,
+            "root": {"type": "group", "op": "and", "children": conditions},
+        },
+        action={"candidate": True, "media_server_action": "delete"},
+    )
+
+
 class _LeavingSoonSyncServiceFake:
     def __init__(
         self,
@@ -324,6 +344,95 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
+
+    def test_evaluate_movie_rule_path_folder_literal_and_filename_regex_passes(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                path="/media/movies/action/Example.Movie.2024.mkv",
+                file_name=None,
+            )
+        ]
+        rule = _make_multi_condition_rule(
+            name="path-folder-and-filename-regex",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "media.path",
+                    "operator": "equals",
+                    "value": "/media/movies/action",
+                },
+                {
+                    "type": "condition",
+                    "field": "media.file_name",
+                    "operator": "matches_any_regex",
+                    "value": [r"example\.movie\.2024\.mkv$"],
+                },
+            ],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_path_and_filename_regex_and_condition_uses_path_basename_fallback(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                path="/media/movies/action/Example.Movie.2024.mkv",
+                file_name=None,
+            )
+        ]
+        rule = _make_multi_condition_rule(
+            name="path-and-filename-and",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "media.path",
+                    "operator": "matches_any_regex",
+                    "value": [r"^/media/movies/action"],
+                },
+                {
+                    "type": "condition",
+                    "field": "media.file_name",
+                    "operator": "matches_any_regex",
+                    "value": [r"example\.movie\.2024\.mkv$"],
+                },
+            ],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_series_rule_filename_regex_uses_series_path_basename(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.last_viewed_at = datetime.now(UTC) - timedelta(days=3)
+        series.service_refs = [
+            _make_series_ref(service_id="sr-1", path="/media/shows/Example.Series")
+        ]
+        rule = _make_single_condition_rule(
+            name="series-filename-regex",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="media.file_name",
+            operator="matches_any_regex",
+            value=[r"example\.series$"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))
 
     def test_evaluate_movie_rule_tmdb_ranges_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
