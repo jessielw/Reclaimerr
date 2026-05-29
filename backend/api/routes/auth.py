@@ -16,7 +16,7 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
@@ -401,7 +401,12 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     """Login with username and password."""
-    result = await db.execute(select(User).where(User.username == body.username))
+    # email or username can be used as the identifier for login, so we need to check both fields for a match
+    result = await db.execute(
+        select(User).where(
+            or_(User.username == body.username, User.email == body.username)
+        )
+    )
     user = result.scalar_one_or_none()
 
     if (

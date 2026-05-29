@@ -2,6 +2,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
+from email_validator import EmailNotValidError, validate_email
 from pydantic import (
     BaseModel,
     EmailStr,
@@ -36,6 +37,19 @@ class UsernameMixin:
                 "Username can only contain letters, numbers, underscores, and hyphens",
             )
         return stripped
+
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        stripped = v.strip()
+        try:
+            email_info = validate_email(stripped, check_deliverability=False)
+            return email_info.normalized
+        except EmailNotValidError as e:
+            raise PydanticCustomError(
+                "email_invalid",
+                "Invalid email address: {error}",
+                {"error": str(e)},
+            ) from e
 
 
 class DisplayNameMixin:
@@ -87,6 +101,8 @@ class LoginRequest(BaseModel, UsernameMixin, PasswordValidationMixin):
     @field_validator("username")
     @classmethod
     def username_validation(cls, v: str) -> str:
+        if "@" in v:
+            return cls.validate_email(v)
         return cls.validate_username(v)
 
     @field_validator("password")
