@@ -21,12 +21,14 @@
     node: RuleNode;
     rootNode?: RuleNode;
     depth?: number;
+    targetScope?: RuleTargetScope;
     pathPickerMediaType?: MediaType;
     pathPickerLibraryIds?: string[] | null;
     onChange: () => void;
     onRemove?: () => void;
   }
 
+  type RuleTargetScope = "movie_version" | "series" | "season" | "episode";
   type FieldKind = "number" | "text" | "boolean" | "temporal";
 
   interface FieldConfig {
@@ -47,6 +49,7 @@
     node,
     rootNode = node,
     depth = 0,
+    targetScope = "movie_version",
     pathPickerMediaType = undefined,
     pathPickerLibraryIds = null,
     onChange,
@@ -280,6 +283,20 @@
       kind: "number",
       operators: numericOperators,
       defaultOperator: "less_than",
+    },
+    {
+      value: "season.fully_watched",
+      label: "Season fully watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "season.watched_percent",
+      label: "Season watched (%)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
     },
     {
       value: "season.is_latest_season",
@@ -520,6 +537,13 @@
       defaultOperator: "is_true",
     },
     {
+      value: "seerr.requester_has_watched",
+      label: "Seerr requester has watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "seerr.requested_by_user_ids",
       label: "Seerr requester IDs",
       kind: "text",
@@ -541,6 +565,186 @@
       defaultOperator: "less_than",
     },
   ];
+
+  const SCOPE_FIELD_VALUES: Record<RuleTargetScope, Set<string>> = {
+    movie_version: new Set<string>([
+      "anilist.favourites",
+      "anilist.popularity",
+      "anilist.score",
+      "arr.monitored",
+      "arr.tags",
+      "audio.channels",
+      "audio.codec_family",
+      "audio.languages",
+      "audio.track_count",
+      "disk.free_bytes",
+      "disk.free_percent",
+      "imdb.rating",
+      "imdb.vote_count",
+      "library.id",
+      "media.days_since_added",
+      "media.duration",
+      "media.file_name",
+      "media.path",
+      "media.size",
+      "seerr.requested",
+      "seerr.requested_by_user_ids",
+      "seerr.requester_has_watched",
+      "subtitle.languages",
+      "tmdb.days_since_release",
+      "tmdb.popularity",
+      "tmdb.release_date",
+      "tmdb.vote_average",
+      "tmdb.vote_count",
+      "video.codec_family",
+      "video.color_primaries",
+      "video.color_space",
+      "video.color_transfer",
+      "video.dolby_vision",
+      "video.hdr",
+      "video.height",
+      "video.resolution",
+      "video.width",
+      "watch.days_since_last_watched",
+      "watch.last_viewed_at",
+      "watch.never_watched",
+      "watch.view_count",
+    ]),
+    series: new Set<string>([
+      "anilist.favourites",
+      "anilist.popularity",
+      "anilist.score",
+      "arr.monitored",
+      "arr.tags",
+      "audio.channels",
+      "audio.codec_family",
+      "disk.free_bytes",
+      "disk.free_percent",
+      "imdb.rating",
+      "imdb.vote_count",
+      "library.id",
+      "media.days_since_added",
+      "media.file_name",
+      "media.path",
+      "media.size",
+      "seerr.requested",
+      "seerr.requested_by_user_ids",
+      "seerr.requester_has_watched",
+      "series.status",
+      "subtitle.languages",
+      "tmdb.days_since_first_air_date",
+      "tmdb.days_since_last_air_date",
+      "tmdb.first_air_date",
+      "tmdb.last_air_date",
+      "tmdb.popularity",
+      "tmdb.vote_average",
+      "tmdb.vote_count",
+      "video.codec_family",
+      "video.dolby_vision",
+      "video.hdr",
+      "video.height",
+      "video.width",
+      "watch.days_since_last_watched",
+      "watch.last_viewed_at",
+      "watch.never_watched",
+      "watch.view_count",
+    ]),
+    season: new Set<string>([
+      "anilist.favourites",
+      "anilist.popularity",
+      "anilist.score",
+      "arr.monitored",
+      "arr.tags",
+      "audio.channels",
+      "audio.codec_family",
+      "audio.languages",
+      "disk.free_bytes",
+      "disk.free_percent",
+      "imdb.rating",
+      "imdb.vote_count",
+      "library.id",
+      "media.days_since_added",
+      "media.file_name",
+      "media.path",
+      "media.size",
+      "season.air_date",
+      "season.days_since_air_date",
+      "season.episode_count",
+      "season.fully_watched",
+      "season.is_latest_season",
+      "season.season_number",
+      "season.seasons_from_latest",
+      "season.watched_percent",
+      "seerr.requested",
+      "seerr.requested_by_user_ids",
+      "seerr.requester_has_watched",
+      "series.status",
+      "subtitle.languages",
+      "tmdb.days_since_first_air_date",
+      "tmdb.days_since_last_air_date",
+      "tmdb.first_air_date",
+      "tmdb.last_air_date",
+      "tmdb.popularity",
+      "tmdb.vote_average",
+      "tmdb.vote_count",
+      "video.codec_family",
+      "video.dolby_vision",
+      "video.hdr",
+      "video.height",
+      "video.width",
+      "watch.days_since_last_watched",
+      "watch.last_viewed_at",
+      "watch.never_watched",
+      "watch.view_count",
+    ]),
+    episode: new Set<string>([
+      "anilist.favourites",
+      "anilist.popularity",
+      "anilist.score",
+      "arr.monitored",
+      "arr.tags",
+      "disk.free_bytes",
+      "disk.free_percent",
+      "episode.air_date",
+      "episode.days_since_air_date",
+      "episode.number",
+      "episode.season_number",
+      "imdb.rating",
+      "imdb.vote_count",
+      "library.id",
+      "media.days_since_added",
+      "media.file_name",
+      "media.path",
+      "media.size",
+      "season.air_date",
+      "season.days_since_air_date",
+      "season.episode_count",
+      "season.fully_watched",
+      "season.is_latest_season",
+      "season.season_number",
+      "season.seasons_from_latest",
+      "season.watched_percent",
+      "seerr.requested",
+      "seerr.requested_by_user_ids",
+      "seerr.requester_has_watched",
+      "series.status",
+      "tmdb.days_since_first_air_date",
+      "tmdb.days_since_last_air_date",
+      "tmdb.first_air_date",
+      "tmdb.last_air_date",
+      "tmdb.popularity",
+      "tmdb.vote_average",
+      "tmdb.vote_count",
+      "watch.days_since_last_watched",
+      "watch.last_viewed_at",
+      "watch.never_watched",
+      "watch.view_count",
+    ]),
+  };
+
+  const scopedFields = $derived.by(() =>
+    fields.filter((field) => SCOPE_FIELD_VALUES[targetScope].has(field.value)),
+  );
 
   // organize fields into common and categorized groups for the UI
   const COMMON_FIELD_VALUES = new Set<string>([
@@ -599,10 +803,10 @@
     }
   };
 
-  const groupedFields: FieldGroup[] = (() => {
+  const groupedFields = $derived.by(() => {
     const groups: FieldGroup[] = [];
 
-    const commonItems = fields
+    const commonItems = scopedFields
       .filter((field) => COMMON_FIELD_VALUES.has(field.value))
       .sort(fieldLabelComparator);
     if (commonItems.length > 0) {
@@ -610,7 +814,7 @@
     }
 
     const byCategory = new Map<string, FieldConfig[]>();
-    for (const field of fields) {
+    for (const field of scopedFields) {
       if (COMMON_FIELD_VALUES.has(field.value)) continue;
       const label = categoryLabel(field.value);
       const current = byCategory.get(label) ?? [];
@@ -629,7 +833,7 @@
     }
 
     return groups;
-  })();
+  });
 
   const MAX_TOTAL_GROUPS = 5;
 
@@ -654,6 +858,8 @@
 
   const fieldLabel = (value: string) =>
     fields.find((f) => f.value === value)?.label ?? value;
+  const isFieldCompatibleForScope = (fieldValue: string) =>
+    SCOPE_FIELD_VALUES[targetScope].has(fieldValue);
   const operatorLabel = (value: RuleConditionOperator) =>
     operatorLabelMap[value] ?? value;
   const isNumericInput = (c: RuleCondition) =>
@@ -875,6 +1081,7 @@
             node={child}
             {rootNode}
             depth={depth + 1}
+            {targetScope}
             {pathPickerMediaType}
             {pathPickerLibraryIds}
             {onChange}
@@ -1033,7 +1240,7 @@
                 <span class="hidden sm:inline">Pick Users</span>
               </Button>
             {/if}
-            {#if node.field === "media.path" && pathPickerMediaType}
+            {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
               <Button
                 size="sm"
                 variant="secondary"
@@ -1061,10 +1268,16 @@
           <Trash2 class="size-3.5" />
         </Button>
       {/if}
+
+      {#if !isFieldCompatibleForScope(node.field)}
+        <p class="w-full text-xs text-amber-600 dark:text-amber-400">
+          This field is not available for the current target scope.
+        </p>
+      {/if}
     </div>
   </div>
 
-  {#if node.field === "media.path" && pathPickerMediaType}
+  {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
     <PathPatternPicker
       bind:open={pathPickerOpen}
       mediaType={pathPickerMediaType}

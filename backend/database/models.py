@@ -39,6 +39,13 @@ class User(Base):
     """User account for Reclaimerr."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint(
+            "oidc_issuer",
+            "oidc_subject",
+            name="uq_users_oidc_identity",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -47,6 +54,12 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), init=True)
     email: Mapped[str | None] = mapped_column(String(120), unique=True, default=None)
     display_name: Mapped[str | None] = mapped_column(String(32), default=None)
+    oidc_issuer: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
+    oidc_subject: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
 
     # permissions
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
@@ -69,6 +82,12 @@ class User(Base):
     notification_settings: Mapped[list[NotificationSetting]] = relationship(
         back_populates="user", default_factory=list, lazy="noload", repr=False
     )
+    sessions: Mapped[list[UserSession]] = relationship(
+        back_populates="user", default_factory=list, lazy="noload", repr=False
+    )
+    media_identities: Mapped[list[MediaUserIdentity]] = relationship(
+        back_populates="user", default_factory=list, lazy="noload", repr=False
+    )
 
     def bump_token_version(self) -> None:
         """
@@ -77,6 +96,33 @@ class User(Base):
         Must be called within a session commit block to take effect.
         """
         self.token_version += 1
+
+
+class UserSession(Base):
+    """Tracked login session for a user."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), default=None)
+    ip_address: Mapped[str | None] = mapped_column(String(64), default=None)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+
+    user: Mapped[User] = relationship(
+        back_populates="sessions", init=False, lazy="noload", repr=False
+    )
 
 
 class NotificationSetting(Base):
@@ -164,6 +210,53 @@ class ServiceMediaLibrary(Base):
     )
 
 
+class MediaUserIdentity(Base):
+    """Media-server identity linked to a local user account."""
+
+    __tablename__ = "media_user_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service",
+            "source_service_config_id",
+            "source_user_id",
+            name="uq_media_user_identities_source_user",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_user_id: Mapped[str] = mapped_column(String(255))
+    username: Mapped[str] = mapped_column(String(255))
+    username_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None, index=True
+    )
+    email: Mapped[str | None] = mapped_column(String(255), default=None, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    raw: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+    user: Mapped[User | None] = relationship(
+        back_populates="media_identities",
+        init=False,
+        lazy="noload",
+        repr=False,
+    )
+
+
 class GeneralSettings(Base):
     """General application settings."""
 
@@ -205,8 +298,46 @@ class GeneralSettings(Base):
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    requester_watch_user_mappings: Mapped[list] = mapped_column(
+        JSON, default_factory=list
+    )
+
+    # leaving soon collection sync
+    leaving_soon_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    leaving_soon_collection_title: Mapped[str] = mapped_column(
+        String(255), default="Leaving Soon"
+    )
+    leaving_soon_last_success_titles: Mapped[dict[str, str]] = mapped_column(
+        JSON, default_factory=dict
+    )
 
     # timestamps
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+class OIDCSettings(Base):
+    """OIDC provider configuration (singleton row)."""
+
+    __tablename__ = "oidc_settings"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    issuer_url: Mapped[str] = mapped_column(String(500), default="")
+    client_id: Mapped[str] = mapped_column(String(255), default="")
+    client_secret: Mapped[str] = mapped_column(Text, default="")
+    scopes: Mapped[str] = mapped_column(String(255), default="openid profile email")
+    email_claim: Mapped[str] = mapped_column(String(64), default="email")
+    token_endpoint_auth_method: Mapped[str] = mapped_column(
+        String(32), default="client_secret_basic"
+    )
+    redirect_uri_override: Mapped[str | None] = mapped_column(String(500), default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
@@ -642,6 +773,40 @@ class MediaFavorite(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class MediaWatchUser(Base):
+    """User watch snapshot rows mapped to TMDB IDs across media servers."""
+
+    __tablename__ = "media_watch_users"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_type",
+            "tmdb_id",
+            "watch_user_key_normalized",
+            "source_service",
+            "source_service_config_id",
+            name="uq_media_watch_users_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
+    watch_user_key: Mapped[str] = mapped_column(String(255))
+    watch_user_key_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    last_watched_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    play_count: Mapped[int | None] = mapped_column(Integer, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )

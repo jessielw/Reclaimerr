@@ -51,7 +51,7 @@
       anilistPopularity={entry.anilist_popularity}
       anilistFavourites={entry.anilist_favourites}
       compact={true}
-      class="w-64"
+      class="w-40 md:w-64"
     />
 
     <!-- genres -->

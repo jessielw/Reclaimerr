@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from backend.core.rule_engine import validate_rule_definition
+from backend.core.rule_engine import (
+    TARGET_MOVIE_VERSION,
+    TARGET_SEASON,
+    validate_rule_definition,
+)
 
 
 def _definition(field: str, operator: str, value: object = 1) -> dict[str, object]:
@@ -129,6 +133,32 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         ):
             validate_rule_definition(_definition("library.id", "equals", "lib-1"))
 
+    def test_accepts_season_fully_watched_boolean_operator(self) -> None:
+        validate_rule_definition(_definition("season.fully_watched", "is_true"))
+
+    def test_rejects_season_fully_watched_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'season.fully_watched'",
+        ):
+            validate_rule_definition(
+                _definition("season.fully_watched", "greater_than", 1)
+            )
+
+    def test_accepts_season_watched_percent_numeric_operator(self) -> None:
+        validate_rule_definition(
+            _definition("season.watched_percent", "greater_than_or_equal", 100),
+        )
+
+    def test_rejects_season_watched_percent_list_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'contains_any' for field 'season.watched_percent'",
+        ):
+            validate_rule_definition(
+                _definition("season.watched_percent", "contains_any", ["100"]),
+            )
+
     def test_accepts_seerr_requested_boolean_operator(self) -> None:
         validate_rule_definition(_definition("seerr.requested", "is_true"))
 
@@ -159,6 +189,57 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             "Library conditions require at least one library id",
         ):
             validate_rule_definition(_definition("library.id", "contains_any", []))
+
+    def test_accepts_scope_compatible_field_for_target(self) -> None:
+        validate_rule_definition(
+            _definition("season.fully_watched", "is_true"),
+            target_scope=TARGET_SEASON,
+        )
+
+    def test_rejects_scope_incompatible_field_for_target(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Rule field\\(s\\) not available for target_scope 'movie_version'",
+        ):
+            validate_rule_definition(
+                _definition("season.fully_watched", "is_true"),
+                target_scope=TARGET_MOVIE_VERSION,
+            )
+
+    def test_rejects_all_incompatible_fields_for_target(self) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "condition",
+                        "field": "episode.number",
+                        "operator": "equals",
+                        "value": 1,
+                    },
+                    {
+                        "type": "condition",
+                        "field": "season.air_date",
+                        "operator": "exists",
+                    },
+                ],
+            },
+        }
+        with self.assertRaises(ValueError) as exc:
+            validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
+        message = str(exc.exception)
+        self.assertIn("episode.number", message)
+        self.assertIn("season.air_date", message)
+
+    def test_rejects_invalid_target_scope(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported target_scope"):
+            validate_rule_definition(
+                _definition("media.size", "greater_than", 1),
+                target_scope="movies",
+            )
 
 
 if __name__ == "__main__":

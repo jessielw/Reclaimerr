@@ -119,10 +119,17 @@ class Settings(BaseSettings):
     @classmethod
     def validate_log_level(cls, v: str) -> str:
         """Validate log level is valid."""
-        try:
-            return str(LogLevel(v.upper())).upper()
-        except ValueError:
-            return "INFO"
+        normalized = v.strip().upper()
+        if normalized in LogLevel.__members__:
+            return normalized
+
+        accepted_values = ", ".join(LogLevel.__members__.keys())
+        logging.getLogger("reclaimerr").warning(
+            "Invalid LOG_LEVEL value %r. Falling back to INFO. Accepted values: %s",
+            v,
+            accepted_values,
+        )
+        return "INFO"
 
     @field_validator("log_retention_days")
     @classmethod

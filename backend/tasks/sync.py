@@ -42,6 +42,7 @@ from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
+from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.plex import PlexService
 from backend.types import MEDIA_SERVERS, MediaServerType
 
@@ -2613,6 +2614,12 @@ async def sync_media() -> dict[str, Any] | None:
         )
         if not ok and error:
             LOG.warning(f"Favorites snapshot refresh failed during sync: {error}")
+
+        watch_ok, watch_error = await media_watch_snapshot_cache.refresh_snapshot(
+            all_servers=all_servers
+        )
+        if not watch_ok and watch_error:
+            LOG.warning(f"Watch snapshot refresh failed during sync: {watch_error}")
 
         # gather supplemental sync data
         await _run_supplemental_syncs()

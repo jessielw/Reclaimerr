@@ -48,9 +48,14 @@ class FakeRadarr:
         self.refreshed.append(movie_ids)
 
 
-def _patch_services(monkeypatch, radarr: FakeRadarr, config_id: int) -> None:
+def _patch_services(
+    monkeypatch,
+    radarr: FakeRadarr | dict[int, FakeRadarr],
+    config_id: int | None = None,
+) -> None:
+    clients = radarr if isinstance(radarr, dict) else {config_id: radarr}
     monkeypatch.setattr(cleanup.service_manager, "_radarr", None)
-    monkeypatch.setattr(cleanup.service_manager, "_radarr_clients", {config_id: radarr})
+    monkeypatch.setattr(cleanup.service_manager, "_radarr_clients", clients)
     monkeypatch.setattr(cleanup.service_manager, "_main_media_server", None)
     monkeypatch.setattr(cleanup.service_manager, "_jellyfin", None)
     monkeypatch.setattr(cleanup.service_manager, "_emby", None)
@@ -77,6 +82,8 @@ async def _seed_movie_version_case(
     arr_action: str = "delete",
     media_server_fallback_enabled: bool = False,
     path_mappings: list[dict] | None = None,
+    arr_movie_path: str | None = "/data/movies/Movie1",
+    arr_movie_id: int = 55,
 ) -> tuple[int, list[int], int]:
     db.add(
         GeneralSettings(
@@ -125,8 +132,8 @@ async def _seed_movie_version_case(
         MovieArrRef(
             movie_id=movie.id,
             service_config_id=service_config.id,
-            arr_movie_id=55,
-            arr_movie_path="/data/movies/Movie1",
+            arr_movie_id=arr_movie_id,
+            arr_movie_path=arr_movie_path,
             tmdb_id=movie.tmdb_id,
         )
     )
@@ -192,6 +199,41 @@ def test_single_version_candidate_promotes_to_radarr_delete(monkeypatch) -> None
     asyncio.run(run())
 
 
+def test_single_version_candidate_promotes_without_path_proof_for_one_radarr(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                _movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/plex/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                )
+
+            radarr = FakeRadarr()
+            _patch_services(monkeypatch, radarr, config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert radarr.deleted == [
+                {
+                    "movie_ids": [55],
+                    "delete_files": True,
+                    "add_import_exclusion": True,
+                }
+            ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_partial_version_candidate_does_not_delete_unselected_versions(
     monkeypatch,
 ) -> None:
@@ -231,6 +273,144 @@ def test_partial_version_candidate_does_not_delete_unselected_versions(
                 assert movie.removed_at is None
                 versions = (await db.execute(select(MovieVersion))).scalars().all()
                 assert len(versions) == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_single_version_multi_radarr_uses_path_mapping_to_target_ref(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/plex/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                    path_mappings=[
+                        {
+                            "source_prefix": "/plex/movies",
+                            "local_prefix": "/library/movies",
+                        },
+                        {
+                            "source_prefix": "/radarr1080",
+                            "local_prefix": "/library/movies",
+                        },
+                        {
+                            "source_prefix": "/radarr4k",
+                            "local_prefix": "/library-4k",
+                        },
+                    ],
+                    arr_movie_path="/radarr1080/Movie1",
+                    arr_movie_id=55,
+                )
+                second_config = ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url="http://radarr-4k",
+                    api_key="secret",
+                    name="Radarr 4K",
+                    enabled=True,
+                )
+                db.add(second_config)
+                await db.flush()
+                db.add(
+                    MovieArrRef(
+                        movie_id=movie_id,
+                        service_config_id=second_config.id,
+                        arr_movie_id=66,
+                        arr_movie_path="/radarr4k/Movie1",
+                        tmdb_id=101,
+                    )
+                )
+                await db.commit()
+
+            primary = FakeRadarr()
+            secondary = FakeRadarr()
+            _patch_services(
+                monkeypatch,
+                {config_id: primary, second_config.id: secondary},
+            )
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert primary.deleted == [
+                {
+                    "movie_ids": [55],
+                    "delete_files": True,
+                    "add_import_exclusion": True,
+                }
+            ]
+            assert secondary.deleted == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_single_version_multi_radarr_without_path_proof_fails_closed(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/plex/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                    arr_movie_path="/radarr1080/Movie1",
+                    arr_movie_id=55,
+                )
+                second_config = ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url="http://radarr-4k",
+                    api_key="secret",
+                    name="Radarr 4K",
+                    enabled=True,
+                )
+                db.add(second_config)
+                await db.flush()
+                db.add(
+                    MovieArrRef(
+                        movie_id=movie_id,
+                        service_config_id=second_config.id,
+                        arr_movie_id=66,
+                        arr_movie_path="/radarr4k/Movie1",
+                        tmdb_id=101,
+                    )
+                )
+                await db.commit()
+
+            primary = FakeRadarr()
+            secondary = FakeRadarr()
+            _patch_services(
+                monkeypatch,
+                {config_id: primary, second_config.id: secondary},
+            )
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 0
+            assert primary.deleted == []
+            assert secondary.deleted == []
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_ids[0])
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
+                assert candidate.last_delete_error is not None
+                assert "Radarr delete that covers the full Radarr movie entry" in (
+                    candidate.last_delete_error
+                )
         finally:
             await engine.dispose()
 

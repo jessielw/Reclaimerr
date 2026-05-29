@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
+from uuid import uuid4
 
 import jwt
 from argon2 import PasswordHasher
@@ -9,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.settings import settings
+from backend.core.utils.datetime_utils import ensure_utc
 from backend.database import get_db
-from backend.database.models import User
+from backend.database.models import User, UserSession
 from backend.enums import Permission, UserRole
 
 # password hashing with Argon2
@@ -24,6 +26,7 @@ COOKIE_NAME = "access_token"
 # less than half the TTL remains, so active users stay logged in.
 SESSION_TTL = timedelta(hours=24)
 SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
+SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -43,6 +46,7 @@ def create_access_token(
     data: dict,
     expires_delta: timedelta | None = None,
     token_version: int = 0,
+    session_id: str | None = None,
 ) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
@@ -51,7 +55,10 @@ def create_access_token(
     else:
         expire = datetime.now(UTC) + SESSION_TTL
 
-    to_encode.update({"exp": expire, "tv": token_version})
+    token_payload: dict[str, object] = {"exp": expire, "tv": token_version}
+    if session_id:
+        token_payload["sid"] = session_id
+    to_encode.update(token_payload)
 
     if settings.jwt_secret is None:
         raise RuntimeError("JWT secret is not set")
@@ -77,6 +84,59 @@ def decode_token(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
         )
+
+
+def generate_session_id() -> str:
+    """Generate an opaque session identifier."""
+    return uuid4().hex
+
+
+def build_session_expires_at() -> datetime:
+    """Return the expiration timestamp for a new session."""
+    return datetime.now(UTC) + SESSION_TTL
+
+
+def get_session_id_from_payload(payload: dict) -> str | None:
+    """Extract a validated session id from JWT payload."""
+    sid = payload.get("sid")
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    return None
+
+
+def get_request_session_id(request: Request) -> str | None:
+    """Get current request session id, if authentication dependency populated it."""
+    session_id = getattr(request.state, "session_id", None)
+    if isinstance(session_id, str) and session_id:
+        return session_id
+    return None
+
+
+def get_request_client_ip(request: Request) -> str | None:
+    """Best effort client IP extraction."""
+    xff = request.headers.get("x-forwarded-for")
+    if isinstance(xff, str) and xff.strip():
+        ip = xff.split(",")[0].strip()
+        return ip[:64] if ip else None
+
+    x_real_ip = request.headers.get("x-real-ip")
+    if isinstance(x_real_ip, str) and x_real_ip.strip():
+        return x_real_ip.strip()[:64]
+
+    if request.client and request.client.host:
+        return request.client.host[:64]
+
+    return None
+
+
+def get_request_user_agent(request: Request) -> str | None:
+    """Get a bounded User-Agent string from request headers."""
+    value = request.headers.get("user-agent")
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            return normalized[:512]
+    return None
 
 
 async def get_current_user(
@@ -113,6 +173,45 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
+
+    session_id = get_session_id_from_payload(payload)
+    if session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session is invalid. Please login again.",
+        )
+
+    session_result = await db.execute(
+        select(UserSession).where(
+            UserSession.user_id == user.id,
+            UserSession.session_id == session_id,
+        )
+    )
+    user_session = session_result.scalar_one_or_none()
+    if user_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Session not found"
+        )
+
+    if user_session.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Session has been revoked"
+        )
+
+    now = datetime.now(UTC)
+    if ensure_utc(user_session.expires_at) <= now:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Session has expired"
+        )
+
+    if (
+        user_session.last_seen_at is None
+        or (now - ensure_utc(user_session.last_seen_at))
+        >= SESSION_LAST_SEEN_TOUCH_INTERVAL
+    ):
+        user_session.last_seen_at = now
+
+    request.state.session_id = session_id
 
     if not user.is_active:
         raise HTTPException(

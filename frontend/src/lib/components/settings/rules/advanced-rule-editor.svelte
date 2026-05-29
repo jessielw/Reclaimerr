@@ -122,7 +122,7 @@
   let evaluatingLibraryChange = $state(false);
   let libraryChangeDialogOpen = $state(false);
   let pendingLibrarySelection = $state<string[] | null>(null);
-  let pendingInvalidPaths = $state<string[]>([]);
+  let pendingInvalidPaths = $state<PathValidationCriterion[]>([]);
   let pendingTotalPaths = $state(0);
 
   // preview states
@@ -184,6 +184,29 @@
     "not_exists",
   ]);
 
+  const pathValidationOperators = new Set<RuleConditionOperator>([
+    "equals",
+    "in",
+    "contains_any",
+    "matches_any_regex",
+  ]);
+
+  type PathValidationField = "media.path" | "media.file_name";
+  type PathValidationCriterion = {
+    field: PathValidationField;
+    operator: RuleConditionOperator;
+    value: string;
+  };
+
+  const isPathValidationField = (field: string): field is PathValidationField =>
+    field === "media.path" || field === "media.file_name";
+
+  const pathCriterionKey = (
+    field: PathValidationField,
+    operator: RuleConditionOperator,
+    value: string,
+  ) => `${field}::${operator}::${value}`;
+
   // normalize library ids from a condition value, ensuring it's always an array of non empty strings
   const normalizeLibraryIds = (value: RuleCondition["value"]) =>
     (Array.isArray(value) ? value : [value])
@@ -236,22 +259,35 @@
 
   const collectPathConditions = (node: RuleNode): RuleCondition[] => {
     if (node.type === "condition") {
-      return node.field === "media.path" ? [node] : [];
+      return isPathValidationField(node.field) ? [node] : [];
     }
     return node.children.flatMap(collectPathConditions);
   };
 
-  const collectPathPatterns = (root: RuleDefinition["root"]): string[] => {
+  const collectPathCriteria = (
+    root: RuleDefinition["root"],
+  ): PathValidationCriterion[] => {
     const seen = new Set<string>();
-    const paths: string[] = [];
+    const criteria: PathValidationCriterion[] = [];
     for (const condition of collectPathConditions(root)) {
-      for (const pattern of normalizePathPatterns(condition.value)) {
-        if (seen.has(pattern)) continue;
-        seen.add(pattern);
-        paths.push(pattern);
+      if (!isPathValidationField(condition.field)) continue;
+      if (!pathValidationOperators.has(condition.operator)) continue;
+      for (const value of normalizePathPatterns(condition.value)) {
+        const key = pathCriterionKey(
+          condition.field,
+          condition.operator,
+          value,
+        );
+        if (seen.has(key)) continue;
+        seen.add(key);
+        criteria.push({
+          field: condition.field,
+          operator: condition.operator,
+          value,
+        });
       }
     }
-    return paths;
+    return criteria;
   };
 
   // find a single canonical library.id condition at the root level with the expected structure
@@ -390,24 +426,26 @@
   );
   const canPreviewRule = $derived(hasValidConditions(definition.root));
 
-  const pruneInvalidPathPatternsFromNode = (
+  const pruneInvalidPathCriteriaFromNode = (
     node: RuleNode,
     invalid: Set<string>,
   ): RuleNode | null => {
     if (node.type === "condition") {
-      if (node.field !== "media.path") return node;
-      const patterns = normalizePathPatterns(node.value).filter(
-        (pattern) => !invalid.has(pattern),
+      if (!isPathValidationField(node.field)) return node;
+      if (!pathValidationOperators.has(node.operator)) return node;
+      const field = node.field;
+      const values = normalizePathPatterns(node.value).filter(
+        (value) => !invalid.has(pathCriterionKey(field, node.operator, value)),
       );
-      if (patterns.length === 0) return null;
+      if (values.length === 0) return null;
       return {
         ...node,
-        value: Array.isArray(node.value) ? patterns : patterns[0],
+        value: Array.isArray(node.value) ? values : values[0],
       };
     }
 
     const nextChildren = node.children
-      .map((child) => pruneInvalidPathPatternsFromNode(child, invalid))
+      .map((child) => pruneInvalidPathCriteriaFromNode(child, invalid))
       .filter((child): child is RuleNode => child !== null);
     if (nextChildren.length === 0) return null;
     return {
@@ -416,10 +454,14 @@
     };
   };
 
-  const applyPathPruning = (invalidPatterns: string[]) => {
-    if (invalidPatterns.length === 0) return;
-    const invalid = new Set(invalidPatterns);
-    const prunedRoot = pruneInvalidPathPatternsFromNode(
+  const applyPathPruning = (invalidCriteria: PathValidationCriterion[]) => {
+    if (invalidCriteria.length === 0) return;
+    const invalid = new Set(
+      invalidCriteria.map((criterion) =>
+        pathCriterionKey(criterion.field, criterion.operator, criterion.value),
+      ),
+    );
+    const prunedRoot = pruneInvalidPathCriteriaFromNode(
       definition.root,
       invalid,
     );
@@ -435,21 +477,34 @@
 
   const validatePathsForScope = async (
     nextLibraryIds: string[],
-  ): Promise<{ invalidPaths: string[]; totalPaths: number } | null> => {
-    const paths = collectPathPatterns(definition.root);
-    if (paths.length === 0) return { invalidPaths: [], totalPaths: 0 };
+  ): Promise<{
+    invalidCriteria: PathValidationCriterion[];
+    totalCriteria: number;
+  } | null> => {
+    const criteria = collectPathCriteria(definition.root);
+    if (criteria.length === 0) return { invalidCriteria: [], totalCriteria: 0 };
     try {
       const response = await post_api<{
         valid_paths: string[];
         invalid_paths: string[];
+        valid_conditions?: PathValidationCriterion[];
+        invalid_conditions?: PathValidationCriterion[];
       }>("/api/rules/validate-paths", {
         media_type: selectedMediaType,
         library_ids: nextLibraryIds.length > 0 ? nextLibraryIds : null,
-        paths,
+        conditions: criteria,
       });
+      const invalidCriteria =
+        response.invalid_conditions && response.invalid_conditions.length > 0
+          ? response.invalid_conditions
+          : (response.invalid_paths ?? []).map((value) => ({
+              field: "media.path" as const,
+              operator: "matches_any_regex" as const,
+              value,
+            }));
       return {
-        invalidPaths: response.invalid_paths ?? [],
-        totalPaths: paths.length,
+        invalidCriteria,
+        totalCriteria: criteria.length,
       };
     } catch (e: any) {
       toast.error(e.message ?? "Failed to validate path criteria.");
@@ -465,15 +520,15 @@
     evaluatingLibraryChange = false;
     if (!validation) return;
 
-    if (validation.invalidPaths.length === 0) {
+    if (validation.invalidCriteria.length === 0) {
       selectedScopeLibraryIds = nextLibraryIds;
       applyCanonicalLibraryScope(nextLibraryIds);
       return;
     }
 
     pendingLibrarySelection = nextLibraryIds;
-    pendingInvalidPaths = validation.invalidPaths;
-    pendingTotalPaths = validation.totalPaths;
+    pendingInvalidPaths = validation.invalidCriteria;
+    pendingTotalPaths = validation.totalCriteria;
     libraryChangeDialogOpen = true;
   };
 
@@ -866,6 +921,7 @@
     <div class="rounded-lg border border-border/60 bg-muted/20 p-4 md:p-5">
       <RuleNodeEditor
         node={definition.root}
+        {targetScope}
         pathPickerMediaType={selectedMediaType}
         pathPickerLibraryIds={selectedPathScopeLibraryIds}
         onChange={() => (definition = { ...definition })}
@@ -1178,13 +1234,13 @@
       <AlertDialog.Description class="text-muted-foreground space-y-3">
         {#if pendingInvalidPaths.length >= pendingTotalPaths && pendingTotalPaths > 0}
           <p>
-            This library scope change invalidates all current path criteria.
-            Confirming will clear all path conditions from this rule.
+            This library scope change invalidates all current path/filename
+            criteria. Confirming will clear those conditions from this rule.
           </p>
         {:else}
           <p>
-            This library scope change invalidates some path criteria. Confirming
-            will remove only the invalid patterns and keep the rest.
+            This library scope change invalidates some path/filename criteria.
+            Confirming will remove only the invalid values and keep the rest.
           </p>
         {/if}
         {#if pendingInvalidPaths.length > 0}
@@ -1194,12 +1250,14 @@
             <p
               class="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2"
             >
-              Invalid Patterns ({pendingInvalidPaths.length})
+              Invalid Criteria ({pendingInvalidPaths.length})
             </p>
             <ul class="space-y-1.5">
-              {#each pendingInvalidPaths as pattern}
+              {#each pendingInvalidPaths as criterion}
                 <li class="font-mono text-xs break-all text-foreground/90">
-                  {pattern}
+                  {criterion.field}
+                  {criterion.operator}
+                  {criterion.value}
                 </li>
               {/each}
             </ul>
