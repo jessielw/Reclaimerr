@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Media provider selector now uses service SVGs and cleaner labels
 - Updated account password behavior for media-auth users without local passwords
   - Users without a local password can set one without entering a current password
+- Updated dependency Granian to v2.7.5
 
 ### Fixed
 
