@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `media.file_name` rule matching now falls back to path basename when explicit filename metadata is missing, so AND combinations like folder path + filename regex evaluate correctly
 - `media.path` literal operators now treat folder values as path prefixes (not just exact file-path matches), and the path browser is only shown for regex mode to avoid operator/value mismatches
 - Spacing between label/input in pattern picker for Path
+- Path mapping for deletions/multi arr
+  - Added mapped path comparison helpers for media-server paths vs Arr root paths
+  - Movie version deletion now promotes to Radarr only when the selected version set covers the full Radarr movie entry
+  - Multi-Radarr ambiguity now fails closed into media-server fallback instead of broad Arr deletion
+  - Season and episode deletion now try all Sonarr refs ordered by path match, then fall back to the media server when enabled
+  - Episode "not found in Sonarr" no longer hard skips when media-server fallback can delete it
 
 ## [0.1.0-beta.24] - 2026-05-23
 
