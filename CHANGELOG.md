@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improved error handling and logging substantially for all HTTP calls
+- Settings > System is now organized alphabetically
 
 ## [0.1.0-beta.25] - 2026-05-29
 
