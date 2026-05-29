@@ -433,9 +433,9 @@
     if (node.type === "condition") {
       if (!isPathValidationField(node.field)) return node;
       if (!pathValidationOperators.has(node.operator)) return node;
+      const field = node.field;
       const values = normalizePathPatterns(node.value).filter(
-        (value) =>
-          !invalid.has(pathCriterionKey(node.field, node.operator, value)),
+        (value) => !invalid.has(pathCriterionKey(field, node.operator, value)),
       );
       if (values.length === 0) return null;
       return {
