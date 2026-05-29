@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Multi-Radarr ambiguity now fails closed into media-server fallback instead of broad Arr deletion
   - Season and episode deletion now try all Sonarr refs ordered by path match, then fall back to the media server when enabled
   - Episode "not found in Sonarr" no longer hard skips when media-server fallback can delete it
+- Logging in via email on local auth would fail
 
 ## [0.1.0-beta.24] - 2026-05-23
 
