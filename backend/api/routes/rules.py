@@ -1,7 +1,8 @@
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from os import PathLike
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -12,7 +13,7 @@ from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
-    collect_rule_path_patterns,
+    collect_rule_path_conditions,
     derive_path_scope_library_ids,
     normalize_rule_definition,
     normalize_rule_target,
@@ -41,6 +42,7 @@ from backend.models.media import PaginatedRulePreviewResponse
 from backend.models.rules import (
     RulePreviewRequest,
     SeerrUserLookupResponse,
+    ValidatePathCondition,
     ValidatePathsRequest,
     ValidatePathsResponse,
     ValidateRegexRequest,
@@ -51,6 +53,26 @@ from backend.services.seerr_cache import seerr_snapshot_cache
 from backend.tasks.cleanup import collect_rule_preview_matches
 
 router = APIRouter(prefix="/api", tags=["rules"])
+
+PathValidationField = Literal["media.path", "media.file_name"]
+
+PATH_VALIDATION_FIELDS: set[PathValidationField] = {"media.path", "media.file_name"}
+PATH_INCLUDE_OPERATORS = {"equals", "in", "contains_any"}
+PATH_REGEX_OPERATOR = "matches_any_regex"
+PATH_VALIDATION_OPERATORS = PATH_INCLUDE_OPERATORS | {PATH_REGEX_OPERATOR}
+
+
+@dataclass(frozen=True, slots=True)
+class _PathCriterion:
+    field: PathValidationField
+    operator: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class _InvalidPathCriterion:
+    criterion: _PathCriterion
+    reason: str
 
 
 def _media_type_for_target(target_scope: str | None, fallback: MediaType) -> MediaType:
@@ -185,19 +207,166 @@ async def _collect_media_paths(
     return [row[0] for row in result.all() if row[0]]
 
 
+def _normalize_path_criterion(
+    field: str,
+    operator: str,
+    value: str,
+) -> _PathCriterion | None:
+    normalized_field = str(field or "").strip()
+    if normalized_field == "media.path":
+        field_value: PathValidationField = "media.path"
+    elif normalized_field == "media.file_name":
+        field_value = "media.file_name"
+    else:
+        return None
+    normalized_operator = str(operator or "").strip().lower()
+    if not normalized_operator:
+        return None
+    normalized_value = str(value or "").strip()
+    if not normalized_value:
+        return None
+    return _PathCriterion(
+        field=field_value,
+        operator=normalized_operator,
+        value=normalized_value,
+    )
+
+
+def _collect_unique_path_criteria(
+    *,
+    conditions: list[ValidatePathCondition] | None = None,
+    legacy_paths: list[str] | None = None,
+    criteria: list[_PathCriterion] | None = None,
+) -> list[_PathCriterion]:
+    unique: list[_PathCriterion] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for criterion in criteria or []:
+        key = (criterion.field, criterion.operator, criterion.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(criterion)
+
+    for condition in conditions or []:
+        criterion = _normalize_path_criterion(
+            condition.field, condition.operator, condition.value
+        )
+        if criterion is None:
+            continue
+        key = (criterion.field, criterion.operator, criterion.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(criterion)
+
+    for raw_path in legacy_paths or []:
+        criterion = _normalize_path_criterion(
+            "media.path",
+            PATH_REGEX_OPERATOR,
+            raw_path,
+        )
+        if criterion is None:
+            continue
+        key = (criterion.field, criterion.operator, criterion.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(criterion)
+
+    return unique
+
+
+def _normalize_criterion_value(field: str, value: str) -> str:
+    if field == "media.path":
+        return normalize_fpath(value, lower=True)
+    return str(value).strip().lower()
+
+
+def _matches_path_prefix(candidate: str, expected: str) -> bool:
+    expected_prefix = normalize_fpath(expected, lower=True, strip_ending_slash=True)
+    normalized_candidate = normalize_fpath(candidate, lower=True)
+    if not expected_prefix or not normalized_candidate:
+        return False
+    return normalized_candidate == expected_prefix or normalized_candidate.startswith(
+        f"{expected_prefix}/"
+    )
+
+
+def _index_media_path_values(media_paths: list[str]) -> dict[str, set[str]]:
+    indexed_paths: set[str] = set()
+    indexed_filenames: set[str] = set()
+    for raw_path in media_paths:
+        normalized = normalize_fpath(raw_path, lower=True)
+        if not normalized:
+            continue
+        indexed_paths.add(normalized)
+        file_name = normalized.rsplit("/", 1)[-1].strip()
+        if file_name:
+            indexed_filenames.add(file_name)
+    return {
+        "media.path": indexed_paths,
+        "media.file_name": indexed_filenames,
+    }
+
+
+def _evaluate_path_criteria(
+    criteria: list[_PathCriterion],
+    indexed_values: dict[str, set[str]],
+) -> tuple[list[_PathCriterion], list[_InvalidPathCriterion]]:
+    valid: list[_PathCriterion] = []
+    invalid: list[_InvalidPathCriterion] = []
+
+    for criterion in criteria:
+        if criterion.operator not in PATH_VALIDATION_OPERATORS:
+            # non inclusion operators are intentionally skipped for existence checks.
+            valid.append(criterion)
+            continue
+
+        candidates = indexed_values.get(criterion.field, set())
+        if criterion.operator == PATH_REGEX_OPERATOR:
+            try:
+                regex = re.compile(criterion.value, re.IGNORECASE)
+            except re.error:
+                invalid.append(_InvalidPathCriterion(criterion, "invalid_regex"))
+                continue
+            if candidates and any(regex.search(candidate) for candidate in candidates):
+                valid.append(criterion)
+            else:
+                invalid.append(_InvalidPathCriterion(criterion, "no_match"))
+            continue
+
+        expected = _normalize_criterion_value(criterion.field, criterion.value)
+        if criterion.field == "media.path":
+            has_match = candidates and any(
+                _matches_path_prefix(candidate, expected) for candidate in candidates
+            )
+        else:
+            has_match = candidates and expected in candidates
+        if has_match:
+            valid.append(criterion)
+        else:
+            invalid.append(_InvalidPathCriterion(criterion, "no_match"))
+
+    return valid, invalid
+
+
 async def _validate_rule_paths(
     db: AsyncSession,
-    paths: list[str] | None,
+    criteria: list[_PathCriterion] | None,
     media_type: MediaType,
     library_ids: list[str] | None,
-) -> list[str] | None:
-    """Normalize and validate that each path matches at least one indexed media file.
+) -> None:
+    """Validate path criteria against indexed media paths in the requested scope."""
+    if not criteria:
+        return None
 
-    Returns the cleaned list (or None if empty). Raises 400 if any path does
-    not match any stored media path for the rule's media type / libraries, or if
-    a regex pattern is invalid.
-    """
-    if not paths:
+    criteria_to_validate = [
+        criterion
+        for criterion in criteria
+        if criterion.operator in PATH_VALIDATION_OPERATORS
+    ]
+    if not criteria_to_validate:
         return None
 
     media_paths = await _collect_media_paths(db, media_type, library_ids)
@@ -210,31 +379,27 @@ async def _validate_rule_paths(
             ),
         )
 
-    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
+    _, invalid = _evaluate_path_criteria(
+        criteria_to_validate, _index_media_path_values(media_paths)
+    )
+    if not invalid:
+        return None
 
-    cleaned: list[str] = []
-    for pattern in paths:
-        pattern = (pattern or "").strip()
-        if not pattern:
-            continue
+    first = invalid[0]
+    if first.reason == "invalid_regex":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid regex pattern '{first.criterion.value}'",
+        )
 
-        # validate regex syntax (patterns should be pre-validated, but double-check)
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-        except re.error as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid regex pattern '{pattern}': {e}",
-            )
-
-        # check if pattern matches any media path
-        if not any(regex.search(mp) for mp in normalized_media):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(f"Path '{pattern}' does not match any indexed media location."),
-            )
-        cleaned.append(pattern)
-    return cleaned or None
+    label = "Path" if first.criterion.field == "media.path" else "Filename"
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"{label} '{first.criterion.value}' does not match any indexed media "
+            "location."
+        ),
+    )
 
 
 async def _validate_definition_paths(
@@ -242,9 +407,20 @@ async def _validate_definition_paths(
     definition: dict | None,
     media_type: MediaType,
 ) -> None:
+    raw_criteria: list[_PathCriterion] = []
+    for condition in collect_rule_path_conditions(definition):
+        criterion = _normalize_path_criterion(
+            condition["field"],
+            condition["operator"],
+            condition["value"],
+        )
+        if criterion is not None:
+            raw_criteria.append(criterion)
+
+    definition_criteria = _collect_unique_path_criteria(criteria=raw_criteria)
     await _validate_rule_paths(
         db,
-        collect_rule_path_patterns(definition),
+        definition_criteria,
         media_type,
         derive_path_scope_library_ids(definition),
     )
@@ -423,40 +599,54 @@ async def validate_paths_against_scope(
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ) -> ValidatePathsResponse:
-    """Validate path patterns against indexed media paths for the given scope.
+    """Validate path criteria against indexed media paths for the given scope.
 
     Returns split lists so callers can offer confirm/prune UX without mutating
     backend state.
     """
-    unique_paths: list[str] = []
-    seen: set[str] = set()
-    for raw in body.paths:
-        path = (raw or "").strip()
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        unique_paths.append(path)
-
-    if not unique_paths:
-        return ValidatePathsResponse(valid_paths=[], invalid_paths=[])
+    criteria = _collect_unique_path_criteria(
+        conditions=body.conditions,
+        legacy_paths=body.paths,
+    )
+    if not criteria:
+        return ValidatePathsResponse()
 
     media_paths = await _collect_media_paths(db, body.media_type, body.library_ids)
-    normalized_media = [normalize_fpath(mp, lower=True) for mp in media_paths if mp]
+    valid, invalid = _evaluate_path_criteria(
+        criteria, _index_media_path_values(media_paths)
+    )
 
-    valid_paths: list[str] = []
-    invalid_paths: list[str] = []
-    for pattern in unique_paths:
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-        except re.error:
-            invalid_paths.append(pattern)
-            continue
-        if normalized_media and any(regex.search(mp) for mp in normalized_media):
-            valid_paths.append(pattern)
-        else:
-            invalid_paths.append(pattern)
+    valid_conditions = [
+        ValidatePathCondition(
+            field=criterion.field,
+            operator=criterion.operator,
+            value=criterion.value,
+        )
+        for criterion in valid
+    ]
+    invalid_conditions = [
+        ValidatePathCondition(
+            field=result.criterion.field,
+            operator=result.criterion.operator,
+            value=result.criterion.value,
+        )
+        for result in invalid
+    ]
 
-    return ValidatePathsResponse(valid_paths=valid_paths, invalid_paths=invalid_paths)
+    return ValidatePathsResponse(
+        valid_paths=[
+            condition.value
+            for condition in valid_conditions
+            if condition.field == "media.path"
+        ],
+        invalid_paths=[
+            condition.value
+            for condition in invalid_conditions
+            if condition.field == "media.path"
+        ],
+        valid_conditions=valid_conditions,
+        invalid_conditions=invalid_conditions,
+    )
 
 
 @router.post("/rules/preview", response_model=PaginatedRulePreviewResponse)

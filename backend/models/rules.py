@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,15 +16,24 @@ class ValidateRegexResponse(BaseModel):
     pattern: str | None = None
 
 
+class ValidatePathCondition(BaseModel):
+    field: Literal["media.path", "media.file_name"]
+    operator: str
+    value: str
+
+
 class ValidatePathsRequest(BaseModel):
     media_type: MediaType
     library_ids: list[str] | None = None
-    paths: list[str]
+    paths: list[str] = Field(default_factory=list)
+    conditions: list[ValidatePathCondition] = Field(default_factory=list)
 
 
 class ValidatePathsResponse(BaseModel):
-    valid_paths: list[str]
-    invalid_paths: list[str]
+    valid_paths: list[str] = Field(default_factory=list)
+    invalid_paths: list[str] = Field(default_factory=list)
+    valid_conditions: list[ValidatePathCondition] = Field(default_factory=list)
+    invalid_conditions: list[ValidatePathCondition] = Field(default_factory=list)
 
 
 class RulePreviewRequest(BaseModel):
