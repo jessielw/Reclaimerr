@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dep FastAPI
 - Each media server now keeps a snapshot for who watched what
   - Snapshots are now gathered during syncs and as needed
+- Rule validation now enforces field compatibility for the selected `target_scope` across create, preview, import, and update
+- Rule editor field picker is now filtered by target scope (Movie Version, Series, Season, Episode) and shows incompatible legacy conditions inline
 - Reworked login UI to use a compact method switcher instead of stacked auth sections
   - Local / Media / SSO modes now render one active flow at a time
   - Media provider selector now uses service SVGs and cleaner labels
@@ -59,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rebuilt media detail modal to look much nicer on mobile
 - Delete button in notification on mobile spilling over
 - Log level validation from env could still sometimes not be set
+- `watch.never_watched` advanced rules now evaluate correctly for Series and Season targets (including stale watch timestamps after re-adds)
+- Invalid field/target-scope rule combinations no longer fail silently; API now returns clear 422 validation errors
 
 ## [0.1.0-beta.24] - 2026-05-23
 

@@ -251,6 +251,182 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
 }
 
+TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
+    TARGET_MOVIE_VERSION: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "audio.languages",
+        "audio.track_count",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.duration",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "subtitle.languages",
+        "tmdb.days_since_release",
+        "tmdb.popularity",
+        "tmdb.release_date",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.color_primaries",
+        "video.color_space",
+        "video.color_transfer",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.resolution",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_SERIES: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "subtitle.languages",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_SEASON: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "audio.languages",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "season.air_date",
+        "season.days_since_air_date",
+        "season.episode_count",
+        "season.fully_watched",
+        "season.is_latest_season",
+        "season.season_number",
+        "season.seasons_from_latest",
+        "season.watched_percent",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "subtitle.languages",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_EPISODE: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "episode.air_date",
+        "episode.days_since_air_date",
+        "episode.number",
+        "episode.season_number",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "season.air_date",
+        "season.days_since_air_date",
+        "season.episode_count",
+        "season.fully_watched",
+        "season.is_latest_season",
+        "season.season_number",
+        "season.seasons_from_latest",
+        "season.watched_percent",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+}
+
 
 class DiskStatsResolver:
     """Holds pre fetched disk stats for one scan run.
@@ -428,13 +604,17 @@ def normalize_rule_definition(rule: ReclaimRule) -> RuleDefinition | None:
     return None
 
 
-def validate_rule_definition(definition: RuleDefinition | None) -> None:
+def validate_rule_definition(
+    definition: RuleDefinition | None, *, target_scope: str | None = None
+) -> None:
     """Validate the structure of a rule definition, ensuring it includes a root group and valid nodes."""
     if not definition:
         raise ValueError("Rule definition is required")
     if not _has_valid_definition(definition):
         raise ValueError("Rule definition must include a root group")
     _validate_node(definition["root"])
+    if target_scope is not None:
+        _validate_scope_fields(definition, target_scope)
 
 
 def collect_rule_conditions(
@@ -573,6 +753,27 @@ def _normalize_condition_values(value: Any) -> list[str]:
     ]
 
 
+def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> None:
+    """Validate that all condition fields are available for the selected target scope."""
+    normalized_scope = str(target_scope).strip().lower()
+    if normalized_scope not in VALID_TARGET_SCOPES:
+        raise ValueError(f"Unsupported target_scope '{target_scope}'")
+
+    allowed_fields = TARGET_SCOPE_ALLOWED_FIELDS.get(normalized_scope, set())
+    invalid_fields: set[str] = set()
+    for condition in collect_rule_conditions(definition):
+        field = str(condition.get("field", ""))
+        if field not in allowed_fields:
+            invalid_fields.add(field)
+
+    if invalid_fields:
+        sorted_invalid = ", ".join(f"'{field}'" for field in sorted(invalid_fields))
+        raise ValueError(
+            "Rule field(s) not available for target_scope "
+            f"'{normalized_scope}': {sorted_invalid}"
+        )
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -706,6 +907,7 @@ def _build_context(
             "watch.view_count": series.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": series.view_count == 0 or _last_viewed is None,
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -780,6 +982,8 @@ def _build_context(
             "watch.view_count": season.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": (season.view_count or 0) == 0
+            or _last_viewed is None,
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,

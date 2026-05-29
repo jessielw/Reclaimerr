@@ -425,6 +425,63 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
 
+    def test_evaluate_series_rule_watch_never_watched_is_true_for_unwatched_series(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.view_count = 0
+        series.last_viewed_at = None
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        rule = _make_single_condition_rule(
+            name="series-never-watched-true",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watch_never_watched_is_false_for_watched_season(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.view_count = 2
+        season.last_viewed_at = now - timedelta(days=2)
+        season.added_at = now - timedelta(days=30)
+        rule = _make_single_condition_rule(
+            name="season-never-watched-false",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="watch.never_watched",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watch_never_watched_treats_readded_as_unwatched(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.view_count = 2
+        season.last_viewed_at = now - timedelta(days=90)
+        season.added_at = now - timedelta(days=5)
+        rule = _make_single_condition_rule(
+            name="season-never-watched-stale-watch-data",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
     def test_evaluate_movie_rule_temporal_criteria_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)

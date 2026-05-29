@@ -866,6 +866,7 @@
     <div class="rounded-lg border border-border/60 bg-muted/20 p-4 md:p-5">
       <RuleNodeEditor
         node={definition.root}
+        {targetScope}
         pathPickerMediaType={selectedMediaType}
         pathPickerLibraryIds={selectedPathScopeLibraryIds}
         onChange={() => (definition = { ...definition })}

@@ -354,7 +354,9 @@ async def create_rule(
             detail="Rules require target_scope",
         )
     try:
-        validate_rule_definition(rule_data.definition)
+        validate_rule_definition(
+            rule_data.definition, target_scope=rule_data.target_scope
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -470,7 +472,7 @@ async def preview_rule_matches(
             detail="Rules require target_scope",
         )
     try:
-        validate_rule_definition(body.definition)
+        validate_rule_definition(body.definition, target_scope=body.target_scope)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -522,7 +524,9 @@ async def import_rules(
             if not rule_data.target_scope:
                 raise ValueError("Rules require target_scope")
             try:
-                validate_rule_definition(rule_data.definition)
+                validate_rule_definition(
+                    rule_data.definition, target_scope=rule_data.target_scope
+                )
             except ValueError as e:
                 raise ValueError(str(e)) from e
 
@@ -620,13 +624,23 @@ async def update_rule(
         or "media_type" in update_data
     ):
         effective_target_scope = update_data.get("target_scope", rule.target_scope)
+        effective_definition = update_data.get("definition", rule.definition)
+        try:
+            validate_rule_definition(
+                effective_definition, target_scope=effective_target_scope
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            ) from e
+
         effective_media_type = _media_type_for_target(
             effective_target_scope,
             update_data.get("media_type", rule.media_type),
         )
         await _validate_definition_paths(
             db,
-            update_data.get("definition", rule.definition),
+            effective_definition,
             effective_media_type,
         )
 
