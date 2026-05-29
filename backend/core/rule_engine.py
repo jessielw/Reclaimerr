@@ -641,6 +641,7 @@ def _build_context(
             "watch.view_count": movie.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,

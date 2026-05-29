@@ -207,6 +207,35 @@ def _make_series_ref(
     return ref
 
 
+def _make_single_condition_rule(
+    *,
+    name: str,
+    media_type: MediaType,
+    target_scope: str,
+    field: str,
+    operator: str,
+    value: object | None = None,
+) -> ReclaimRule:
+    condition: dict[str, object] = {
+        "type": "condition",
+        "field": field,
+        "operator": operator,
+    }
+    if value is not None:
+        condition["value"] = value
+    return ReclaimRule(
+        name=name,
+        media_type=media_type,
+        enabled=True,
+        target_scope=target_scope,
+        definition={
+            "version": 1,
+            "root": {"type": "group", "op": "and", "children": [condition]},
+        },
+        action={"candidate": True, "media_server_action": "delete"},
+    )
+
+
 class _LeavingSoonSyncServiceFake:
     def __init__(
         self,
@@ -333,6 +362,68 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_rule(movie, default_rule, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, include_never_rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_is_true_for_unwatched_movie(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 0
+        movie.last_viewed_at = None
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-true",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_is_false_for_watched_movie(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 3
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=3)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-false",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_treats_readded_copy_as_unwatched(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 3
+        movie.last_viewed_at = now - timedelta(days=90)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                added_at=now - timedelta(days=1),
+            )
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-stale-watch-data",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
 
     def test_evaluate_movie_rule_temporal_criteria_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
