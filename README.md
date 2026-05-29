@@ -77,6 +77,8 @@ As a result, this project will close pull requests that appear to be mostly or w
 - Last chance/Leaving soon (displayed on servers for media soon to be deleted)
 - Session management
 - OIDC
+- Plex, Jellyfin, and Emby login support directly with users
+  - Link local users to media server users
 
 # Additional Info
 
