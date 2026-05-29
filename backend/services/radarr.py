@@ -10,7 +10,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.models.media import ArrTag
 from backend.models.services.radarr import RadarrMovie
 
@@ -64,7 +64,12 @@ class RadarrClient:
         ),
     )
     async def _make_request(
-        self, method: str, endpoint: str, **kwargs
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        error_context: str | None = None,
+        **kwargs,
     ) -> tuple[int, dict | list | None]:
         """Make HTTP request to Radarr API with automatic retry.
 
@@ -73,7 +78,20 @@ class RadarrClient:
         """
         url = f"{self.base_url}/api/v3/{endpoint}"
         response = await self.session.request(method, url, **kwargs)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except niquests.HTTPError as exc:
+            if error_context:
+                raise ValueError(
+                    format_http_failure(
+                        action=error_context,
+                        exception=exc,
+                        response=response,
+                        method=method,
+                        endpoint=endpoint,
+                    )
+                ) from exc
+            raise
 
         status_code = response.status_code
         if not status_code:
@@ -280,6 +298,7 @@ class RadarrClient:
                 "deleteFiles": delete_files,
                 "addImportExclusion": add_import_exclusion,
             },
+            error_context=f"Failed to delete movies {movie_ids} via Radarr",
         )
         if status_code != 200:
             raise ValueError(
@@ -294,6 +313,7 @@ class RadarrClient:
             "PUT",
             "movie/editor",
             json={"movieIds": movie_ids, "monitored": False},
+            error_context=f"Failed to unmonitor movies {movie_ids} via Radarr",
         )
 
     async def rescan_movies(self, movie_ids: list[int]) -> None:

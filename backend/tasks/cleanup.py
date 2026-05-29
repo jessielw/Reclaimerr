@@ -32,6 +32,7 @@ from backend.core.utils.filesystem import (
     resolve_path,
     sibling_cleanup,
 )
+from backend.core.utils.request import summarize_error_message
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import async_db
 from backend.database.models import (
@@ -2794,7 +2795,9 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
             return
         candidate.delete_attempts = (candidate.delete_attempts or 0) + 1
         candidate.last_delete_attempt_at = datetime.now(UTC)
-        candidate.last_delete_error = error[:2000]
+        candidate.last_delete_error = (
+            summarize_error_message(error, max_chars=500) or "Deletion failed"
+        )
         await db.commit()
 
 

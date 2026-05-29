@@ -10,7 +10,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.models.media import ArrTag
 from backend.models.services.sonarr import SonarrSeason, SonarrSeries
 
@@ -77,7 +77,12 @@ class SonarrClient:
         ),
     )
     async def _make_request(
-        self, method: str, endpoint: str, **kwargs
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        error_context: str | None = None,
+        **kwargs,
     ) -> tuple[int, dict | list | None]:
         """Make HTTP request to Sonarr API with automatic retry.
 
@@ -86,7 +91,20 @@ class SonarrClient:
         """
         url = f"{self.base_url}/api/v3/{endpoint}"
         response = await self.session.request(method, url, **kwargs)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except niquests.HTTPError as exc:
+            if error_context:
+                raise ValueError(
+                    format_http_failure(
+                        action=error_context,
+                        exception=exc,
+                        response=response,
+                        method=method,
+                        endpoint=endpoint,
+                    )
+                ) from exc
+            raise
 
         status_code = response.status_code
         if not status_code:
@@ -303,6 +321,7 @@ class SonarrClient:
             f"series/{series_id}",
             params=params,
             timeout=60,
+            error_context=f"Failed to delete series {series_id} via Sonarr",
         )
         if status_code != 200:
             raise ValueError(
@@ -325,6 +344,7 @@ class SonarrClient:
                 "addImportListExclusion": add_import_exclusion,
             },
             timeout=60,
+            error_context=f"Failed to delete series {series_ids} via Sonarr",
         )
         if status_code != 200:
             raise ValueError(
@@ -340,6 +360,7 @@ class SonarrClient:
             "series/editor",
             json={"seriesIds": series_ids, "monitored": False},
             timeout=60,
+            error_context=f"Failed to unmonitor series {series_ids} via Sonarr",
         )
 
     async def refresh_series(self, series_ids: list[int]) -> None:
@@ -438,6 +459,10 @@ class SonarrClient:
             "episodefile/bulk",
             json={"episodeFileIds": episode_file_ids},
             timeout=120,
+            error_context=(
+                f"Failed to delete season {season_number} files for series {series_id} "
+                "via Sonarr"
+            ),
         )
         if status_code != 200:
             raise ValueError(
@@ -469,7 +494,12 @@ class SonarrClient:
             episode_file_id: Sonarr episode file ID
         """
         status_code, _ = await self._make_request(
-            "DELETE", f"episodefile/{episode_file_id}", timeout=60
+            "DELETE",
+            f"episodefile/{episode_file_id}",
+            timeout=60,
+            error_context=(
+                f"Failed to delete episode file {episode_file_id} via Sonarr"
+            ),
         )
         if status_code not in {200, 204}:
             raise ValueError(
@@ -487,6 +517,7 @@ class SonarrClient:
             "episode/monitor",
             json={"episodeIds": [episode_id], "monitored": False},
             timeout=60,
+            error_context=f"Failed to unmonitor episode {episode_id} via Sonarr",
         )
         if status_code not in {200, 202}:
             raise ValueError(
