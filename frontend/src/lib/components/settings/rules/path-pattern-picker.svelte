@@ -330,7 +330,7 @@
         </div>
 
         <!-- regex suffix input -->
-        <div>
+        <div class="space-y-1">
           <Label for="path-suffix" class="text-sm"
             >Regex Suffix <span class="text-muted-foreground font-normal"
               >(optional)</span
@@ -356,8 +356,8 @@
           </p>
         </div>
 
-        <!-- pattern preview - fixed min height so it never collapses -->
-        <div>
+        <!-- pattern preview -->
+        <div class="space-y-1">
           <Label class="text-sm">Pattern Preview</Label>
           <div
             class="

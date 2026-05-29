@@ -66,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path rule validation is now operator-aware for both `media.path` and `media.file_name`; literal operators no longer get treated as regex, and invalid scope criteria are pruned correctly in the rule editor
 - `media.file_name` rule matching now falls back to path basename when explicit filename metadata is missing, so AND combinations like folder path + filename regex evaluate correctly
 - `media.path` literal operators now treat folder values as path prefixes (not just exact file-path matches), and the path browser is only shown for regex mode to avoid operator/value mismatches
+- Spacing between label/input in pattern picker for Path
 
 ## [0.1.0-beta.24] - 2026-05-23
 
