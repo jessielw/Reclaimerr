@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from backend.core.logger import LOG
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
-from backend.database.models import AdminNotice, BackgroundJob, TaskRun
+from backend.database.models import AdminNotice, BackgroundJob, TaskRun, UserSession
 from backend.enums import Task
 
 __all__ = ["weekly_house_keeping"]
@@ -74,6 +74,28 @@ async def _trim_admin_notices(retain_days: int) -> None:
             await session.rollback()
 
 
+async def _trim_user_sessions(retain_days: int) -> None:
+    """Trim old expired/revoked user sessions to keep table size bounded."""
+    cutoff = datetime.now(UTC) - timedelta(days=retain_days)
+    async with async_db() as session:
+        try:
+            del_stmt = delete(UserSession).where(
+                (
+                    (UserSession.revoked_at.is_not(None))
+                    & (UserSession.revoked_at < cutoff)
+                )
+                | (UserSession.expires_at < cutoff)
+            )
+            result = await session.execute(del_stmt)
+            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            await session.commit()
+            if count > 0:
+                LOG.debug(f"Trimmed {count} old user sessions")
+        except Exception as e:
+            LOG.error(f"Error trimming user sessions: {e}")
+            await session.rollback()
+
+
 class HouseKeepingTask(NamedTuple):
     """Represents a house keeping task (used only internally for this module)."""
 
@@ -99,6 +121,11 @@ _WEEKLY_HOUSE_KEEPING_TASKS = (
         name="Trim old admin notices",
         func=_trim_admin_notices,
         kwargs={"retain_days": 90},
+    ),
+    HouseKeepingTask(
+        name="Trim old user sessions",
+        func=_trim_user_sessions,
+        kwargs={"retain_days": 30},
     ),
 )
 

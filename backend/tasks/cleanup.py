@@ -1,10 +1,9 @@
 import shutil
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
-from alembic.op import f
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +22,7 @@ from backend.core.rule_engine import (
 )
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
+from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import (
     find_season_folder,
     move_directory,
@@ -39,6 +39,7 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     MediaFavorite,
+    MediaWatchUser,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -51,6 +52,7 @@ from backend.database.models import (
     Series,
     SeriesArrRef,
     SeriesServiceRef,
+    SupplementalMediaMatch,
 )
 from backend.enums import (
     MediaType,
@@ -74,7 +76,8 @@ from backend.services.notifications import (
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
 )
-from backend.services.seerr_cache import seerr_snapshot_cache
+from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -708,12 +711,125 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
         rule.definition, field="seerr.requested_by_user_ids"
     ):
         return True
+    for _ in collect_rule_conditions(
+        rule.definition, field="seerr.requester_has_watched"
+    ):
+        return True
     return False
+
+
+def _rule_uses_season_episode_watch_fields(rule: ReclaimRule) -> bool:
+    """Return True if the rule references season episode-level watch progress fields."""
+    for _ in collect_rule_conditions(rule.definition, field="season.fully_watched"):
+        return True
+    for _ in collect_rule_conditions(rule.definition, field="season.watched_percent"):
+        return True
+    return False
+
+
+def _rules_use_season_episode_watch_fields(rules: list[ReclaimRule]) -> bool:
+    """Return True if any rule references season episode-level watch progress fields."""
+    return any(_rule_uses_season_episode_watch_fields(r) for r in rules)
 
 
 def _rules_use_seerr_fields(rules: list[ReclaimRule]) -> bool:
     """Return True if any of the rules reference Seerr request state fields."""
     return any(_rule_uses_seerr_fields(r) for r in rules)
+
+
+def _normalize_watch_key(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    return normalized or None
+
+
+def _extract_requester_mapping_identity(
+    requester_id: int,
+    requester_identity_keys: set[str],
+    mapping: dict[str, Any],
+) -> bool:
+    raw_id = mapping.get("seerr_user_id")
+    if raw_id is not None:
+        try:
+            return int(raw_id) == requester_id
+        except Exception:
+            return False
+    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
+    return bool(raw_name and raw_name in requester_identity_keys)
+
+
+def _extract_mapping_service(mapping: dict[str, Any]) -> Service | None:
+    raw_service = mapping.get("service_type")
+    if raw_service is None:
+        return None
+    try:
+        if isinstance(raw_service, Service):
+            return raw_service
+        return Service(str(raw_service))
+    except Exception:
+        return None
+
+
+def _build_watch_keys_for_requester(
+    *,
+    requester_id: int,
+    requester_identity_keys: set[str],
+    target_service: Service,
+    mappings: list[dict[str, Any]],
+) -> set[str]:
+    keys: set[str] = set()
+    for mapping in mappings:
+        if not _extract_requester_mapping_identity(
+            requester_id, requester_identity_keys, mapping
+        ):
+            continue
+        service_scope = _extract_mapping_service(mapping)
+        if service_scope is not None and service_scope is not target_service:
+            continue
+        media_user_key = _normalize_watch_key(mapping.get("media_user_key"))
+        if media_user_key:
+            keys.add(media_user_key)
+
+    # fallback by direct normalized identity keys
+    keys.update(requester_identity_keys)
+    return keys
+
+
+def _compute_requester_has_watched_for_key(
+    *,
+    media_key: tuple[MediaType, int],
+    snapshot: SeerrRequestSnapshot,
+    watch_by_service_and_user: Mapping[
+        tuple[MediaType, int], Mapping[Service, Mapping[str, datetime]]
+    ],
+    mappings: list[dict[str, Any]],
+) -> bool:
+    watches_for_key = watch_by_service_and_user.get(media_key)
+    if not watches_for_key:
+        return False
+    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
+    if not requester_times:
+        return False
+
+    for requester_id, requested_at in requester_times.items():
+        requested_at_utc = ensure_utc(requested_at)
+        requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
+            requester_id, set()
+        )
+        if not requester_identity_keys:
+            # retain user-id path if username/display_name wasn't present in request payload
+            requester_identity_keys = {str(requester_id)}
+        for watch_service, watch_by_user in watches_for_key.items():
+            candidate_keys = _build_watch_keys_for_requester(
+                requester_id=requester_id,
+                requester_identity_keys=requester_identity_keys,
+                target_service=watch_service,
+                mappings=mappings,
+            )
+            for watch_key in candidate_keys:
+                watched_at = watch_by_user.get(watch_key)
+                if watched_at is not None and ensure_utc(watched_at) > requested_at_utc:
+                    return True
+    return False
 
 
 async def _activate_seerr_request_resolver_for_rules(
@@ -732,7 +848,7 @@ async def _activate_seerr_request_resolver_for_rules(
             "Rule uses Seerr fields but Seerr service is not configured; "
             "Seerr rule conditions will not match"
         )
-        SeerrRequestResolver({}).activate()
+        SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, "Seerr service is not configured"
 
     movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
@@ -761,7 +877,7 @@ async def _activate_seerr_request_resolver_for_rules(
         allow_stale_on_failure=allow_stale_on_failure,
     )
     if snapshot is None:
-        SeerrRequestResolver({}).activate()
+        SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, snapshot_error or "Failed to load Seerr request snapshot"
 
     requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
@@ -770,7 +886,7 @@ async def _activate_seerr_request_resolver_for_rules(
     requester_ids_by_key.update(
         {(MediaType.SERIES, tmdb_id): set() for tmdb_id in series_tmdb_ids}
     )
-    for key, user_ids in snapshot.items():
+    for key, user_ids in snapshot.requester_ids_by_key.items():
         media_type, tmdb_id = key
         if media_type is MediaType.MOVIE and tmdb_id not in movie_tmdb_ids:
             continue
@@ -780,7 +896,64 @@ async def _activate_seerr_request_resolver_for_rules(
             continue
         requester_ids_by_key[key].update(user_ids)
 
-    SeerrRequestResolver(requester_ids_by_key).activate()
+    relevant_keys = set(requester_ids_by_key.keys())
+    watch_rows = (
+        await db.execute(
+            select(
+                MediaWatchUser.media_type,
+                MediaWatchUser.tmdb_id,
+                MediaWatchUser.source_service,
+                MediaWatchUser.watch_user_key_normalized,
+                MediaWatchUser.last_watched_at,
+            ).where(
+                or_(
+                    and_(
+                        MediaWatchUser.media_type == MediaType.MOVIE,
+                        MediaWatchUser.tmdb_id.in_(movie_tmdb_ids),
+                    ),
+                    and_(
+                        MediaWatchUser.media_type == MediaType.SERIES,
+                        MediaWatchUser.tmdb_id.in_(series_tmdb_ids),
+                    ),
+                )
+            )
+        )
+    ).all()
+    watch_by_service_and_user: dict[
+        tuple[MediaType, int], dict[Service, dict[str, datetime]]
+    ] = {}
+    for media_type, tmdb_id, source_service, user_key, last_watched_at in watch_rows:
+        key = (media_type, int(tmdb_id))
+        if key not in relevant_keys:
+            continue
+        normalized_key = _normalize_watch_key(user_key)
+        if not normalized_key or last_watched_at is None:
+            continue
+        last_watched_at_utc = ensure_utc(last_watched_at)
+        by_service = watch_by_service_and_user.setdefault(key, {})
+        by_user = by_service.setdefault(source_service, {})
+        existing = by_user.get(normalized_key)
+        if existing is None or last_watched_at_utc > existing:
+            by_user[normalized_key] = last_watched_at_utc
+
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    raw_mappings = (
+        settings_row.requester_watch_user_mappings if settings_row is not None else []
+    )
+    mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {}
+    for key in relevant_keys:
+        requester_has_watched_by_key[key] = _compute_requester_has_watched_for_key(
+            media_key=key,
+            snapshot=snapshot,
+            watch_by_service_and_user=watch_by_service_and_user,
+            mappings=mappings,
+        )
+
+    SeerrRequestResolver(
+        requester_ids_by_key,
+        requester_has_watched_by_key=requester_has_watched_by_key,
+    ).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "
         f"{len(series_tmdb_ids)} series keys"
@@ -791,6 +964,349 @@ async def _activate_seerr_request_resolver_for_rules(
             f"{snapshot_error}"
         )
     return True, snapshot_error
+
+
+_LEAVING_SOON_MEDIA_SERVICES = {
+    Service.PLEX,
+    Service.JELLYFIN,
+    Service.EMBY,
+}
+
+
+def _normalize_leaving_soon_last_success_titles(
+    raw_titles: object,
+) -> dict[Service, str]:
+    if not isinstance(raw_titles, Mapping):
+        return {}
+    normalized_titles: dict[Service, str] = {}
+    for raw_service, raw_title in raw_titles.items():
+        try:
+            service = Service(str(raw_service))
+        except Exception:
+            continue
+        if service not in _LEAVING_SOON_MEDIA_SERVICES:
+            continue
+        normalized_titles[service] = normalize_leaving_soon_collection_title(
+            str(raw_title)
+        )
+    return normalized_titles
+
+
+async def _load_leaving_soon_collection_settings(
+    db: AsyncSession,
+) -> tuple[GeneralSettings | None, bool, str, dict[Service, str]]:
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    if settings_row is None:
+        return None, False, "Leaving Soon", {}
+    collection_base_title = normalize_leaving_soon_collection_title(
+        settings_row.leaving_soon_collection_title
+    )
+    last_success_titles = _normalize_leaving_soon_last_success_titles(
+        settings_row.leaving_soon_last_success_titles
+    )
+    return (
+        settings_row,
+        bool(settings_row.leaving_soon_enabled),
+        collection_base_title,
+        last_success_titles,
+    )
+
+
+def _append_service_item_id(
+    expected_items_by_service: dict[Service, set[str]],
+    *,
+    service: Service,
+    item_id: str | None,
+) -> None:
+    if service not in _LEAVING_SOON_MEDIA_SERVICES:
+        return
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_item_id:
+        return
+    expected_items_by_service.setdefault(service, set()).add(normalized_item_id)
+
+
+async def _build_leaving_soon_expected_item_ids(
+    db: AsyncSession,
+) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
+    movie_expected_by_service: dict[Service, set[str]] = {}
+    series_expected_by_service: dict[Service, set[str]] = {}
+
+    candidate_rows = (
+        await db.execute(
+            select(
+                ReclaimCandidate.media_type,
+                ReclaimCandidate.movie_id,
+                ReclaimCandidate.movie_version_id,
+                ReclaimCandidate.series_id,
+            )
+        )
+    ).all()
+    if not candidate_rows:
+        return movie_expected_by_service, series_expected_by_service
+
+    movie_candidate_version_ids: set[int] = set()
+    movie_candidate_ids: set[int] = set()
+    series_candidate_ids: set[int] = set()
+    for media_type, movie_id, movie_version_id, series_id in candidate_rows:
+        if media_type == MediaType.MOVIE:
+            if movie_id is not None:
+                movie_candidate_ids.add(int(movie_id))
+            if movie_version_id is not None:
+                movie_candidate_version_ids.add(int(movie_version_id))
+            continue
+        if media_type == MediaType.SERIES and series_id is not None:
+            series_candidate_ids.add(int(series_id))
+
+    if movie_candidate_version_ids:
+        version_rows = (
+            await db.execute(
+                select(
+                    MovieVersion.service,
+                    MovieVersion.service_item_id,
+                    MovieVersion.movie_id,
+                ).where(MovieVersion.id.in_(movie_candidate_version_ids))
+            )
+        ).all()
+        for service, service_item_id, movie_id in version_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=service,
+                item_id=service_item_id,
+            )
+            movie_candidate_ids.add(int(movie_id))
+
+    if movie_candidate_ids:
+        movie_version_rows = (
+            await db.execute(
+                select(MovieVersion.service, MovieVersion.service_item_id).where(
+                    MovieVersion.movie_id.in_(movie_candidate_ids)
+                )
+            )
+        ).all()
+        for service, service_item_id in movie_version_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=service,
+                item_id=service_item_id,
+            )
+
+        supplemental_movie_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.MOVIE,
+                    SupplementalMediaMatch.movie_id.in_(movie_candidate_ids),
+                )
+            )
+        ).all()
+        for source_service, source_item_id in supplemental_movie_rows:
+            _append_service_item_id(
+                movie_expected_by_service,
+                service=source_service,
+                item_id=source_item_id,
+            )
+
+    if series_candidate_ids:
+        series_ref_rows = (
+            await db.execute(
+                select(SeriesServiceRef.service, SeriesServiceRef.service_id).where(
+                    SeriesServiceRef.series_id.in_(series_candidate_ids)
+                )
+            )
+        ).all()
+        for service, service_id in series_ref_rows:
+            _append_service_item_id(
+                series_expected_by_service,
+                service=service,
+                item_id=service_id,
+            )
+
+        supplemental_series_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.SERIES,
+                    SupplementalMediaMatch.series_id.in_(series_candidate_ids),
+                )
+            )
+        ).all()
+        for source_service, source_item_id in supplemental_series_rows:
+            _append_service_item_id(
+                series_expected_by_service,
+                service=source_service,
+                item_id=source_item_id,
+            )
+
+    return movie_expected_by_service, series_expected_by_service
+
+
+async def _cleanup_disabled_leaving_soon_collections(
+    db: AsyncSession,
+    *,
+    settings_row: GeneralSettings | None,
+    last_success_titles_by_service: Mapping[Service, str],
+) -> None:
+    if settings_row is None or not last_success_titles_by_service:
+        return
+
+    updated_last_success_titles = dict(last_success_titles_by_service)
+    last_success_changed = False
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+
+    for service_type, service_client in service_clients:
+        previous_success_title = updated_last_success_titles.get(service_type)
+        if previous_success_title is None:
+            continue
+        if service_client is None:
+            # keep title for retry while service is unavailable
+            continue
+
+        delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
+        if not callable(delete_method):
+            LOG.warning(
+                "Leaving Soon cleanup method missing for "
+                f"{service_type.value}; cannot remove title "
+                f"{previous_success_title!r} while Leaving Soon is disabled"
+            )
+            continue
+        delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
+        try:
+            await delete_func(base_title=previous_success_title)
+        except Exception as e:
+            LOG.warning(
+                "Failed cleaning Leaving Soon collections for "
+                f"{service_type.value} while disabled (title "
+                f"{previous_success_title!r}): {e}"
+            )
+            continue
+
+        del updated_last_success_titles[service_type]
+        last_success_changed = True
+
+    if not last_success_changed:
+        return
+
+    settings_row.leaving_soon_last_success_titles = {
+        service.value: title
+        for service, title in updated_last_success_titles.items()
+        if service in _LEAVING_SOON_MEDIA_SERVICES
+    }
+    db.add(settings_row)
+    await db.commit()
+
+
+async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
+    (
+        settings_row,
+        enabled,
+        collection_base_title,
+        last_success_titles_by_service,
+    ) = await _load_leaving_soon_collection_settings(db)
+    if not enabled:
+        await _cleanup_disabled_leaving_soon_collections(
+            db,
+            settings_row=settings_row,
+            last_success_titles_by_service=last_success_titles_by_service,
+        )
+        return
+
+    movie_expected_by_service: dict[Service, set[str]] = {}
+    series_expected_by_service: dict[Service, set[str]] = {}
+    (
+        movie_expected_by_service,
+        series_expected_by_service,
+    ) = await _build_leaving_soon_expected_item_ids(db)
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+    updated_last_success_titles = dict(last_success_titles_by_service)
+    last_success_changed = False
+
+    for service_type, service_client in service_clients:
+        if service_client is None:
+            continue
+        previous_success_title = updated_last_success_titles.get(service_type)
+        service_success = True
+
+        # if this service last synced under a different title, clean it first.
+        if (
+            previous_success_title is not None
+            and previous_success_title != collection_base_title
+        ):
+            delete_method = getattr(
+                service_client, "delete_leaving_soon_collections", None
+            )
+            if not callable(delete_method):
+                service_success = False
+                LOG.warning(
+                    "Leaving Soon cleanup method missing for "
+                    f"{service_type.value}; cannot remove previous title "
+                    f"{previous_success_title!r}"
+                )
+            else:
+                delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
+                try:
+                    await delete_func(base_title=previous_success_title)
+                except Exception as e:
+                    service_success = False
+                    LOG.warning(
+                        "Failed cleaning previous Leaving Soon collections for "
+                        f"{service_type.value} (title {previous_success_title!r}): {e}"
+                    )
+
+        sync_method = getattr(service_client, "sync_leaving_soon_collections", None)
+        if not callable(sync_method):
+            LOG.warning(
+                "Leaving Soon sync method missing for "
+                f"{service_type.value}; skipping service sync"
+            )
+            continue
+        sync_func = cast(Callable[..., Awaitable[Any]], sync_method)
+        movie_item_ids = movie_expected_by_service.get(service_type, set())
+        series_item_ids = series_expected_by_service.get(service_type, set())
+        try:
+            await sync_func(
+                base_title=collection_base_title,
+                movie_item_ids=movie_item_ids,
+                series_item_ids=series_item_ids,
+            )
+        except Exception as e:
+            service_success = False
+            LOG.warning(
+                f"Failed syncing Leaving Soon collections for {service_type.value}: {e}"
+            )
+
+        if not service_success:
+            continue
+        if previous_success_title == collection_base_title:
+            continue
+
+        updated_last_success_titles[service_type] = collection_base_title
+        last_success_changed = True
+
+    if not last_success_changed:
+        return
+    if settings_row is None:
+        return
+
+    settings_row.leaving_soon_last_success_titles = {
+        service.value: title
+        for service, title in updated_last_success_titles.items()
+        if service in _LEAVING_SOON_MEDIA_SERVICES
+    }
+    db.add(settings_row)
+    await db.commit()
 
 
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
@@ -808,6 +1324,10 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             LOG.info("No enabled cleanup rules found, clearing all candidates")
             await db.execute(delete(ReclaimCandidate))
             await db.commit()
+            try:
+                await _sync_leaving_soon_collections(db)
+            except Exception as e:
+                LOG.warning(f"Leaving Soon collection sync failed: {e}")
             return
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
@@ -952,6 +1472,11 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             candidates_removed += del_result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
             await db.commit()
+
+        try:
+            await _sync_leaving_soon_collections(db)
+        except Exception as e:
+            LOG.warning(f"Leaving Soon collection sync failed: {e}")
 
         LOG.info(
             f"Cleanup scan completed: {candidates_created} new candidates, "
@@ -1345,6 +1870,7 @@ async def _collect_season_candidate_records(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
+    include_episodes = _rules_use_season_episode_watch_fields(rules)
     (
         favorites_enabled,
         favorites_all_users,
@@ -1362,10 +1888,13 @@ async def _collect_season_candidate_records(
     )
 
     # load all non-deleted series with their seasons and service refs
+    season_loader = selectinload(Series.seasons)
+    if include_episodes:
+        season_loader = season_loader.selectinload(Season.episodes)
     query = (
         select(Series)
         .where(Series.removed_at.is_(None))
-        .options(selectinload(Series.service_refs), selectinload(Series.seasons))
+        .options(selectinload(Series.service_refs), season_loader)
     )
     result = await db.execute(query)
     all_series = result.scalars().all()
@@ -2272,11 +2801,176 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
 async def _load_path_mappings() -> list[dict]:
     """Load path mappings from GeneralSettings (returns empty list if unset)."""
     async with async_db() as db:
-        result = await db.execute(select(GeneralSettings))
-        settings = result.scalars().first()
-        if settings and settings.path_mappings:
-            return settings.path_mappings
+        result = await db.execute(select(GeneralSettings.path_mappings))
+        path_mappings = result.scalars().first()
+        if path_mappings:
+            return path_mappings
     return []
+
+
+def _main_media_server_type() -> Service | None:
+    """Return the configured main media server type based on the active client."""
+    main_service = service_manager.main_media_server
+    if main_service is None:
+        return None
+    if main_service is service_manager.jellyfin:
+        return Service.JELLYFIN
+    if main_service is service_manager.emby:
+        return Service.EMBY
+    return Service.PLEX
+
+
+def _season_media_server_id(season: Season, service_type: Service | None) -> str | None:
+    if service_type is Service.JELLYFIN:
+        return season.jellyfin_season_id
+    if service_type is Service.EMBY:
+        return season.emby_season_id
+    if service_type is Service.PLEX:
+        return season.plex_season_rating_key
+    return None
+
+
+def _episode_media_server_id(
+    episode: Episode, service_type: Service | None
+) -> str | None:
+    if service_type is Service.JELLYFIN:
+        return episode.jellyfin_episode_id
+    if service_type is Service.EMBY:
+        return episode.emby_episode_id
+    if service_type is Service.PLEX:
+        return episode.plex_rating_key
+    return None
+
+
+def _mapping_applies_to_scope(
+    mapping: Mapping[str, Any],
+    *,
+    service_type: str | None,
+    service_config_id: int | None,
+) -> bool:
+    mapping_service_type = str(mapping.get("service_type") or "").lower()
+    mapping_config_id = mapping.get("service_config_id")
+    if mapping_config_id is not None:
+        return service_config_id is not None and mapping_config_id == service_config_id
+    if mapping_service_type:
+        return bool(service_type) and mapping_service_type == service_type.lower()
+    return True
+
+
+def _mapped_path_variants(
+    path: str | None,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
+) -> set[str]:
+    """Return normalized raw and path-mapped variants without touching the filesystem."""
+    if not path:
+        return set()
+
+    normalized = normalize_fpath(path, strip_ending_slash=True)
+    if not normalized:
+        return set()
+
+    variants = {normalized}
+    sorted_mappings = sorted(
+        path_mappings or [],
+        key=lambda m: (
+            0
+            if service_config_id is not None
+            and m.get("service_config_id") == service_config_id
+            else 1
+            if service_type
+            and str(m.get("service_type") or "").lower() == service_type.lower()
+            and not m.get("service_config_id")
+            else 2
+            if not m.get("service_type") and not m.get("service_config_id")
+            else 3,
+            -len(str(m.get("source_prefix") or "")),
+        ),
+    )
+
+    for mapping in sorted_mappings:
+        if not _mapping_applies_to_scope(
+            mapping,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        ):
+            continue
+        source = normalize_fpath(
+            str(mapping.get("source_prefix") or ""), strip_ending_slash=True
+        )
+        local = normalize_fpath(
+            str(mapping.get("local_prefix") or ""), strip_ending_slash=True
+        )
+        if not source or not local:
+            continue
+        if normalized == source or normalized.startswith(source + "/"):
+            suffix = normalized[len(source) :]
+            variants.add(normalize_fpath(local + suffix, strip_ending_slash=True))
+
+    return {variant for variant in variants if variant}
+
+
+def _path_is_inside_folder(path: str, folder: str) -> bool:
+    return path == folder or path.startswith(folder + "/")
+
+
+def _path_matches_arr_folder(
+    path: str | None,
+    arr_folder: str | None,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    path_service_type: str | None = None,
+    arr_service_type: str | None = None,
+    arr_service_config_id: int | None = None,
+) -> bool:
+    path_variants = _mapped_path_variants(
+        path,
+        path_mappings,
+        service_type=path_service_type,
+    )
+    arr_variants = _mapped_path_variants(
+        arr_folder,
+        path_mappings,
+        service_type=arr_service_type,
+        service_config_id=arr_service_config_id,
+    )
+    return any(
+        _path_is_inside_folder(path_variant, arr_variant)
+        for path_variant in path_variants
+        for arr_variant in arr_variants
+    )
+
+
+def _order_series_arr_refs(
+    refs: Sequence[SeriesArrRef],
+    candidate_paths: Sequence[str | None],
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    media_service_type: Service | None,
+) -> list[SeriesArrRef]:
+    def ref_score(ref: SeriesArrRef) -> tuple[int, int]:
+        if any(
+            _path_matches_arr_folder(
+                path,
+                ref.arr_series_path,
+                path_mappings,
+                path_service_type=media_service_type.value
+                if media_service_type
+                else None,
+                arr_service_type=Service.SONARR.value,
+                arr_service_config_id=ref.service_config_id,
+            )
+            for path in candidate_paths
+            if path
+        ):
+            return (0, ref.id or 0)
+        if ref.arr_series_path:
+            return (1, ref.id or 0)
+        return (2, ref.id or 0)
+
+    return sorted(refs, key=ref_score)
 
 
 async def _load_arr_disk_space() -> list[dict]:
@@ -2441,12 +3135,13 @@ async def _delete_movie_version_candidates(
     rules: dict[int, ReclaimRule] | None = None,
     default_arr_delete_behavior: ArrDeleteFallback = "unmonitor",
 ) -> int:
-    """Delete movie-version candidates using service-aware targeted deletion.
+    """Deletes movie version candidates using service aware targeted deletion.
 
-    These are partial-version deletions (e.g. delete 1080p but keep 4K).  Radarr
-    cannot delete individual quality versions, so the media server is the only
-    authority here.  When *media_server_fallback_enabled* is False the deletion
-    is skipped and a warning is logged instead.
+    These are version scoped deletions (e.g. delete 1080p but keep 4K) or
+    candidates that could not be safely promoted to a full Radarr movie delete.
+    Radarr cannot delete individual quality versions, so the media server is the
+    only authority here.  When *media_server_fallback_enabled* is False the
+    deletion is skipped and a warning is logged instead.
     """
     if not version_candidates:
         return 0
@@ -2463,13 +3158,14 @@ async def _delete_movie_version_candidates(
                 title = version.movie.title if version and version.movie else "unknown"
             await _mark_candidate_delete_failure(
                 candidate.id,
-                "Partial movie version delete requires media server fallback, "
+                "Partial movie-version delete requires media server fallback, "
                 "or a Radarr delete that covers the full Radarr movie entry",
             )
             LOG.warning(
-                f"Media server fallback disabled - skipping partial-version deletion "
+                f"Media server fallback disabled - skipping movie-version deletion "
                 f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
-                f"General Settings to delete individual quality versions."
+                f"General Settings to delete individual quality versions or "
+                f"non-promotable version candidates."
             )
         return 0
 
@@ -2816,62 +3512,78 @@ async def _delete_movie_candidates(
             c.movie_version_id for c in version_candidates if c.movie_version_id
         ]
         version_path_by_id: dict[int, str | None] = {}
+        version_service_by_id: dict[int, Service | None] = {}
         if version_ids:
             ver_rows = (
                 await db.execute(
-                    select(MovieVersion.id, MovieVersion.path).where(
-                        MovieVersion.id.in_(version_ids)
-                    )
+                    select(
+                        MovieVersion.id,
+                        MovieVersion.path,
+                        MovieVersion.service,
+                    ).where(MovieVersion.id.in_(version_ids))
                 )
             ).all()
-            version_path_by_id = {ver_id: ver_path for ver_id, ver_path in ver_rows}
+            version_path_by_id = {
+                ver_id: ver_path for ver_id, ver_path, _service in ver_rows
+            }
+            version_service_by_id = {
+                ver_id: service for ver_id, _ver_path, service in ver_rows
+            }
 
         all_version_rows = (
             await db.execute(
-                select(MovieVersion.movie_id, MovieVersion.id, MovieVersion.path).where(
-                    MovieVersion.movie_id.in_(all_movie_ids)
-                )
+                select(
+                    MovieVersion.movie_id,
+                    MovieVersion.id,
+                    MovieVersion.path,
+                    MovieVersion.service,
+                ).where(MovieVersion.movie_id.in_(all_movie_ids))
             )
         ).all()
-        version_paths_by_movie: dict[int, dict[int, str | None]] = {}
-        for movie_id, version_id, version_path in all_version_rows:
+        version_info_by_movie: dict[
+            int, dict[int, tuple[str | None, Service | None]]
+        ] = {}
+        for movie_id, version_id, version_path, version_service in all_version_rows:
             if movie_id is not None:
-                version_paths_by_movie.setdefault(movie_id, {})[version_id] = (
-                    version_path
+                version_info_by_movie.setdefault(movie_id, {})[version_id] = (
+                    version_path,
+                    version_service,
                 )
 
     def _match_version_to_arr(
         version_path: str | None,
+        version_service: Service | None,
         refs: list[tuple],
     ) -> set[tuple[int, int]]:
         """Return (config_id, arr_movie_id) pairs whose folder path contains this version.
 
-        Path prefix matching is tried first.  If no arr_movie_path is stored yet
-        (e.g. before first sync after upgrade), falls back to routing to all arr
-        instances that have this movie.
+        Path prefix matching is tried first.  If there is only one active Radarr
+        ref and no path proof is available, route to that one ref.  Multi Radarr
+        cases without a path proof fail closed and use media-server fallback.
         """
-        if not refs:
+        active_refs = [
+            (config_id, arr_movie_id, arr_movie_path)
+            for config_id, arr_movie_id, arr_movie_path in refs
+            if config_id in radarr_clients
+        ]
+        if not active_refs:
             return set()
         matched: set[tuple[int, int]] = set()
-        if version_path:
-            norm_ver = version_path.rstrip("/")
-            for config_id, arr_movie_id, arr_movie_path in refs:
-                if arr_movie_path and config_id in radarr_clients:
-                    if norm_ver.startswith(arr_movie_path.rstrip("/") + "/"):
-                        matched.add((config_id, arr_movie_id))
+        for config_id, arr_movie_id, arr_movie_path in active_refs:
+            if _path_matches_arr_folder(
+                version_path,
+                arr_movie_path,
+                move_path_mappings,
+                path_service_type=version_service.value if version_service else None,
+                arr_service_type=Service.RADARR.value,
+                arr_service_config_id=config_id,
+            ):
+                matched.add((config_id, arr_movie_id))
         if not matched:
-            # no path match - use all known arr configs for this movie
-            for config_id, arr_movie_id, _ in refs:
-                if config_id in radarr_clients:
-                    matched.add((config_id, arr_movie_id))
+            if len(active_refs) == 1:
+                config_id, arr_movie_id, _arr_movie_path = active_refs[0]
+                matched.add((config_id, arr_movie_id))
         return matched
-
-    def _path_in_arr_folder(path: str | None, arr_movie_path: str | None) -> bool:
-        if not path or not arr_movie_path:
-            return False
-        norm_path = normalize_fpath(path, strip_ending_slash=True)
-        norm_arr = normalize_fpath(arr_movie_path, strip_ending_slash=True)
-        return norm_path == norm_arr or norm_path.startswith(norm_arr + "/")
 
     def _candidate_covers_full_radarr_entry(
         movie_id: int,
@@ -2883,25 +3595,39 @@ async def _delete_movie_candidates(
         if not selected_version_ids or not matched_refs:
             return False
 
-        version_paths = version_paths_by_movie.get(movie_id, {})
-        if not version_paths:
+        version_info = version_info_by_movie.get(movie_id, {})
+        if not version_info:
             return False
 
         refs_by_pair = {
             (config_id, arr_movie_id): arr_movie_path
             for config_id, arr_movie_id, arr_movie_path in refs
         }
-        all_version_ids = set(version_paths)
+        all_version_ids = set(version_info)
 
         for pair in matched_refs:
             arr_movie_path = refs_by_pair.get(pair)
             if arr_movie_path:
                 ref_version_ids = {
                     version_id
-                    for version_id, version_path in version_paths.items()
-                    if _path_in_arr_folder(version_path, arr_movie_path)
+                    for version_id, (
+                        version_path,
+                        version_service,
+                    ) in version_info.items()
+                    if _path_matches_arr_folder(
+                        version_path,
+                        arr_movie_path,
+                        move_path_mappings,
+                        path_service_type=version_service.value
+                        if version_service
+                        else None,
+                        arr_service_type=Service.RADARR.value,
+                        arr_service_config_id=pair[0],
+                    )
                 }
                 if not ref_version_ids:
+                    if len(refs) == 1 and selected_version_ids == all_version_ids:
+                        continue
                     return False
                 if not ref_version_ids.issubset(selected_version_ids):
                     return False
@@ -2932,7 +3658,8 @@ async def _delete_movie_candidates(
                 unmatched_version_candidates.append(cand)
                 continue
             ver_path = version_path_by_id.get(cand.movie_version_id)
-            matched = _match_version_to_arr(ver_path, movie_info["refs"])
+            ver_service = version_service_by_id.get(cand.movie_version_id)
+            matched = _match_version_to_arr(ver_path, ver_service, movie_info["refs"])
             cand_action = movie_arr_action.get(cand.movie_id or 0, "delete")
             if matched and cand_action == "unmonitor":
                 # version-level unmonitor: Radarr un-monitors the whole movie;
@@ -4084,6 +4811,9 @@ async def _delete_season_candidates(
             )
             if str(raw).strip()
         }
+        path_mappings: list[dict] = (
+            settings_row.path_mappings or [] if settings_row else []
+        )
 
     async with async_db() as db:
         query = (
@@ -4168,12 +4898,13 @@ async def _delete_season_candidates(
             candidate, season_rules_by_id, default_arr_delete_behavior
         )
 
-        # try Sonarr first
+        # try Sonarr first, preferring refs whose Sonarr path matches the media path
         sonarr_ref_id: int | None = None
         sonarr_ref_config_id: int | None = None
         arr_series_path: str | None = None
+        sonarr_client = None
         async with async_db() as db:
-            ref = (
+            refs = (
                 (
                     await db.execute(
                         select(SeriesArrRef)
@@ -4182,48 +4913,82 @@ async def _delete_season_candidates(
                     )
                 )
                 .scalars()
-                .first()
+                .all()
             )
-            if ref:
-                sonarr_ref_id = ref.arr_series_id
-                sonarr_ref_config_id = ref.service_config_id
-                arr_series_path = ref.arr_series_path
+        ordered_refs = _order_series_arr_refs(
+            refs,
+            [season.path, *(season.episode_paths or [])],
+            path_mappings,
+            media_service_type=_main_media_server_type(),
+        )
+        last_sonarr_error: str | None = None
 
-        sonarr_client = None
-        if sonarr_ref_config_id is not None:
-            sonarr_client = service_manager.get_sonarr(sonarr_ref_config_id)
-        if sonarr_client is None:
-            sonarr_client = service_manager.sonarr
+        for ref in ordered_refs:
+            ref_client = service_manager.get_sonarr(ref.service_config_id)
+            if ref_client is None:
+                ref_client = service_manager.sonarr
+            if ref_client is None or ref.arr_series_id is None:
+                continue
 
-        if sonarr_client and sonarr_ref_id:
-            # unmonitor first so Sonarr can't queue a re-grab if the delete is
-            # slow or partially fails; if un-monitoring fails we abort entirely
-            # rather than risk deleting files that will immediately be re-grabbed
             try:
-                await sonarr_client.update_season_monitoring(
-                    sonarr_ref_id, season_number, monitored=False
+                sonarr_episodes = await ref_client.get_episodes(ref.arr_series_id)
+            except Exception as e:
+                last_sonarr_error = str(e)
+                LOG.warning(
+                    f"Failed to fetch episodes from Sonarr for "
+                    f"'{series_obj.title}' S{season_number:02d} "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id}): {e}"
+                )
+                continue
+
+            season_file_ids = [
+                ep.get("episodeFileId")
+                for ep in sonarr_episodes
+                if ep.get("seasonNumber") == season_number
+                and ep.get("episodeFileId") is not None
+            ]
+            if not season_file_ids:
+                last_sonarr_error = (
+                    f"No Sonarr episode files found for S{season_number:02d}"
+                )
+                LOG.warning(
+                    f"No Sonarr episode files found for '{series_obj.title}' "
+                    f"S{season_number:02d} "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id})"
+                )
+                continue
+
+            try:
+                await ref_client.update_season_monitoring(
+                    ref.arr_series_id, season_number, monitored=False
                 )
                 LOG.debug(
                     f"Unmonitored '{series_obj.title}' S{season_number:02d} in Sonarr"
                 )
             except Exception as e:
+                last_sonarr_error = str(e)
                 LOG.warning(
                     f"Failed to unmonitor '{series_obj.title}' S{season_number:02d} "
-                    f"in Sonarr: {e} - aborting deletion to avoid re-grab"
+                    f"in Sonarr "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id}): {e}"
                 )
                 continue
 
+            sonarr_ref_id = ref.arr_series_id
+            sonarr_ref_config_id = ref.service_config_id
+            arr_series_path = ref.arr_series_path
+            sonarr_client = ref_client
+
             if cand_arr_action == "unmonitor":
-                # unmonitor path: delete files from disk, keep Sonarr entry
-                season_path_mappings = await _load_path_mappings()
                 season_folder: Path | None = None
                 if arr_series_path:
                     local_series_path = Path(arr_series_path)
                     if not local_series_path.is_dir():
                         local_series_path = resolve_path(
                             arr_series_path,
-                            season_path_mappings,
-                            service_type="sonarr",
+                            path_mappings,
+                            service_type=Service.SONARR.value,
+                            service_config_id=sonarr_ref_config_id,
                         )
                     if local_series_path and local_series_path.is_dir():
                         season_folder = find_season_folder(
@@ -4238,78 +5003,88 @@ async def _delete_season_candidates(
                         )
                         deleted_via_sonarr = True
                     except Exception as fs_err:
+                        last_sonarr_error = str(fs_err)
                         LOG.warning(
                             f"shutil.rmtree failed for '{series_obj.title}' "
                             f"S{season_number:02d} at '{season_folder}': {fs_err} "
                             f"- will attempt media server fallback"
                         )
                 else:
+                    last_sonarr_error = "Could not locate season folder"
                     LOG.warning(
                         f"Could not locate season folder for '{series_obj.title}' "
                         f"S{season_number:02d} (arr_series_path={arr_series_path!r})"
                     )
-                # also remove from media server to keep library clean
-                if deleted_via_sonarr and media_server_fallback_enabled:
-                    media_svc = service_manager.main_media_server
-                    if media_svc is None:
-                        _season_svc_id = None
-                    elif media_svc is service_manager.jellyfin:
-                        _season_svc_id = season.jellyfin_season_id
-                    elif media_svc is service_manager.emby:
-                        _season_svc_id = season.emby_season_id
-                    else:
-                        _season_svc_id = season.plex_season_rating_key
-                    if media_svc is not None and _season_svc_id:
-                        try:
-                            await media_svc.delete_item(_season_svc_id)
-                        except Exception as ms_err:
-                            LOG.warning(
-                                f"Media server delete_item failed for "
-                                f"'{series_obj.title}' S{season_number:02d}: {ms_err}"
-                            )
             else:
                 try:
-                    await sonarr_client.delete_season_files(
-                        sonarr_ref_id, season_number
+                    await ref_client.delete_season_files(
+                        ref.arr_series_id, season_number
                     )
                     deleted_via_sonarr = True
                     LOG.info(
                         f"Deleted '{series_obj.title}' S{season_number:02d} "
-                        f"via Sonarr (sonarr_id={sonarr_ref_id})"
+                        f"via Sonarr (sonarr_id={ref.arr_series_id})"
                     )
                 except Exception as e:
+                    last_sonarr_error = str(e)
                     LOG.warning(
                         f"Sonarr file deletion failed for '{series_obj.title}' "
                         f"S{season_number:02d}: {e} - will attempt media server fallback"
                     )
 
-            # if no files remain across all seasons (delete path only), remove series
-            if deleted_via_sonarr and cand_arr_action != "unmonitor":
+            if deleted_via_sonarr:
+                break
+
+        if deleted_via_sonarr and media_server_fallback_enabled:
+            media_svc = service_manager.main_media_server
+            media_svc_type = _main_media_server_type()
+            season_service_id = _season_media_server_id(season, media_svc_type)
+            if media_svc is not None and season_service_id:
                 try:
-                    fresh_series = await sonarr_client.get_series(sonarr_ref_id)
-                    all_empty = all(
-                        (s.statistics or {}).get("episodeFileCount", 0) == 0
-                        for s in fresh_series.seasons
-                    )
-                    if all_empty:
-                        await sonarr_client.delete_series(
-                            sonarr_ref_id,
-                            delete_files=False,
-                            add_import_exclusion=add_arr_import_exclusions_on_delete,
-                        )
-                        LOG.info(
-                            f"Removed '{series_obj.title}' from Sonarr entirely "
-                            f"(no files remaining, sonarr_id={sonarr_ref_id})"
-                        )
-                except Exception as e:
+                    await media_svc.delete_item(season_service_id)
+                except Exception as ms_err:
                     LOG.warning(
-                        f"Could not check/remove empty series '{series_obj.title}' "
-                        f"from Sonarr: {e}"
+                        f"Media server delete_item failed for "
+                        f"'{series_obj.title}' S{season_number:02d}: {ms_err}"
                     )
+
+        # if no files remain across all seasons (delete path only), remove series
+        if (
+            deleted_via_sonarr
+            and cand_arr_action != "unmonitor"
+            and sonarr_client is not None
+            and sonarr_ref_id is not None
+        ):
+            try:
+                fresh_series = await sonarr_client.get_series(sonarr_ref_id)
+                all_empty = all(
+                    (s.statistics or {}).get("episodeFileCount", 0) == 0
+                    for s in fresh_series.seasons
+                )
+                if all_empty:
+                    await sonarr_client.delete_series(
+                        sonarr_ref_id,
+                        delete_files=False,
+                        add_import_exclusion=add_arr_import_exclusions_on_delete,
+                    )
+                    LOG.info(
+                        f"Removed '{series_obj.title}' from Sonarr entirely "
+                        f"(no files remaining, sonarr_id={sonarr_ref_id})"
+                    )
+            except Exception as e:
+                LOG.warning(
+                    f"Could not check/remove empty series '{series_obj.title}' "
+                    f"from Sonarr: {e}"
+                )
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
             if not media_server_fallback_enabled:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error
+                    or "Media server fallback disabled for season deletion",
+                )
                 LOG.warning(
                     f"Media server fallback disabled - skipping season deletion for "
                     f"'{series_obj.title}' S{season_number:02d}. Enable 'Allow Media "
@@ -4317,14 +5092,9 @@ async def _delete_season_candidates(
                 )
                 continue
             media_service = service_manager.main_media_server
-            if media_service is service_manager.jellyfin:
-                season_service_id = season.jellyfin_season_id
-            elif media_service is service_manager.emby:
-                season_service_id = season.emby_season_id
-            else:
-                season_service_id = (
-                    season.plex_season_rating_key if media_service else None
-                )
+            season_service_id = _season_media_server_id(
+                season, _main_media_server_type()
+            )
             if media_service and season_service_id:
                 try:
                     await media_service.delete_item(season_service_id)
@@ -4332,12 +5102,20 @@ async def _delete_season_candidates(
                         f"Deleted '{series_obj.title}' S{season_number:02d} via media server"
                     )
                 except Exception as e:
+                    await _mark_candidate_delete_failure(
+                        candidate.id,
+                        f"Media server season deletion failed: {e}",
+                    )
                     LOG.error(
                         f"Media server deletion failed for '{series_obj.title}' "
                         f"S{season_number:02d}: {e} - skipping"
                     )
                     continue
             else:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    "No deletion method available for season",
+                )
                 LOG.warning(
                     f"No deletion method available for '{series_obj.title}' "
                     f"S{season_number:02d} - skipping"
@@ -4470,6 +5248,9 @@ async def _delete_episode_candidates(
 
     async with async_db() as db:
         settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+        media_server_fallback_enabled = (
+            settings_row.media_server_fallback_enabled if settings_row else True
+        )
         default_arr_delete_behavior = _coerce_arr_delete_fallback(
             settings_row.default_arr_delete_behavior if settings_row else None
         )
@@ -4489,6 +5270,9 @@ async def _delete_episode_candidates(
             )
             if str(raw).strip()
         }
+        path_mappings: list[dict] = (
+            settings_row.path_mappings or [] if settings_row else []
+        )
 
     async with async_db() as db:
         query = (
@@ -4584,8 +5368,11 @@ async def _delete_episode_candidates(
 
         sonarr_ref_id: int | None = None
         sonarr_ref_config_id: int | None = None
+        sonarr_client = None
+        deleted_via_sonarr = False
+        last_sonarr_error: str | None = None
         async with async_db() as db:
-            ref = (
+            refs = (
                 (
                     await db.execute(
                         select(SeriesArrRef)
@@ -4594,26 +5381,29 @@ async def _delete_episode_candidates(
                     )
                 )
                 .scalars()
-                .first()
+                .all()
             )
-            if ref:
-                sonarr_ref_id = ref.arr_series_id
-                sonarr_ref_config_id = ref.service_config_id
+        ordered_refs = _order_series_arr_refs(
+            refs,
+            [episode.path, season.path, *(season.episode_paths or [])],
+            path_mappings,
+            media_service_type=_main_media_server_type(),
+        )
 
-        sonarr_client = None
-        if sonarr_ref_config_id is not None:
-            sonarr_client = service_manager.get_sonarr(sonarr_ref_config_id)
-        if sonarr_client is None:
-            sonarr_client = service_manager.sonarr
-
-        deleted_via_sonarr = False
-        if sonarr_client and sonarr_ref_id:
+        for ref in ordered_refs:
+            ref_client = service_manager.get_sonarr(ref.service_config_id)
+            if ref_client is None:
+                ref_client = service_manager.sonarr
+            if ref_client is None or ref.arr_series_id is None:
+                continue
             try:
-                sonarr_episodes = await sonarr_client.get_episodes(sonarr_ref_id)
+                sonarr_episodes = await ref_client.get_episodes(ref.arr_series_id)
             except Exception as e:
+                last_sonarr_error = str(e)
                 LOG.warning(
                     f"Failed to fetch episodes from Sonarr for "
-                    f"'{series_obj.title}' {ep_label}: {e}"
+                    f"'{series_obj.title}' {ep_label} "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id}): {e}"
                 )
                 continue
 
@@ -4624,8 +5414,10 @@ async def _delete_episode_candidates(
                 and ep.get("episodeNumber") == episode.episode_number
             ]
             if not matching:
+                last_sonarr_error = f"No Sonarr episode found for {ep_label}"
                 LOG.warning(
-                    f"No Sonarr episode found for '{series_obj.title}' {ep_label} - skipping"
+                    f"No Sonarr episode found for '{series_obj.title}' {ep_label} "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id})"
                 )
                 continue
 
@@ -4634,34 +5426,29 @@ async def _delete_episode_candidates(
             sonarr_ep_file_id: int | None = sonarr_ep.get("episodeFileId")
 
             if not sonarr_ep_file_id:
+                last_sonarr_error = f"No episode file in Sonarr for {ep_label}"
                 LOG.debug(
-                    f"No episode file in Sonarr for '{series_obj.title}' {ep_label} - skipping"
+                    f"No episode file in Sonarr for '{series_obj.title}' {ep_label} "
+                    f"(config_id={ref.service_config_id}, sonarr_id={ref.arr_series_id})"
                 )
-                # still remove candidate since there's nothing to delete
-                async with async_db() as db:
-                    cand_obj = (
-                        await db.execute(
-                            select(ReclaimCandidate).where(
-                                ReclaimCandidate.id == candidate.id
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if cand_obj:
-                        await db.delete(cand_obj)
-                    await db.commit()
                 continue
 
             try:
                 if cand_arr_action == "unmonitor" and sonarr_ep_id:
-                    await sonarr_client.unmonitor_episode(sonarr_ep_id)
+                    await ref_client.unmonitor_episode(sonarr_ep_id)
                     LOG.debug(f"Unmonitored '{series_obj.title}' {ep_label} in Sonarr")
-                await sonarr_client.delete_episode_file(sonarr_ep_file_id)
+                await ref_client.delete_episode_file(sonarr_ep_file_id)
                 deleted_via_sonarr = True
+                sonarr_ref_id = ref.arr_series_id
+                sonarr_ref_config_id = ref.service_config_id
+                sonarr_client = ref_client
                 LOG.info(
                     f"Deleted '{series_obj.title}' {ep_label} via Sonarr"
                     f" (file_id={sonarr_ep_file_id})"
                 )
+                break
             except Exception as e:
+                last_sonarr_error = str(e)
                 LOG.warning(
                     f"Sonarr episode file deletion failed for "
                     f"'{series_obj.title}' {ep_label}: {e}"
@@ -4670,13 +5457,7 @@ async def _delete_episode_candidates(
         if deleted_via_sonarr:
             # remove from media server to keep library in sync
             media_svc = service_manager.main_media_server
-            ep_svc_id: str | None = None
-            if media_svc is service_manager.jellyfin:
-                ep_svc_id = episode.jellyfin_episode_id
-            elif media_svc is service_manager.emby:
-                ep_svc_id = episode.emby_episode_id
-            elif media_svc is not None:
-                ep_svc_id = episode.plex_rating_key
+            ep_svc_id = _episode_media_server_id(episode, _main_media_server_type())
             if media_svc is not None and ep_svc_id:
                 try:
                     await media_svc.delete_item(ep_svc_id)
@@ -4713,10 +5494,46 @@ async def _delete_episode_candidates(
                     )
 
         if not deleted_via_sonarr:
-            LOG.warning(
-                f"No deletion method available for '{series_obj.title}' {ep_label} - skipping"
-            )
-            continue
+            if not media_server_fallback_enabled:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error
+                    or "Media server fallback disabled for episode deletion",
+                )
+                LOG.warning(
+                    f"Media server fallback disabled - skipping episode deletion for "
+                    f"'{series_obj.title}' {ep_label}. Enable 'Allow Media Server "
+                    f"Fallback Deletion' in General Settings."
+                )
+                continue
+            media_svc = service_manager.main_media_server
+            ep_svc_id = _episode_media_server_id(episode, _main_media_server_type())
+            if media_svc is not None and ep_svc_id:
+                try:
+                    await media_svc.delete_item(ep_svc_id)
+                    LOG.info(
+                        f"Deleted '{series_obj.title}' {ep_label} via media server"
+                    )
+                except Exception as e:
+                    await _mark_candidate_delete_failure(
+                        candidate.id,
+                        f"Media server episode deletion failed: {e}",
+                    )
+                    LOG.error(
+                        f"Media server deletion failed for '{series_obj.title}' "
+                        f"{ep_label}: {e} - skipping"
+                    )
+                    continue
+            else:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error or "No deletion method available for episode",
+                )
+                LOG.warning(
+                    f"No deletion method available for '{series_obj.title}' "
+                    f"{ep_label} - skipping"
+                )
+                continue
 
         async with async_db() as db:
             cand_obj = (

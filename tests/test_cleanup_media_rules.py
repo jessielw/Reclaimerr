@@ -13,6 +13,7 @@ from backend.core.rule_engine import SeerrRequestResolver
 from backend.database import Base
 from backend.database.models import (
     Episode,
+    GeneralSettings,
     Movie,
     MovieVersion,
     ProtectedMedia,
@@ -24,7 +25,10 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, Service
+from backend.services.seerr_cache import SeerrRequestSnapshot
+from backend.tasks import cleanup as cleanup_tasks
 from backend.tasks.cleanup import (
+    _compute_requester_has_watched_for_key,
     _evaluate_movie_rule,
     _evaluate_rule_for_season,
     _process_series_episodes,
@@ -32,6 +36,7 @@ from backend.tasks.cleanup import (
     _scan_with_db,
     collect_rule_preview_matches,
 )
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
 def _make_rule(media_type: MediaType, **overrides: object) -> ReclaimRule:
@@ -202,6 +207,91 @@ def _make_series_ref(
     return ref
 
 
+def _make_single_condition_rule(
+    *,
+    name: str,
+    media_type: MediaType,
+    target_scope: str,
+    field: str,
+    operator: str,
+    value: object | None = None,
+) -> ReclaimRule:
+    condition: dict[str, object] = {
+        "type": "condition",
+        "field": field,
+        "operator": operator,
+    }
+    if value is not None:
+        condition["value"] = value
+    return ReclaimRule(
+        name=name,
+        media_type=media_type,
+        enabled=True,
+        target_scope=target_scope,
+        definition={
+            "version": 1,
+            "root": {"type": "group", "op": "and", "children": [condition]},
+        },
+        action={"candidate": True, "media_server_action": "delete"},
+    )
+
+
+def _make_multi_condition_rule(
+    *,
+    name: str,
+    media_type: MediaType,
+    target_scope: str,
+    conditions: list[dict[str, object]],
+) -> ReclaimRule:
+    return ReclaimRule(
+        name=name,
+        media_type=media_type,
+        enabled=True,
+        target_scope=target_scope,
+        definition={
+            "version": 1,
+            "root": {"type": "group", "op": "and", "children": conditions},
+        },
+        action={"candidate": True, "media_server_action": "delete"},
+    )
+
+
+class _LeavingSoonSyncServiceFake:
+    def __init__(
+        self,
+        *,
+        fail_sync: bool = False,
+        fail_delete_titles: set[str] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.delete_calls: list[str] = []
+        self._fail_sync = fail_sync
+        self._fail_delete_titles = set(fail_delete_titles or set())
+
+    async def sync_leaving_soon_collections(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        if self._fail_sync:
+            raise RuntimeError("sync failure")
+        self.calls.append(
+            {
+                "base_title": base_title,
+                "movie_item_ids": set(movie_item_ids),
+                "series_item_ids": set(series_item_ids),
+            }
+        )
+
+    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
+        normalized = normalize_leaving_soon_collection_title(base_title)
+        self.delete_calls.append(normalized)
+        if normalized in self._fail_delete_titles:
+            raise RuntimeError(f"delete failure for {normalized}")
+
+
 class CleanupMediaRuleTests(unittest.TestCase):
     def test_evaluate_movie_rule_library_filter_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
@@ -255,6 +345,95 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
 
+    def test_evaluate_movie_rule_path_folder_literal_and_filename_regex_passes(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                path="/media/movies/action/Example.Movie.2024.mkv",
+                file_name=None,
+            )
+        ]
+        rule = _make_multi_condition_rule(
+            name="path-folder-and-filename-regex",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "media.path",
+                    "operator": "equals",
+                    "value": "/media/movies/action",
+                },
+                {
+                    "type": "condition",
+                    "field": "media.file_name",
+                    "operator": "matches_any_regex",
+                    "value": [r"example\.movie\.2024\.mkv$"],
+                },
+            ],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_path_and_filename_regex_and_condition_uses_path_basename_fallback(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                path="/media/movies/action/Example.Movie.2024.mkv",
+                file_name=None,
+            )
+        ]
+        rule = _make_multi_condition_rule(
+            name="path-and-filename-and",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "media.path",
+                    "operator": "matches_any_regex",
+                    "value": [r"^/media/movies/action"],
+                },
+                {
+                    "type": "condition",
+                    "field": "media.file_name",
+                    "operator": "matches_any_regex",
+                    "value": [r"example\.movie\.2024\.mkv$"],
+                },
+            ],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_series_rule_filename_regex_uses_series_path_basename(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.last_viewed_at = datetime.now(UTC) - timedelta(days=3)
+        series.service_refs = [
+            _make_series_ref(service_id="sr-1", path="/media/shows/Example.Series")
+        ]
+        rule = _make_single_condition_rule(
+            name="series-filename-regex",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="media.file_name",
+            operator="matches_any_regex",
+            value=[r"example\.series$"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))
+
     def test_evaluate_movie_rule_tmdb_ranges_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
@@ -292,6 +471,125 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_rule(movie, default_rule, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, include_never_rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_is_true_for_unwatched_movie(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 0
+        movie.last_viewed_at = None
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-true",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_is_false_for_watched_movie(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 3
+        movie.last_viewed_at = datetime.now(UTC) - timedelta(days=3)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-false",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_watch_never_watched_treats_readded_copy_as_unwatched(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 3
+        movie.last_viewed_at = now - timedelta(days=90)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                added_at=now - timedelta(days=1),
+            )
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-never-watched-stale-watch-data",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_series_rule_watch_never_watched_is_true_for_unwatched_series(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.view_count = 0
+        series.last_viewed_at = None
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        rule = _make_single_condition_rule(
+            name="series-never-watched-true",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watch_never_watched_is_false_for_watched_season(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.view_count = 2
+        season.last_viewed_at = now - timedelta(days=2)
+        season.added_at = now - timedelta(days=30)
+        rule = _make_single_condition_rule(
+            name="season-never-watched-false",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="watch.never_watched",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watch_never_watched_treats_readded_as_unwatched(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.view_count = 2
+        season.last_viewed_at = now - timedelta(days=90)
+        season.added_at = now - timedelta(days=5)
+        rule = _make_single_condition_rule(
+            name="season-never-watched-stale-watch-data",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="watch.never_watched",
+            operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
 
     def test_evaluate_movie_rule_temporal_criteria_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
@@ -550,6 +848,225 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
         self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
 
+    def test_evaluate_rule_for_season_fully_watched_matches_all_watched(self) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.added_at = now - timedelta(days=10)
+        season.episodes = [
+            Episode(season_id=1, episode_number=1, view_count=1),
+            Episode(
+                season_id=1,
+                episode_number=2,
+                view_count=0,
+                last_viewed_at=now - timedelta(days=1),
+            ),
+        ]
+        rule = ReclaimRule(
+            name="season-fully-watched",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
+    def test_evaluate_rule_for_season_watched_percent_matches_partial(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.episodes = [
+            Episode(season_id=1, episode_number=1, view_count=1),
+            Episode(season_id=1, episode_number=2, view_count=0),
+        ]
+        pass_rule = ReclaimRule(
+            name="season-watched-pct-pass",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "greater_than_or_equal",
+                            "value": 50,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        fail_rule = ReclaimRule(
+            name="season-watched-pct-fail",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "equals",
+                            "value": 100,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, pass_rule, {}, []))
+        self.assertFalse(_evaluate_rule_for_season(series, season, fail_rule, {}, []))
+
+    def test_evaluate_rule_for_season_watched_progress_ignores_stale_watch_data(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.added_at = now
+        season.episodes = [
+            Episode(
+                season_id=1,
+                episode_number=1,
+                view_count=1,
+                last_viewed_at=now - timedelta(days=1),
+            )
+        ]
+        fully_watched_rule = ReclaimRule(
+            name="season-fully-watched-stale",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        watched_percent_zero_rule = ReclaimRule(
+            name="season-watched-zero",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "equals",
+                            "value": 0,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertFalse(
+            _evaluate_rule_for_season(series, season, fully_watched_rule, {}, [])
+        )
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, watched_percent_zero_rule, {}, [])
+        )
+
+    def test_evaluate_rule_for_season_watched_progress_unknown_without_episodes(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+
+        is_true_rule = ReclaimRule(
+            name="season-fully-watched-unknown-true",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        not_exists_rule = ReclaimRule(
+            name="season-fully-watched-unknown-missing",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "not_exists",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertFalse(
+            _evaluate_rule_for_season(series, season, is_true_rule, {}, [])
+        )
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, not_exists_rule, {}, [])
+        )
+
     def test_evaluate_movie_rule_combined_criteria_populates_reasons(self) -> None:
         now = datetime.now(UTC)
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
@@ -744,6 +1261,42 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         SeerrRequestResolver({(MediaType.MOVIE, 1): {404}}).activate()
         self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_compute_requester_has_watched_handles_mixed_timezone_datetimes(
+        self,
+    ) -> None:
+        media_key: tuple[MediaType, int] = (MediaType.MOVIE, 1)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={
+                media_key: {101: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
+            },
+            requester_identity_keys_by_user_id={101: {"alice"}},
+        )
+        watch_by_service_and_user: dict[
+            tuple[MediaType, int], dict[Service, dict[str, datetime]]
+        ] = {media_key: {Service.PLEX: {"alice": datetime(2026, 1, 1, 13, 0)}}}
+
+        self.assertTrue(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watch_by_service_and_user,
+                mappings=[],
+            )
+        )
+
+        watch_by_service_and_user[media_key][Service.PLEX]["alice"] = datetime(
+            2026, 1, 1, 11, 0
+        )
+        self.assertFalse(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watch_by_service_and_user,
+                mappings=[],
+            )
+        )
 
 
 if __name__ == "__main__":
@@ -1154,3 +1707,410 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(preview_items[0].media_title, "Preview Movie")
             self.assertEqual(preview_items[0].version_video_resolution, "2160p")
             self.assertTrue(preview_items[0].reason_tokens)
+
+    async def test_scan_syncs_leaving_soon_collections_when_enabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5001, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5001",
+                service_item_id="plex-item-5001",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["base_title"], "Leaving Soon")
+        self.assertEqual(call["movie_item_ids"], {"plex-item-5001"})
+        self.assertEqual(call["series_item_ids"], set())
+        self.assertEqual(fake_plex.delete_calls, [])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Leaving Soon"},
+            )
+
+    async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5002, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5002",
+                service_item_id="plex-item-5002",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+
+    async def test_scan_cleans_leaving_soon_collections_when_disabled(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=50021, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-50021",
+                service_item_id="plex-item-50021",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(settings.leaving_soon_last_success_titles, {})
+
+    async def test_scan_keeps_leaving_soon_titles_when_disabled_cleanup_fails(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=False,
+                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=50022, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-50022",
+                service_item_id="plex-item-50022",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Leaving Soon"})
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Leaving Soon"},
+            )
+
+    async def test_scan_maps_season_candidates_to_series_leaving_soon_items(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Leaving Soon",
+            )
+            rule = _make_rule(
+                MediaType.SERIES,
+                target_scope="season",
+                min_size=1,
+                include_never_watched=True,
+            )
+            series = Series(title="Series", tmdb_id=5003, size=5 * 1024**3)
+            db.add_all([settings, rule, series])
+            await db.flush()
+
+            series_ref = _make_series_ref(
+                service_id="plex-series-5003",
+                library_id="lib-series",
+                library_name="TV",
+            )
+            series_ref.series_id = series.id
+            db.add(series_ref)
+            db.add(
+                Season(
+                    series_id=series.id,
+                    season_number=1,
+                    size=2 * 1024**3,
+                )
+            )
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["movie_item_ids"], set())
+        self.assertEqual(call["series_item_ids"], {"plex-series-5003"})
+
+    async def test_scan_renames_using_last_success_title(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5004, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5004",
+                service_item_id="plex-item-5004",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
+        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Latest Soon"},
+            )
+
+    async def test_scan_keeps_last_success_title_when_old_cleanup_fails(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5005, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5005",
+                service_item_id="plex-item-5005",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Old A"})
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+        self.assertEqual(len(fake_plex.calls), 1)
+        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Old A"},
+            )
+
+    async def test_scan_keeps_last_success_title_when_current_sync_fails(self) -> None:
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5006, size=3 * 1024**3)
+            db.add_all([settings, rule, movie])
+            await db.flush()
+
+            version = _make_movie_version(
+                service_media_id="mv-5006",
+                service_item_id="plex-item-5006",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake(fail_sync=True)
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+
+        self.assertEqual(fake_plex.calls, [])
+        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {Service.PLEX.value: "Old A"},
+            )

@@ -1,7 +1,8 @@
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
+from email_validator import EmailNotValidError, validate_email
 from pydantic import (
     BaseModel,
     EmailStr,
@@ -36,6 +37,19 @@ class UsernameMixin:
                 "Username can only contain letters, numbers, underscores, and hyphens",
             )
         return stripped
+
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        stripped = v.strip()
+        try:
+            email_info = validate_email(stripped, check_deliverability=False)
+            return email_info.normalized
+        except EmailNotValidError as e:
+            raise PydanticCustomError(
+                "email_invalid",
+                "Invalid email address: {error}",
+                {"error": str(e)},
+            ) from e
 
 
 class DisplayNameMixin:
@@ -87,6 +101,8 @@ class LoginRequest(BaseModel, UsernameMixin, PasswordValidationMixin):
     @field_validator("username")
     @classmethod
     def username_validation(cls, v: str) -> str:
+        if "@" in v:
+            return cls.validate_email(v)
         return cls.validate_username(v)
 
     @field_validator("password")
@@ -104,6 +120,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
     role: UserRole
     permissions: list[Permission] = []
     created_at: datetime
+    has_local_password: bool
     require_password_change: bool
 
     @field_validator("username")
@@ -163,12 +180,92 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
             role=user.role,
             permissions=cls.coerce_permissions(user.permissions),
             created_at=user.created_at,
+            has_local_password=bool(user.password_hash),
             require_password_change=user.require_password_change or False,
         )
 
 
 class AuthResponse(BaseModel):
     user: UserInfo
+
+
+class OIDCAuthStatusResponse(BaseModel):
+    enabled: bool
+
+
+class MediaAuthProvider(BaseModel):
+    service_config_id: int
+    service_type: str
+    name: str
+    auth_mode: Literal["credentials", "redirect"]
+
+
+class MediaAuthProvidersResponse(BaseModel):
+    providers: list[MediaAuthProvider]
+    default_service_config_id: int | None = None
+
+
+class MediaLoginRequest(BaseModel):
+    service_config_id: int
+    username: str
+    password: str
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> "MediaLoginRequest":
+        self.username = self.username.strip()
+        self.password = self.password.strip()
+        if not self.username or not self.password:
+            raise PydanticCustomError(
+                "media_credentials",
+                "Username and password are required",
+            )
+        return self
+
+
+class UserSessionInfo(BaseModel):
+    session_id: str
+    user_agent: str | None
+    ip_address: str | None
+    created_at: datetime
+    last_seen_at: datetime | None
+    expires_at: datetime
+    is_current: bool
+
+
+class RevokeSessionResponse(BaseModel):
+    message: str
+    revoked_current: bool
+
+
+class RevokeOtherSessionsResponse(BaseModel):
+    message: str
+    revoked_count: int
+
+
+class MediaIdentityItem(BaseModel):
+    id: int
+    source_service: str
+    source_service_config_id: int
+    source_service_name: str
+    source_user_id: str
+    username: str
+    username_normalized: str
+    email: str | None = None
+    display_name: str | None = None
+    user_id: int | None = None
+    user_username: str | None = None
+    user_display_name: str | None = None
+    last_seen_at: datetime
+    linked_at: datetime | None = None
+
+
+class MediaIdentityListResponse(BaseModel):
+    items: list[MediaIdentityItem]
+    total: int
+
+
+class MediaIdentityLinkRequest(BaseModel):
+    target_user_id: int
 
 
 class CreateUserRequest(

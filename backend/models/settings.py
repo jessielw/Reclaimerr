@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 from backend.database.models import User
 from backend.enums import MediaType, NotificationType, Service
 from backend.types import MEDIA_SERVERS, MediaServerType
+from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
 def _validate_notification_url(url: str) -> None:
@@ -162,6 +163,32 @@ class PathMappingItem(BaseModel):
         return self
 
 
+class RequesterWatchUserMapping(BaseModel):
+    """Map Seerr requester identities to media server watch user keys."""
+
+    seerr_user_id: int | None = None
+    seerr_username: str | None = None
+    media_user_key: str
+    service_type: Service | None = None
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> RequesterWatchUserMapping:
+        if self.seerr_username is not None:
+            self.seerr_username = self.seerr_username.strip().lower() or None
+        self.media_user_key = self.media_user_key.strip()
+        if not self.media_user_key:
+            raise PydanticCustomError(
+                "requester_watch_user_mapping",
+                "media_user_key is required",
+            )
+        if self.seerr_user_id is None and self.seerr_username is None:
+            raise PydanticCustomError(
+                "requester_watch_user_mapping",
+                "Either seerr_user_id or seerr_username is required",
+            )
+        return self
+
+
 class PostActionWebhookHeader(BaseModel):
     name: str
     value: str
@@ -234,6 +261,31 @@ class FavoritesUserLookupResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class WatchUserLookupResponse(BaseModel):
+    user_key: str
+    user_key_normalized: str
+    source_services: list[Service] = Field(default_factory=list)
+
+
+class FavoritesMediaEntryResponse(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_url: str | None = None
+    favorite_user_count: int
+    favorite_users: list[str] = Field(default_factory=list)
+    is_missing_metadata: bool = False
+
+
+class PaginatedFavoritesMediaResponse(BaseModel):
+    items: list[FavoritesMediaEntryResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
 class GeneralSettingsResponse(BaseModel):
     worker_poll_min_seconds: float | None = None
     worker_poll_max_seconds: float | None = None
@@ -258,6 +310,11 @@ class GeneralSettingsResponse(BaseModel):
     favorites_ignore_enabled: bool = False
     favorites_protect_all_users: bool = False
     favorites_usernames: list[str] = Field(default_factory=list)
+    requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
+        default_factory=list
+    )
+    leaving_soon_enabled: bool = False
+    leaving_soon_collection_title: str = "Leaving Soon"
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -307,4 +364,97 @@ class GeneralSettingsResponse(BaseModel):
         self.favorites_usernames = normalized_usernames
         return self
 
+    @model_validator(mode="after")
+    def normalize_leaving_soon_title(self) -> GeneralSettingsResponse:
+        title = normalize_leaving_soon_collection_title(
+            self.leaving_soon_collection_title
+        )
+        self.leaving_soon_collection_title = title
+        return self
+
+    @model_validator(mode="after")
+    def normalize_requester_watch_user_mappings(self) -> GeneralSettingsResponse:
+        """Normalize and dedupe requester watch user mappings."""
+        deduped: list[RequesterWatchUserMapping] = []
+        seen: set[tuple[int | None, str | None, str, Service | None]] = set()
+        for mapping in self.requester_watch_user_mappings:
+            key = (
+                mapping.seerr_user_id,
+                mapping.seerr_username,
+                mapping.media_user_key.strip().lower(),
+                mapping.service_type,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(mapping)
+        self.requester_watch_user_mappings = deduped
+        return self
+
     model_config = ConfigDict(from_attributes=True)
+
+
+class OIDCSettingsResponse(BaseModel):
+    enabled: bool = False
+    issuer_url: str = ""
+    client_id: str = ""
+    scopes: str = "openid profile email"
+    email_claim: str = "email"
+    token_endpoint_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
+        "client_secret_basic"
+    )
+    redirect_uri_override: str | None = None
+    client_secret_configured: bool = False
+    updated_at: datetime | None = None
+    updated_by: User | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> OIDCSettingsResponse:
+        self.issuer_url = self.issuer_url.strip().rstrip("/")
+        self.client_id = self.client_id.strip()
+        self.scopes = " ".join(self.scopes.split()) or "openid profile email"
+        self.email_claim = self.email_claim.strip() or "email"
+        self.redirect_uri_override = (
+            self.redirect_uri_override.strip()
+            if self.redirect_uri_override is not None
+            else None
+        ) or None
+        return self
+
+
+class OIDCSettingsUpdate(BaseModel):
+    enabled: bool = False
+    issuer_url: str = ""
+    client_id: str = ""
+    client_secret: str | None = None  # None = keep existing secret
+    scopes: str = "openid profile email"
+    email_claim: str = "email"
+    token_endpoint_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
+        "client_secret_basic"
+    )
+    redirect_uri_override: str | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> OIDCSettingsUpdate:
+        self.issuer_url = self.issuer_url.strip().rstrip("/")
+        self.client_id = self.client_id.strip()
+        self.client_secret = (
+            self.client_secret.strip() if self.client_secret is not None else None
+        ) or None
+        self.scopes = " ".join(self.scopes.split()) or "openid profile email"
+        self.email_claim = self.email_claim.strip() or "email"
+        self.redirect_uri_override = (
+            self.redirect_uri_override.strip()
+            if self.redirect_uri_override is not None
+            else None
+        ) or None
+        return self
+
+
+class OIDCTestResponse(BaseModel):
+    success: bool
+    issuer: str | None = None
+    authorization_endpoint: str | None = None
+    token_endpoint: str | None = None
+    jwks_uri: str | None = None
+    userinfo_endpoint: str | None = None

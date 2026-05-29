@@ -72,6 +72,11 @@ As a result, this project will close pull requests that appear to be mostly or w
 - Supports generic post action webhooks (Autopulse, etc.)
 - Light and dark mode
 - Responsive UI (works great on mobile)
+- Powerful logical rule system
+- IMDb, TMDB, and AniList metadata
+- Last chance/Leaving soon (displayed on servers for media soon to be deleted)
+- Session management
+- OIDC
 
 # Additional Info
 

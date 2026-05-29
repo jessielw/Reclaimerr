@@ -18,9 +18,10 @@
     type GeneralSettings,
     type PathMapping,
     type PostActionWebhookConfig,
+    type RequesterWatchUserMapping,
   } from "$lib/types/shared";
   import TestButton from "$lib/components/test-button.svelte";
-  import FavoritesSettings from "$lib/components/settings/general/favorites-settings.svelte";
+  import Notice from "$lib/components/notice.svelte";
   import { auth } from "$lib/stores/auth";
 
   // props
@@ -56,6 +57,9 @@
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
+  let requesterWatchUserMappings = $state<RequesterWatchUserMapping[]>([]);
+  let leavingSoonEnabled = $state(false);
+  let leavingSoonCollectionTitle = $state("Leaving Soon");
   let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
     "unmonitor",
   );
@@ -139,6 +143,9 @@
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
+        requester_watch_user_mappings: requesterWatchUserMappings,
+        leaving_soon_enabled: leavingSoonEnabled,
+        leaving_soon_collection_title: leavingSoonCollectionTitle,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -353,6 +360,11 @@
         favoritesUsernamesInput = (settings.favorites_usernames ?? []).join(
           ", ",
         );
+        requesterWatchUserMappings =
+          settings.requester_watch_user_mappings ?? [];
+        leavingSoonEnabled = settings.leaving_soon_enabled ?? false;
+        leavingSoonCollectionTitle =
+          settings.leaving_soon_collection_title ?? "Leaving Soon";
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -929,6 +941,59 @@
       </div>
     </div>
 
+    <!-- leaving soon collections -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-semibold text-foreground">Leaving Soon Collections</h3>
+        <Switch id="leavingSoonEnabled" bind:checked={leavingSoonEnabled} />
+      </div>
+      <p class="text-muted-foreground text-sm mb-3">
+        Keep an auto-synced "Leaving Soon" row on enabled Plex, Jellyfin, and
+        Emby servers. Reclaimerr updates these collections after each candidate
+        scan and removes stale entries automatically.
+      </p>
+
+      {#if leavingSoonEnabled}
+        <div class="max-w-md">
+          <Label for="leavingSoonCollectionTitle" class="mb-2">
+            <span class="text-sm text-foreground">Collection Base Title</span>
+          </Label>
+          <Input
+            id="leavingSoonCollectionTitle"
+            name="leavingSoonCollectionTitle"
+            type="text"
+            class="input-hover-el text-foreground placeholder:text-muted-foreground"
+            placeholder="Leaving Soon"
+            bind:value={leavingSoonCollectionTitle}
+            maxlength={50}
+          />
+        </div>
+        <p class="text-xs text-muted-foreground mt-2 break-all">
+          Reclaimerr manages two collections per server:
+          <strong
+            >{leavingSoonCollectionTitle || "Leaving Soon"} [Movies]</strong
+          >
+          and
+          <strong
+            >{leavingSoonCollectionTitle || "Leaving Soon"} [Series]</strong
+          >.
+        </p>
+        <Notice class="mt-2" type="info" title="Note">
+          Plex stores collections <strong>per library</strong>, while Jellyfin
+          and Emby use
+          <strong>global</strong> collections. On Plex, the "Leaving Soon"
+          collection is split across libraries; on Jellyfin and Emby it appears
+          in a single global collection.
+          <br />
+          <br />
+          <strong
+            >Do not rename or modify these collections on the media server -
+            Reclaimerr depends on their names to manage them.</strong
+          >
+        </Notice>
+      {/if}
+    </div>
+
     <!-- move settings -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
       <div class="flex items-center justify-between mb-1">
@@ -1012,12 +1077,6 @@
         only actions are not affected.
       </p>
     </div>
-
-    <FavoritesSettings
-      bind:favoritesIgnoreEnabled
-      bind:favoritesProtectAllUsers
-      bind:favoritesUsernamesInput
-    />
 
     <!-- default ARR delete behavior -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">

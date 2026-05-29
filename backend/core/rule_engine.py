@@ -50,6 +50,8 @@ FIELD_LABELS: dict[str, str] = {
     "season.days_since_air_date": "Days since season aired",
     "season.season_number": "Season number",
     "season.episode_count": "Episode count",
+    "season.fully_watched": "Season fully watched",
+    "season.watched_percent": "Season watched (%)",
     "season.is_latest_season": "Is latest season",
     "season.seasons_from_latest": "Seasons from latest",
     "episode.number": "Episode number",
@@ -85,6 +87,7 @@ FIELD_LABELS: dict[str, str] = {
     "arr.monitored": "Arr monitored",
     "seerr.requested": "Seerr requested",
     "seerr.requested_by_user_ids": "Seerr requested by user IDs",
+    "seerr.requester_has_watched": "Seerr requester has watched",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -130,6 +133,7 @@ NUMERIC_FIELDS = {
     "season.days_since_air_date",
     "season.season_number",
     "season.episode_count",
+    "season.watched_percent",
     "season.seasons_from_latest",
     "episode.number",
     "episode.season_number",
@@ -167,10 +171,12 @@ LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
     "video.hdr",
     "video.dolby_vision",
+    "season.fully_watched",
     "season.is_latest_season",
     "watch.never_watched",
     "arr.monitored",
     "seerr.requested",
+    "seerr.requester_has_watched",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -243,6 +249,182 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
+}
+
+TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
+    TARGET_MOVIE_VERSION: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "audio.languages",
+        "audio.track_count",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.duration",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "subtitle.languages",
+        "tmdb.days_since_release",
+        "tmdb.popularity",
+        "tmdb.release_date",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.color_primaries",
+        "video.color_space",
+        "video.color_transfer",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.resolution",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_SERIES: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "subtitle.languages",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_SEASON: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "audio.channels",
+        "audio.codec_family",
+        "audio.languages",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "season.air_date",
+        "season.days_since_air_date",
+        "season.episode_count",
+        "season.fully_watched",
+        "season.is_latest_season",
+        "season.season_number",
+        "season.seasons_from_latest",
+        "season.watched_percent",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "subtitle.languages",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "video.codec_family",
+        "video.dolby_vision",
+        "video.hdr",
+        "video.height",
+        "video.width",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
+    TARGET_EPISODE: {
+        "anilist.favourites",
+        "anilist.popularity",
+        "anilist.score",
+        "arr.monitored",
+        "arr.tags",
+        "disk.free_bytes",
+        "disk.free_percent",
+        "episode.air_date",
+        "episode.days_since_air_date",
+        "episode.number",
+        "episode.season_number",
+        "imdb.rating",
+        "imdb.vote_count",
+        "library.id",
+        "media.days_since_added",
+        "media.file_name",
+        "media.path",
+        "media.size",
+        "season.air_date",
+        "season.days_since_air_date",
+        "season.episode_count",
+        "season.fully_watched",
+        "season.is_latest_season",
+        "season.season_number",
+        "season.seasons_from_latest",
+        "season.watched_percent",
+        "seerr.requested",
+        "seerr.requested_by_user_ids",
+        "seerr.requester_has_watched",
+        "series.status",
+        "tmdb.days_since_first_air_date",
+        "tmdb.days_since_last_air_date",
+        "tmdb.first_air_date",
+        "tmdb.last_air_date",
+        "tmdb.popularity",
+        "tmdb.vote_average",
+        "tmdb.vote_count",
+        "watch.days_since_last_watched",
+        "watch.last_viewed_at",
+        "watch.never_watched",
+        "watch.view_count",
+    },
 }
 
 
@@ -350,16 +532,22 @@ class SeerrRequestResolver:
         "seerr_request_resolver", default=None
     )
 
-    __slots__ = ("_requester_ids_by_key",)
+    __slots__ = ("_requester_ids_by_key", "_requester_has_watched_by_key")
 
     def __init__(
         self,
         requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[int]]
         | None = None,
+        requester_has_watched_by_key: Mapping[tuple[MediaType, int], bool]
+        | None = None,
     ):
         self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
         for key, user_ids in (requester_ids_by_key or {}).items():
             self._requester_ids_by_key[key] = {int(v) for v in user_ids}
+        self._requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {
+            key: bool(value)
+            for key, value in (requester_has_watched_by_key or {}).items()
+        }
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -388,6 +576,17 @@ class SeerrRequestResolver:
             return None
         return bool(requester_ids)
 
+    def resolve_requester_has_watched(
+        self, media_type: MediaType, tmdb_id: int | None
+    ) -> bool | None:
+        """Return requester watched state for the given media key if known."""
+        if tmdb_id is None:
+            return None
+        value = self._requester_has_watched_by_key.get((media_type, tmdb_id))
+        if value is None:
+            return None
+        return bool(value)
+
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
     """Normalize the target scope of a rule, defaulting to movie version or series based on media
@@ -405,13 +604,17 @@ def normalize_rule_definition(rule: ReclaimRule) -> RuleDefinition | None:
     return None
 
 
-def validate_rule_definition(definition: RuleDefinition | None) -> None:
+def validate_rule_definition(
+    definition: RuleDefinition | None, *, target_scope: str | None = None
+) -> None:
     """Validate the structure of a rule definition, ensuring it includes a root group and valid nodes."""
     if not definition:
         raise ValueError("Rule definition is required")
     if not _has_valid_definition(definition):
         raise ValueError("Rule definition must include a root group")
     _validate_node(definition["root"])
+    if target_scope is not None:
+        _validate_scope_fields(definition, target_scope)
 
 
 def collect_rule_conditions(
@@ -426,16 +629,54 @@ def collect_rule_conditions(
     return list(_iter_condition_nodes(root, field=field))
 
 
-def collect_rule_path_patterns(definition: RuleDefinition | None) -> list[str]:
-    """Collect all unique path patterns from media.path conditions in the rule definition."""
-    seen: set[str] = set()
-    patterns: list[str] = []
-    for condition in collect_rule_conditions(definition, field="media.path"):
+def collect_rule_path_conditions(
+    definition: RuleDefinition | None,
+) -> list[dict[str, str]]:
+    """Collect normalized path/filename conditions from a rule definition.
+
+    Returns a deduplicated list of objects with ``field``, ``operator``, and ``value``.
+    Valueless operators are skipped.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    conditions: list[dict[str, str]] = []
+    for condition in collect_rule_conditions(definition):
+        field = str(condition.get("field", ""))
+        if field not in PATH_FIELDS:
+            continue
+        operator = str(condition.get("operator", "")).lower()
+        if operator not in PATH_OPERATORS or operator in VALUELESS_OPERATORS:
+            continue
         for value in _normalize_condition_values(condition.get("value")):
-            if value in seen:
+            key = (field, operator, value)
+            if key in seen:
                 continue
-            seen.add(value)
-            patterns.append(value)
+            seen.add(key)
+            conditions.append(
+                {
+                    "field": field,
+                    "operator": operator,
+                    "value": value,
+                }
+            )
+    return conditions
+
+
+def collect_rule_path_patterns(definition: RuleDefinition | None) -> list[str]:
+    """Collect all unique media.path values from a rule definition.
+
+    This helper is kept for backward compatibility with older call sites that
+    only consume path pattern strings.
+    """
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for condition in collect_rule_path_conditions(definition):
+        if condition["field"] != "media.path":
+            continue
+        value = condition["value"]
+        if value in seen:
+            continue
+        seen.add(value)
+        patterns.append(value)
     return patterns
 
 
@@ -550,6 +791,27 @@ def _normalize_condition_values(value: Any) -> list[str]:
     ]
 
 
+def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> None:
+    """Validate that all condition fields are available for the selected target scope."""
+    normalized_scope = str(target_scope).strip().lower()
+    if normalized_scope not in VALID_TARGET_SCOPES:
+        raise ValueError(f"Unsupported target_scope '{target_scope}'")
+
+    allowed_fields = TARGET_SCOPE_ALLOWED_FIELDS.get(normalized_scope, set())
+    invalid_fields: set[str] = set()
+    for condition in collect_rule_conditions(definition):
+        field = str(condition.get("field", ""))
+        if field not in allowed_fields:
+            invalid_fields.add(field)
+
+    if invalid_fields:
+        sorted_invalid = ", ".join(f"'{field}'" for field in sorted(invalid_fields))
+        raise ValueError(
+            "Rule field(s) not available for target_scope "
+            f"'{normalized_scope}': {sorted_invalid}"
+        )
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -607,10 +869,11 @@ def _build_context(
         )
         _added = version.added_at or movie.added_at
         _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
+        _file_name = version.file_name or _path_basename(version.path)
         return {
             "library.id": [version.library_id],
             "media.path": [version.path] if version.path else [],
-            "media.file_name": [version.file_name] if version.file_name else [],
+            "media.file_name": [_file_name] if _file_name else [],
             "media.size": size,
             "media.days_since_added": _days_between(
                 version.added_at or movie.added_at, now
@@ -618,6 +881,7 @@ def _build_context(
             "watch.view_count": movie.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
@@ -655,6 +919,13 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.MOVIE, movie.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -662,6 +933,11 @@ def _build_context(
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
         _series_path = next((ref.path for ref in refs if ref.path), None)
+        _series_file_names = [
+            file_name
+            for file_name in (_path_basename(ref.path) for ref in refs)
+            if file_name
+        ]
         _disk = (
             _resolver.resolve(_series_path) if (_resolver and _series_path) else None
         )
@@ -669,12 +945,13 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
-            "media.file_name": [],
+            "media.file_name": _series_file_names,
             "media.size": series.size,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": series.view_count == 0 or _last_viewed is None,
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -712,15 +989,24 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_SEASON and series and season:
         refs = series.service_refs or []
+        _season_file_name = _path_basename(season.path)
         non_special_nums = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
         )
+        season_fully_watched, season_watched_percent = _season_watch_progress(season)
         max_season = non_special_nums[-1] if non_special_nums else 0
         if season.season_number > 0 and season.season_number in non_special_nums:
             seasons_from_latest: int | None = (
@@ -735,16 +1021,20 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [ref.path for ref in refs if ref.path],
-            "media.file_name": [season.path.rsplit("/", 1)[-1]] if season.path else [],
+            "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
+            "watch.never_watched": (season.view_count or 0) == 0
+            or _last_viewed is None,
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
+            "season.fully_watched": season_fully_watched,
+            "season.watched_percent": season_watched_percent,
             "season.is_latest_season": is_latest_season,
             "season.seasons_from_latest": seasons_from_latest,
             "tmdb.first_air_date": series.tmdb_first_air_date,
@@ -785,12 +1075,23 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
 
     if target_scope == TARGET_EPISODE and series and season and episode:
         refs = series.service_refs or []
+        _episode_file_name = _path_basename(episode.path)
+        season_fully_watched_ep, season_watched_percent_ep = _season_watch_progress(
+            season
+        )
         non_special_nums_ep = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
         )
@@ -814,9 +1115,7 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.path": [episode.path] if episode.path else [],
-            "media.file_name": [episode.path.rsplit("/", 1)[-1]]
-            if episode.path
-            else [],
+            "media.file_name": [_episode_file_name] if _episode_file_name else [],
             "media.size": episode.size,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": episode.view_count,
@@ -829,6 +1128,8 @@ def _build_context(
             "episode.days_since_air_date": _days_between(episode.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
+            "season.fully_watched": season_fully_watched_ep,
+            "season.watched_percent": season_watched_percent_ep,
             "season.is_latest_season": is_latest_season_ep,
             "season.seasons_from_latest": seasons_from_latest_ep,
             "season.air_date": season.air_date,
@@ -859,6 +1160,13 @@ def _build_context(
             ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_has_watched": (
+                _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES, series.tmdb_id
+                )
                 if _seerr_resolver
                 else None
             ),
@@ -920,14 +1228,16 @@ def _evaluate_condition(
     operator = str(condition.get("operator", ""))
     expected = condition.get("value")
     actual = context.get(field)
-    if not _matches_operator(actual, operator, expected):
+    if not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))
     return True
 
 
-def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
+def _matches_operator(
+    actual: Any, operator: str, expected: Any, *, field: str | None = None
+) -> bool:
     """Evaluate a single condition operator against the provided actual and expected values."""
     if operator == "exists":
         return _exists(actual)
@@ -940,7 +1250,7 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     if operator == "matches_any_regex":
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
-        return _matches_list_operator(actual, operator, expected)
+        return _matches_list_operator(actual, operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
         left_date = _date_value(_first_scalar(actual))
         right_date = _date_value(_first_scalar(expected))
@@ -961,8 +1271,20 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     if left is None or right is None:
         return False
     if operator == "equals":
+        if field == "media.path":
+            return _matches_path_prefix(left, right)
+        left_number = _number(left)
+        right_number = _number(right)
+        if left_number is not None and right_number is not None:
+            return left_number == right_number
         return _normalize(left) == _normalize(right)
     if operator == "not_equals":
+        if field == "media.path":
+            return not _matches_path_prefix(left, right)
+        left_number = _number(left)
+        right_number = _number(right)
+        if left_number is not None and right_number is not None:
+            return left_number != right_number
         return _normalize(left) != _normalize(right)
 
     left_number = _number(left)
@@ -980,8 +1302,38 @@ def _matches_operator(actual: Any, operator: str, expected: Any) -> bool:
     return False
 
 
-def _matches_list_operator(actual: Any, operator: str, expected: Any) -> bool:
+def _matches_list_operator(
+    actual: Any,
+    operator: str,
+    expected: Any,
+    *,
+    field: str | None = None,
+) -> bool:
     """Evaluate a list operator against the provided actual and expected values."""
+    if field == "media.path":
+        actual_paths = [
+            normalize_fpath(value, lower=True)
+            for value in _as_list(actual)
+            if _exists(value)
+        ]
+        expected_paths = [
+            normalize_fpath(value, lower=True, strip_ending_slash=True)
+            for value in _as_list(expected)
+            if _exists(value)
+        ]
+        if not expected_paths:
+            return False
+        has_any = any(
+            _matches_path_prefix(actual_path, expected_path)
+            for actual_path in actual_paths
+            for expected_path in expected_paths
+        )
+        if operator in {"in", "contains_any"}:
+            return has_any
+        if operator in {"not_in", "not_contains_any"}:
+            return not has_any
+        return False
+
     actual_values = {_normalize(value) for value in _as_list(actual) if _exists(value)}
     expected_values = {
         _normalize(value) for value in _as_list(expected) if _exists(value)
@@ -994,6 +1346,15 @@ def _matches_list_operator(actual: Any, operator: str, expected: Any) -> bool:
     if operator in {"not_in", "not_contains_any"}:
         return not has_any
     return False
+
+
+def _matches_path_prefix(actual: Any, expected: Any) -> bool:
+    """Return True when ``actual`` is exactly ``expected`` or a child path of it."""
+    actual_path = normalize_fpath(actual, lower=True)
+    expected_path = normalize_fpath(expected, lower=True, strip_ending_slash=True)
+    if not actual_path or not expected_path:
+        return False
+    return actual_path == expected_path or actual_path.startswith(f"{expected_path}/")
 
 
 def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
@@ -1011,6 +1372,17 @@ def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
     return False
 
 
+def _path_basename(path: str | None) -> str | None:
+    """Return the basename component of a path, normalized for slash style."""
+    if not path:
+        return None
+    normalized = normalize_fpath(path)
+    if not normalized:
+        return None
+    name = normalized.rsplit("/", 1)[-1].strip()
+    return name or None
+
+
 def _effective_last_viewed(
     last_viewed_at: datetime | None,
     added_at: datetime | None,
@@ -1025,6 +1397,32 @@ def _effective_last_viewed(
     if last_viewed_at and added_at and added_at > last_viewed_at:
         return None
     return last_viewed_at
+
+
+def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
+    """Return season watch completion as (fully_watched, watched_percent).
+
+    Uses episode level watch state when episode rows are present. If no episodes are
+    available in the loaded season relationship, both values are treated as unknown.
+    """
+    episodes = season.episodes or []
+    total_episodes = len(episodes)
+    if total_episodes == 0:
+        return None, None
+
+    watched_episodes = 0
+    for episode in episodes:
+        effective_last_viewed = _effective_last_viewed(
+            episode.last_viewed_at, season.added_at
+        )
+        if effective_last_viewed is not None:
+            watched_episodes += 1
+            continue
+        if episode.last_viewed_at is None and (episode.view_count or 0) > 0:
+            watched_episodes += 1
+
+    watched_percent = round((watched_episodes / total_episodes) * 100, 2)
+    return watched_episodes == total_episodes, watched_percent
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

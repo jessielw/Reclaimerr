@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.25] - 2026-05-29
+
+### Added
+
+- Rule
+  - **Seerr requester has watched**
+    - Makes it possible for deletions when movies/episodes are watched by the requester so they can automatically be cleaned up after
+  - **Season watch percentage**
+  - **Season fully watched**
+- Added new settings tab **User Signals**
+  - Built inline compact favorites viewer to browse what titles your users have favorited
+  - Can now map Seerr users to their media server usernames via a new mapping component
+- Added the ability to support **Leaving Soon**
+  - Works on Jellyfin, Emby, and Plex
+    - Plex displays the titles in the collection based on the library where as the others put it in a single place
+  - Automatically refreshes this during candidate syncs
+  - Allows renaming the base (keeps track of it to update/clean up the old name)
+  - Cleans up the collection when Leaving Soon is disabled
+- Added session management
+  - Added new house keeping task to trim old sessions
+- Added generic OIDC support
+  - Button in the login screen that will show up if it's been enabled by the administrator
+  - Added new settings tab to setup OIDC
+- Added media-server account sign-in and identity linking
+  - Added login-time authentication for **Jellyfin/Emby** (username/password)
+  - Added login-time authentication for **Plex** via PIN redirect/callback flow
+  - Added persistent `media_user_identities` storage to track source identities per media server
+  - Added automatic account resolution/linking at sign-in (existing link, email match, case-insensitive username match, or create user)
+  - Added admin notice generation when a media identity matches multiple local users and requires manual linking
+  - Added admin APIs for media identity management
+    - List identities
+    - Link identity to a local user
+    - Unlink identity from a local user
+  - Added media identity linking controls to **Settings -> Users**
+  - Added media auth provider discovery endpoint for the login screen
+
+### Changed
+
+- Updated dep FastAPI
+- Each media server now keeps a snapshot for who watched what
+  - Snapshots are now gathered during syncs and as needed
+- Rule validation now enforces field compatibility for the selected `target_scope` across create, preview, import, and update
+- Rule editor field picker is now filtered by target scope (Movie Version, Series, Season, Episode) and shows incompatible legacy conditions inline
+- Reworked login UI to use a compact method switcher instead of stacked auth sections
+  - Local / Media / SSO modes now render one active flow at a time
+  - Media provider selector now uses service SVGs and cleaner labels
+- Updated account password behavior for media-auth users without local passwords
+  - Users without a local password can set one without entering a current password
+- Updated dependency Granian to v2.7.5
+- Updated dependency apprise to v1.11.0
+
+### Fixed
+
+- Candidates and Protected mobile view had some visual bugs
+- Rebuilt media detail modal to look much nicer on mobile
+- Delete button in notification on mobile spilling over
+- Log level validation from env could still sometimes not be set
+- `watch.never_watched` advanced rules now evaluate correctly for Series and Season targets (including stale watch timestamps after re-adds)
+- Invalid field/target-scope rule combinations no longer fail silently; API now returns clear 422 validation errors
+- Path rule validation is now operator-aware for both `media.path` and `media.file_name`; literal operators no longer get treated as regex, and invalid scope criteria are pruned correctly in the rule editor
+- `media.file_name` rule matching now falls back to path basename when explicit filename metadata is missing, so AND combinations like folder path + filename regex evaluate correctly
+- `media.path` literal operators now treat folder values as path prefixes (not just exact file-path matches), and the path browser is only shown for regex mode to avoid operator/value mismatches
+- Spacing between label/input in pattern picker for Path
+- Path mapping for deletions/multi arr
+  - Added mapped path comparison helpers for media-server paths vs Arr root paths
+  - Movie version deletion now promotes to Radarr only when the selected version set covers the full Radarr movie entry
+  - Multi-Radarr ambiguity now fails closed into media-server fallback instead of broad Arr deletion
+  - Season and episode deletion now try all Sonarr refs ordered by path match, then fall back to the media server when enabled
+  - Episode "not found in Sonarr" no longer hard skips when media-server fallback can delete it
+- Logging in via email on local auth would fail
+
 ## [0.1.0-beta.24] - 2026-05-23
 
 ### Added
