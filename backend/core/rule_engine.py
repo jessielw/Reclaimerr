@@ -41,6 +41,8 @@ FIELD_LABELS: dict[str, str] = {
     "watch.days_since_last_watched": "Days since watched",
     "watch.last_viewed_at": "Last watched",
     "tmdb.release_date": "TMDB release date",
+    "tmdb.in_collection": "TMDB in collection",
+    "tmdb.collection_name": "TMDB collection name",
     "tmdb.first_air_date": "TMDB first air date",
     "tmdb.last_air_date": "TMDB last air date",
     "season.air_date": "Season air date",
@@ -107,6 +109,8 @@ OPERATOR_LABELS: dict[str, str] = {
     "not_in": "not in",
     "contains_any": "contains",
     "not_contains_any": "does not contain",
+    "contains_all": "contains all",
+    "not_contains_all": "does not contain all",
     "exists": "exists",
     "not_exists": "missing",
     "is_true": "is true",
@@ -119,6 +123,8 @@ LIST_OPERATORS = {
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "matches_any_regex",
 }
 VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
@@ -155,6 +161,7 @@ NUMERIC_FIELDS = {
     "disk.free_percent",
 }
 TEXT_FIELDS = {
+    "tmdb.collection_name",
     "series.status",
     "video.codec_family",
     "audio.codec_family",
@@ -169,6 +176,7 @@ TEXT_FIELDS = {
 }
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
+    "tmdb.in_collection",
     "video.hdr",
     "video.dolby_vision",
     "season.fully_watched",
@@ -204,6 +212,8 @@ TEXT_OPERATORS = {
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
 }
@@ -212,6 +222,8 @@ LIBRARY_OPERATORS = {
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
 }
@@ -221,6 +233,8 @@ SEERR_REQUESTER_ID_OPERATORS = {
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
 }
@@ -233,10 +247,11 @@ TEMPORAL_OPERATORS = {
     "on_or_after",
 }
 PATH_OPERATORS = TEXT_OPERATORS | {"matches_any_regex"}
-PATH_LIBRARY_INCLUSION_OPERATORS = {"contains_any", "in", "equals"}
+PATH_LIBRARY_INCLUSION_OPERATORS = {"contains_any", "contains_all", "in", "equals"}
 PATH_LIBRARY_UNSUPPORTED_OPERATORS = {
     "not_in",
     "not_contains_any",
+    "not_contains_all",
     "not_equals",
     "exists",
     "not_exists",
@@ -277,6 +292,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.requester_has_watched",
         "subtitle.languages",
         "tmdb.days_since_release",
+        "tmdb.in_collection",
+        "tmdb.collection_name",
         "tmdb.popularity",
         "tmdb.release_date",
         "tmdb.vote_average",
@@ -883,6 +900,12 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
             "tmdb.release_date": movie.tmdb_release_date,
+            "tmdb.in_collection": (
+                movie.tmdb_collection_id is not None
+                if movie.tmdb_collection_checked
+                else None
+            ),
+            "tmdb.collection_name": movie.tmdb_collection_name,
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
             "tmdb.vote_average": movie.vote_average,
@@ -1328,10 +1351,21 @@ def _matches_list_operator(
             for actual_path in actual_paths
             for expected_path in expected_paths
         )
+        has_all = all(
+            any(
+                _matches_path_prefix(actual_path, expected_path)
+                for actual_path in actual_paths
+            )
+            for expected_path in expected_paths
+        )
         if operator in {"in", "contains_any"}:
             return has_any
         if operator in {"not_in", "not_contains_any"}:
             return not has_any
+        if operator == "contains_all":
+            return has_all
+        if operator == "not_contains_all":
+            return not has_all
         return False
 
     actual_values = {_normalize(value) for value in _as_list(actual) if _exists(value)}
@@ -1341,10 +1375,15 @@ def _matches_list_operator(
     if not expected_values:
         return False
     has_any = bool(actual_values & expected_values)
+    has_all = expected_values.issubset(actual_values)
     if operator in {"in", "contains_any"}:
         return has_any
     if operator in {"not_in", "not_contains_any"}:
         return not has_any
+    if operator == "contains_all":
+        return has_all
+    if operator == "not_contains_all":
+        return not has_all
     return False
 
 
