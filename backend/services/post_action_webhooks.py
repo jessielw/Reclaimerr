@@ -8,6 +8,7 @@ import niquests
 from sqlalchemy import select
 
 from backend.core.logger import LOG
+from backend.core.utils.request import response_body_excerpt
 from backend.database import async_db
 from backend.database.models import GeneralSettings
 from backend.models.post_action_webhooks import PostActionWebhookEvent
@@ -135,10 +136,14 @@ async def send_post_action_webhook(
         status_code = response.status_code or 0
         success = 200 <= status_code < 300
         if not success:
+            body = response_body_excerpt(response, max_chars=600)
+            error = f"HTTP {status_code}"
+            if body:
+                error = f"{error}: {body}"
             return {
                 "success": False,
                 "status_code": status_code,
-                "error": f"HTTP {status_code}",
+                "error": error,
             }
         return {"success": True, "status_code": status_code, "error": None}
     except Exception as e:

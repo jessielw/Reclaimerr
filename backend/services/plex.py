@@ -24,7 +24,7 @@ from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import MediaType, Service
 from backend.models.media import (
@@ -135,7 +135,12 @@ class PlexService:
             response.raise_for_status()
             LOG.debug(f"Deleted Plex item {rating_key}")
         except Exception as e:
-            raise ValueError(f"Failed to delete Plex item {rating_key}: {e}")
+            raise ValueError(
+                format_http_failure(
+                    action=f"Failed to delete Plex item {rating_key}",
+                    exception=e,
+                )
+            ) from e
 
     async def delete_movie_version(self, rating_key: str, media_item_id: str) -> None:
         """Deletes one media version from a Plex metadata item."""
@@ -147,8 +152,13 @@ class PlexService:
             LOG.debug(f"Deleted Plex media item {media_item_id} from {rating_key}")
         except Exception as e:
             raise ValueError(
-                f"Failed to delete Plex media item {media_item_id} from {rating_key}: {e}"
-            )
+                format_http_failure(
+                    action=(
+                        f"Failed to delete Plex media item {media_item_id} from {rating_key}"
+                    ),
+                    exception=e,
+                )
+            ) from e
 
     async def sync_leaving_soon_collections(
         self,
@@ -295,14 +305,28 @@ class PlexService:
         except HTTPError as e:
             status_code = e.response.status_code if e.response else None
             if status_code != 404:
-                raise
+                raise ValueError(
+                    format_http_failure(
+                        action=f"Failed to delete Plex collection {collection_id}",
+                        exception=e,
+                    )
+                ) from e
 
         # backward compatibility fallback for older/custom builds (likely won't hit this)
         response = await self.session.delete(
             f"{self.plex_url}/library/sections/{section_id}/collection/{collection_id}",
             timeout=60,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except HTTPError as e:
+            raise ValueError(
+                format_http_failure(
+                    action=f"Failed to delete Plex collection {collection_id}",
+                    exception=e,
+                    response=response,
+                )
+            ) from e
 
     async def _build_item_uri(self, item_ids: set[str]) -> str:
         identity, _ = await self._make_request("identity")

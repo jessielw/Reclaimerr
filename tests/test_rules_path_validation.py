@@ -293,6 +293,11 @@ def test_validate_paths_endpoint_supports_structured_and_legacy_payloads() -> No
                         operator="not_in",
                         value="/media/movies/never-used.mkv",
                     ),
+                    ValidatePathCondition(
+                        field="media.path",
+                        operator="contains_all",
+                        value="/media/movies",
+                    ),
                 ],
             )
 
@@ -321,6 +326,11 @@ def test_validate_paths_endpoint_supports_structured_and_legacy_payloads() -> No
                 "media.path",
                 "not_in",
                 "/media/movies/never-used.mkv",
+            ) in valid_entries
+            assert (
+                "media.path",
+                "contains_all",
+                "/media/movies",
             ) in valid_entries
 
             folder_criterion = ValidatePathsRequest(

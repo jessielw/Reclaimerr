@@ -606,6 +606,13 @@ async def get_movies(
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
             "tmdb_release_date": to_utc_isoformat(movie.tmdb_release_date),
+            "tmdb_collection_id": movie.tmdb_collection_id,
+            "tmdb_collection_name": movie.tmdb_collection_name,
+            "tmdb_in_collection": (
+                movie.tmdb_collection_id is not None
+                if movie.tmdb_collection_checked
+                else None
+            ),
             "original_language": movie.original_language,
             "poster_url": movie.poster_url,
             "backdrop_url": movie.backdrop_url,
@@ -1212,6 +1219,9 @@ async def get_candidates(
             Movie.size.label("movie_size"),
             # movie tmdb data
             Movie.tmdb_id.label("movie_tmdb_id"),
+            Movie.tmdb_collection_id.label("movie_tmdb_collection_id"),
+            Movie.tmdb_collection_name.label("movie_tmdb_collection_name"),
+            Movie.tmdb_collection_checked.label("movie_tmdb_collection_checked"),
             Movie.imdb_id.label("movie_imdb_id"),
             Movie.imdb_rating.label("movie_imdb_rating"),
             Movie.imdb_vote_count.label("movie_imdb_vote_count"),
@@ -1417,6 +1427,14 @@ async def get_candidates(
         media_year = row.movie_year if is_movie else row.series_year
         poster_url = row.movie_poster_url if is_movie else row.series_poster_url
         tmdb_id = row.movie_tmdb_id if is_movie else row.series_tmdb_id
+        tmdb_collection_id = row.movie_tmdb_collection_id if is_movie else None
+        tmdb_collection_name = row.movie_tmdb_collection_name if is_movie else None
+        tmdb_collection_checked = (
+            bool(row.movie_tmdb_collection_checked) if is_movie else False
+        )
+        tmdb_in_collection = (
+            tmdb_collection_id is not None if tmdb_collection_checked else None
+        )
         imdb_id = row.movie_imdb_id if is_movie else row.series_imdb_id
         imdb_rating = row.movie_imdb_rating if is_movie else row.series_imdb_rating
         imdb_vote_count = (
@@ -1502,6 +1520,9 @@ async def get_candidates(
                 media_title=media_title,
                 media_year=media_year,
                 tmdb_id=tmdb_id,
+                tmdb_collection_id=tmdb_collection_id,
+                tmdb_collection_name=tmdb_collection_name,
+                tmdb_in_collection=tmdb_in_collection,
                 imdb_id=imdb_id,
                 imdb_rating=imdb_rating,
                 imdb_vote_count=imdb_vote_count,

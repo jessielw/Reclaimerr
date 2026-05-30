@@ -40,6 +40,8 @@ from backend.models.cleanup import (
 )
 from backend.models.media import PaginatedRulePreviewResponse
 from backend.models.rules import (
+    MovieCollectionLookupResponse,
+    PaginatedMovieCollectionsResponse,
     RulePreviewRequest,
     SeerrUserLookupResponse,
     ValidatePathCondition,
@@ -57,7 +59,7 @@ router = APIRouter(prefix="/api", tags=["rules"])
 PathValidationField = Literal["media.path", "media.file_name"]
 
 PATH_VALIDATION_FIELDS: set[PathValidationField] = {"media.path", "media.file_name"}
-PATH_INCLUDE_OPERATORS = {"equals", "in", "contains_any"}
+PATH_INCLUDE_OPERATORS = {"equals", "in", "contains_any", "contains_all"}
 PATH_REGEX_OPERATOR = "matches_any_regex"
 PATH_VALIDATION_OPERATORS = PATH_INCLUDE_OPERATORS | {PATH_REGEX_OPERATOR}
 
@@ -502,6 +504,70 @@ async def get_seerr_users(
             or needle in (user.display_name or "").lower()
         ]
     return response_users[:limit]
+
+
+@router.get(
+    "/rules/movie-collections",
+    response_model=PaginatedMovieCollectionsResponse,
+)
+async def get_movie_collections(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+    q: Annotated[str, Query(max_length=200)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> PaginatedMovieCollectionsResponse:
+    """Return paginated movie collection names sourced from local active movies."""
+    trimmed_name = func.trim(Movie.tmdb_collection_name)
+    normalized_name = func.lower(trimmed_name)
+
+    grouped = select(
+        normalized_name.label("name_key"),
+        func.min(trimmed_name).label("name"),
+        func.count(Movie.id).label("movie_count"),
+    ).where(
+        Movie.removed_at.is_(None),
+        Movie.tmdb_collection_id.is_not(None),
+        Movie.tmdb_collection_name.is_not(None),
+        func.length(trimmed_name) > 0,
+    )
+
+    needle = q.strip().lower()
+    if needle:
+        grouped = grouped.where(normalized_name.contains(needle))
+
+    grouped = grouped.group_by(normalized_name)
+    grouped_subquery = grouped.subquery()
+
+    total = await db.scalar(select(func.count()).select_from(grouped_subquery)) or 0
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    offset = (page - 1) * per_page
+
+    rows = await db.execute(
+        select(
+            grouped_subquery.c.name,
+            grouped_subquery.c.movie_count,
+        )
+        .order_by(grouped_subquery.c.name.asc())
+        .offset(offset)
+        .limit(per_page)
+    )
+    items = [
+        MovieCollectionLookupResponse(
+            name=str(row.name or "").strip(),
+            movie_count=int(row.movie_count or 0),
+        )
+        for row in rows.all()
+        if str(row.name or "").strip()
+    ]
+
+    return PaginatedMovieCollectionsResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/rules", response_model=list[CleanupRuleResponse])

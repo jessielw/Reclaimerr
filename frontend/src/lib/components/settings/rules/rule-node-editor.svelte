@@ -4,6 +4,7 @@
   import * as Select from "$lib/components/ui/select/index.js";
   import PathPatternPicker from "$lib/components/settings/rules/path-pattern-picker.svelte";
   import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
+  import MovieCollectionPicker from "$lib/components/settings/rules/movie-collection-picker.svelte";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
@@ -58,6 +59,7 @@
 
   let pathPickerOpen = $state(false);
   let seerrPickerOpen = $state(false);
+  let collectionPickerOpen = $state(false);
 
   const operatorLabelMap: Record<RuleConditionOperator, string> = {
     equals: "is",
@@ -74,6 +76,8 @@
     not_in: "not in any",
     contains_any: "contains any",
     not_contains_any: "excludes all",
+    contains_all: "contains all",
+    not_contains_all: "does not contain all",
     exists: "exists",
     not_exists: "does not exist",
     is_true: "is true",
@@ -86,6 +90,8 @@
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "matches_any_regex",
   ]);
 
@@ -114,6 +120,8 @@
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
   ];
@@ -123,6 +131,8 @@
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
   ];
@@ -144,6 +154,8 @@
     "not_in",
     "contains_any",
     "not_contains_any",
+    "contains_all",
+    "not_contains_all",
     "exists",
     "not_exists",
   ];
@@ -220,6 +232,20 @@
       kind: "temporal",
       operators: temporalOperators,
       defaultOperator: "exists",
+    },
+    {
+      value: "tmdb.in_collection",
+      label: "TMDB in collection",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "tmdb.collection_name",
+      label: "TMDB collection name",
+      kind: "text",
+      operators: textOperators,
+      defaultOperator: "contains_any",
     },
     {
       value: "tmdb.first_air_date",
@@ -592,6 +618,8 @@
       "seerr.requester_has_watched",
       "subtitle.languages",
       "tmdb.days_since_release",
+      "tmdb.in_collection",
+      "tmdb.collection_name",
       "tmdb.popularity",
       "tmdb.release_date",
       "tmdb.vote_average",
@@ -756,6 +784,7 @@
     "watch.days_since_last_watched",
     "watch.last_viewed_at",
     "series.status",
+    "tmdb.in_collection",
     "tmdb.vote_average",
     "imdb.rating",
     "anilist.score",
@@ -871,6 +900,8 @@
     if (c.operator === "matches_any_regex") return "regex patterns…";
     if (c.field === "seerr.requested_by_user_ids")
       return "Seerr user IDs (comma-separated)...";
+    if (c.field === "tmdb.collection_name")
+      return "Collection names (comma-separated)...";
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";
   };
@@ -1001,6 +1032,18 @@
   const applySeerrUserIds = (c: RuleCondition, ids: string[]) => {
     if (!listOperators.has(c.operator)) return;
     c.value = ids;
+    onChange();
+  };
+
+  const applyMovieCollections = (c: RuleCondition, names: string[]) => {
+    const cleaned = [
+      ...new Set(names.map((name) => name.trim()).filter(Boolean)),
+    ];
+    if (listOperators.has(c.operator)) {
+      c.value = cleaned;
+    } else {
+      c.value = cleaned[0] ?? "";
+    }
     onChange();
   };
 
@@ -1135,12 +1178,12 @@
     <!--
       Layout strategy (attempt to keep things nice):
       - stack vertically on mobile (flex-col)
-      - switch to a wrapping row on sm+ (flex-row flex-wrap)
+      - switch to a wrapping row on md+ (flex-row flex-wrap)
       - value + browse share a row via their own inner flex so browse never 
       gets squeezed out at awkward breakpoints
     -->
     <div
-      class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
+      class="flex flex-col md:flex-row md:flex-wrap items-stretch md:items-center gap-2"
     >
       <!-- field selector -->
       <Select.Root
@@ -1149,7 +1192,7 @@
         onValueChange={(value) => setConditionField(node, value)}
       >
         <Select.Trigger
-          class="h-8 w-full sm:w-auto sm:flex-1 sm:min-w-36 text-sm text-foreground cursor-pointer bg-background"
+          class="h-8 w-full md:w-auto md:flex-1 md:min-w-36 text-sm text-foreground cursor-pointer bg-background"
         >
           {fieldLabel(node.field)}
         </Select.Trigger>
@@ -1179,7 +1222,7 @@
           setConditionOperator(node, value as RuleConditionOperator)}
       >
         <Select.Trigger
-          class="h-8 w-full sm:w-auto sm:flex-1 sm:min-w-32 text-sm text-foreground cursor-pointer bg-background"
+          class="h-8 w-full md:w-auto md:flex-1 md:min-w-32 text-sm text-foreground cursor-pointer bg-background"
         >
           {operatorLabel(node.operator)}
         </Select.Trigger>
@@ -1195,7 +1238,9 @@
       <!-- value + optional browse button - always on their own flex row so browse can't get pushed off 
         screen by the selects above -->
       {#if !valuelessOperators.has(node.operator)}
-        <div class="flex items-center gap-2 w-full sm:flex-1 sm:min-w-40">
+        <div
+          class="flex flex-wrap items-center gap-2 w-full md:flex-1 md:min-w-[18rem]"
+        >
           {#if node.field === "series.status" && !listOperators.has(node.operator)}
             <Select.Root
               type="single"
@@ -1219,7 +1264,7 @@
             </Select.Root>
           {:else}
             <Input
-              class="h-8 flex-1 min-w-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+              class="h-8 flex-1 min-w-40 text-sm text-foreground placeholder:text-muted-foreground bg-background"
               type={isNumericInput(node)
                 ? "number"
                 : isTemporalInput(node)
@@ -1237,7 +1282,18 @@
                 onclick={() => (seerrPickerOpen = true)}
               >
                 <Users class="size-3.5" />
-                <span class="hidden sm:inline">Pick Users</span>
+                <span class="hidden md:inline">Pick Users</span>
+              </Button>
+            {/if}
+            {#if node.field === "tmdb.collection_name"}
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (collectionPickerOpen = true)}
+              >
+                <span class="hidden md:inline">Pick Collections</span>
+                <span class="md:hidden">Pick</span>
               </Button>
             {/if}
             {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
@@ -1248,21 +1304,21 @@
                 onclick={() => (pathPickerOpen = true)}
               >
                 <FolderSearch class="size-3.5" />
-                <span class="hidden sm:inline">Browse</span>
+                <span class="hidden md:inline">Browse</span>
               </Button>
             {/if}
           {/if}
         </div>
       {:else}
         <!-- spacer so the remove button stays right aligned on desktop -->
-        <div class="hidden sm:flex sm:flex-1"></div>
+        <div class="hidden md:flex md:flex-1"></div>
       {/if}
 
       <!-- remove button -->
       {#if onRemove}
         <Button
           size="icon-sm"
-          class="cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground self-end sm:self-center shrink-0"
+          class="cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground self-end md:self-center shrink-0"
           onclick={onRemove}
         >
           <Trash2 class="size-3.5" />
@@ -1291,6 +1347,15 @@
       bind:open={seerrPickerOpen}
       initialSelectedIds={normalizeValueList(node.value)}
       onApply={(ids) => applySeerrUserIds(node, ids)}
+    />
+  {/if}
+
+  {#if node.field === "tmdb.collection_name"}
+    <MovieCollectionPicker
+      bind:open={collectionPickerOpen}
+      initialSelectedNames={normalizeValueList(node.value)}
+      allowMultiple={listOperators.has(node.operator)}
+      onApply={(names) => applyMovieCollections(node, names)}
     />
   {/if}
 {/if}

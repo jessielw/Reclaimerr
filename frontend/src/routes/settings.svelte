@@ -134,12 +134,7 @@
     {
       label: "System",
       tabs: [
-        {
-          id: SettingsTab.General,
-          label: "General",
-          icon: Wrench,
-          adminOnly: true,
-        },
+        { id: SettingsTab.Account, label: "Account", icon: UserCog },
         {
           id: SettingsTab.Authentication,
           label: "Authentication",
@@ -147,22 +142,27 @@
           adminOnly: true,
         },
         {
-          id: SettingsTab.UserSignals,
-          label: "User Signals",
-          icon: UserCog,
+          id: SettingsTab.General,
+          label: "General",
+          icon: Wrench,
           adminOnly: true,
         },
+        { id: SettingsTab.Notifications, label: "Notifications", icon: Bell },
         {
           id: SettingsTab.Tasks,
           label: "Tasks",
           icon: CalendarClock,
           adminOnly: true,
         },
-        { id: SettingsTab.Notifications, label: "Notifications", icon: Bell },
-        { id: SettingsTab.Account, label: "Account", icon: UserCog },
         {
           id: SettingsTab.Users,
           label: "Users",
+          icon: UserCog,
+          adminOnly: true,
+        },
+        {
+          id: SettingsTab.UserSignals,
+          label: "User Signals",
           icon: UserCog,
           adminOnly: true,
         },
@@ -853,10 +853,6 @@
           {:else if activeTab === SettingsTab.Authentication}
             <Authentication svgIcon={getTabIcon(activeTab)} />
 
-            <!-- user signals settings -->
-          {:else if activeTab === SettingsTab.UserSignals}
-            <UserSignals svgIcon={getTabIcon(activeTab)} />
-
             <!-- tasks -->
           {:else if activeTab === SettingsTab.Tasks}
             <Tasks svgIcon={getTabIcon(activeTab)} />
@@ -875,6 +871,10 @@
             <!-- users -->
           {:else if activeTab === SettingsTab.Users}
             <Users svgIcon={getTabIcon(activeTab)} />
+
+            <!-- user signals settings -->
+          {:else if activeTab === SettingsTab.UserSignals}
+            <UserSignals svgIcon={getTabIcon(activeTab)} />
 
             <!-- about -->
           {:else if activeTab === SettingsTab.About}

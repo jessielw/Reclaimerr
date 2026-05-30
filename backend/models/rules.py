@@ -49,3 +49,16 @@ class SeerrUserLookupResponse(BaseModel):
     id: int
     username: str | None = None
     display_name: str | None = None
+
+
+class MovieCollectionLookupResponse(BaseModel):
+    name: str
+    movie_count: int
+
+
+class PaginatedMovieCollectionsResponse(BaseModel):
+    items: list[MovieCollectionLookupResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

@@ -498,6 +498,14 @@
                       : `${media.view_count} views`}
                   </span>
                 </div>
+                {#if isMovie(media) && media.tmdb_in_collection && media.tmdb_collection_name}
+                  <div>
+                    <span class="text-muted-foreground">Collection:</span>
+                    <span class="text-foreground ml-2"
+                      >{media.tmdb_collection_name}</span
+                    >
+                  </div>
+                {/if}
                 {#if media.last_viewed_at}
                   <div>
                     <span class="text-muted-foreground">Last Viewed:</span>

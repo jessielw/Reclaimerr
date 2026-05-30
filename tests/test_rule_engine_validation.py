@@ -5,6 +5,7 @@ import unittest
 from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
+    derive_path_scope_library_ids,
     validate_rule_definition,
 )
 
@@ -55,6 +56,41 @@ class RuleDefinitionValidationTests(unittest.TestCase):
 
     def test_accepts_tmdb_release_temporal_exists_operator(self) -> None:
         validate_rule_definition(_definition("tmdb.release_date", "exists"))
+
+    def test_accepts_tmdb_in_collection_boolean_operator(self) -> None:
+        validate_rule_definition(_definition("tmdb.in_collection", "is_true"))
+
+    def test_rejects_tmdb_in_collection_list_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'contains_any' for field 'tmdb.in_collection'",
+        ):
+            validate_rule_definition(
+                _definition("tmdb.in_collection", "contains_any", ["true"]),
+            )
+
+    def test_accepts_tmdb_collection_name_text_operator(self) -> None:
+        validate_rule_definition(
+            _definition("tmdb.collection_name", "contains_any", ["Star Wars"]),
+        )
+
+    def test_accepts_tmdb_collection_name_contains_all_operator(self) -> None:
+        validate_rule_definition(
+            _definition(
+                "tmdb.collection_name",
+                "contains_all",
+                ["Star Wars Collection", "Collection"],
+            ),
+        )
+
+    def test_rejects_tmdb_collection_name_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'tmdb.collection_name'",
+        ):
+            validate_rule_definition(
+                _definition("tmdb.collection_name", "greater_than", 1),
+            )
 
     def test_accepts_temporal_field_before_operator(self) -> None:
         validate_rule_definition(
@@ -126,6 +162,11 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             _definition("library.id", "contains_any", ["lib-1", "lib-2"]),
         )
 
+    def test_accepts_library_contains_all_operator(self) -> None:
+        validate_rule_definition(
+            _definition("library.id", "contains_all", ["lib-1", "lib-2"]),
+        )
+
     def test_rejects_library_equals_operator(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -189,6 +230,23 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             "Library conditions require at least one library id",
         ):
             validate_rule_definition(_definition("library.id", "contains_any", []))
+
+    def test_derive_path_scope_library_ids_accepts_contains_all_operator(self) -> None:
+        self.assertEqual(
+            derive_path_scope_library_ids(
+                _definition("library.id", "contains_all", ["lib-1", "lib-2"])
+            ),
+            ["lib-1", "lib-2"],
+        )
+
+    def test_derive_path_scope_library_ids_rejects_not_contains_all_operator(
+        self,
+    ) -> None:
+        self.assertIsNone(
+            derive_path_scope_library_ids(
+                _definition("library.id", "not_contains_all", ["lib-1", "lib-2"])
+            )
+        )
 
     def test_accepts_scope_compatible_field_for_target(self) -> None:
         validate_rule_definition(
