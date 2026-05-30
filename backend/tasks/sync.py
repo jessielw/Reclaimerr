@@ -409,6 +409,12 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     if not obj.last_metadata_refresh_at:
         return True
 
+    # one time collection backfill for movie records created before this field existed
+    if media_type is MediaType.MOVIE and not getattr(
+        obj, "tmdb_collection_checked", False
+    ):
+        return True
+
     # cache time now
     time_now = datetime.now(UTC)
 
@@ -1526,6 +1532,25 @@ async def _update_movie_tmdb_metadata(
         movie.imdb_id = ext_ids.get("imdb_id") or None
         movie.tmdb_title = movie_metadata.get("title")
         movie.original_title = movie_metadata.get("original_title")
+
+        collection = movie_metadata.get("belongs_to_collection")
+        collection_id: int | None = None
+        collection_name: str | None = None
+        if isinstance(collection, dict):
+            raw_collection_id = collection.get("id")
+            if isinstance(raw_collection_id, int):
+                collection_id = raw_collection_id
+            else:
+                raw_collection_text = str(raw_collection_id or "").strip()
+                if raw_collection_text.isdigit():
+                    collection_id = int(raw_collection_text)
+
+            raw_collection_name = str(collection.get("name") or "").strip()
+            if raw_collection_name:
+                collection_name = raw_collection_name
+        movie.tmdb_collection_id = collection_id
+        movie.tmdb_collection_name = collection_name
+        movie.tmdb_collection_checked = True
 
         release_date = movie_metadata.get("release_date")
         if release_date:

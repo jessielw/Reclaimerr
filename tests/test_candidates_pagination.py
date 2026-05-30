@@ -77,6 +77,9 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
     alpha.anilist_score = 85
     alpha.anilist_popularity = 998866
     alpha.anilist_favourites = 79392
+    alpha.tmdb_collection_id = 10
+    alpha.tmdb_collection_name = "Alpha Collection"
+    alpha.tmdb_collection_checked = True
     delta.imdb_id = "tt0000202"
     delta.imdb_rating = 8.1
     delta.imdb_vote_count = 9200
@@ -343,6 +346,9 @@ def test_get_candidates_includes_imdb_fields() -> None:
             assert movie_entry.anilist_score == 85
             assert movie_entry.anilist_popularity == 998866
             assert movie_entry.anilist_favourites == 79392
+            assert movie_entry.tmdb_collection_id == 10
+            assert movie_entry.tmdb_collection_name == "Alpha Collection"
+            assert movie_entry.tmdb_in_collection is True
 
             series_response = await get_candidates(
                 _admin_user(),
@@ -364,6 +370,9 @@ def test_get_candidates_includes_imdb_fields() -> None:
             assert series_entry.anilist_score == 90
             assert series_entry.anilist_popularity == 543210
             assert series_entry.anilist_favourites == 40000
+            assert series_entry.tmdb_collection_id is None
+            assert series_entry.tmdb_collection_name is None
+            assert series_entry.tmdb_in_collection is None
 
         await engine.dispose()
 

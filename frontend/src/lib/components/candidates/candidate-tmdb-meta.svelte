@@ -9,6 +9,9 @@
   let { entry }: Props = $props();
 
   const genres = $derived((entry.genres ?? []).slice(0, 3));
+  const collectionName = $derived(
+    entry.media_type === "movie" ? entry.tmdb_collection_name : null,
+  );
 
   const tmdbMediaType = $derived(
     entry.media_type === "series" ? "tv" : "movie",
@@ -23,7 +26,8 @@
       entry.anilist_score != null ||
       entry.anilist_popularity != null ||
       entry.anilist_favourites != null ||
-      genres.length > 0,
+      genres.length > 0 ||
+      !!collectionName,
   );
 </script>
 
@@ -63,6 +67,12 @@
             >{genre}</span
           >
         {/each}
+      </div>
+    {/if}
+
+    {#if collectionName}
+      <div class="text-xs text-muted-foreground">
+        Collection: {collectionName}
       </div>
     {/if}
   </div>

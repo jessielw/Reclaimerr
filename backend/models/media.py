@@ -288,6 +288,9 @@ class MovieWithStatus(BaseModel):
     tmdb_title: str | None
     original_title: str | None
     tmdb_release_date: str | None
+    tmdb_collection_id: int | None
+    tmdb_collection_name: str | None
+    tmdb_in_collection: bool | None
     original_language: str | None
     poster_url: str | None
     backdrop_url: str | None
@@ -481,6 +484,9 @@ class CandidateEntryBase(BaseModel):
     media_year: int | None
     poster_url: str | None
     tmdb_id: int | None = None
+    tmdb_collection_id: int | None = None
+    tmdb_collection_name: str | None = None
+    tmdb_in_collection: bool | None = None
     imdb_id: str | None = None
     imdb_rating: float | None = None
     imdb_vote_count: int | None = None

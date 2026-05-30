@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
+from xml.etree import ElementTree
 
 import niquests
 from niquests.exceptions import HTTPError
@@ -32,6 +33,7 @@ PLEX_CLIENT_ID_PREFIX = "reclaimerr"
 PLEX_AUTH_BASE_URL = "https://app.plex.tv/auth#"
 PLEX_TV_PINS_URL = "https://plex.tv/api/v2/pins"
 PLEX_TV_USER_URL = "https://plex.tv/api/v2/user"
+PLEX_TV_USERS_URL = "https://plex.tv/api/users"
 PLEX_PENDING_AUTH_TTL = timedelta(minutes=10)
 
 MEDIA_AUTH_CONFLICT_NOTICE_KIND = "media_auth_conflict"
@@ -194,6 +196,68 @@ def _media_browser_auth_header(token: str | None = None) -> str:
     if token:
         parts.append(f'Token="{token}"')
     return "MediaBrowser " + ", ".join(parts)
+
+
+def _normalized_machine_identifier(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _extract_machine_identifier(identity_payload: dict[str, Any]) -> str | None:
+    media_container = identity_payload.get("MediaContainer")
+    if not isinstance(media_container, dict):
+        return None
+    machine_id = _normalized_machine_identifier(
+        media_container.get("machineIdentifier")
+    )
+    return machine_id or None
+
+
+def _check_plex_users_server_access(
+    users_xml: str,
+    *,
+    source_user_id: str,
+    source_user_email: str | None,
+    machine_identifier: str,
+) -> tuple[bool, str]:
+    try:
+        root = ElementTree.fromstring(users_xml)
+    except ElementTree.ParseError as exc:
+        raise MediaAuthProviderError("Plex shared users response was invalid") from exc
+
+    # Plex has returned both lowercase and titlecase tags across different endpoints.
+    users = [*root.findall(".//User"), *root.findall(".//user")]
+    if not users:
+        return False, "no_users"
+
+    matched_user: ElementTree.Element | None = None
+    if source_user_id:
+        for user in users:
+            user_id = str(user.attrib.get("id") or "").strip()
+            if user_id and user_id == source_user_id:
+                matched_user = user
+                break
+
+    if matched_user is None and source_user_email:
+        normalized_email = normalize_email(source_user_email)
+        for user in users:
+            user_email = normalize_email(str(user.attrib.get("email") or ""))
+            if user_email and normalized_email and user_email == normalized_email:
+                matched_user = user
+                break
+
+    if matched_user is None:
+        return False, "user_not_shared"
+
+    target_machine = _normalized_machine_identifier(machine_identifier)
+    servers = [*matched_user.findall("./Server"), *matched_user.findall("./server")]
+    has_server_access = any(
+        _normalized_machine_identifier(server.attrib.get("machineIdentifier"))
+        == target_machine
+        for server in servers
+    )
+    if not has_server_access:
+        return False, "server_not_shared"
+    return True, "ok"
 
 
 async def list_media_auth_providers(db: AsyncSession) -> list[MediaAuthProvider]:
@@ -474,6 +538,9 @@ async def authenticate_plex_token(
     config = await _get_service_config_for_provider(db, provider=provider)
     server_api_key = _decrypt_api_key(config.api_key)
     base_url = provider.base_url.rstrip("/")
+    owner_user_id = ""
+    target_machine_id = ""
+    access_check_reason = "unknown"
 
     async with niquests.AsyncSession() as session:
         try:
@@ -503,50 +570,87 @@ async def authenticate_plex_token(
         username = plex_username or display_name
 
         try:
-            server_response = await session.get(
-                f"{base_url}/library/sections",
+            owner_response = await session.get(
+                PLEX_TV_USER_URL,
                 headers={
                     "accept": "application/json",
-                    "X-Plex-Token": plex_user_token,
+                    "X-Plex-Token": server_api_key,
                 },
                 timeout=30,
             )
-            server_response.raise_for_status()
+            owner_response.raise_for_status()
         except HTTPError as exc:
-            raise MediaAuthAccessDeniedError(
-                "Plex account does not have access to this server"
-            ) from exc
+            raise MediaAuthProviderError("Plex owner account lookup failed") from exc
+        except Exception as exc:
+            raise MediaAuthProviderError("Plex owner account lookup failed") from exc
+
+        owner_payload = owner_response.json() if owner_response.content else {}
+        if not isinstance(owner_payload, dict):
+            raise MediaAuthProviderError("Invalid Plex owner user response")
+        owner_user_id = str(owner_payload.get("id") or "").strip()
+        if not owner_user_id:
+            raise MediaAuthProviderError("Plex owner user response was incomplete")
+
+        try:
+            identity_response = await session.get(
+                f"{base_url}/identity",
+                headers={
+                    "accept": "application/json",
+                    "X-Plex-Token": server_api_key,
+                },
+                timeout=30,
+            )
+            identity_response.raise_for_status()
         except Exception as exc:
             raise MediaAuthProviderError(
                 "Plex server access verification failed"
             ) from exc
 
-        # cross check membership against the configured server owner's visible user list
-        has_membership_hint = False
-        try:
-            users_response = await session.get(
-                "https://plex.tv/api/users",
-                params={
-                    "X-Plex-Client-Identifier": MEDIA_AUTH_DEVICE_ID,
-                    "X-Plex-Token": server_api_key,
-                },
-                headers={"Accept": "application/xml"},
-                timeout=60,
+        identity_payload = identity_response.json() if identity_response.content else {}
+        if not isinstance(identity_payload, dict):
+            raise MediaAuthProviderError("Invalid Plex identity response")
+        machine_identifier = _extract_machine_identifier(identity_payload)
+        if not machine_identifier:
+            raise MediaAuthProviderError("Plex identity response was incomplete")
+        target_machine_id = machine_identifier
+
+        has_server_access = False
+        if source_user_id and source_user_id == owner_user_id:
+            has_server_access = True
+            access_check_reason = "owner"
+        else:
+            try:
+                users_response = await session.get(
+                    PLEX_TV_USERS_URL,
+                    params={
+                        "X-Plex-Client-Identifier": MEDIA_AUTH_DEVICE_ID,
+                        "X-Plex-Token": server_api_key,
+                    },
+                    headers={"Accept": "application/xml"},
+                    timeout=60,
+                )
+                users_response.raise_for_status()
+            except HTTPError as exc:
+                raise MediaAuthProviderError("Plex shared users lookup failed") from exc
+            except Exception as exc:
+                raise MediaAuthProviderError("Plex shared users lookup failed") from exc
+
+            has_server_access, access_check_reason = _check_plex_users_server_access(
+                users_response.text or "",
+                source_user_id=source_user_id,
+                source_user_email=plex_email,
+                machine_identifier=machine_identifier,
             )
-            users_response.raise_for_status()
-            membership_xml = users_response.text or ""
-            has_membership_hint = (
-                source_user_id and f'id="{source_user_id}"' in membership_xml
-            ) or (plex_email and plex_email in membership_xml)
-        except Exception:
-            LOG.debug(
-                f"Plex membership hint check failed for provider {provider.service_config_id} and "
-                f"user id {source_user_id}"
+
+        if not has_server_access:
+            LOG.info(
+                "Denied Plex media login: account is not shared to configured server "
+                f"(provider_id={provider.service_config_id}, user_id={source_user_id or 'unknown'}, "
+                f"email={plex_email or 'unknown'}, machine_id={target_machine_id or 'unknown'}, "
+                f"reason={access_check_reason})"
             )
-        if not has_membership_hint:
-            LOG.debug(
-                f"Plex membership hint mismatch for provider {provider.service_config_id} and "
-                f"user id {source_user_id}"
+            raise MediaAuthAccessDeniedError(
+                "Plex account does not have access to this server"
             )
 
     return _build_discovered_user(
@@ -558,7 +662,10 @@ async def authenticate_plex_token(
         raw={
             "plex_user": user_payload,
             "provider": provider.service_type.value,
-            "membership_hint": bool(has_membership_hint),
+            "server_access_verified": True,
+            "access_check_reason": access_check_reason,
+            "owner_user_id": owner_user_id,
+            "target_machine_id": target_machine_id,
         },
     )
 

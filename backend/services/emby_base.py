@@ -21,7 +21,7 @@ from backend.core.codecs import (
 from backend.core.logger import LOG
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.misc import as_float, as_int
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import MediaType, Service
 from backend.models.media import (
@@ -109,8 +109,11 @@ class EmbyServiceBase:
             LOG.debug(f"Deleted {self.service_type} item {item_id}")
         except Exception as e:
             raise ValueError(
-                f"Failed to delete {self.service_type} item {item_id}: {e}"
-            )
+                format_http_failure(
+                    action=f"Failed to delete {self.service_type} item {item_id}",
+                    exception=e,
+                )
+            ) from e
 
     async def delete_movie_version(self, item_id: str, _media_source_id: str) -> None:
         """Deletes one movie version for Emby/Jellyfin.
@@ -301,7 +304,15 @@ class EmbyServiceBase:
         except HTTPError as e:
             status_code = e.response.status_code if e.response else None
             if status_code != 404:
-                raise
+                raise ValueError(
+                    format_http_failure(
+                        action=(
+                            f"Failed to remove items from {self.service_type} "
+                            f"collection {collection_id}"
+                        ),
+                        exception=e,
+                    )
+                ) from e
 
         # compatibility fallback used by some older server builds (likely will never hit it)
         fallback_response = await self.session.post(
@@ -309,14 +320,35 @@ class EmbyServiceBase:
             params={"Ids": ",".join(sorted(item_ids))},
             timeout=60,
         )
-        fallback_response.raise_for_status()
+        try:
+            fallback_response.raise_for_status()
+        except HTTPError as e:
+            raise ValueError(
+                format_http_failure(
+                    action=(
+                        f"Failed to remove items from {self.service_type} "
+                        f"collection {collection_id}"
+                    ),
+                    exception=e,
+                    response=fallback_response,
+                )
+            ) from e
 
     async def _delete_collection(self, collection_id: str) -> None:
         response = await self.session.delete(
             f"{self.service_url}/Items/{collection_id}",
             timeout=60,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except HTTPError as e:
+            raise ValueError(
+                format_http_failure(
+                    action=f"Failed to delete {self.service_type} collection {collection_id}",
+                    exception=e,
+                    response=response,
+                )
+            ) from e
 
     async def scan_item_path(self, item_path: str) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.26] - 2026-05-30
+
+### Added
+
+- Rules
+  - Movie collections (TMDb) rule
+    - New inline collections rule picker so users can see what Collections are available, but they are also free to type the collections
+      - API endpoint to parse collections from the backend
+  - Added operators **contains all** and **does not contain all** for list based rules
+- Collection name for movie in candidates and info
+
+### Changed
+
+- Improved error handling and logging substantially for all HTTP calls
+- Settings > System is now organized alphabetically
+- Sync now collections TMDb collection data
+
+### Fixed
+
+- Rule node editor could get slightly cramped on some screens
+- Issue with Plex authentication
+
 ## [0.1.0-beta.25] - 2026-05-29
 
 ### Added

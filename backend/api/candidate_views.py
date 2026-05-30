@@ -296,6 +296,24 @@ async def build_rule_preview_items(
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
+                tmdb_id=(
+                    movie.tmdb_id
+                    if is_movie and movie
+                    else series.tmdb_id
+                    if series
+                    else None
+                ),
+                tmdb_collection_id=(
+                    movie.tmdb_collection_id if is_movie and movie else None
+                ),
+                tmdb_collection_name=(
+                    movie.tmdb_collection_name if is_movie and movie else None
+                ),
+                tmdb_in_collection=(
+                    movie.tmdb_collection_id is not None
+                    if is_movie and movie and movie.tmdb_collection_checked
+                    else None
+                ),
                 movie_version_id=record.movie_version_id,
                 version_service=version.service.value if version else None,
                 version_library_id=version.library_id if version else None,

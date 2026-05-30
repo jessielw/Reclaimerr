@@ -92,3 +92,52 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
 
     assert result == {"success": True, "status_code": 204, "error": None}
     assert captured["url"].endswith("path=%2Fmedia%2FMovie%20Name%2Ffile.mkv")
+
+
+def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 500
+        text = '{"error":"boom","token":"keep-me-out"}'
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "backend.services.post_action_webhooks.niquests.AsyncSession",
+        lambda: FakeSession(),
+    )
+
+    result = asyncio.run(
+        send_post_action_webhook(
+            {
+                "enabled": True,
+                "name": "Autopulse",
+                "method": "GET",
+                "url_template": "http://autopulse:2875/trigger",
+                "path_mode": "original",
+                "actions": ["deleted"],
+                "media_types": ["movie"],
+                "timeout_seconds": 15,
+            },
+            PostActionWebhookEvent(
+                action="deleted",
+                media_type=MediaType.MOVIE,
+                title="Movie",
+                path="/media/Movie Name/file.mkv",
+                service_type=Service.PLEX,
+            ),
+        )
+    )
+
+    assert result["success"] is False
+    assert result["status_code"] == 500
+    assert "HTTP 500" in (result["error"] or "")
+    assert "<redacted>" in (result["error"] or "")
+    assert "keep-me-out" not in (result["error"] or "")

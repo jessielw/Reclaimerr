@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from backend.core.utils.request import summarize_error_message
 from backend.database import async_db
 from backend.database.models import DeleteRequest, ReclaimCandidate
 from backend.enums import BackgroundJobType, CandidateFileOpOperation
@@ -79,11 +80,14 @@ async def _finalize_delete_request_job(
             delete_request.executed_at = datetime.now(UTC)
             delete_request.execution_error = None
         else:
-            delete_request.execution_error = (
+            delete_request.execution_error = summarize_error_message(
                 (candidate_after.last_delete_error if candidate_after else None)
                 or fallback_error
-                or "Deletion failed"
+                or "Deletion failed",
+                max_chars=500,
             )
+            if not delete_request.execution_error:
+                delete_request.execution_error = "Deletion failed"
             if candidate_after is not None:
                 await db.delete(candidate_after)
 

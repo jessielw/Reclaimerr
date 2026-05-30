@@ -195,6 +195,19 @@ export interface SeerrUserLookup {
   display_name: string | null;
 }
 
+export interface MovieCollectionLookup {
+  name: string;
+  movie_count: number;
+}
+
+export interface PaginatedMovieCollectionsResponse {
+  items: MovieCollectionLookup[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
 export interface GeneralSettings {
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
@@ -280,6 +293,8 @@ export type RuleConditionOperator =
   | "not_in"
   | "contains_any"
   | "not_contains_any"
+  | "contains_all"
+  | "not_contains_all"
   | "exists"
   | "not_exists"
   | "is_true"
@@ -466,6 +481,9 @@ export interface MovieWithStatus {
   tmdb_title: string | null;
   original_title: string | null;
   tmdb_release_date: string | null;
+  tmdb_collection_id: number | null;
+  tmdb_collection_name: string | null;
+  tmdb_in_collection: boolean | null;
   original_language: string | null;
   poster_url: string | null;
   backdrop_url: string | null;
@@ -749,6 +767,9 @@ export interface ReclaimCandidateEntry {
   media_year: number | null;
   poster_url: string | null;
   tmdb_id: number | null;
+  tmdb_collection_id: number | null;
+  tmdb_collection_name: string | null;
+  tmdb_in_collection: boolean | null;
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;

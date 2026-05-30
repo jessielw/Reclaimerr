@@ -172,6 +172,7 @@
 
   const pathLibraryInclusionOperators = new Set<RuleConditionOperator>([
     "contains_any",
+    "contains_all",
     "in",
     "equals",
   ]);
@@ -179,6 +180,7 @@
   const pathLibraryUnsupportedOperators = new Set<RuleConditionOperator>([
     "not_in",
     "not_contains_any",
+    "not_contains_all",
     "not_equals",
     "exists",
     "not_exists",
@@ -188,6 +190,7 @@
     "equals",
     "in",
     "contains_any",
+    "contains_all",
     "matches_any_regex",
   ]);
 

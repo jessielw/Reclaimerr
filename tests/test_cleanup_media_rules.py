@@ -628,6 +628,150 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_movie_rule(movie, pass_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(movie, fail_rule, {}, []))
 
+    def test_evaluate_movie_rule_tmdb_in_collection_true_false(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_collection_checked = True
+        movie.tmdb_collection_id = 10
+        movie.tmdb_collection_name = "Die Hard Collection"
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+
+        in_collection_rule = _make_single_condition_rule(
+            name="movie-in-collection",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.in_collection",
+            operator="is_true",
+        )
+        not_in_collection_rule = _make_single_condition_rule(
+            name="movie-not-in-collection",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.in_collection",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, in_collection_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, not_in_collection_rule, {}, []))
+
+    def test_evaluate_movie_rule_tmdb_in_collection_unknown_does_not_match_false(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_collection_checked = False
+        movie.tmdb_collection_id = None
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-not-in-collection",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.in_collection",
+            operator="is_false",
+        )
+
+        self.assertFalse(_evaluate_movie_rule(movie, rule, {}, []))
+
+    def test_evaluate_movie_rule_tmdb_collection_name_matches(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_collection_checked = True
+        movie.tmdb_collection_id = 10
+        movie.tmdb_collection_name = "Star Wars Collection"
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        match_rule = _make_single_condition_rule(
+            name="movie-collection-name-match",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.collection_name",
+            operator="contains_any",
+            value=["star wars collection"],
+        )
+        miss_rule = _make_single_condition_rule(
+            name="movie-collection-name-miss",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.collection_name",
+            operator="equals",
+            value="Die Hard Collection",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, match_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, miss_rule, {}, []))
+
+    def test_evaluate_movie_rule_tmdb_collection_name_contains_all_and_negation(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.tmdb_collection_checked = True
+        movie.tmdb_collection_id = 10
+        movie.tmdb_collection_name = "Star Wars Collection"
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+
+        contains_all_rule = _make_single_condition_rule(
+            name="movie-collection-contains-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.collection_name",
+            operator="contains_all",
+            value=["star wars collection"],
+        )
+        missing_one_rule = _make_single_condition_rule(
+            name="movie-collection-missing-one",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.collection_name",
+            operator="contains_all",
+            value=["star wars collection", "die hard"],
+        )
+        not_contains_all_rule = _make_single_condition_rule(
+            name="movie-collection-not-contains-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.collection_name",
+            operator="not_contains_all",
+            value=["star wars collection", "die hard"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, contains_all_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, missing_one_rule, {}, []))
+        self.assertTrue(_evaluate_movie_rule(movie, not_contains_all_rule, {}, []))
+
+    def test_evaluate_movie_rule_media_path_contains_all_and_negation(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.versions = [
+            _make_movie_version(
+                service_media_id="m1",
+                service_item_id="i1",
+                path="/media/movies/star-wars-collection/movie.mkv",
+            )
+        ]
+
+        contains_all_rule = _make_single_condition_rule(
+            name="movie-path-contains-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media.path",
+            operator="contains_all",
+            value=["/media/movies", "/media/movies/star-wars-collection"],
+        )
+        not_contains_all_rule = _make_single_condition_rule(
+            name="movie-path-not-contains-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media.path",
+            operator="not_contains_all",
+            value=["/media/movies", "/media/movies/does-not-exist"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, contains_all_rule, {}, []))
+        self.assertTrue(_evaluate_movie_rule(movie, not_contains_all_rule, {}, []))
+
     def test_evaluate_movie_rule_release_date_operator_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         movie.tmdb_release_date = datetime(2024, 1, 15)
@@ -1661,6 +1805,9 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Preview Movie", tmdb_id=3001, size=6 * 1024**3)
+            movie.tmdb_collection_id = 77
+            movie.tmdb_collection_name = "Preview Collection"
+            movie.tmdb_collection_checked = True
             db.add_all([rule, movie])
             await db.flush()
 
@@ -1706,6 +1853,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(preview_items), 1)
             self.assertEqual(preview_items[0].media_title, "Preview Movie")
             self.assertEqual(preview_items[0].version_video_resolution, "2160p")
+            self.assertEqual(preview_items[0].tmdb_collection_id, 77)
+            self.assertEqual(
+                preview_items[0].tmdb_collection_name, "Preview Collection"
+            )
+            self.assertTrue(preview_items[0].tmdb_in_collection)
             self.assertTrue(preview_items[0].reason_tokens)
 
     async def test_scan_syncs_leaving_soon_collections_when_enabled(self) -> None:

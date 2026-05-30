@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.enums import MediaType, SeerrRequestStatus
 from backend.models.services.seerr import SeerrPageInfo, SeerrRequest, SeerrUser
 
@@ -79,7 +79,12 @@ class SeerrClient:
         ),
     )
     async def _make_request(
-        self, method: str, endpoint: str, **kwargs
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        error_context: str | None = None,
+        **kwargs,
     ) -> tuple[int, dict | list | None]:
         """Make HTTP request to Seerr API with automatic retry.
 
@@ -97,7 +102,20 @@ class SeerrClient:
                 "Please use an admin account's API key in Seerr's settings."
             )
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except niquests.HTTPError as exc:
+            if error_context:
+                raise ValueError(
+                    format_http_failure(
+                        action=error_context,
+                        exception=exc,
+                        response=response,
+                        method=method,
+                        endpoint=endpoint,
+                    )
+                ) from exc
+            raise
 
         status_code = response.status_code
         if not status_code:
@@ -151,7 +169,11 @@ class SeerrClient:
         Args:
             request_id: Request ID to delete
         """
-        status_code, _ = await self._make_request("DELETE", f"request/{request_id}")
+        status_code, _ = await self._make_request(
+            "DELETE",
+            f"request/{request_id}",
+            error_context=f"Failed to delete request {request_id} via Seerr",
+        )
         if status_code != 204:
             raise ValueError(
                 f"Failed to delete request {request_id} (status: {status_code})"
@@ -345,7 +367,11 @@ class SeerrClient:
         Args:
             media_id: Seerr internal media ID
         """
-        status_code, _ = await self._make_request("DELETE", f"media/{media_id}")
+        status_code, _ = await self._make_request(
+            "DELETE",
+            f"media/{media_id}",
+            error_context=f"Failed to delete media {media_id} via Seerr",
+        )
         if status_code != 204:
             raise ValueError(
                 f"Failed to delete media {media_id} (status: {status_code})"

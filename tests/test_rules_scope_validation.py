@@ -112,6 +112,44 @@ def test_preview_rule_rejects_incompatible_field_for_target_scope() -> None:
     asyncio.run(run())
 
 
+def test_create_rule_rejects_movie_collection_field_for_series_scope() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.commit()
+
+            payload = CleanupRuleCreate(
+                name="bad-series-collection-scope-rule",
+                media_type=MediaType.SERIES,
+                enabled=True,
+                target_scope="series",
+                definition=_definition(
+                    "tmdb.collection_name",
+                    "contains_any",
+                    ["star wars collection"],
+                ),
+                action=None,
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await create_rule(payload, admin, db)
+            assert exc.value.status_code == 422
+            assert "target_scope 'series'" in str(exc.value.detail)
+            assert "tmdb.collection_name" in str(exc.value.detail)
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_import_rules_reports_scope_validation_errors() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
