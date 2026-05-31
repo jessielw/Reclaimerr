@@ -196,8 +196,7 @@ If you are using LinuxServer SWAG, see:
 
 This includes both:
 
-- subdomain proxy config (`reclaimerr.yourdomain.com`) (recommended)
-- root/apex domain proxy config (`yourdomain.com`)
+- subdomain proxy config (`reclaimerr.yourdomain.com`)
 
 `PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr. `TZ` controls the container timezone, which is what cron-style task schedules use.
 
