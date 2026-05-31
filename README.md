@@ -188,6 +188,17 @@ services:
       - "8000:8000"
 ```
 
+## Reverse Proxy (SWAG)
+
+If you are using LinuxServer SWAG, see:
+
+- [SWAG reverse proxy examples](docs/reverse-proxy/swag.md)
+
+This includes both:
+
+- subdomain proxy config (`reclaimerr.yourdomain.com`) (recommended)
+- root/apex domain proxy config (`yourdomain.com`)
+
 `PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr. `TZ` controls the container timezone, which is what cron-style task schedules use.
 
 These settings affect the container process and files created under `/app/data`. They do not override host filesystem permissions on your bind mounts. Your mounted media paths still need to be owned by, or otherwise writable to, the same UID/GID you configure for the container. Reclaimerr still stores timestamps in UTC internally; `TZ` only affects container-local behavior such as what "3 AM" means for scheduled cron tasks.
