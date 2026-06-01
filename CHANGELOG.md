@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Plex 'favorite' handling
   - Plex favorites are actually handled via **watchlists**
   - Plex users **must** authenticate via Plex with Reclaimerr
+- Rule preview now shows the count of active, favorited, and protected media to give the user more information on why their rule might not be showing a specific result
 
 ### Changed
 
