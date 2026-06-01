@@ -68,6 +68,7 @@ from backend.services.media_auth import (
     exchange_plex_pin_for_token,
     get_media_auth_provider,
     list_media_auth_providers,
+    persist_plex_identity_token,
     pop_pending_plex_auth,
     resolve_or_create_user_for_identity,
     start_plex_pin_flow,
@@ -584,6 +585,11 @@ async def media_plex_callback(
             plex_user_token=plex_user_token,
         )
         user = await resolve_or_create_user_for_identity(db, identity=identity)
+        await persist_plex_identity_token(
+            db,
+            identity=identity,
+            plex_user_token=plex_user_token,
+        )
         if not user.is_active:
             return _auth_error_redirect(
                 "Account is disabled", redirect_to=redirect_target
