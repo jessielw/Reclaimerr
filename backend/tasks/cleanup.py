@@ -62,7 +62,11 @@ from backend.enums import (
     Service,
     Task,
 )
-from backend.models.cleanup import MatchedCandidateRecord
+from backend.models.cleanup import (
+    MatchedCandidateRecord,
+    RulePreviewMatchMetadata,
+    RulePreviewMatchResult,
+)
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.admin_notices import (
     clear_seerr_rule_skip_notice,
@@ -87,6 +91,7 @@ __all__ = [
     "delete_specific_candidates",
     "move_specific_candidates",
     "collect_rule_preview_matches",
+    "collect_rule_preview_matches_with_metadata",
 ]
 
 ArrDeleteFallback: TypeAlias = Literal["unmonitor", "remove_if_empty"]
@@ -310,6 +315,15 @@ async def collect_rule_preview_matches(
     rules: list[ReclaimRule],
 ) -> list[MatchedCandidateRecord]:
     """Evaluate rules without mutating persisted candidates."""
+    result = await collect_rule_preview_matches_with_metadata(db, rules)
+    return result.matches
+
+
+async def collect_rule_preview_matches_with_metadata(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> RulePreviewMatchResult:
+    """Evaluate rules without mutating persisted candidates and return counters."""
     favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(db)
     if not favorites_ready and favorites_error:
         LOG.warning(
@@ -339,16 +353,42 @@ async def collect_rule_preview_matches(
     season_rules = [r for r in rules if normalize_rule_target(r) == TARGET_SEASON]
     episode_rules = [r for r in rules if normalize_rule_target(r) == TARGET_EPISODE]
 
+    metadata = RulePreviewMatchMetadata()
     matches: list[MatchedCandidateRecord] = []
     if movie_rules:
-        matches.extend(await _collect_movie_version_candidate_records(db, movie_rules))
+        matches.extend(
+            await _collect_movie_version_candidate_records(
+                db,
+                movie_rules,
+                preview_metadata=metadata,
+            )
+        )
     if series_rules:
-        matches.extend(await _collect_series_candidate_records(db, series_rules))
+        matches.extend(
+            await _collect_series_candidate_records(
+                db,
+                series_rules,
+                preview_metadata=metadata,
+            )
+        )
     if season_rules:
-        matches.extend(await _collect_season_candidate_records(db, season_rules))
+        matches.extend(
+            await _collect_season_candidate_records(
+                db,
+                season_rules,
+                preview_metadata=metadata,
+            )
+        )
     if episode_rules:
-        matches.extend(await _collect_episode_candidate_records(db, episode_rules))
-    return matches
+        matches.extend(
+            await _collect_episode_candidate_records(
+                db,
+                episode_rules,
+                preview_metadata=metadata,
+            )
+        )
+    metadata.matched_count = len(matches)
+    return RulePreviewMatchResult(matches=matches, metadata=metadata)
 
 
 async def scan_cleanup_candidates() -> None:
@@ -392,15 +432,62 @@ def _collect_arr_tag_labels(rules: list[ReclaimRule]) -> set[str]:
     return labels
 
 
+def _coerce_int(value: Any) -> int | None:
+    """Best-effort integer coercion for API payload IDs."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_arr_item_ids_by_label(
+    *,
+    items: Sequence[Any],
+    tags: Sequence[Any],
+    wanted_labels: set[str],
+) -> dict[str, set[int]]:
+    """Build label -> arr item IDs from item payload tags + tag catalog labels."""
+    if not wanted_labels:
+        return {}
+
+    tag_id_to_label: dict[int, str] = {}
+    for tag in tags:
+        tag_id = _coerce_int(getattr(tag, "id", None))
+        label_raw = getattr(tag, "label", None)
+        if tag_id is None or label_raw is None:
+            continue
+        label = str(label_raw).strip().lower()
+        if not label:
+            continue
+        tag_id_to_label[tag_id] = label
+
+    label_to_arr_ids: dict[str, set[int]] = {}
+    for item in items:
+        arr_item_id = _coerce_int(getattr(item, "id", None))
+        if arr_item_id is None:
+            continue
+        tag_ids = getattr(item, "tags", None) or []
+        for raw_tag_id in tag_ids:
+            tag_id = _coerce_int(raw_tag_id)
+            if tag_id is None:
+                continue
+            label = tag_id_to_label.get(tag_id)
+            if label and label in wanted_labels:
+                label_to_arr_ids.setdefault(label, set()).add(arr_item_id)
+
+    return label_to_arr_ids
+
+
 async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
     """Refresh arr_tags on Movie/Series rows for tag labels referenced by active rules.
 
     Steps:
     1. Collect the distinct tag labels used in arr.tags conditions across all rules.
-    2. Per arr client: single GET /tag/detail call returning all tags with their item IDs.
+    2. Per arr client: fetch items + tag catalog and resolve tag IDs to labels.
     3. Map arr item IDs -> DB IDs via MovieArrRef / SeriesArrRef.
-    4. Strip rule relevant labels from all tracked rows, then re add only where confirmed present.
-    This keeps negative operators (not_contains_any) correct without fetching all movies/series.
+    4. Strip rule-relevant labels only on refs for configs that refreshed successfully,
+       then re-add only where confirmed present.
+    Failed config fetches are non-destructive (existing DB tags are preserved).
     """
     movie_rules = [
         r for r in rules if normalize_rule_target(r) in {TARGET_MOVIE_VERSION}
@@ -426,6 +513,8 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
         if radarr_clients:
             # movie_id (DB) -> set of labels to add
             movie_label_additions: dict[int, set[str]] = {}
+            radarr_successful_config_ids: set[int] = set()
+            radarr_failed_config_ids: set[int] = set()
 
             async with async_db() as db:
                 rows = (
@@ -446,31 +535,46 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
 
             for config_id, client in radarr_clients.items():
                 try:
-                    # single call: label -> [arr_movie_id, ...] for ALL tags
-                    tag_details = await client.get_all_tag_details()
+                    all_movies = await client.get_all_movies()
+                    tag_list = await client.get_tags()
                 except Exception as e:
+                    radarr_failed_config_ids.add(config_id)
                     LOG.warning(
-                        f"Failed to fetch Radarr tag details for config {config_id}: {e}"
+                        f"Failed to fetch Radarr movies/tags for config {config_id}: {e}"
                     )
                     continue
 
+                radarr_successful_config_ids.add(config_id)
+                label_to_arr_ids = _collect_arr_item_ids_by_label(
+                    items=all_movies,
+                    tags=tag_list,
+                    wanted_labels=movie_tag_labels,
+                )
                 arr_to_db = arr_to_db_by_config.get(config_id, {})
-                for label in movie_tag_labels:
-                    for arr_id in tag_details.get(label, []):
+                for label, arr_ids in label_to_arr_ids.items():
+                    for arr_id in arr_ids:
                         db_id = arr_to_db.get(arr_id)
                         if db_id is not None:
                             movie_label_additions.setdefault(db_id, set()).add(label)
 
-            # apply: strip then re-add relevant labels on all tracked movie rows
-            all_db_movie_ids = {
+            # apply only to refs we successfully refreshed, and never touch rows tied to a failed config.
+            successful_db_movie_ids = {
                 db_id
-                for mapping in arr_to_db_by_config.values()
+                for config_id, mapping in arr_to_db_by_config.items()
+                if config_id in radarr_successful_config_ids
                 for db_id in mapping.values()
             }
-            if all_db_movie_ids:
+            failed_db_movie_ids = {
+                db_id
+                for config_id, mapping in arr_to_db_by_config.items()
+                if config_id in radarr_failed_config_ids
+                for db_id in mapping.values()
+            }
+            refreshable_db_movie_ids = successful_db_movie_ids - failed_db_movie_ids
+            if refreshable_db_movie_ids:
                 async with async_db() as db:
                     result = await db.execute(
-                        select(Movie).where(Movie.id.in_(all_db_movie_ids))
+                        select(Movie).where(Movie.id.in_(refreshable_db_movie_ids))
                     )
                     for movie in result.scalars().all():
                         current = set(movie.arr_tags or [])
@@ -480,8 +584,13 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
                         )  # re-add current ones
                         movie.arr_tags = sorted(current)
                     await db.commit()
+            elif movie_tag_labels and radarr_failed_config_ids:
+                LOG.warning(
+                    "Radarr tag refresh failed for all relevant refs; "
+                    "keeping existing movie arr_tags rows unchanged"
+                )
             LOG.debug(
-                f"Refreshed arr_tags for {len(all_db_movie_ids)} movies (labels: {movie_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies (labels: {movie_tag_labels})"
             )
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####
@@ -492,6 +601,8 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
 
         if sonarr_clients:
             series_label_additions: dict[int, set[str]] = {}
+            sonarr_successful_config_ids: set[int] = set()
+            sonarr_failed_config_ids: set[int] = set()
 
             async with async_db() as db:
                 rows = (
@@ -511,30 +622,45 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
 
             for config_id, client in sonarr_clients.items():
                 try:
-                    # single call: label -> [arr_series_id, ...] for ALL tags
-                    tag_details = await client.get_all_tag_details()
+                    all_series = await client.get_all_series()
+                    tag_list = await client.get_tags()
                 except Exception as e:
+                    sonarr_failed_config_ids.add(config_id)
                     LOG.warning(
-                        f"Failed to fetch Sonarr tag details for config {config_id}: {e}"
+                        f"Failed to fetch Sonarr series/tags for config {config_id}: {e}"
                     )
                     continue
 
+                sonarr_successful_config_ids.add(config_id)
+                label_to_arr_ids = _collect_arr_item_ids_by_label(
+                    items=all_series,
+                    tags=tag_list,
+                    wanted_labels=series_tag_labels,
+                )
                 arr_to_db = sonarr_arr_to_db_by_config.get(config_id, {})
-                for label in series_tag_labels:
-                    for arr_id in tag_details.get(label, []):
+                for label, arr_ids in label_to_arr_ids.items():
+                    for arr_id in arr_ids:
                         db_id = arr_to_db.get(arr_id)
                         if db_id is not None:
                             series_label_additions.setdefault(db_id, set()).add(label)
 
-            all_db_series_ids = {
+            successful_db_series_ids = {
                 db_id
-                for mapping in sonarr_arr_to_db_by_config.values()
+                for config_id, mapping in sonarr_arr_to_db_by_config.items()
+                if config_id in sonarr_successful_config_ids
                 for db_id in mapping.values()
             }
-            if all_db_series_ids:
+            failed_db_series_ids = {
+                db_id
+                for config_id, mapping in sonarr_arr_to_db_by_config.items()
+                if config_id in sonarr_failed_config_ids
+                for db_id in mapping.values()
+            }
+            refreshable_db_series_ids = successful_db_series_ids - failed_db_series_ids
+            if refreshable_db_series_ids:
                 async with async_db() as db:
                     result = await db.execute(
-                        select(Series).where(Series.id.in_(all_db_series_ids))
+                        select(Series).where(Series.id.in_(refreshable_db_series_ids))
                     )
                     for series in result.scalars().all():
                         current = set(series.arr_tags or [])
@@ -542,8 +668,13 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
                         current |= series_label_additions.get(series.id, set())
                         series.arr_tags = sorted(current)
                     await db.commit()
+            elif series_tag_labels and sonarr_failed_config_ids:
+                LOG.warning(
+                    "Sonarr tag refresh failed for all relevant refs; "
+                    "keeping existing series arr_tags rows unchanged"
+                )
             LOG.debug(
-                f"Refreshed arr_tags for {len(all_db_series_ids)} series (labels: {series_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series (labels: {series_tag_labels})"
             )
 
 
@@ -1348,7 +1479,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
 
         # refresh arr data from Radarr/Sonarr for any labels/fields referenced in active rules
-        # (1 GET /tag + 1 GET /tag/detail/{id} per relevant label per client - no bulk fetch)
+        # (fetches full item lists + tag catalog per client, then resolves item tag IDs -> labels)
         DiskStatsResolver(
             arr_entries=await _load_arr_disk_space(),
             path_mappings=await _load_path_mappings(),
@@ -1507,6 +1638,8 @@ async def _process_media(
 async def _collect_series_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
+    *,
+    preview_metadata: RulePreviewMatchMetadata | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate whole series rules without mutating persisted candidates."""
     (
@@ -1533,6 +1666,8 @@ async def _collect_series_candidate_records(
     )
     result = await db.execute(query)
     media_items = result.scalars().all()
+    if preview_metadata is not None:
+        preview_metadata.source_media_count += len(media_items)
 
     LOG.info(f"Processing {len(media_items)} {MediaType.SERIES.value} items")
 
@@ -1559,12 +1694,16 @@ async def _collect_series_candidate_records(
 
     for item in media_items:
         if favorite_tmdb_ids and item.tmdb_id in favorite_tmdb_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_favorites_count += 1
             LOG.info(
                 f"Skipping favorite series: {item.title} (TMDB ID: {item.tmdb_id})"
             )
             continue
         # skip protected items
         if item.id in protected_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_protected_count += 1
             continue
 
         # evaluate all rules against this item
@@ -1670,6 +1809,8 @@ async def _process_movie_versions(
 async def _collect_movie_version_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
+    *,
+    preview_metadata: RulePreviewMatchMetadata | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate movie-version rules without mutating persisted candidates."""
     (
@@ -1694,6 +1835,8 @@ async def _collect_movie_version_candidate_records(
     )
     result = await db.execute(query)
     movies = result.scalars().all()
+    if preview_metadata is not None:
+        preview_metadata.source_media_count += len(movies)
     LOG.info(f"Processing {len(movies)} movie items at version granularity")
 
     now = datetime.now(UTC)
@@ -1726,11 +1869,15 @@ async def _collect_movie_version_candidate_records(
 
     for movie in movies:
         if favorite_tmdb_ids and movie.tmdb_id in favorite_tmdb_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_favorites_count += 1
             LOG.info(
                 f"Skipping favorite movie: {movie.title} (TMDB ID: {movie.tmdb_id})"
             )
             continue
         if movie.id in protected_movie_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_protected_count += 1
             continue
         if not movie.versions:
             continue
@@ -1869,6 +2016,8 @@ async def _process_series_episodes(
 async def _collect_season_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
+    *,
+    preview_metadata: RulePreviewMatchMetadata | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
     include_episodes = _rules_use_season_episode_watch_fields(rules)
@@ -1899,6 +2048,8 @@ async def _collect_season_candidate_records(
     )
     result = await db.execute(query)
     all_series = result.scalars().all()
+    if preview_metadata is not None:
+        preview_metadata.source_media_count += len(all_series)
 
     if not all_series:
         return []
@@ -1941,6 +2092,8 @@ async def _collect_season_candidate_records(
 
     for series in all_series:
         if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_favorites_count += 1
             LOG.info(
                 f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
             )
@@ -1948,6 +2101,8 @@ async def _collect_season_candidate_records(
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_protected_count += 1
             continue
 
         for season in series.seasons:
@@ -2052,6 +2207,8 @@ async def _sync_season_candidates(
 async def _collect_episode_candidate_records(
     db: AsyncSession,
     rules: list[ReclaimRule],
+    *,
+    preview_metadata: RulePreviewMatchMetadata | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate episode rules without mutating persisted candidates."""
     (
@@ -2080,6 +2237,8 @@ async def _collect_episode_candidate_records(
     )
     result = await db.execute(query)
     all_series = result.scalars().all()
+    if preview_metadata is not None:
+        preview_metadata.source_media_count += len(all_series)
 
     if not all_series:
         return []
@@ -2135,6 +2294,8 @@ async def _collect_episode_candidate_records(
 
     for series in all_series:
         if favorite_tmdb_ids and series.tmdb_id in favorite_tmdb_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_favorites_count += 1
             LOG.info(
                 f"Skipping favorite series: {series.title} (TMDB ID: {series.tmdb_id})"
             )
@@ -2142,6 +2303,8 @@ async def _collect_episode_candidate_records(
         if not series.seasons:
             continue
         if series.id in protected_series_ids:
+            if preview_metadata is not None:
+                preview_metadata.skipped_protected_count += 1
             continue
 
         for season in series.seasons:
@@ -2308,7 +2471,7 @@ def _evaluate_movie_rule(
                 return True
         return False
 
-    if normalize_rule_target(rule) != TARGET_SERIES or not item.size:
+    if normalize_rule_target(rule) != TARGET_SERIES:
         return False
 
     matched, criteria, rule_reasons = evaluate_advanced_rule(
