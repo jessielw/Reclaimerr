@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Rule `Arr tags` could be inaccurate when running rules against them
+- Dashboard would show media count that had been soft deleted
 
 ## [0.1.0-beta.26] - 2026-05-30
 

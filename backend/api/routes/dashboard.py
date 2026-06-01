@@ -57,10 +57,12 @@ async def get_dashboard(
             select(
                 select(func.count())
                 .select_from(Movie)
+                .where(Movie.removed_at.is_(None))
                 .scalar_subquery()
                 .label("movie_count"),
                 select(func.count())
                 .select_from(Series)
+                .where(Series.removed_at.is_(None))
                 .scalar_subquery()
                 .label("series_count"),
                 select(
