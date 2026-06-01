@@ -853,6 +853,17 @@ export type RulePreviewEntry = Omit<
   "id" | "has_pending_request" | "created_at"
 >;
 
+export interface RulePreviewMetadata {
+  source_media_count: number;
+  skipped_favorites_count: number;
+  skipped_protected_count: number;
+  matched_count: number;
+}
+
+export interface PaginatedRulePreviewResponse extends PaginatedResponse<RulePreviewEntry> {
+  metadata?: RulePreviewMetadata | null;
+}
+
 export interface DashboardKpis {
   total_movies: number;
   total_series: number;

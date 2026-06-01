@@ -75,7 +75,7 @@
     in: "in any",
     not_in: "not in any",
     contains_any: "contains any",
-    not_contains_any: "excludes all",
+    not_contains_any: "does not contain",
     contains_all: "contains all",
     not_contains_all: "does not contain all",
     exists: "exists",
@@ -118,6 +118,15 @@
     "not_equals",
     "in",
     "not_in",
+    "contains_any",
+    "not_contains_any",
+    "contains_all",
+    "not_contains_all",
+    "exists",
+    "not_exists",
+  ];
+
+  const multiValueTextOperators: RuleConditionOperator[] = [
     "contains_any",
     "not_contains_any",
     "contains_all",
@@ -545,7 +554,7 @@
       value: "arr.tags",
       label: "Arr tags",
       kind: "text",
-      operators: textOperators,
+      operators: multiValueTextOperators,
       defaultOperator: "contains_any",
     },
     {

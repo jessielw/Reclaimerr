@@ -174,6 +174,13 @@ TEXT_FIELDS = {
     "arr.tags",
     "seerr.requested_by_user_ids",
 }
+MULTI_VALUE_TEXT_FIELDS = {
+    "arr.tags",
+    "video.codec_family",
+    "audio.codec_family",
+    "audio.languages",
+    "subtitle.languages",
+}
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
     "tmdb.in_collection",
@@ -1274,6 +1281,9 @@ def _matches_operator(
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected, field=field)
+    if field in MULTI_VALUE_TEXT_FIELDS and operator in {"equals", "not_equals"}:
+        list_operator = "contains_any" if operator == "equals" else "not_contains_any"
+        return _matches_list_operator(actual, list_operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
         left_date = _date_value(_first_scalar(actual))
         right_date = _date_value(_first_scalar(expected))

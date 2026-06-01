@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plex favorites are actually handled via **watchlists**
   - Plex users **must** authenticate via Plex with Reclaimerr
 
+### Changed
+
+- Rule `Arr tags` rule operator has been tightened up to only contain operators that make sense for it
+- Improved tag detection for the arrs
+
+### Fixed
+
+- Rule `Arr tags` could be inaccurate when running rules against them
+
 ## [0.1.0-beta.26] - 2026-05-30
 
 ### Added
