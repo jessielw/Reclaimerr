@@ -57,24 +57,6 @@ def _make_plex_callback_request(state: str = "expected-state") -> Request:
     return Request(scope)
 
 
-def _make_oidc_start_request(*, scheme: str = "http") -> Request:
-    headers = [
-        (b"host", b"testserver"),
-    ]
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/api/auth/oidc/start",
-        "headers": headers,
-        "query_string": b"",
-        "client": ("127.0.0.1", 4242),
-        "scheme": scheme,
-        "server": ("testserver", 443 if scheme == "https" else 80),
-        "router": auth_routes.router,
-    }
-    return Request(scope)
-
-
 def _new_user(*, username: str, email: str | None, role: UserRole) -> User:
     return User(
         username=username,
@@ -169,26 +151,6 @@ def test_update_oidc_settings_persists_token_endpoint_auth_method() -> None:
         await engine.dispose()
 
     asyncio.run(run())
-
-
-def test_oidc_callback_redirect_uri_uses_override() -> None:
-    request = _make_oidc_start_request(scheme="https")
-    settings_row = OIDCSettings(
-        redirect_uri_override="https://login.example.com/callback",
-    )
-
-    callback_uri = auth_routes._oidc_callback_redirect_uri(request, settings_row)  # pyright: ignore[reportPrivateUsage]
-
-    assert callback_uri == "https://login.example.com/callback"
-
-
-def test_oidc_callback_redirect_uri_uses_request_scheme() -> None:
-    request = _make_oidc_start_request(scheme="https")
-    settings_row = OIDCSettings(redirect_uri_override=None)
-
-    callback_uri = auth_routes._oidc_callback_redirect_uri(request, settings_row)  # pyright: ignore[reportPrivateUsage]
-
-    assert callback_uri == "https://testserver/api/auth/oidc/callback"
 
 
 def test_extract_userinfo_fetches_userinfo_when_email_missing() -> None:

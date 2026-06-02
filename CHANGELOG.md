@@ -5,41 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Add **opt-in** automatic deletion task
-  - Must be enabled in **Settings -> General** and in the **Tasks** page
-
-### Changed
-
-- Improve path resolution between arrs and Reclaimerr
-- Update operator labels for clarity and enhance rule validation tests (existing rules don't need anything adjusted)
-  - contains_any -> matches any
-  - not_contains_any -> matches none
-  - contains_all -> matches all
-  - not_contains_all -> does not match all
-
-## [0.1.0-beta.27] - 2026-06-01
-
-### Added
-
-- Added Plex 'favorite' handling
-  - Plex favorites are actually handled via **watchlists**
-  - Plex users **must** authenticate via Plex with Reclaimerr
-- Rule preview now shows the count of active, favorited, and protected media to give the user more information on why their rule might not be showing a specific result
-
-### Changed
-
-- Rule `Arr tags` rule operator has been tightened up to only contain operators that make sense for it
-- Improved tag detection for the arrs
-
-### Fixed
-
-- Rule `Arr tags` could be inaccurate when running rules against them
-- Dashboard would show media count that had been soft deleted
-
 ## [0.1.0-beta.26] - 2026-05-30
 
 ### Added

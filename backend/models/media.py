@@ -551,13 +551,6 @@ class RulePreviewEntry(CandidateEntryBase):
     """Transient dry-run preview row for an unsaved rule."""
 
 
-class RulePreviewMetadata(BaseModel):
-    source_media_count: int = 0
-    skipped_favorites_count: int = 0
-    skipped_protected_count: int = 0
-    matched_count: int = 0
-
-
 class PaginatedCandidatesResponse(BaseModel):
     items: list[CandidateEntry]
     total: int
@@ -600,7 +593,6 @@ class PaginatedRulePreviewResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
-    metadata: RulePreviewMetadata | None = None
 
 
 class ReclaimHistoryAttributes(BaseModel):

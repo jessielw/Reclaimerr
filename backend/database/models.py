@@ -242,10 +242,6 @@ class MediaUserIdentity(Base):
     display_name: Mapped[str | None] = mapped_column(String(255), default=None)
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     linked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    plex_auth_token: Mapped[str | None] = mapped_column(String(2048), default=None)
-    plex_auth_token_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, default=None
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
@@ -297,7 +293,6 @@ class GeneralSettings(Base):
     add_arr_import_exclusions_on_delete: Mapped[bool] = mapped_column(
         Boolean, default=True
     )
-    auto_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -751,7 +746,7 @@ class SupplementalMediaMatch(Base):
 class MediaFavorite(Base):
     """Snapshot of user favorites mapped to TMDB IDs across media servers.
 
-    Emby/Jellyfin favorites plus Plex signed-in users' watchlists.
+    Emby and Jellyfin only for now as Plex doesn't store this data locally.
     """
 
     __tablename__ = "media_favorites"

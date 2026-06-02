@@ -305,7 +305,6 @@ class GeneralSettingsResponse(BaseModel):
     media_server_fallback_enabled: bool = True
     default_arr_delete_behavior: Literal["unmonitor", "remove_if_empty"] = "unmonitor"
     add_arr_import_exclusions_on_delete: bool = True
-    auto_delete_enabled: bool = False
 
     # favorites
     favorites_ignore_enabled: bool = False

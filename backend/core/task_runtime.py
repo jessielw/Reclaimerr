@@ -7,21 +7,12 @@ from sqlalchemy import select
 
 from backend.core.logger import LOG
 from backend.database import async_db
-from backend.database.models import (
-    BackgroundJob,
-    GeneralSettings,
-    ServiceConfig,
-    TaskSchedule,
-)
+from backend.database.models import BackgroundJob, ServiceConfig, TaskSchedule
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
 from backend.jobs import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
 from backend.tasks.anilist import refresh_anilist_ratings
-from backend.tasks.cleanup import (
-    delete_cleanup_candidates,
-    scan_cleanup_candidates,
-    tag_cleanup_candidates,
-)
+from backend.tasks.cleanup import scan_cleanup_candidates, tag_cleanup_candidates
 from backend.tasks.house_keeping import weekly_house_keeping
 from backend.tasks.imdb import refresh_imdb_ratings
 from backend.tasks.sync import (
@@ -41,7 +32,6 @@ MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
         Task.SYNC_LINKED_DATA,
         Task.SCAN_CLEANUP_CANDIDATES,
         Task.TAG_CLEANUP_CANDIDATES,
-        Task.DELETE_CLEANUP_CANDIDATES,
     }
 )
 
@@ -51,7 +41,6 @@ DISABLE_ABLE_TASKS: frozenset[Task] = frozenset(
         Task.CHECK_APP_UPDATES,
         Task.IMDB_RATINGS_REFRESH,
         Task.ANILIST_RATINGS_REFRESH,
-        Task.DELETE_CLEANUP_CANDIDATES,
     }
 )
 
@@ -70,14 +59,6 @@ async def is_task_enabled(task: Task) -> bool:
         enabled = result.scalar_one_or_none()
     # default safe behavior for unknown schedule row: treat as enabled
     return True if enabled is None else bool(enabled)
-
-
-async def is_auto_delete_enabled() -> bool:
-    """Whether automatic cleanup deletion is enabled in general settings."""
-    async with async_db() as session:
-        result = await session.execute(select(GeneralSettings.auto_delete_enabled))
-        enabled = result.scalar_one_or_none()
-    return bool(enabled)
 
 
 async def _get_active_task_job(task: Task) -> BackgroundJob | None:
@@ -177,8 +158,6 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
     if task is Task.TAG_CLEANUP_CANDIDATES:
         await tag_cleanup_candidates()
         return
-    if task is Task.DELETE_CLEANUP_CANDIDATES:
-        return await delete_cleanup_candidates()
     if task is Task.WEEKLY_HOUSE_KEEPING:
         await weekly_house_keeping()
         return
