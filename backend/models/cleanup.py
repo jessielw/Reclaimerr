@@ -79,3 +79,21 @@ class MatchedCandidateRecord:
     series_id: int | None = None
     season_id: int | None = None
     episode_id: int | None = None
+
+
+@dataclass(slots=True)
+class RulePreviewMatchMetadata:
+    """Aggregate counters captured during preview collection."""
+
+    source_media_count: int = 0
+    skipped_favorites_count: int = 0
+    skipped_protected_count: int = 0
+    matched_count: int = 0
+
+
+@dataclass(slots=True)
+class RulePreviewMatchResult:
+    """Preview matches and metadata returned by preview collection."""
+
+    matches: list[MatchedCandidateRecord]
+    metadata: RulePreviewMatchMetadata

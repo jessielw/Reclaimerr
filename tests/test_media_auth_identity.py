@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.api.routes.account import change_password as change_password_route
 from backend.api.routes.account import link_media_identity, unlink_media_identity
 from backend.core.auth import verify_password
+from backend.core.encryption import fer_decrypt
 from backend.database import Base
 from backend.database.models import AdminNotice, MediaUserIdentity, ServiceConfig, User
 from backend.enums import Permission, Service, UserRole
@@ -18,6 +19,7 @@ from backend.services.admin_notices import upsert_singleton_notice
 from backend.services.media_auth import (
     DiscoveredMediaUser,
     media_auth_conflict_notice_key_for_source,
+    persist_plex_identity_token,
     resolve_or_create_user_for_identity,
 )
 
@@ -244,6 +246,60 @@ def test_admin_can_link_and_unlink_media_identity_and_resolve_notice() -> None:
                 db=db_session,
             )
             assert unlinked.user_id is None
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_persist_plex_identity_token_updates_linked_identity() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            local_user = _new_user("plex_user", email="plex_user@example.com")
+            plex = _new_service_config(service_type=Service.PLEX, name="plex-main")
+            db_session.add_all([local_user, plex])
+            await db_session.commit()
+            await db_session.refresh(local_user)
+            await db_session.refresh(plex)
+
+            identity = DiscoveredMediaUser(
+                source_service=Service.PLEX,
+                source_service_config_id=plex.id,
+                source_service_name=plex.name,
+                source_user_id="plex-user-77",
+                username="plex_user",
+                username_normalized="plex_user",
+                email="plex_user@example.com",
+                display_name="Plex User",
+                raw={"source": "plex"},
+            )
+            await resolve_or_create_user_for_identity(db_session, identity=identity)
+            await persist_plex_identity_token(
+                db_session,
+                identity=identity,
+                plex_user_token="user-token-abc",
+            )
+            await db_session.commit()
+
+            row = (
+                await db_session.execute(
+                    select(MediaUserIdentity).where(
+                        MediaUserIdentity.source_service == Service.PLEX,
+                        MediaUserIdentity.source_service_config_id == plex.id,
+                        MediaUserIdentity.source_user_id == "plex-user-77",
+                    )
+                )
+            ).scalar_one()
+            assert row.plex_auth_token is not None
+            assert fer_decrypt(row.plex_auth_token) == "user-token-abc"
+            assert row.plex_auth_token_updated_at is not None
 
         await engine.dispose()
 

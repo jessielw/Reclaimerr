@@ -13,7 +13,7 @@ from niquests.exceptions import HTTPError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.encryption import fer_decrypt
+from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.database.models import MediaUserIdentity, ServiceConfig, User
 from backend.enums import Permission, Service, UserRole
@@ -750,6 +750,35 @@ async def upsert_media_identity(
     if user_id is not None and row.linked_at is None:
         row.linked_at = now
     return row
+
+
+async def persist_plex_identity_token(
+    db: AsyncSession,
+    *,
+    identity: DiscoveredMediaUser,
+    plex_user_token: str,
+    now: datetime | None = None,
+) -> None:
+    """Persist encrypted Plex user auth token on the linked media identity row."""
+    token = str(plex_user_token or "").strip()
+    if identity.source_service is not Service.PLEX or not token:
+        return
+
+    row = (
+        await db.execute(
+            select(MediaUserIdentity).where(
+                MediaUserIdentity.source_service == identity.source_service,
+                MediaUserIdentity.source_service_config_id
+                == identity.source_service_config_id,
+                MediaUserIdentity.source_user_id == identity.source_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+
+    row.plex_auth_token = fer_encrypt(token)
+    row.plex_auth_token_updated_at = now or datetime.now(UTC)
 
 
 async def resolve_or_create_user_for_identity(

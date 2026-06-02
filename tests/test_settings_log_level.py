@@ -82,3 +82,21 @@ def test_log_level_empty_string_falls_back_and_warns(
         and f"Accepted values: {_ACCEPTED_LOG_LEVELS}" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_proxy_trusted_hosts_list_defaults_to_loopback(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.proxy_trusted_hosts_list == ["127.0.0.1", "::1"]
+
+
+def test_proxy_trusted_hosts_list_parses_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROXY_TRUSTED_HOSTS", "10.10.10.2, 10.10.10.0/24, *")
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.proxy_trusted_hosts_list == [
+        "10.10.10.2",
+        "10.10.10.0/24",
+        "*",
+    ]

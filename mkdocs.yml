@@ -1,0 +1,87 @@
+site_name: Reclaimerr Docs
+site_url: https://jessielw.github.io/Reclaimerr/
+site_description: Reclaimerr documentation, setup, deployment, and development notes
+site_author: jessielw
+repo_url: https://github.com/jessielw/Reclaimerr
+repo_name: jessielw/Reclaimerr
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  variant: classic
+  language: en
+  icon:
+    logo: material/arrow-decision
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - search.highlight
+    - search.share
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue-grey
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue-grey
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+
+nav:
+  - Home: index.md
+  - Features: features.md
+  - Getting Started:
+      - Quick Start: getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Configuration: getting-started/configuration.md
+  - Using Reclaimerr:
+      - How It Works: usage/how-it-works.md
+      - Deletion Flow: usage/deletion-flow.md
+      - Rules: usage/rules.md
+      - Tasks: usage/tasks.md
+  - Deployment:
+      - Docker: deployment/docker.md
+      - Production: deployment/production.md
+      - Backups: deployment/backups.md
+      - SWAG Reverse Proxy: deployment/swag.md
+  - Development:
+      - Contributing: development/contributing.md
+      - Architecture: development/architecture.md
+      - Release Process: development/release-process.md
+      - Database Migrations: development/migrations.md
+  - Reference:
+      - Changelog: reference/changelog.md
+      - API Reference: reference/api.md
+      - FAQ: reference/faq.md
+      - Troubleshooting: reference/troubleshooting.md

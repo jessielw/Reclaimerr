@@ -23,6 +23,7 @@ config.toml
 # logs
 logs
 *.log
+site/
 
 # clients
 .vscode

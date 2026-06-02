@@ -3,8 +3,10 @@ from __future__ import annotations
 from asyncio import Lock
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from platform import release, system
 from typing import Any
 
+import niquests
 from cryptography.fernet import InvalidToken
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
@@ -13,12 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.encryption import fer_decrypt
 from backend.core.logger import LOG
 from backend.database import async_db
-from backend.database.models import MediaFavorite, ServiceConfig
+from backend.database.models import MediaFavorite, MediaUserIdentity, ServiceConfig
 from backend.enums import MediaType, Service
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
 from backend.types import MEDIA_SERVERS
+
+_PLEX_WATCHLIST_ENDPOINT = (
+    "https://discover.provider.plex.tv/library/sections/watchlist/all"
+)
+_PLEX_METADATA_BASE_URL = "https://metadata.provider.plex.tv"
+_PLEX_WATCHLIST_PAGE_SIZES = (20, 10, 5)
+_PLEX_PRODUCT_NAME = "Reclaimerr"
+_PLEX_CLIENT_IDENTIFIER = "reclaimerr"
 
 
 class MediaFavoritesSnapshotCache:
@@ -88,7 +98,7 @@ class MediaFavoritesSnapshotCache:
         *,
         all_servers: list[ServiceConfig] | None = None,
     ) -> tuple[bool, str | None]:
-        """Refresh favorites rows from Emby/Jellyfin."""
+        """Refresh favorites rows from Emby/Jellyfin and Plex watchlists."""
         async with self._refresh_lock:
             try:
                 async with async_db() as session:
@@ -97,13 +107,16 @@ class MediaFavoritesSnapshotCache:
                         if all_servers is not None
                         else await self._get_configured_media_servers(session)
                     )
-                    supported = [
+                    supported_emby_or_jellyfin = [
                         cfg
                         for cfg in servers
                         if cfg.service_type in {Service.EMBY, Service.JELLYFIN}
                     ]
+                    supported_plex = [
+                        cfg for cfg in servers if cfg.service_type is Service.PLEX
+                    ]
 
-                    if not supported:
+                    if not supported_emby_or_jellyfin and not supported_plex:
                         await session.execute(sql_delete(MediaFavorite))
                         await session.commit()
                         self._last_successful_refresh = datetime.now(UTC)
@@ -111,8 +124,8 @@ class MediaFavoritesSnapshotCache:
                         return True, None
 
                     APPROVED_CLIENTS = (EmbyService, JellyfinService)
-                    refreshed_servers = 0
-                    for config in supported:
+                    refreshed_sources = 0
+                    for config in supported_emby_or_jellyfin:
                         client = self._build_media_service_from_config(config)
                         if client is None or not isinstance(client, APPROVED_CLIENTS):
                             continue
@@ -153,13 +166,23 @@ class MediaFavoritesSnapshotCache:
                         if rows:
                             session.add_all(rows)
                         await session.commit()
-                        refreshed_servers += 1
+                        refreshed_sources += 1
                         LOG.info(
                             f"Refreshed favorites snapshot for {config.service_type} "
                             f"(config_id={config.id}): {len(rows)} row(s)"
                         )
 
-                    if refreshed_servers == 0:
+                    for config in supported_plex:
+                        did_refresh = (
+                            await self._refresh_plex_watchlist_snapshot_for_config(
+                                session,
+                                config=config,
+                            )
+                        )
+                        if did_refresh:
+                            refreshed_sources += 1
+
+                    if refreshed_sources == 0:
                         self._last_error = "Failed to refresh favorites snapshot from all supported servers"
                         return False, self._last_error
 
@@ -251,6 +274,32 @@ class MediaFavoritesSnapshotCache:
                         merged[normalized] = entry
                     entry["sources"].add(source_name)
 
+            async with async_db() as session:
+                plex_identities = (
+                    await session.execute(
+                        select(
+                            MediaUserIdentity.username,
+                            MediaUserIdentity.plex_auth_token,
+                        ).where(
+                            MediaUserIdentity.source_service == Service.PLEX,
+                            MediaUserIdentity.user_id.is_not(None),
+                        )
+                    )
+                ).all()
+
+            for username, plex_auth_token in plex_identities:
+                if not plex_auth_token:
+                    continue
+                display_username = str(username or "").strip()
+                normalized = self._normalize_username(display_username)
+                if not normalized:
+                    continue
+                entry = merged.get(normalized)
+                if entry is None:
+                    entry = {"username": display_username, "sources": set()}
+                    merged[normalized] = entry
+                entry["sources"].add(Service.PLEX.value)
+
             if not merged and had_fetch_error and existing_cache is not None:
                 return existing_cache
 
@@ -320,6 +369,334 @@ class MediaFavoritesSnapshotCache:
 
         output.sort(key=lambda item: str(item.get("username", "")).lower())
         return output
+
+    async def _refresh_plex_watchlist_snapshot_for_config(
+        self,
+        session: AsyncSession,
+        *,
+        config: ServiceConfig,
+    ) -> bool:
+        """Refresh favorites snapshot rows for a Plex config from linked users' watchlists."""
+        identities = (
+            (
+                await session.execute(
+                    select(MediaUserIdentity).where(
+                        MediaUserIdentity.source_service == Service.PLEX,
+                        MediaUserIdentity.source_service_config_id == config.id,
+                        MediaUserIdentity.user_id.is_not(None),
+                        MediaUserIdentity.plex_auth_token.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        if not identities:
+            await session.execute(
+                sql_delete(MediaFavorite).where(
+                    MediaFavorite.source_service == Service.PLEX,
+                    MediaFavorite.source_service_config_id == config.id,
+                )
+            )
+            await session.commit()
+            LOG.info(
+                "Refreshed favorites snapshot for Service.PLEX "
+                f"(config_id={config.id}): 0 row(s), no linked Plex users"
+            )
+            return True
+
+        rows: list[MediaFavorite] = []
+        failed_usernames: set[str] = set()
+        successful_users = 0
+        for identity in identities:
+            username = (identity.username or "").strip()
+            normalized = self._normalize_username(username)
+            if not normalized:
+                continue
+
+            raw_token = str(identity.plex_auth_token or "").strip()
+            if not raw_token:
+                continue
+            try:
+                user_token = fer_decrypt(raw_token)
+            except InvalidToken:
+                user_token = raw_token
+            user_token = user_token.strip()
+            if not user_token:
+                continue
+
+            try:
+                watchlist = await self._fetch_plex_watchlist_tmdb_ids(user_token)
+            except Exception as exc:
+                failed_usernames.add(normalized)
+                LOG.warning(
+                    "Plex watchlist favorites refresh failed for "
+                    f"user={username!r} (config_id={config.id}): {exc}"
+                )
+                continue
+
+            if movie_ids := watchlist.get(MediaType.MOVIE):
+                rows.extend(
+                    self._build_favorite_rows(
+                        media_type=MediaType.MOVIE,
+                        source_service=Service.PLEX,
+                        source_service_config_id=config.id,
+                        username_to_tmdb={username: movie_ids},
+                    )
+                )
+            if series_ids := watchlist.get(MediaType.SERIES):
+                rows.extend(
+                    self._build_favorite_rows(
+                        media_type=MediaType.SERIES,
+                        source_service=Service.PLEX,
+                        source_service_config_id=config.id,
+                        username_to_tmdb={username: series_ids},
+                    )
+                )
+            successful_users += 1
+
+        if successful_users == 0:
+            if failed_usernames:
+                LOG.warning(
+                    "Plex watchlist refresh failed for all eligible linked users "
+                    f"(config_id={config.id}); keeping stale favorites rows"
+                )
+                return False
+            await session.execute(
+                sql_delete(MediaFavorite).where(
+                    MediaFavorite.source_service == Service.PLEX,
+                    MediaFavorite.source_service_config_id == config.id,
+                )
+            )
+            await session.commit()
+            LOG.info(
+                "Refreshed favorites snapshot for Service.PLEX "
+                f"(config_id={config.id}): 0 row(s), no usable Plex tokens"
+            )
+            return True
+
+        if failed_usernames:
+            stale_rows = (
+                await session.execute(
+                    select(
+                        MediaFavorite.media_type,
+                        MediaFavorite.tmdb_id,
+                        MediaFavorite.username,
+                        MediaFavorite.username_normalized,
+                    ).where(
+                        MediaFavorite.source_service == Service.PLEX,
+                        MediaFavorite.source_service_config_id == config.id,
+                        MediaFavorite.username_normalized.in_(failed_usernames),
+                    )
+                )
+            ).all()
+            for media_type, tmdb_id, username, username_normalized in stale_rows:
+                rows.append(
+                    MediaFavorite(
+                        media_type=media_type,
+                        tmdb_id=tmdb_id,
+                        username=username,
+                        username_normalized=username_normalized,
+                        source_service=Service.PLEX,
+                        source_service_config_id=config.id,
+                    )
+                )
+
+        await session.execute(
+            sql_delete(MediaFavorite).where(
+                MediaFavorite.source_service == Service.PLEX,
+                MediaFavorite.source_service_config_id == config.id,
+            )
+        )
+        if rows:
+            session.add_all(rows)
+        await session.commit()
+        LOG.info(
+            "Refreshed favorites snapshot for Service.PLEX "
+            f"(config_id={config.id}): {len(rows)} row(s), "
+            f"{successful_users} user(s) refreshed, {len(failed_usernames)} user(s) failed"
+        )
+        return True
+
+    async def _fetch_plex_watchlist_tmdb_ids(
+        self,
+        plex_user_token: str,
+    ) -> dict[MediaType, set[int]]:
+        """Fetch TMDb IDs for movies and series in a Plex user's watchlist."""
+        ids_by_type: dict[MediaType, set[int]] = {
+            MediaType.MOVIE: set(),
+            MediaType.SERIES: set(),
+        }
+        await self._collect_plex_watchlist_ids_from_endpoint(
+            endpoint=_PLEX_WATCHLIST_ENDPOINT,
+            plex_user_token=plex_user_token,
+            ids_by_type=ids_by_type,
+        )
+        return ids_by_type
+
+    async def _collect_plex_watchlist_ids_from_endpoint(
+        self,
+        *,
+        endpoint: str,
+        plex_user_token: str,
+        ids_by_type: dict[MediaType, set[int]],
+    ) -> None:
+        """Collect TMDb IDs for movies and series from a Plex watchlist endpoint, handling pagination."""
+        headers = self._build_plex_discover_headers(plex_user_token)
+
+        start = 0
+        async with niquests.AsyncSession() as http:
+            while True:
+                payload, page_size = await self._request_plex_watchlist_page(
+                    http=http,
+                    endpoint=endpoint,
+                    headers=headers,
+                    start=start,
+                )
+
+                media_container = (
+                    payload.get("MediaContainer", {})
+                    if isinstance(payload, dict)
+                    else {}
+                )
+                if not isinstance(media_container, dict):
+                    break
+                metadata = media_container.get("Metadata", [])
+                if not isinstance(metadata, list) or not metadata:
+                    break
+
+                for item in metadata:
+                    if not isinstance(item, dict):
+                        continue
+                    media_type = str(item.get("type") or "").strip().lower()
+                    if media_type not in {"movie", "show"}:
+                        continue
+                    external_ids = PlexService._parse_external_ids(item)
+                    tmdb_id = external_ids.tmdb if external_ids else None
+                    if not tmdb_id:
+                        rating_key = str(item.get("ratingKey") or "").strip()
+                        if rating_key:
+                            tmdb_id = await self._fetch_plex_item_tmdb_id(
+                                http=http,
+                                endpoint_base=_PLEX_METADATA_BASE_URL,
+                                headers=headers,
+                                rating_key=rating_key,
+                            )
+                    if not tmdb_id:
+                        continue
+                    if media_type == "movie":
+                        ids_by_type[MediaType.MOVIE].add(int(tmdb_id))
+                    else:
+                        ids_by_type[MediaType.SERIES].add(int(tmdb_id))
+
+                total_size = int(media_container.get("totalSize") or 0)
+                items_seen = int(media_container.get("size") or len(metadata) or 0)
+                if items_seen <= 0:
+                    items_seen = page_size
+                if items_seen <= 0:
+                    break
+                start += items_seen
+                if total_size > 0 and start >= total_size:
+                    break
+
+    @staticmethod
+    def _build_plex_discover_headers(plex_user_token: str) -> dict[str, str]:
+        platform_name = system() or "Unknown"
+        platform_version = release() or "0"
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Plex-Token": plex_user_token,
+            "X-Plex-Platform": platform_name,
+            "X-Plex-Platform-Version": platform_version,
+            "X-Plex-Provides": "controller",
+            "X-Plex-Product": _PLEX_PRODUCT_NAME,
+            "X-Plex-Version": "1.0.0",
+            "X-Plex-Device": platform_name,
+            "X-Plex-Device-Name": _PLEX_PRODUCT_NAME,
+            "X-Plex-Client-Identifier": _PLEX_CLIENT_IDENTIFIER,
+            "X-Plex-Language": "en",
+            "X-Plex-Sync-Version": "2",
+            "X-Plex-Features": "external-media",
+        }
+
+    async def _request_plex_watchlist_page(
+        self,
+        *,
+        http: niquests.AsyncSession,
+        endpoint: str,
+        headers: dict[str, str],
+        start: int,
+    ) -> tuple[dict[str, Any], int]:
+        """Request a page of a Plex watchlist, trying multiple page sizes if necessary."""
+        last_error: str | None = None
+        for page_size in _PLEX_WATCHLIST_PAGE_SIZES:
+            params = {
+                "includeCollections": "1",
+                "includeExternalMedia": "1",
+            }
+            request_headers = dict(headers)
+            request_headers["X-Plex-Container-Start"] = str(start)
+            request_headers["X-Plex-Container-Size"] = str(page_size)
+            response = await http.get(
+                endpoint,
+                headers=request_headers,
+                params=params,
+                timeout=45,
+            )
+            if response.status_code is not None and response.status_code >= 400:
+                body = (response.text or "").strip()
+                if (
+                    response.status_code == 400
+                    and "x-plex-container-size" in body.lower()
+                ):
+                    last_error = f"HTTP {response.status_code}: invalid container size {page_size}"
+                    continue
+                raise RuntimeError(
+                    f"HTTP {response.status_code} for {endpoint}: {body[:300]}"
+                )
+            payload = response.json() if response.content else {}
+            if isinstance(payload, dict):
+                return payload, page_size
+            raise RuntimeError(
+                f"Unexpected Plex watchlist payload type: {type(payload)}"
+            )
+
+        raise RuntimeError(
+            f"Plex watchlist rejected all tested container sizes at start={start}: {last_error or 'unknown'}"
+        )
+
+    async def _fetch_plex_item_tmdb_id(
+        self,
+        *,
+        http: niquests.AsyncSession,
+        endpoint_base: str,
+        headers: dict[str, str],
+        rating_key: str,
+    ) -> int | None:
+        """Fetch TMDb ID for a Plex item by its rating key."""
+        response = await http.get(
+            f"{endpoint_base}/library/metadata/{rating_key}",
+            headers=headers,
+            timeout=30,
+        )
+        if response.status_code is not None and response.status_code >= 400:
+            return None
+        payload = response.json() if response.content else {}
+        media_container = (
+            payload.get("MediaContainer", {}) if isinstance(payload, dict) else {}
+        )
+        if not isinstance(media_container, dict):
+            return None
+        metadata = media_container.get("Metadata", [])
+        if not isinstance(metadata, list) or not metadata:
+            return None
+        item = metadata[0]
+        if not isinstance(item, dict):
+            return None
+        external_ids = PlexService._parse_external_ids(item)
+        return external_ids.tmdb if external_ids else None
 
     @staticmethod
     def _normalize_username(value: str) -> str:
