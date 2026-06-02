@@ -10,6 +10,11 @@ on:
         description: "Branch or ref to build"
         required: false
         default: "dev"
+      deploy:
+        description: "Deploy the build"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -55,7 +60,9 @@ jobs:
           path: site
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true')
     needs: build
     runs-on: ubuntu-latest
     environment:
