@@ -28,8 +28,8 @@
     MediaType,
     SettingsTab,
     type LibraryType,
-    type PaginatedRulePreviewResponse,
     type ReclaimRule,
+    type PaginatedResponse,
     type RuleCondition,
     type RuleConditionOperator,
     type RuleDefinition,
@@ -129,7 +129,7 @@
   let previewDialogOpen = $state(false);
   let previewLoading = $state(false);
   let previewError = $state("");
-  let previewData = $state<PaginatedRulePreviewResponse | null>(null);
+  let previewData = $state<PaginatedResponse<RulePreviewEntry> | null>(null);
   let previewSnapshot = $state<{
     name: string | null;
     media_type: MediaType;
@@ -680,7 +680,7 @@
     if (page === 1) previewData = null;
     if (openDialog) previewDialogOpen = true;
     try {
-      previewData = await post_api<PaginatedRulePreviewResponse>(
+      previewData = await post_api<PaginatedResponse<RulePreviewEntry>>(
         "/api/rules/preview",
         {
           ...snapshot,
@@ -1089,51 +1089,13 @@
     </Dialog.Header>
 
     <div class="space-y-4">
-      <div class="flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div class="flex items-center justify-between gap-3">
         <div class="text-sm text-muted-foreground">
           {#if previewData}
             <strong>{previewData.total}</strong> matching item{previewData.total ===
             1
               ? ""
               : "s"}
-
-            <!-- preview data -->
-            {#if previewData.metadata}
-              <div class="mt-1 text-xs text-muted-foreground italic">
-                Evaluated <strong
-                  >{previewData.metadata.source_media_count}</strong
-                >
-                active item{previewData.metadata.source_media_count === 1
-                  ? ""
-                  : "s"}.
-                {#if previewData.metadata.skipped_favorites_count > 0 || previewData.metadata.skipped_protected_count > 0}
-                  Excluded
-                  {#if previewData.metadata.skipped_favorites_count > 0}
-                    {" "}
-                    <strong
-                      >{previewData.metadata.skipped_favorites_count}</strong
-                    >
-                    favorite{previewData.metadata.skipped_favorites_count === 1
-                      ? ""
-                      : "s"}
-                  {/if}
-                  {#if previewData.metadata.skipped_favorites_count > 0 && previewData.metadata.skipped_protected_count > 0}
-                    {" "}
-                    and
-                  {/if}
-                  {#if previewData.metadata.skipped_protected_count > 0}
-                    {" "}
-                    <strong
-                      >{previewData.metadata.skipped_protected_count}</strong
-                    >
-                    protected item{previewData.metadata
-                      .skipped_protected_count === 1
-                      ? ""
-                      : "s"}
-                  {/if}
-                {/if}
-              </div>
-            {/if}
           {:else}
             No preview loaded.
           {/if}

@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from granian.utils.proxies import wrap_asgi_with_proxy_headers
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -46,19 +45,6 @@ from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
 
 limiter = Limiter(key_func=get_remote_address)
-
-
-def _wrap_proxy_headers(asgi_app, *, trusted_hosts: list[str] | str):
-    """Return an ASGI3-compatible proxy-header wrapper for the given app."""
-    wrapped_app = wrap_asgi_with_proxy_headers(
-        asgi_app,
-        trusted_hosts=trusted_hosts,
-    )
-
-    async def _asgi(scope, receive, send) -> None:
-        await wrapped_app(scope, receive, send)
-
-    return _asgi
 
 
 @asynccontextmanager
@@ -144,7 +130,7 @@ async def lifespan(app: FastAPI):
         LOG.stop()  # flush and join the logging background thread
 
 
-fastapi_app = FastAPI(
+app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
     version="0.1.0",
@@ -152,59 +138,49 @@ fastapi_app = FastAPI(
 )
 
 # register exception handlers
-register_exception_handlers(fastapi_app)
+register_exception_handlers(app)
 
 # setup limiter
-fastapi_app.state.limiter = limiter
+app.state.limiter = limiter
 
 # add middleware (order matters: outermost middleware added last)
-cors_middleware(fastapi_app)
-security_headers_middleware(fastapi_app)
-oidc_session_middleware(fastapi_app)
-sliding_session_middleware(fastapi_app)
-setup_guard_middleware(fastapi_app)
+cors_middleware(app)
+security_headers_middleware(app)
+oidc_session_middleware(app)
+sliding_session_middleware(app)
+setup_guard_middleware(app)
 
 # routers
-fastapi_app.include_router(setup_router)
-fastapi_app.include_router(info_router)
-fastapi_app.include_router(settings_router)
-fastapi_app.include_router(dashboard_router)
-fastapi_app.include_router(auth_router)
-fastapi_app.include_router(rules_router)
-fastapi_app.include_router(account_router)
-fastapi_app.include_router(tasks_router)
-fastapi_app.include_router(background_jobs_router)
-fastapi_app.include_router(media_router)
-fastapi_app.include_router(requests_router)
-fastapi_app.include_router(delete_requests_router)
-fastapi_app.include_router(protected_router)
-fastapi_app.include_router(system_router)
+app.include_router(setup_router)
+app.include_router(info_router)
+app.include_router(settings_router)
+app.include_router(dashboard_router)
+app.include_router(auth_router)
+app.include_router(rules_router)
+app.include_router(account_router)
+app.include_router(tasks_router)
+app.include_router(background_jobs_router)
+app.include_router(media_router)
+app.include_router(requests_router)
+app.include_router(delete_requests_router)
+app.include_router(protected_router)
+app.include_router(system_router)
 
 
 # mount static files LAST
-fastapi_app.mount(
-    "/static", StaticFiles(directory=settings.static_dir_path), name="static"
-)
-fastapi_app.mount(
-    "/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars"
-)
+app.mount("/static", StaticFiles(directory=settings.static_dir_path), name="static")
+app.mount("/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars")
 
 # serve built frontend (desktop mode) when FRONTEND_DIST is set
 if settings.frontend_dist and settings.frontend_dist.is_dir():
     fe_dist = settings.frontend_dist
-    fastapi_app.mount(
+    app.mount(
         "/assets", StaticFiles(directory=fe_dist / "assets"), name="frontend-assets"
     )
 
-    @fastapi_app.get("/{full_path:path}", include_in_schema=False)
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
         candidate = fe_dist / full_path
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(fe_dist / "index.html")
-
-
-app = _wrap_proxy_headers(
-    fastapi_app.__call__,
-    trusted_hosts=settings.proxy_trusted_hosts_list,
-)

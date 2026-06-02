@@ -107,10 +107,10 @@ OPERATOR_LABELS: dict[str, str] = {
     "on_or_after": "is on or after",
     "in": "in",
     "not_in": "not in",
-    "contains_any": "matches any",
-    "not_contains_any": "matches none",
-    "contains_all": "matches all",
-    "not_contains_all": "does not match all",
+    "contains_any": "contains",
+    "not_contains_any": "does not contain",
+    "contains_all": "contains all",
+    "not_contains_all": "does not contain all",
     "exists": "exists",
     "not_exists": "missing",
     "is_true": "is true",
@@ -173,13 +173,6 @@ TEXT_FIELDS = {
     "video.color_primaries",
     "arr.tags",
     "seerr.requested_by_user_ids",
-}
-MULTI_VALUE_TEXT_FIELDS = {
-    "arr.tags",
-    "video.codec_family",
-    "audio.codec_family",
-    "audio.languages",
-    "subtitle.languages",
 }
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
@@ -1217,14 +1210,12 @@ def _evaluate_node(
     fields and reasons for the evaluation.
     """
     if node.get("type") == "group":
-        op = str(node.get("op", "")).lower()
-        if op not in {"and", "or"}:
+        children = [
+            child for child in node.get("children", []) if isinstance(child, dict)
+        ]
+        if not children:
             return False
-        children = node.get("children")
-        if not isinstance(children, list) or not children:
-            return False
-        if not all(isinstance(child, dict) for child in children):
-            return False
+        op = str(node.get("op", "and")).lower()
         if op == "or":
             branch_matches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
             for child in children:
@@ -1243,9 +1234,6 @@ def _evaluate_node(
             if not _evaluate_node(child, context, matched, reasons):
                 return False
         return True
-
-    if node.get("type") != "condition":
-        return False
 
     return _evaluate_condition(node, context, matched, reasons)
 
@@ -1286,9 +1274,6 @@ def _matches_operator(
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected, field=field)
-    if field in MULTI_VALUE_TEXT_FIELDS and operator in {"equals", "not_equals"}:
-        list_operator = "contains_any" if operator == "equals" else "not_contains_any"
-        return _matches_list_operator(actual, list_operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
         left_date = _date_value(_first_scalar(actual))
         right_date = _date_value(_first_scalar(expected))

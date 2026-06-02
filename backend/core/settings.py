@@ -65,13 +65,6 @@ class Settings(BaseSettings):
             "Avoid '*' in production."
         ),
     )
-    proxy_trusted_hosts: str = Field(
-        default="127.0.0.1,::1",
-        description=(
-            "Comma-separated trusted proxy IPs/CIDRs (or '*') used for "
-            "X-Forwarded-* headers."
-        ),
-    )
 
     # JWT authentication
     jwt_secret: str = Field(
@@ -200,15 +193,6 @@ class Settings(BaseSettings):
         if not self.cors_origins or self.cors_origins == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_origins.split(",")]
-
-    @property
-    def proxy_trusted_hosts_list(self) -> list[str]:
-        """Convert comma-separated trusted proxy hosts to list."""
-        raw = (self.proxy_trusted_hosts or "").strip()
-        if not raw:
-            return ["127.0.0.1", "::1"]
-        hosts = [item.strip() for item in raw.split(",") if item.strip()]
-        return hosts or ["127.0.0.1", "::1"]
 
     @property
     def version(self) -> str:

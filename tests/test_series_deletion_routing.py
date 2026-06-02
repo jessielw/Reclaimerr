@@ -76,16 +76,6 @@ class FakeSonarr:
         self.refreshed.append(series_ids)
 
 
-class FailingSonarr(FakeSonarr):
-    async def delete_series(
-        self,
-        series_id: int,
-        delete_files: bool = False,
-        add_import_exclusion: bool = False,
-    ) -> None:
-        raise RuntimeError("sonarr unavailable")
-
-
 async def _make_session(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
@@ -204,11 +194,9 @@ async def _seed_series_case(
         reason="cleanup",
         reason_data=[],
         series_id=series.id,
-        season_id=season.id if target_scope in {"season", "episode"} else None,
+        season_id=season.id,
         episode_id=episode.id if target_scope == "episode" else None,
-        estimated_space_bytes=episode.size
-        if target_scope == "episode"
-        else season.size,
+        estimated_space_bytes=episode.size if target_scope == "episode" else season.size,
     )
     db.add(candidate)
     await db.flush()
@@ -216,129 +204,6 @@ async def _seed_series_case(
     config_ids = [config.id for config in service_configs]
     await db.commit()
     return candidate_id, config_ids, arr_series_ids
-
-
-def test_whole_series_without_active_ref_records_failure_when_fallback_disabled(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        engine, session_maker = await _make_session(monkeypatch)
-        try:
-            async with session_maker() as db:
-                candidate_id, config_ids, _arr_ids = await _seed_series_case(
-                    db,
-                    target_scope="series",
-                    media_server_fallback_enabled=False,
-                )
-
-            _patch_services(monkeypatch, {}, None)
-
-            deleted = await cleanup._delete_series_candidates(
-                restrict_to_ids=frozenset([candidate_id]),
-                approved_by="tester",
-            )
-
-            assert deleted == 0
-            async with session_maker() as db:
-                candidate = await db.get(ReclaimCandidate, candidate_id)
-                assert candidate is not None
-                assert candidate.delete_attempts == 1
-                assert candidate.last_delete_error is not None
-                assert "not handled by any active Sonarr instance" in (
-                    candidate.last_delete_error
-                )
-            assert config_ids
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_whole_series_sonarr_batch_failure_records_candidate_error(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        engine, session_maker = await _make_session(monkeypatch)
-        try:
-            async with session_maker() as db:
-                candidate_id, config_ids, arr_ids = await _seed_series_case(
-                    db,
-                    target_scope="series",
-                    media_server_fallback_enabled=False,
-                )
-
-            _patch_services(
-                monkeypatch,
-                {config_ids[0]: FailingSonarr({arr_ids[0]: []})},
-                None,
-            )
-
-            deleted = await cleanup._delete_series_candidates(
-                restrict_to_ids=frozenset([candidate_id]),
-                approved_by="tester",
-            )
-
-            assert deleted == 0
-            async with session_maker() as db:
-                candidate = await db.get(ReclaimCandidate, candidate_id)
-                assert candidate is not None
-                assert candidate.delete_attempts == 1
-                assert candidate.last_delete_error is not None
-                assert "Sonarr delete failed" in candidate.last_delete_error
-                assert "sonarr unavailable" in candidate.last_delete_error
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_invalid_series_candidate_shape_records_unexplained_failure(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        engine, session_maker = await _make_session(monkeypatch)
-        try:
-            async with session_maker() as db:
-                db.add(
-                    GeneralSettings(
-                        media_server_fallback_enabled=False,
-                        path_mappings=[],
-                    )
-                )
-                candidate = ReclaimCandidate(
-                    media_type=MediaType.SERIES,
-                    matched_rule_ids=[],
-                    matched_criteria={},
-                    reason="manual",
-                    reason_data=[],
-                    estimated_space_bytes=100,
-                )
-                db.add(candidate)
-                await db.flush()
-                candidate_id = candidate.id
-                await db.commit()
-
-            _patch_services(monkeypatch, {1: FakeSonarr({})}, None)
-
-            deleted, failed = await cleanup.delete_specific_candidates(
-                [candidate_id],
-                approved_by="tester",
-            )
-
-            assert deleted == 0
-            assert failed == 1
-            async with session_maker() as db:
-                candidate = await db.get(ReclaimCandidate, candidate_id)
-                assert candidate is not None
-                assert candidate.delete_attempts == 1
-                assert candidate.last_delete_error is not None
-                assert "failed before a scoped handler could complete" in (
-                    candidate.last_delete_error
-                )
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
 
 
 def test_episode_missing_in_sonarr_falls_back_to_media_server(monkeypatch) -> None:
@@ -399,9 +264,7 @@ def test_episode_missing_in_sonarr_records_failure_when_fallback_disabled(
                 candidate = await db.get(ReclaimCandidate, candidate_id)
                 assert candidate is not None
                 assert candidate.delete_attempts == 1
-                assert (
-                    candidate.last_delete_error == "No Sonarr episode found for S01E01"
-                )
+                assert candidate.last_delete_error == "No Sonarr episode found for S01E01"
         finally:
             await engine.dispose()
 

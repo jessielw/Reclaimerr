@@ -219,7 +219,6 @@ export interface GeneralSettings {
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
-  auto_delete_enabled: boolean;
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
@@ -853,17 +852,6 @@ export type RulePreviewEntry = Omit<
   ReclaimCandidateEntry,
   "id" | "has_pending_request" | "created_at"
 >;
-
-export interface RulePreviewMetadata {
-  source_media_count: number;
-  skipped_favorites_count: number;
-  skipped_protected_count: number;
-  matched_count: number;
-}
-
-export interface PaginatedRulePreviewResponse extends PaginatedResponse<RulePreviewEntry> {
-  metadata?: RulePreviewMetadata | null;
-}
 
 export interface DashboardKpis {
   total_movies: number;
