@@ -40,6 +40,7 @@
     media_server_fallback_enabled: true,
     default_arr_delete_behavior: "unmonitor",
     add_arr_import_exclusions_on_delete: true,
+    auto_delete_enabled: false,
     favorites_ignore_enabled: false,
     favorites_protect_all_users: false,
     favorites_usernames: [],
