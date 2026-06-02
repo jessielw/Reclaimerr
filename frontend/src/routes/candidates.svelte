@@ -1043,7 +1043,7 @@
                 "0",
               )}{#if deleteTarget.episode_name}&nbsp;&quot;{deleteTarget.episode_name}&quot;{/if}
               of {deleteTarget.series_title ?? deleteTarget.media_title}</strong
-            > and remove the file from disk. Only this episode is affected — the series
+            > and remove the file from disk. Only this episode is affected - the series
             and season remain monitored. This cannot be undone.
           {:else if deleteTarget.season_number != null}
             Permanently delete <strong
