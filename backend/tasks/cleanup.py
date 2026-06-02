@@ -1,5 +1,5 @@
 import shutil
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
@@ -3159,6 +3159,34 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
         await db.commit()
 
 
+async def _mark_candidate_delete_failures(
+    candidate_ids: Iterable[int | None], error: str
+) -> None:
+    """Persist the same delete failure on multiple remaining candidates."""
+    unique_ids = {candidate_id for candidate_id in candidate_ids if candidate_id}
+    for candidate_id in unique_ids:
+        await _mark_candidate_delete_failure(candidate_id, error)
+
+
+async def _mark_unexplained_delete_failures(
+    candidate_ids: Iterable[int], error: str
+) -> None:
+    """Mark remaining candidates that did not receive a more specific error."""
+    unique_ids = {candidate_id for candidate_id in candidate_ids if candidate_id}
+    if not unique_ids:
+        return
+
+    async with async_db() as db:
+        result = await db.execute(
+            select(ReclaimCandidate.id)
+            .where(ReclaimCandidate.id.in_(unique_ids))
+            .where(ReclaimCandidate.last_delete_error.is_(None))
+        )
+        remaining_ids = [row[0] for row in result.all()]
+
+    await _mark_candidate_delete_failures(remaining_ids, error)
+
+
 async def _load_path_mappings() -> list[dict]:
     """Load path mappings from GeneralSettings (returns empty list if unset)."""
     async with async_db() as db:
@@ -4093,6 +4121,13 @@ async def _delete_movie_candidates(
                     title = movie_data.get(cand.movie_id or 0, {}).get(
                         "title", "unknown"
                     )
+                    await _mark_unexplained_delete_failures(
+                        [cand.id],
+                        (
+                            "Media server fallback disabled and movie was not found "
+                            "in any active Radarr instance"
+                        ),
+                    )
                     LOG.warning(
                         f"Media server fallback disabled - skipping deletion for "
                         f"'{title}' (not found in any Radarr instance)"
@@ -4201,6 +4236,15 @@ async def _delete_movie_candidates(
             movies_to_delete.extend(batch)
             radarr_refresh_after_delete.setdefault(config_id, set()).update(radarr_ids)
         except Exception as e:
+            failed_candidate_ids = [
+                cand_id
+                for movie_info in batch
+                for cand_id in movie_info.get("all_candidate_ids", [])
+            ]
+            await _mark_candidate_delete_failures(
+                failed_candidate_ids,
+                f"Radarr delete failed for config {config_id}: {e}",
+            )
             LOG.error(
                 f"Error deleting movies via Radarr config {config_id}: {e}",
                 exc_info=True,
@@ -4361,6 +4405,15 @@ async def _delete_movie_candidates(
                 radarr_ids
             )
         except Exception as e:
+            failed_candidate_ids = [
+                cand_id
+                for movie_info in batch
+                for cand_id in movie_info.get("all_candidate_ids", [])
+            ]
+            await _mark_candidate_delete_failures(
+                failed_candidate_ids,
+                f"Radarr unmonitor failed for config {config_id}: {e}",
+            )
             LOG.error(
                 f"Error unmonitoring movies via Radarr config {config_id}: {e}",
                 exc_info=True,
@@ -4604,6 +4657,13 @@ async def _delete_movie_candidates(
             ]
             for cand in unhandled:
                 title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
+                await _mark_unexplained_delete_failures(
+                    [cand.id],
+                    (
+                        "Media server fallback disabled and movie was not handled "
+                        "by any active Radarr instance"
+                    ),
+                )
                 LOG.warning(
                     f"Media server fallback disabled - skipping deletion for "
                     f"'{title}' (not handled by any Radarr instance)"
@@ -4867,6 +4927,10 @@ async def _delete_series_candidates(
                 {int(s["sonarr_id"]) for s in batch}
             )
         except Exception as e:
+            await _mark_candidate_delete_failures(
+                [series_info.get("candidate_id") for series_info in batch],
+                f"Sonarr delete failed for config {config_id}: {e}",
+            )
             LOG.error(
                 f"Error deleting series via Sonarr config {config_id}: {e}",
                 exc_info=True,
@@ -4973,6 +5037,10 @@ async def _delete_series_candidates(
                 sonarr_ids
             )
         except Exception as e:
+            await _mark_candidate_delete_failures(
+                [series_info.get("candidate_id") for series_info in batch],
+                f"Sonarr unmonitor failed for config {config_id}: {e}",
+            )
             LOG.error(
                 f"Error unmonitoring series via Sonarr config {config_id}: {e}",
                 exc_info=True,
@@ -5129,6 +5197,13 @@ async def _delete_series_candidates(
         unhandled = [c for c in candidates if c.series_id not in series_handled_ids]
         for cand in unhandled:
             title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
+            await _mark_unexplained_delete_failures(
+                [cand.id],
+                (
+                    "Media server fallback disabled and series was not handled "
+                    "by any active Sonarr instance"
+                ),
+            )
             LOG.warning(
                 f"Media server fallback disabled - skipping deletion for "
                 f"'{title}' (not handled by any Sonarr instance)"
@@ -6401,6 +6476,16 @@ async def delete_specific_candidates(
         )
 
     failed = max(0, len(found_ids) - deleted)
+    if failed:
+        await _mark_unexplained_delete_failures(
+            found_ids,
+            (
+                "Candidate delete failed before a scoped handler could complete. "
+                "The candidate may be stale, have an invalid scope, lack an active "
+                "Arr/media-server route, or have failed in a branch without a more "
+                "specific error."
+            ),
+        )
     LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
     return deleted, failed
 

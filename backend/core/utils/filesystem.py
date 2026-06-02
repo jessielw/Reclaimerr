@@ -68,6 +68,8 @@ def resolve_path(
     if not media_server_path:
         return None
 
+    normalized_media_path = normalize_fpath(media_server_path, strip_ending_slash=True)
+
     sorted_mappings = sorted(
         mappings or [],
         key=lambda m: (
@@ -95,11 +97,21 @@ def resolve_path(
             if not service_type or mapping_service_type != service_type.lower():
                 continue
 
-        source = m.get("source_prefix", "")
-        local = m.get("local_prefix", "")
-        if source and media_server_path.startswith(source):
-            mapped = local + media_server_path[len(source) :]
-            p = Path(mapped)
+        raw_source = str(m.get("source_prefix", "")).strip()
+        source = normalize_fpath(raw_source, strip_ending_slash=True)
+        if not source and raw_source.replace("\\", "/") == "/":
+            source = "/"
+        local = str(m.get("local_prefix", "")).strip()
+        source_matches = (
+            normalized_media_path.startswith("/")
+            if source == "/"
+            else normalized_media_path == source
+            or normalized_media_path.startswith(source + "/")
+        )
+        if source and source_matches:
+            suffix = normalized_media_path[len(source) :].lstrip("/")
+            suffix_parts = [part for part in suffix.split("/") if part]
+            p = Path(local).joinpath(*suffix_parts) if suffix_parts else Path(local)
             if p.exists():
                 LOG.debug(f"resolve_path: mapped {media_server_path!r} to {p}")
                 return p

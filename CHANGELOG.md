@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add **opt-in** automatic deletion task
   - Must be enabled in **Settings -> General** and in the **Tasks** page
 
+### Changed
+
+- Improve path resolution between arrs and Reclaimerr
+
 ## [0.1.0-beta.27] - 2026-06-01
 
 ### Added

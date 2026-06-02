@@ -11,7 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.api.candidate_views import build_rule_preview_items
-from backend.core.rule_engine import SeerrRequestResolver
+from backend.core.rule_engine import (
+    TARGET_EPISODE,
+    TARGET_MOVIE_VERSION,
+    TARGET_SEASON,
+    TARGET_SERIES,
+    SeerrRequestResolver,
+    evaluate_advanced_rule,
+)
 from backend.database import Base
 from backend.database.models import (
     Episode,
@@ -36,6 +43,8 @@ from backend.tasks import cleanup as cleanup_tasks
 from backend.tasks.cleanup import (
     _compute_requester_has_watched_for_key,
     _evaluate_movie_rule,
+    _evaluate_movie_version_rule,
+    _evaluate_rule_for_episode,
     _evaluate_rule_for_season,
     _process_series_episodes,
     _process_series_seasons,
@@ -173,6 +182,36 @@ def _definition_from_overrides(overrides: dict[str, object]) -> dict[str, object
         )
 
     return {"version": 1, "root": {"type": "group", "op": "and", "children": children}}
+
+
+def _condition(
+    field: str, operator: str, value: object | None = None
+) -> dict[str, object]:
+    node: dict[str, object] = {
+        "type": "condition",
+        "field": field,
+        "operator": operator,
+    }
+    if operator not in {"exists", "not_exists", "is_true", "is_false"}:
+        node["value"] = value
+    return node
+
+
+def _group(op: str, *children: dict[str, object]) -> dict[str, object]:
+    return {"type": "group", "op": op, "children": list(children)}
+
+
+def _rule_with_root(
+    media_type: MediaType, target_scope: str, root: dict[str, object]
+) -> ReclaimRule:
+    return ReclaimRule(
+        name="logical rule",
+        media_type=media_type,
+        enabled=True,
+        target_scope=target_scope,
+        definition={"version": 1, "root": root},
+        action={"candidate": True, "media_server_action": "delete"},
+    )
 
 
 def _make_movie_version(
@@ -346,6 +385,166 @@ class _RadarrTagRefreshClientFake:
 
 
 class CleanupMediaRuleTests(unittest.TestCase):
+    def test_nested_and_or_movie_version_only_records_matching_or_branch(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            library_id="lib-1",
+            size=10 * 1024**3,
+        )
+        movie.versions = [version]
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                _condition("media.size", "greater_than", 1024),
+                _group(
+                    "or",
+                    _condition("library.id", "contains_any", ["lib-1"]),
+                    _condition("imdb.rating", "greater_than", 9),
+                ),
+            ),
+        )
+        matched_criteria: dict = {}
+        reasons: list[dict[str, object]] = []
+
+        self.assertTrue(
+            _evaluate_movie_version_rule(
+                movie, version, rule, matched_criteria, reasons
+            )
+        )
+
+        self.assertIn("media.size", matched_criteria)
+        self.assertIn("library.id", matched_criteria)
+        self.assertNotIn("imdb.rating", matched_criteria)
+        self.assertEqual(len(reasons[0]["conditions"]), 2)
+
+    def test_nested_and_or_series_scope_requires_all_and_children(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3, status="ended")
+        passing_rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_SERIES,
+            _group(
+                "and",
+                _condition("series.status", "equals", "ended"),
+                _group(
+                    "or",
+                    _condition("media.size", "greater_than", 10),
+                    _condition("arr.monitored", "is_true"),
+                ),
+            ),
+        )
+        failing_rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_SERIES,
+            _group(
+                "and",
+                _condition("series.status", "equals", "ended"),
+                _group(
+                    "or",
+                    _condition("media.size", "less_than", 10),
+                    _condition("arr.monitored", "is_true"),
+                ),
+            ),
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, passing_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(series, failing_rule, {}, []))
+
+    def test_nested_and_or_season_scope_matches_expected_branch(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        season = Season(
+            series_id=1,
+            season_number=1,
+            size=4 * 1024**3,
+            episode_count=4,
+        )
+        rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_SEASON,
+            _group(
+                "or",
+                _group(
+                    "and",
+                    _condition("season.season_number", "equals", 1),
+                    _condition("season.episode_count", "greater_than_or_equal", 4),
+                ),
+                _condition("season.season_number", "equals", 2),
+            ),
+        )
+        matched_criteria: dict = {}
+        reasons: list[dict[str, object]] = []
+
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, rule, matched_criteria, reasons)
+        )
+
+        self.assertEqual(matched_criteria["season.season_number"], 1)
+        self.assertEqual(matched_criteria["season.episode_count"], 4)
+        self.assertEqual(len(reasons[0]["conditions"]), 2)
+
+    def test_nested_and_or_episode_scope_matches_expected_branch(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        episode = Episode(
+            season_id=1,
+            episode_number=3,
+            size=1 * 1024**3,
+            view_count=0,
+        )
+        rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_EPISODE,
+            _group(
+                "and",
+                _condition("episode.number", "equals", 3),
+                _group(
+                    "or",
+                    _condition("watch.never_watched", "is_true"),
+                    _condition("watch.view_count", "greater_than", 10),
+                ),
+            ),
+        )
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_EPISODE,
+            series=series,
+            season=season,
+            episode=episode,
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(criteria["episode.number"], 3)
+        self.assertTrue(criteria["watch.never_watched"])
+        self.assertNotIn("watch.view_count", criteria)
+        self.assertEqual(len(rule_reasons), 2)
+
+    def test_malformed_runtime_group_fails_closed(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=10 * 1024**3,
+        )
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group("xor", _condition("media.size", "greater_than", 1024)),
+        )
+
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_MOVIE_VERSION,
+            movie=movie,
+            version=version,
+        )
+
+        self.assertFalse(matched)
+        self.assertEqual(criteria, {})
+        self.assertEqual(rule_reasons, [])
+
     def test_evaluate_movie_rule_library_filter_passes_and_fails(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         movie.last_viewed_at = datetime.now(UTC) - timedelta(days=1)
