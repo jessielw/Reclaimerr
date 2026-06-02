@@ -13,6 +13,9 @@
 deletion requests, and routes the final action through the appropriate service.
 
 The docs site covers setup, usage, deployment, and development notes.
+Docs are built and published by GitHub Actions on pushes to `main`. Manual
+workflow runs can select a source branch, and can optionally deploy when
+needed.
 
 - [Docs home](docs/index.md)
 - [Getting started](docs/getting-started/index.md)
