@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improve path resolution between arrs and Reclaimerr
+- Update operator labels for clarity and enhance rule validation tests (existing rules don't need anything adjusted)
+  - contains_any -> matches any
+  - not_contains_any -> matches none
+  - contains_all -> matches all
+  - not_contains_all -> does not match all
 
 ## [0.1.0-beta.27] - 2026-06-01
 

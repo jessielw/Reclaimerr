@@ -107,10 +107,10 @@ OPERATOR_LABELS: dict[str, str] = {
     "on_or_after": "is on or after",
     "in": "in",
     "not_in": "not in",
-    "contains_any": "contains",
-    "not_contains_any": "does not contain",
-    "contains_all": "contains all",
-    "not_contains_all": "does not contain all",
+    "contains_any": "matches any",
+    "not_contains_any": "matches none",
+    "contains_all": "matches all",
+    "not_contains_all": "does not match all",
     "exists": "exists",
     "not_exists": "missing",
     "is_true": "is true",
@@ -1217,12 +1217,14 @@ def _evaluate_node(
     fields and reasons for the evaluation.
     """
     if node.get("type") == "group":
-        children = [
-            child for child in node.get("children", []) if isinstance(child, dict)
-        ]
-        if not children:
+        op = str(node.get("op", "")).lower()
+        if op not in {"and", "or"}:
             return False
-        op = str(node.get("op", "and")).lower()
+        children = node.get("children")
+        if not isinstance(children, list) or not children:
+            return False
+        if not all(isinstance(child, dict) for child in children):
+            return False
         if op == "or":
             branch_matches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
             for child in children:
@@ -1241,6 +1243,9 @@ def _evaluate_node(
             if not _evaluate_node(child, context, matched, reasons):
                 return False
         return True
+
+    if node.get("type") != "condition":
+        return False
 
     return _evaluate_condition(node, context, matched, reasons)
 
