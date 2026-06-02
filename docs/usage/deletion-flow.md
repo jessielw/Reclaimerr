@@ -1,0 +1,40 @@
+# Deletion Flow
+
+Reclaimerr deletes candidates in a fixed order.
+
+## Deletion Modes
+
+| Mode | Behavior |
+| --- | --- |
+| `delete` | Delete through Radarr, Sonarr, or the media server route used for the candidate |
+| `move` | Move the file to the configured destination and remove the source record |
+| `fallback deletion` | Use the media server when ARR cannot handle the delete path |
+
+## Routing Order
+
+1. Use Radarr for movie candidates when the candidate is linked to Radarr and
+   the action can be handled there.
+2. Use Sonarr for series, season, and episode candidates when the candidate is
+   linked to Sonarr and the action can be handled there.
+3. Fall back to the main media server when the ARR service cannot handle the
+   deletion or no ARR route exists.
+4. Use local deletion only when that fallback is enabled and the candidate can
+   be removed locally.
+
+## What The Fallback Covers
+
+- movie candidates that Radarr cannot remove directly
+- series candidates that Sonarr cannot remove directly
+- scoped deletions that need the media server to remove files or folders
+
+## Important Settings
+
+- `Default ARR Delete Behavior`
+- `Allow Media Server Fallback Deletion`
+- `Add Arr Import List Exclusions on Delete`
+
+## Related Pages
+
+- [How It Works](how-it-works.md)
+- [Tasks](tasks.md)
+- [Production](../deployment/production.md)

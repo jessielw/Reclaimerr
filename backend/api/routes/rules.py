@@ -38,7 +38,7 @@ from backend.models.cleanup import (
     RuleImportPayload,
     RuleImportResponse,
 )
-from backend.models.media import PaginatedRulePreviewResponse
+from backend.models.media import PaginatedRulePreviewResponse, RulePreviewMetadata
 from backend.models.rules import (
     MovieCollectionLookupResponse,
     PaginatedMovieCollectionsResponse,
@@ -52,7 +52,7 @@ from backend.models.rules import (
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.seerr_cache import seerr_snapshot_cache
-from backend.tasks.cleanup import collect_rule_preview_matches
+from backend.tasks.cleanup import collect_rule_preview_matches_with_metadata
 
 router = APIRouter(prefix="/api", tags=["rules"])
 
@@ -747,8 +747,10 @@ async def preview_rule_matches(
         action=_action_or_default(None),
     )
 
-    matches = await collect_rule_preview_matches(db, [preview_rule])
-    items = await build_rule_preview_items(db, matches)
+    preview_result = await collect_rule_preview_matches_with_metadata(
+        db, [preview_rule]
+    )
+    items = await build_rule_preview_items(db, preview_result.matches)
     total = len(items)
     total_pages = (total + body.per_page - 1) // body.per_page if total else 0
     offset = (body.page - 1) * body.per_page
@@ -760,6 +762,12 @@ async def preview_rule_matches(
         page=body.page,
         per_page=body.per_page,
         total_pages=total_pages,
+        metadata=RulePreviewMetadata(
+            source_media_count=preview_result.metadata.source_media_count,
+            skipped_favorites_count=preview_result.metadata.skipped_favorites_count,
+            skipped_protected_count=preview_result.metadata.skipped_protected_count,
+            matched_count=preview_result.metadata.matched_count,
+        ),
     )
 
 

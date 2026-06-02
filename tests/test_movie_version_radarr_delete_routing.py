@@ -48,6 +48,16 @@ class FakeRadarr:
         self.refreshed.append(movie_ids)
 
 
+class FailingRadarr(FakeRadarr):
+    async def delete_movies(
+        self,
+        movie_ids: list[int],
+        delete_files: bool = True,
+        add_import_exclusion: bool = False,
+    ) -> None:
+        raise RuntimeError("radarr unavailable")
+
+
 def _patch_services(
     monkeypatch,
     radarr: FakeRadarr | dict[int, FakeRadarr],
@@ -159,6 +169,60 @@ async def _seed_movie_version_case(
     return movie.id, candidate_ids, service_config.id
 
 
+async def _seed_whole_movie_case(
+    db: AsyncSession,
+    *,
+    media_server_fallback_enabled: bool = False,
+    with_arr_ref: bool = False,
+) -> tuple[int, int, int | None]:
+    db.add(
+        GeneralSettings(
+            media_server_fallback_enabled=media_server_fallback_enabled,
+            default_arr_delete_behavior="remove_if_empty",
+            path_mappings=[],
+        )
+    )
+    movie = Movie(title="Movie1", tmdb_id=101, year=2020, size=100)
+    db.add(movie)
+    await db.flush()
+
+    service_config_id: int | None = None
+    if with_arr_ref:
+        service_config = ServiceConfig(
+            service_type=Service.RADARR,
+            base_url="http://radarr",
+            api_key="secret",
+            name="Radarr",
+            enabled=True,
+        )
+        db.add(service_config)
+        await db.flush()
+        service_config_id = service_config.id
+        db.add(
+            MovieArrRef(
+                movie_id=movie.id,
+                service_config_id=service_config.id,
+                arr_movie_id=55,
+                arr_movie_path="/data/movies/Movie1",
+                tmdb_id=movie.tmdb_id,
+            )
+        )
+
+    candidate = ReclaimCandidate(
+        media_type=MediaType.MOVIE,
+        matched_rule_ids=[],
+        matched_criteria={},
+        reason="manual",
+        reason_data=[],
+        movie_id=movie.id,
+        estimated_space_bytes=movie.size,
+    )
+    db.add(candidate)
+    await db.flush()
+    await db.commit()
+    return movie.id, candidate.id, service_config_id
+
+
 def test_single_version_candidate_promotes_to_radarr_delete(monkeypatch) -> None:
     async def run() -> None:
         engine, session_maker = await _make_session(monkeypatch)
@@ -193,6 +257,76 @@ def test_single_version_candidate_promotes_to_radarr_delete(monkeypatch) -> None
                 assert movie.removed_at is not None
                 versions = (await db.execute(select(MovieVersion))).scalars().all()
                 assert versions == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_whole_movie_without_radarr_ref_records_failure_when_fallback_disabled(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                _movie_id, candidate_id, _config_id = await _seed_whole_movie_case(
+                    db,
+                    media_server_fallback_enabled=False,
+                    with_arr_ref=False,
+                )
+
+            _patch_services(monkeypatch, {}, None)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 0
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
+                assert candidate.last_delete_error is not None
+                assert "not found in any active Radarr instance" in (
+                    candidate.last_delete_error
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_whole_movie_radarr_batch_failure_records_candidate_error(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                _movie_id, candidate_id, config_id = await _seed_whole_movie_case(
+                    db,
+                    media_server_fallback_enabled=False,
+                    with_arr_ref=True,
+                )
+
+            assert config_id is not None
+            _patch_services(monkeypatch, FailingRadarr(), config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 0
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
+                assert candidate.last_delete_error is not None
+                assert "Radarr delete failed" in candidate.last_delete_error
+                assert "radarr unavailable" in candidate.last_delete_error
         finally:
             await engine.dispose()
 

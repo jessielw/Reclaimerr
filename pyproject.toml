@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.1.0-beta.26"
+version = "0.1.0-beta.27"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -42,6 +42,7 @@ desktop = [
     "filelock>=3.16.0",
     "uvicorn>=0.41.0",
 ]
+docs = ["zensical", "pymdown-extensions"]
 
 [build-system]
 requires = ["hatchling"]

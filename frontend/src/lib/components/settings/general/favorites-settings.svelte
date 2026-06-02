@@ -23,6 +23,7 @@
     type PaginatedFavoritesMediaResponse,
   } from "$lib/types/shared";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
+  import Notice from "$lib/components/notice.svelte";
 
   const FAVORITES_MEDIA_PER_PAGE = 25;
   const FAVORITES_MEDIA_VISIBLE_USERS = 5;
@@ -195,8 +196,16 @@
   </div>
   <p class="text-muted-foreground text-sm">
     Skip cleanup candidates when the movie or series appears in selected user
-    favorites on Emby/Jellyfin.
+    favorites on Emby/Jellyfin or in signed-in Plex users&apos; watchlists.
   </p>
+
+  <Notice class="mt-2">
+    <p>
+      Plex users must authenticate via Plex. Emby and Jellyfin users are
+      protected based on their username, which is automatically loaded from the
+      media server.
+    </p>
+  </Notice>
 
   {#if favoritesIgnoreEnabled}
     <div class="mt-4 space-y-3">
@@ -363,7 +372,8 @@
       </Button>
     </div>
     <p class="text-xs text-muted-foreground">
-      Browse all media currently seen in favorites snapshots from Emby/Jellyfin.
+      Browse all media currently seen in favorites snapshots from
+      Emby/Jellyfin/Plex.
     </p>
 
     {#if favoritesMediaOpen}

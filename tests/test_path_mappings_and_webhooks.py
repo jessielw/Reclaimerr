@@ -46,6 +46,61 @@ def test_resolve_path_prefers_scoped_mappings(tmp_path: Path) -> None:
     ) == (config_root / "Movie" / "file.mkv")
 
 
+def test_resolve_path_normalizes_slashes_and_requires_prefix_boundary(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "Movie").mkdir(parents=True)
+    (media_root / "Movie" / "file.mkv").write_text("x")
+
+    mappings = [
+        {
+            "source_prefix": r"\remote\media",
+            "local_prefix": str(media_root),
+        }
+    ]
+
+    assert resolve_path(r"\remote\media\Movie\file.mkv", mappings) == (
+        media_root / "Movie" / "file.mkv"
+    )
+    assert resolve_path(r"\remote\media-other\Movie\file.mkv", mappings) is None
+
+
+def test_resolve_path_skips_non_matching_scoped_mapping(tmp_path: Path) -> None:
+    scoped_root = tmp_path / "scoped"
+    global_root = tmp_path / "global"
+    (global_root / "Movie").mkdir(parents=True)
+    (global_root / "Movie" / "file.mkv").write_text("x")
+
+    mappings = [
+        {
+            "source_prefix": "/media",
+            "local_prefix": str(scoped_root),
+            "service_type": "plex",
+            "service_config_id": 10,
+        },
+        {"source_prefix": "/media", "local_prefix": str(global_root)},
+    ]
+
+    assert resolve_path(
+        "/media/Movie/file.mkv",
+        mappings,
+        service_type="plex",
+        service_config_id=20,
+    ) == (global_root / "Movie" / "file.mkv")
+
+
+def test_resolve_path_supports_root_source_mapping(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "media" / "Movie").mkdir(parents=True)
+    (root / "media" / "Movie" / "file.mkv").write_text("x")
+
+    assert resolve_path(
+        "/media/Movie/file.mkv",
+        [{"source_prefix": "/", "local_prefix": str(root)}],
+    ) == (root / "media" / "Movie" / "file.mkv")
+
+
 def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
