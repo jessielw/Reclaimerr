@@ -181,6 +181,40 @@ def test_create_rule_accepts_literal_media_filename() -> None:
     asyncio.run(run())
 
 
+def test_create_rule_accepts_filename_without_indexed_media() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.commit()
+
+            payload = CleanupRuleCreate(
+                name="filename-without-index",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition=_definition("media.file_name", "equals", "bunny"),
+                action=None,
+            )
+
+            created = await create_rule(payload, admin, db)
+            rule_condition = created.definition["root"]["children"][0]
+            assert rule_condition["field"] == "media.file_name"
+            assert rule_condition["operator"] == "equals"
+            assert rule_condition["value"] == "bunny"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_create_rule_rejects_invalid_path_regex() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)

@@ -428,6 +428,25 @@ async def _validate_definition_paths(
     )
 
 
+def _validate_definition_path_syntax(definition: dict | None) -> None:
+    """Validate path criteria in a rule definition without requiring indexed media."""
+    for condition in collect_rule_path_conditions(definition):
+        criterion = _normalize_path_criterion(
+            condition["field"],
+            condition["operator"],
+            condition["value"],
+        )
+        if criterion is None or criterion.operator != PATH_REGEX_OPERATOR:
+            continue
+        try:
+            re.compile(criterion.value, re.IGNORECASE)
+        except re.error as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid regex pattern '{criterion.value}'",
+            ) from exc
+
+
 @router.get("/rules/path-tree")
 async def get_path_tree(
     _admin: Annotated[User, Depends(require_admin)],
@@ -607,7 +626,7 @@ async def create_rule(
     effective_media_type = _media_type_for_target(
         rule_data.target_scope, rule_data.media_type
     )
-    await _validate_definition_paths(db, rule_data.definition, effective_media_type)
+    _validate_definition_path_syntax(rule_data.definition)
     new_rule = ReclaimRule(
         name=rule_data.name,
         media_type=effective_media_type,
@@ -736,7 +755,7 @@ async def preview_rule_matches(
         ) from e
 
     effective_media_type = _media_type_for_target(body.target_scope, body.media_type)
-    await _validate_definition_paths(db, body.definition, effective_media_type)
+    _validate_definition_path_syntax(body.definition)
 
     preview_rule = ReclaimRule(
         name=(body.name or "").strip() or "Preview Rule",
@@ -793,6 +812,7 @@ async def import_rules(
                 )
             except ValueError as e:
                 raise ValueError(str(e)) from e
+            _validate_definition_path_syntax(rule_data.definition)
 
             name = rule_data.name
             if name in used_names:
@@ -898,15 +918,7 @@ async def update_rule(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
             ) from e
 
-        effective_media_type = _media_type_for_target(
-            effective_target_scope,
-            update_data.get("media_type", rule.media_type),
-        )
-        await _validate_definition_paths(
-            db,
-            effective_definition,
-            effective_media_type,
-        )
+        _validate_definition_path_syntax(effective_definition)
 
     for field, value in update_data.items():
         setattr(rule, field, value)

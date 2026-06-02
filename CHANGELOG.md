@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - contains_all -> matches all
   - not_contains_all -> does not match all
 
+### Fixed
+
+- Filename regex matching would throw an error when there was no media to run against when creating a rule
+
 ## [0.1.0-beta.27] - 2026-06-01
 
 ### Added
