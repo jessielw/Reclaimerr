@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from granian.utils.proxies import wrap_asgi_with_proxy_headers
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -45,6 +46,19 @@ from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
 
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _wrap_proxy_headers(asgi_app, *, trusted_hosts: list[str] | str):
+    """Return an ASGI3-compatible proxy-header wrapper for the given app."""
+    wrapped_app = wrap_asgi_with_proxy_headers(
+        asgi_app,
+        trusted_hosts=trusted_hosts,
+    )
+
+    async def _asgi(scope, receive, send) -> None:
+        await wrapped_app(scope, receive, send)
+
+    return _asgi
 
 
 @asynccontextmanager
@@ -184,3 +198,9 @@ if settings.frontend_dist and settings.frontend_dist.is_dir():
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(fe_dist / "index.html")
+
+
+app = _wrap_proxy_headers(
+    app.__call__,
+    trusted_hosts=settings.proxy_trusted_hosts_list,
+)

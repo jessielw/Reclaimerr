@@ -115,6 +115,7 @@ As of **v0.1.0-beta8**, you can control a _few_ customizable options via a **.en
 API_PORT=8049
 # API_HOST=127.0.0.1
 # CORS_ORIGINS=http://localhost:3000
+# PROXY_TRUSTED_HOSTS=127.0.0.1,::1
 # optional (only use if you want to reset or set the admin password on first launch, min 3 / max 64)
 # ADMIN_PASSWORD=
 ```
@@ -146,6 +147,8 @@ DATA_DIR=./data
 API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000
+# trusted proxy IPs/CIDRs for X-Forwarded-* headers (set this to your reverse proxy)
+PROXY_TRUSTED_HOSTS=127.0.0.1,::1
 
 # secrets - leave blank to auto-generate stable values on first launch (recommended),
 # or set your own (min 32 characters, e.g. `openssl rand -hex 32`)
@@ -201,6 +204,8 @@ This includes both:
 `PUID` and `PGID` are optional, but they are often needed on Unraid/Linux NAS setups so the container writes files as the host user/group you expect. `UMASK` controls the default permissions for new files and directories created by Reclaimerr. `TZ` controls the container timezone, which is what cron-style task schedules use.
 
 These settings affect the container process and files created under `/app/data`. They do not override host filesystem permissions on your bind mounts. Your mounted media paths still need to be owned by, or otherwise writable to, the same UID/GID you configure for the container. Reclaimerr still stores timestamps in UTC internally; `TZ` only affects container-local behavior such as what "3 AM" means for scheduled cron tasks.
+
+If you are behind a reverse proxy and need correct HTTPS callback URLs (OIDC/Plex auth), set `PROXY_TRUSTED_HOSTS` to your proxy IP/CIDR (or `*` only in trusted/private deployments) and ensure the proxy forwards `X-Forwarded-For` and `X-Forwarded-Proto`. If your provider still requires an exact callback URL override, use the OIDC `redirect_uri_override` setting.
 
 ## Reset Admin Password
 

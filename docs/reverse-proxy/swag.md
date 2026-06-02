@@ -82,3 +82,6 @@ server {
 
 - If SWAG is proxying via container DNS, you usually do not need to publish Reclaimerr's port to the host.
 - If your container is not named `reclaimerr`, set `$upstream_app` accordingly.
+- Ensure your proxy forwards `X-Forwarded-For` and `X-Forwarded-Proto` headers (SWAG `proxy.conf` does this).
+- For correct HTTPS callback URLs (OIDC and Plex browser sign-in), set `PROXY_TRUSTED_HOSTS` in Reclaimerr to your SWAG proxy IP/CIDR. Use `*` only if your Reclaimerr API is not directly exposed.
+- If an OIDC provider needs a hard-coded callback URL, you can still set `redirect_uri_override` in Authentication settings.
