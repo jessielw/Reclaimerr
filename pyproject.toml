@@ -42,6 +42,7 @@ desktop = [
     "filelock>=3.16.0",
     "uvicorn>=0.41.0",
 ]
+docs = ["zensical", "pymdown-extensions"]
 
 [build-system]
 requires = ["hatchling"]
