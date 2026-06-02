@@ -153,6 +153,7 @@
   const selectedArrInstances = $derived(
     targetScope === "movie_version" ? radarrInstances : sonarrInstances,
   );
+  const NO_INSTANCE_VALUE = "__none";
   const selectedArrName = $derived(
     targetScope === "movie_version" ? "Radarr" : "Sonarr",
   );
@@ -957,12 +958,15 @@
         value={targetScope === "movie_version"
           ? radarrServiceConfigId !== null
             ? String(radarrServiceConfigId)
-            : undefined
+            : NO_INSTANCE_VALUE
           : sonarrServiceConfigId !== null
             ? String(sonarrServiceConfigId)
-            : undefined}
+            : NO_INSTANCE_VALUE}
         onValueChange={(value) => {
-          const nextValue = value ? Number(value) : null;
+          const nextValue =
+            value == null || value === NO_INSTANCE_VALUE || value === ""
+              ? null
+              : Number(value);
           if (targetScope === "movie_version") {
             radarrServiceConfigId = nextValue;
           } else {
@@ -980,7 +984,7 @@
           {/if}
         </Select.Trigger>
         <Select.Content>
-          <Select.Item value="__none" disabled label="No instance selected">
+          <Select.Item value={NO_INSTANCE_VALUE} label="No instance selected">
             No instance selected
           </Select.Item>
           {#each selectedArrInstances as instance}

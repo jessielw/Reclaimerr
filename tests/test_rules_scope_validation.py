@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.api.routes.rules import (
@@ -221,6 +222,71 @@ def test_update_rule_rejects_target_scope_change_with_incompatible_definition() 
             assert exc.value.status_code == 422
             assert "target_scope 'movie_version'" in str(exc.value.detail)
             assert "series.status" in str(exc.value.detail)
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_update_rule_allows_clearing_arr_instance_selection() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.flush()
+
+            existing_rule = ReclaimRule(
+                name="movie-version-rule",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition=_definition("media.size", "greater_than", 100),
+                action={
+                    "candidate": True,
+                    "tag_enabled": True,
+                    "arr_tag": "rec-movie-version-rule",
+                    "arr_action": "delete",
+                    "media_server_action": "delete",
+                    "radarr_service_config_id": 12,
+                    "sonarr_service_config_id": None,
+                },
+            )
+            db.add(existing_rule)
+            await db.commit()
+            await db.refresh(existing_rule)
+
+            payload = CleanupRuleUpdate(
+                action={
+                    "candidate": True,
+                    "tag_enabled": True,
+                    "arr_tag": "rec-movie-version-rule",
+                    "arr_action": "delete",
+                    "media_server_action": "delete",
+                    "radarr_service_config_id": None,
+                    "sonarr_service_config_id": None,
+                }
+            )
+
+            updated = await update_rule(existing_rule.id, payload, admin, db)
+            assert updated.action is not None
+            assert updated.action["arr_action"] == "delete"
+            assert updated.action["radarr_service_config_id"] is None
+            assert updated.action["sonarr_service_config_id"] is None
+
+            result = await db.execute(
+                select(ReclaimRule).where(ReclaimRule.id == existing_rule.id)
+            )
+            refreshed_rule = result.scalar_one()
+            assert refreshed_rule.action is not None
+            assert refreshed_rule.action["radarr_service_config_id"] is None
+            assert refreshed_rule.action["sonarr_service_config_id"] is None
 
         await engine.dispose()
 

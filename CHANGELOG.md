@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add **opt-in** automatic deletion task
   - Must be enabled in **Settings -> General** and in the **Tasks** page
+- Ability to de-select arr instance in rule editor
 
 ### Changed
 
