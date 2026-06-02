@@ -87,7 +87,7 @@ from backend.utils.helpers import normalize_leaving_soon_collection_title
 __all__ = [
     "scan_cleanup_candidates",
     "tag_cleanup_candidates",
-    # "delete_cleanup_candidates",
+    "delete_cleanup_candidates",
     "delete_specific_candidates",
     "move_specific_candidates",
     "collect_rule_preview_matches",
@@ -131,16 +131,172 @@ def _build_reclaim_history_attributes(
     }
 
 
-def _is_series_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+def _is_series_scope(model: Any) -> Any:
     return and_(model.season_id.is_(None), model.episode_id.is_(None))
 
 
-def _is_season_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+def _is_season_scope(model: Any) -> Any:
     return and_(model.season_id.isnot(None), model.episode_id.is_(None))
 
 
-def _is_episode_scope(model: type[ReclaimCandidate] | type[ProtectedMedia]) -> Any:
+def _is_episode_scope(model: Any) -> Any:
     return model.episode_id.isnot(None)
+
+
+async def _is_auto_delete_enabled() -> bool:
+    async with async_db() as db:
+        result = await db.execute(select(GeneralSettings.auto_delete_enabled))
+        enabled = result.scalar_one_or_none()
+    return bool(enabled)
+
+
+async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int]:
+    async with async_db() as db:
+        candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
+        if not candidates:
+            return [], 0
+
+        now = datetime.now(UTC)
+        blocked_movie_ids: set[int] = set()
+        blocked_movie_version_ids: set[int] = set()
+
+        movie_overlap_queries = (
+            select(ProtectedMedia.movie_id, ProtectedMedia.movie_version_id).where(
+                ProtectedMedia.media_type == MediaType.MOVIE,
+                or_(
+                    ProtectedMedia.permanent.is_(True),
+                    ProtectedMedia.expires_at.is_(None),
+                    ProtectedMedia.expires_at > now,
+                ),
+            ),
+            select(
+                ProtectionRequest.movie_id, ProtectionRequest.movie_version_id
+            ).where(
+                ProtectionRequest.media_type == MediaType.MOVIE,
+                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+            ),
+            select(DeleteRequest.movie_id, DeleteRequest.movie_version_id).where(
+                DeleteRequest.media_type == MediaType.MOVIE,
+                DeleteRequest.status == ProtectionRequestStatus.PENDING,
+            ),
+        )
+        for query in movie_overlap_queries:
+            for movie_id, movie_version_id in (await db.execute(query)).all():
+                if movie_id is not None:
+                    blocked_movie_ids.add(movie_id)
+                if movie_version_id is not None:
+                    blocked_movie_version_ids.add(movie_version_id)
+
+        if blocked_movie_version_ids:
+            version_rows = (
+                await db.execute(
+                    select(MovieVersion.id, MovieVersion.movie_id).where(
+                        MovieVersion.id.in_(blocked_movie_version_ids)
+                    )
+                )
+            ).all()
+            blocked_movie_ids.update(
+                movie_id for _, movie_id in version_rows if movie_id is not None
+            )
+
+        blocked_series_ids: set[int] = set()
+        blocked_season_ids: set[int] = set()
+        blocked_episode_ids: set[int] = set()
+
+        series_overlap_queries = (
+            select(
+                ProtectedMedia.series_id,
+                ProtectedMedia.season_id,
+                ProtectedMedia.episode_id,
+            ).where(
+                ProtectedMedia.media_type == MediaType.SERIES,
+                or_(
+                    ProtectedMedia.permanent.is_(True),
+                    ProtectedMedia.expires_at.is_(None),
+                    ProtectedMedia.expires_at > now,
+                ),
+            ),
+            select(
+                ProtectionRequest.series_id,
+                ProtectionRequest.season_id,
+                ProtectionRequest.episode_id,
+            ).where(
+                ProtectionRequest.media_type == MediaType.SERIES,
+                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+            ),
+            select(
+                DeleteRequest.series_id,
+                DeleteRequest.season_id,
+                DeleteRequest.episode_id,
+            ).where(
+                DeleteRequest.media_type == MediaType.SERIES,
+                DeleteRequest.status == ProtectionRequestStatus.PENDING,
+            ),
+        )
+        for query in series_overlap_queries:
+            for series_id, season_id, episode_id in (await db.execute(query)).all():
+                if series_id is not None:
+                    blocked_series_ids.add(series_id)
+                if season_id is not None:
+                    blocked_season_ids.add(season_id)
+                if episode_id is not None:
+                    blocked_episode_ids.add(episode_id)
+
+        if blocked_episode_ids:
+            episode_rows = (
+                await db.execute(
+                    select(Episode.id, Episode.season_id).where(
+                        Episode.id.in_(blocked_episode_ids)
+                    )
+                )
+            ).all()
+            blocked_season_ids.update(
+                season_id for _, season_id in episode_rows if season_id is not None
+            )
+
+        if blocked_season_ids:
+            season_rows = (
+                await db.execute(
+                    select(Season.id, Season.series_id).where(
+                        Season.id.in_(blocked_season_ids)
+                    )
+                )
+            ).all()
+            blocked_series_ids.update(
+                series_id for _, series_id in season_rows if series_id is not None
+            )
+
+        eligible_ids: list[int] = []
+        for candidate in candidates:
+            blocked = False
+            if candidate.media_type is MediaType.MOVIE:
+                blocked = (
+                    candidate.movie_id is not None
+                    and candidate.movie_id in blocked_movie_ids
+                ) or (
+                    candidate.movie_version_id is not None
+                    and candidate.movie_version_id in blocked_movie_version_ids
+                )
+            else:
+                blocked = (
+                    (
+                        candidate.series_id is not None
+                        and candidate.series_id in blocked_series_ids
+                    )
+                    or (
+                        candidate.season_id is not None
+                        and candidate.season_id in blocked_season_ids
+                    )
+                    or (
+                        candidate.episode_id is not None
+                        and candidate.episode_id in blocked_episode_ids
+                    )
+                )
+
+            if not blocked:
+                eligible_ids.append(candidate.id)
+
+        return eligible_ids, len(candidates) - len(eligible_ids)
 
 
 def _normalize_favorites_username(value: str) -> str:
@@ -2945,6 +3101,45 @@ async def _sync_expected_arr_tags(
 #         except Exception as e:
 #             LOG.error(f"Error deleting cleanup candidates: {e}", exc_info=True)
 #             raise
+
+
+async def delete_cleanup_candidates() -> dict[str, int]:
+    """Automatically delete eligible cleanup candidates when globally enabled."""
+    LOG.info("Starting automatic cleanup candidate deletion")
+
+    async with track_task_execution(Task.DELETE_CLEANUP_CANDIDATES):
+        if not await _is_auto_delete_enabled():
+            LOG.info(
+                "Automatic cleanup deletion skipped because it is disabled in General Settings"
+            )
+            return {"eligible": 0, "skipped": 0, "deleted": 0, "failed": 0}
+
+        eligible_ids, skipped_count = await _select_auto_delete_eligible_candidate_ids()
+        if not eligible_ids:
+            LOG.info(
+                "Automatic cleanup deletion found no eligible candidates "
+                f"(skipped={skipped_count})"
+            )
+            return {"eligible": 0, "skipped": skipped_count, "deleted": 0, "failed": 0}
+
+        deleted_count, failed_count = await delete_specific_candidates(
+            eligible_ids,
+            approved_by="system:auto-delete",
+        )
+        summary = {
+            "eligible": len(eligible_ids),
+            "skipped": skipped_count,
+            "deleted": deleted_count,
+            "failed": failed_count,
+        }
+        LOG.info(
+            "Automatic cleanup deletion completed: "
+            f"eligible={summary['eligible']}, "
+            f"skipped={summary['skipped']}, "
+            f"deleted={summary['deleted']}, "
+            f"failed={summary['failed']}"
+        )
+        return summary
 
 
 async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:

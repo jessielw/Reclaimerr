@@ -82,9 +82,10 @@ As a result, this project will close pull requests that appear to be mostly or w
 
 # Additional Info
 
-- While Reclaimerr is in early beta, the task to **automatically delete** media will **not** be enabled or visible in the UI. I do not want to risk permanent deletion of anyone's media due to a bug with full automation until the things have been **thoroughly tested**.
-  - For now, only admins or users with appropriate permissions can manage deletions through the UI or API
-  - Once automatic deletions are added it will be **opt in**
+- Automatic cleanup deletion is now available as a strict **opt-in** feature and is **disabled by default**.
+  - You must enable the global opt-in in **General Settings** and then separately enable the `Delete Cleanup Candidates` task in **Tasks**
+  - Protected media plus items with pending protection or delete requests are skipped automatically
+  - Admins and users with appropriate permissions can still manage deletions manually through the UI or API
 - While Reclaimerr is in **beta**, things are subject to change in response to user feedback and testing
 - Proper documentation will be made as the app matures a bit more
 

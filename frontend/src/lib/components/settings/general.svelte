@@ -13,6 +13,7 @@
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import {
     MediaType,
     type GeneralSettings,
@@ -54,6 +55,7 @@
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
   let addArrImportExclusionsOnDelete = $state(true);
+  let autoDeleteEnabled = $state(false);
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
@@ -66,6 +68,7 @@
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   let testingWebhookIndex = $state<number | null>(null);
+  let showAutoDeleteConfirm = $state(false);
 
   // default settings for webhook
   const serviceTypeOptions = ["plex", "jellyfin", "emby", "radarr", "sonarr"];
@@ -101,6 +104,23 @@
       usernames.push(normalized);
     }
     return usernames;
+  };
+
+  const closeAutoDeleteConfirm = () => {
+    showAutoDeleteConfirm = false;
+  };
+
+  const confirmAutoDeleteEnabled = () => {
+    autoDeleteEnabled = true;
+    showAutoDeleteConfirm = false;
+  };
+
+  const handleAutoDeleteEnabledChange = (checked: boolean) => {
+    if (checked) {
+      showAutoDeleteConfirm = true;
+      return;
+    }
+    autoDeleteEnabled = false;
   };
 
   // save settings
@@ -140,6 +160,7 @@
         media_server_fallback_enabled: mediaServerFallbackEnabled,
         default_arr_delete_behavior: defaultArrDeleteBehavior,
         add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
+        auto_delete_enabled: autoDeleteEnabled,
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
@@ -354,6 +375,7 @@
           settings.default_arr_delete_behavior ?? "unmonitor";
         addArrImportExclusionsOnDelete =
           settings.add_arr_import_exclusions_on_delete ?? true;
+        autoDeleteEnabled = settings.auto_delete_enabled ?? false;
         favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
         favoritesProtectAllUsers =
           settings.favorites_protect_all_users ?? false;
@@ -1078,6 +1100,43 @@
       </p>
     </div>
 
+    <!-- automatic deletion opt-in -->
+    <div
+      class="bg-muted/50 border border-destructive/30 rounded-lg p-4 shadow-sm"
+    >
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-semibold text-foreground">
+          Enable Automatic Cleanup Deletion
+        </h3>
+        <Switch
+          id="autoDeleteEnabled"
+          checked={autoDeleteEnabled}
+          onCheckedChange={handleAutoDeleteEnabledChange}
+        />
+      </div>
+      <p class="text-muted-foreground text-sm mb-3">
+        Global safety gate for the scheduled
+        <code>Delete Cleanup Candidates</code> task. Nothing is deleted
+        automatically until this setting is enabled and the task is separately
+        enabled in the <strong>Tasks</strong> section.
+      </p>
+      <div
+        class="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-foreground"
+      >
+        <p class="font-medium">Warning</p>
+        <p class="mt-1">
+          When both the opt-in and task schedule are enabled, Reclaimerr will
+          permanently delete current cleanup candidates without per-item
+          approval. Protected media and items with pending protection or delete
+          requests are skipped.
+        </p>
+        <p class="mt-2 text-xs text-muted-foreground">
+          Turning this off automatically disables the scheduled delete task and
+          cancels pending task runs for it.
+        </p>
+      </div>
+    </div>
+
     <!-- default ARR delete behavior -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
       <h3 class="font-semibold text-foreground mb-1">
@@ -1166,3 +1225,39 @@
     </div>
   {/if}
 </div>
+
+<AlertDialog.Root
+  open={showAutoDeleteConfirm}
+  onOpenChange={(value) => {
+    showAutoDeleteConfirm = value;
+  }}
+>
+  <AlertDialog.Content
+    class="bg-card border border-border rounded-lg p-6 max-w-md w-full"
+  >
+    <AlertDialog.Header>
+      <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2">
+        Enable automatic cleanup deletion?
+      </AlertDialog.Title>
+      <AlertDialog.Description class="text-muted-foreground">
+        This only unlocks the scheduled delete task. Once you also enable the
+        task in <strong>Tasks</strong>, Reclaimerr can permanently delete
+        eligible cleanup candidates automatically.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="flex justify-end gap-3 pt-4">
+      <AlertDialog.Cancel
+        class="cursor-pointer hover text-foreground bg-secondary"
+        onclick={closeAutoDeleteConfirm}
+      >
+        Cancel
+      </AlertDialog.Cancel>
+      <AlertDialog.Action
+        class="cursor-pointer bg-destructive text-destructive-foreground hover:bg-destructive/90"
+        onclick={confirmAutoDeleteEnabled}
+      >
+        Enable
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>

@@ -297,6 +297,7 @@ class GeneralSettings(Base):
     add_arr_import_exclusions_on_delete: Mapped[bool] = mapped_column(
         Boolean, default=True
     )
+    auto_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

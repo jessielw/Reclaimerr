@@ -219,6 +219,7 @@ export interface GeneralSettings {
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
+  auto_delete_enabled: boolean;
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
