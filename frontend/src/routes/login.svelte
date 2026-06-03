@@ -56,13 +56,11 @@
   const selectedMediaIsRedirect = $derived.by(
     () => selectedMediaProvider?.auth_mode === "redirect",
   );
-  const mediaSignInDisabled = $derived.by(
-    () =>
-      mediaLoading ||
-      !selectedMediaProvider ||
-      (!selectedMediaIsRedirect &&
-        (!mediaUsername.trim() || !mediaPassword.trim())),
-  );
+  const mediaSignInDisabled = $derived.by(() => {
+    if (mediaLoading || !selectedMediaProvider) return true;
+    if (selectedMediaProvider.auth_mode === "redirect") return false;
+    return !mediaUsername.trim() || !mediaPassword.trim();
+  });
   const hasMediaMethods = $derived.by(() => mediaProviders.length > 0);
   const hasSsoMethod = $derived.by(() => oidcEnabled);
   const visibleMethods = $derived.by(() => {
