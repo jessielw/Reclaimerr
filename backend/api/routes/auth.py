@@ -507,13 +507,7 @@ async def list_media_auth_login_providers(
 ) -> MediaAuthProvidersResponse:
     providers = await list_media_auth_providers(db)
     payload = [_serialize_media_provider(provider) for provider in providers]
-    default_provider = next(
-        (provider for provider in payload if provider.auth_mode == "redirect"),
-        payload[0] if payload else None,
-    )
-    default_service_config_id = (
-        default_provider.service_config_id if default_provider else None
-    )
+    default_service_config_id = payload[0].service_config_id if payload else None
     return MediaAuthProvidersResponse(
         providers=payload,
         default_service_config_id=default_service_config_id,
