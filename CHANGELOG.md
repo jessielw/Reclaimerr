@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filename regex matching would throw an error when there was no media to run against when creating a rule
 - Plex and OIDC auth redirects now use the configured **Application URL** when present, preventing Plex login from landing on `localhost:3000` or an HTTP callback behind strict Docker/Granian reverse proxies
 - Plex login button not being enabled on initial launch of application even if configured
+- Issue sometimes with the UI hanging on certain browsers
 
 ## [0.1.0-beta.27] - 2026-06-01
 
