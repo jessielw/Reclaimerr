@@ -159,6 +159,9 @@
   const setLoginMethod = (method: LoginMethod) => {
     loginMethod = method;
     error = "";
+    if (method === "media") {
+      void loadMediaProviders();
+    }
   };
 
   const serviceTypeKey = (serviceType: string | null | undefined): string =>
@@ -168,6 +171,33 @@
 
   const mediaServiceIcon = (serviceType: string) =>
     MEDIA_SERVER_ICONS[serviceTypeKey(serviceType)] ?? Server;
+
+  const selectPreferredMediaProvider = (
+    providers: MediaAuthProvider[],
+    backendDefaultId: number | null | undefined,
+  ) => {
+    const currentExists = providers.some(
+      (provider) => String(provider.service_config_id) === mediaProviderId,
+    );
+    if (currentExists) return mediaProviderId;
+
+    const defaultId =
+      backendDefaultId === null || backendDefaultId === undefined
+        ? ""
+        : String(backendDefaultId);
+    const defaultProvider = providers.find(
+      (provider) => String(provider.service_config_id) === defaultId,
+    );
+    if (defaultProvider?.auth_mode === "redirect") return defaultId;
+
+    const redirectProvider = providers.find(
+      (provider) => provider.auth_mode === "redirect",
+    );
+    if (redirectProvider) return String(redirectProvider.service_config_id);
+
+    if (defaultProvider) return defaultId;
+    return String(providers[0].service_config_id);
+  };
 
   const loadMediaProviders = async () => {
     mediaProvidersLoading = true;
@@ -181,16 +211,10 @@
         return;
       }
 
-      const defaultId = String(
-        payload.default_service_config_id ??
-          mediaProviders[0].service_config_id,
+      mediaProviderId = selectPreferredMediaProvider(
+        mediaProviders,
+        payload.default_service_config_id,
       );
-      const defaultExists = mediaProviders.some(
-        (provider) => String(provider.service_config_id) === defaultId,
-      );
-      mediaProviderId = defaultExists
-        ? defaultId
-        : String(mediaProviders[0].service_config_id);
     } catch {
       mediaProviders = [];
       mediaProviderId = "";
@@ -521,7 +545,9 @@
           >
             <Server class="size-5" />
             <span class="font-medium">
-              {#if selectedMediaIsRedirect}
+              {#if mediaProvidersLoading}
+                Loading media providers...
+              {:else if selectedMediaIsRedirect}
                 {mediaHovered ? "Continue to Plex" : "Sign In with Plex"}
               {:else}
                 {mediaLoading ? "Signing in..." : "Sign In with Media Server"}
