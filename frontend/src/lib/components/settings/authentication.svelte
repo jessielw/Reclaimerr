@@ -11,7 +11,7 @@
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { get_api, post_api, put_api } from "$lib/api";
   import { toast } from "svelte-sonner";
-  import type { OIDCSettings } from "$lib/types/shared";
+  import type { GeneralSettings, OIDCSettings } from "$lib/types/shared";
 
   interface Props {
     svgIcon: Component | null;
@@ -35,6 +35,15 @@
   let oidcSettings = $state<OIDCSettings>({ ...defaultSettings });
   let clientSecret = $state("");
   let callbackPreview = $state("");
+  let applicationUrl = $state("");
+
+  const updateCallbackPreview = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const baseUrl = applicationUrl.trim() || window.location.origin;
+    callbackPreview = `${baseUrl.replace(/\/+$/, "")}/api/auth/oidc/callback`;
+  };
 
   const buildPayload = () => ({
     enabled: oidcSettings.enabled,
@@ -55,6 +64,7 @@
         ...response,
       };
       clientSecret = "";
+      updateCallbackPreview();
     } catch (error) {
       toast.error(
         `Failed to load authentication settings: ${error instanceof Error ? error.message : String(error)}`,
@@ -87,6 +97,19 @@
     }
   };
 
+  const loadGeneralSettings = async () => {
+    try {
+      const settings = await get_api<GeneralSettings>("/api/settings/general");
+      applicationUrl = settings.application_url ?? "";
+      updateCallbackPreview();
+    } catch (error) {
+      console.warn(
+        `Failed to load general settings for callback preview: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      updateCallbackPreview();
+    }
+  };
+
   const testConnection = async () => {
     testing = true;
     try {
@@ -102,10 +125,8 @@
   };
 
   onMount(async () => {
-    if (typeof window !== "undefined") {
-      callbackPreview = `${window.location.origin}/api/auth/oidc/callback`;
-    }
-    await loadSettings();
+    updateCallbackPreview();
+    await Promise.all([loadSettings(), loadGeneralSettings()]);
   });
 </script>
 

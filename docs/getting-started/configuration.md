@@ -6,8 +6,8 @@ set of environment variables for the runtime container or desktop process.
 ## Core Settings Areas
 
 - **Media servers** - connect Plex, Jellyfin, Emby, Radarr, and Sonarr
-- **General Settings** - path mappings, fallback deletion, Leaving Soon, and
-  automatic cleanup deletion
+- **General Settings** - path mappings, public application URL, fallback
+  deletion, Leaving Soon, and automatic cleanup deletion
 - **Tasks** - schedule scans, tagging, syncs, and optional auto-deletion
 - **Notifications** - configure Apprise destinations
 
@@ -24,6 +24,9 @@ set of environment variables for the runtime container or desktop process.
 | `JWT_SECRET` | Session signing secret |
 | `ENCRYPTION_KEY` | Secrets encryption key |
 | `ADMIN_PASSWORD` | Initial admin password or admin password reset on startup |
+
+Application URL is configured in General Settings. It is used for Plex and OIDC
+callback generation behind a reverse proxy.
 
 ## Multi-Server Setup
 

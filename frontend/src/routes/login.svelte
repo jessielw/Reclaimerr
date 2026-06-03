@@ -115,7 +115,7 @@
     if (selectedMediaProvider.auth_mode === "redirect") {
       const params = new URLSearchParams({
         service_config_id: String(selectedMediaProvider.service_config_id),
-        return_to: `${window.location.origin}/`,
+        return_to: "/",
       });
       window.location.href = `/api/auth/media/plex/start?${params.toString()}`;
       return;

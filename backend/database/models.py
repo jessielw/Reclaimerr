@@ -298,6 +298,7 @@ class GeneralSettings(Base):
         Boolean, default=True
     )
     auto_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    application_url: Mapped[str | None] = mapped_column(String(500), default=None)
 
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

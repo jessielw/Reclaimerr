@@ -16,7 +16,8 @@
 
 - Make sure `X-Forwarded-Proto` reaches the app.
 - Set `PROXY_TRUSTED_HOSTS` to the proxy IP or CIDR.
-- Recheck callback URLs for OIDC and Plex sign-in flows.
+- Recheck `Application URL` in General Settings. Use
+  `redirect_uri_override` only when OIDC needs a different callback.
 
 ## Deletion Is Skipped
 

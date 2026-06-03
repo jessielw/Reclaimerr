@@ -14,7 +14,13 @@ from backend.api.routes.settings.oidc import update_oidc_settings
 from backend.core.encryption import fer_encrypt
 from backend.core.oidc import OIDCProviderMetadata, extract_userinfo
 from backend.database import Base
-from backend.database.models import OIDCSettings, ServiceConfig, User, UserSession
+from backend.database.models import (
+    GeneralSettings,
+    OIDCSettings,
+    ServiceConfig,
+    User,
+    UserSession,
+)
 from backend.enums import Service, UserRole
 from backend.models.settings import OIDCSettingsUpdate
 from backend.services.media_auth import (
@@ -67,6 +73,24 @@ def _make_oidc_start_request(*, scheme: str = "http") -> Request:
         "path": "/api/auth/oidc/start",
         "headers": headers,
         "query_string": b"",
+        "client": ("127.0.0.1", 4242),
+        "scheme": scheme,
+        "server": ("testserver", 443 if scheme == "https" else 80),
+        "router": auth_routes.router,
+    }
+    return Request(scope)
+
+
+def _make_plex_start_request(*, scheme: str = "http") -> Request:
+    headers = [
+        (b"host", b"testserver"),
+    ]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/auth/media/plex/start",
+        "headers": headers,
+        "query_string": b"service_config_id=1",
         "client": ("127.0.0.1", 4242),
         "scheme": scheme,
         "server": ("testserver", 443 if scheme == "https" else 80),
@@ -189,6 +213,54 @@ def test_oidc_callback_redirect_uri_uses_request_scheme() -> None:
     callback_uri = auth_routes._oidc_callback_redirect_uri(request, settings_row)  # pyright: ignore[reportPrivateUsage]
 
     assert callback_uri == "https://testserver/api/auth/oidc/callback"
+
+
+def test_oidc_callback_redirect_uri_prefers_application_url() -> None:
+    request = _make_oidc_start_request(scheme="http")
+    settings_row = OIDCSettings(redirect_uri_override=None)
+
+    callback_uri = auth_routes._oidc_callback_redirect_uri(  # pyright: ignore[reportPrivateUsage]
+        request,
+        settings_row,
+        application_url="https://public.example.com/",
+    )
+
+    assert callback_uri == "https://public.example.com/api/auth/oidc/callback"
+
+
+def test_post_auth_redirect_uses_application_url_default() -> None:
+    redirect = auth_routes._resolve_post_auth_redirect(  # pyright: ignore[reportPrivateUsage]
+        None,
+        application_url="https://public.example.com",
+    )
+
+    assert redirect == "https://public.example.com/"
+
+
+def test_post_auth_redirect_rejects_localhost_when_application_url_is_public() -> None:
+    redirect = auth_routes._resolve_post_auth_redirect(  # pyright: ignore[reportPrivateUsage]
+        "http://localhost:3000/",
+        application_url="https://public.example.com",
+    )
+
+    assert redirect == "https://public.example.com/"
+
+
+def test_post_auth_redirect_allows_localhost_without_application_url() -> None:
+    redirect = auth_routes._resolve_post_auth_redirect(  # pyright: ignore[reportPrivateUsage]
+        "http://localhost:3000/",
+    )
+
+    assert redirect == "http://localhost:3000/"
+
+
+def test_post_auth_redirect_allows_relative_path() -> None:
+    redirect = auth_routes._resolve_post_auth_redirect(  # pyright: ignore[reportPrivateUsage]
+        "/",
+        application_url="https://public.example.com",
+    )
+
+    assert redirect == "/"
 
 
 def test_extract_userinfo_fetches_userinfo_when_email_missing() -> None:
@@ -316,7 +388,9 @@ def test_oidc_callback_links_existing_user_by_email(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_media_plex_callback_redirects_on_success(monkeypatch) -> None:
+def test_media_plex_callback_redirects_to_localhost_without_application_url(
+    monkeypatch,
+) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -429,6 +503,244 @@ def test_media_plex_callback_redirects_on_success(monkeypatch) -> None:
 
             assert response.status_code == 302
             assert response.headers.get("location") == "http://localhost:3000/"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_callback_uses_application_url_when_return_to_is_localhost(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            user = _new_user(
+                username="plexmember",
+                email="plexmember@example.com",
+                role=UserRole.USER,
+            )
+            service = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex.local",
+                api_key="server-token",
+                name="plex-main",
+                enabled=True,
+            )
+            db_session.add_all(
+                [
+                    user,
+                    service,
+                    GeneralSettings(application_url="https://public.example.com/"),
+                ]
+            )
+            await db_session.commit()
+            await db_session.refresh(user)
+            await db_session.refresh(service)
+
+            def fake_pop_pending_plex_auth(state: str) -> PlexPendingAuth:
+                return PlexPendingAuth(
+                    state=state,
+                    service_config_id=service.id,
+                    client_identifier="plex-client-id",
+                    pin_id=123,
+                    pin_code="abcd",
+                    return_to="http://localhost:3000/",
+                    created_at=datetime.now(UTC),
+                )
+
+            async def fake_exchange_plex_pin_for_token(
+                pending: PlexPendingAuth,
+            ) -> str:
+                assert pending.service_config_id == service.id
+                return "plex-user-token"
+
+            async def fake_authenticate_plex_token(
+                db: AsyncSession,
+                *,
+                provider: object,
+                plex_user_token: str,
+            ) -> DiscoveredMediaUser:
+                assert db is db_session
+                assert plex_user_token == "plex-user-token"
+                return DiscoveredMediaUser(
+                    source_service=Service.PLEX,
+                    source_service_config_id=service.id,
+                    source_service_name="plex-main",
+                    source_user_id="plex-user-42",
+                    username="plexmember",
+                    username_normalized="plexmember",
+                    email="plexmember@example.com",
+                    display_name="Plex Member",
+                    raw={"source": "plex"},
+                )
+
+            async def fake_resolve_or_create_user_for_identity(
+                db: AsyncSession,
+                *,
+                identity: DiscoveredMediaUser,
+            ) -> User:
+                assert db is db_session
+                assert identity.source_service == Service.PLEX
+                return user
+
+            async def fake_issue_login_session(**_: object) -> None:
+                return None
+
+            monkeypatch.setattr(
+                auth_routes,
+                "pop_pending_plex_auth",
+                fake_pop_pending_plex_auth,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "exchange_plex_pin_for_token",
+                fake_exchange_plex_pin_for_token,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "authenticate_plex_token",
+                fake_authenticate_plex_token,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "resolve_or_create_user_for_identity",
+                fake_resolve_or_create_user_for_identity,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "_issue_login_session",
+                fake_issue_login_session,
+            )
+
+            request = _make_plex_callback_request()
+            response = await auth_routes.media_plex_callback(
+                request=request,
+                state="expected-state",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location") == "https://public.example.com/"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_callback_expired_state_uses_application_url_error() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            db_session.add(
+                GeneralSettings(application_url="https://public.example.com")
+            )
+            await db_session.commit()
+
+            request = _make_plex_callback_request()
+            response = await auth_routes.media_plex_callback(
+                request=request,
+                state="expired-state",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location", "").startswith(
+                "https://public.example.com/?auth_error="
+            )
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_start_uses_application_url(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            db_session.add(
+                GeneralSettings(application_url="https://public.example.com/")
+            )
+            await db_session.commit()
+
+            provider = auth_routes.MediaAuthProviderConfig(
+                service_config_id=1,
+                service_type=Service.PLEX,
+                name="plex-main",
+                base_url="http://plex.local",
+                auth_mode="redirect",
+            )
+            captured: dict[str, str] = {}
+
+            async def fake_get_media_auth_provider(
+                _db: AsyncSession,
+                *,
+                service_config_id: int,
+            ) -> object | None:
+                assert service_config_id == 1
+                return provider
+
+            async def fake_start_plex_pin_flow(
+                *,
+                provider: object,
+                callback_url: str,
+                return_to: str | None = None,
+            ) -> str:
+                captured["callback_url"] = callback_url
+                captured["return_to"] = return_to or ""
+                assert isinstance(provider, auth_routes.MediaAuthProviderConfig)
+                assert provider.service_type is Service.PLEX
+                return "http://plex.local/auth"
+
+            monkeypatch.setattr(
+                auth_routes,
+                "get_media_auth_provider",
+                fake_get_media_auth_provider,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "start_plex_pin_flow",
+                fake_start_plex_pin_flow,
+            )
+
+            request = _make_plex_start_request()
+            response = await auth_routes.media_plex_start(
+                request=request,
+                service_config_id=1,
+                return_to="http://localhost:3000/",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location") == "http://plex.local/auth"
+            assert captured["callback_url"] == (
+                "https://public.example.com/api/auth/media/plex/callback"
+            )
+            assert captured["return_to"] == "https://public.example.com/"
 
         await engine.dispose()
 

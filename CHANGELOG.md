@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add **opt-in** automatic deletion task
   - Must be enabled in **Settings -> General** and in the **Tasks** page
 - Ability to de-select arr instance in rule editor
+- Add **Application URL** in **Settings -> General** for Plex and OIDC callback URL generation behind reverse proxies
 
 ### Changed
 
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Filename regex matching would throw an error when there was no media to run against when creating a rule
+- Plex and OIDC auth redirects now use the configured **Application URL** when present, preventing Plex login from landing on `localhost:3000` or an HTTP callback behind strict Docker/Granian reverse proxies
 
 ## [0.1.0-beta.27] - 2026-06-01
 
