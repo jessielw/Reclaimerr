@@ -40,10 +40,10 @@
 
   // border based on media type
   const borderColor = $derived.by(() => {
-    const defaultColor = "bg-gray-800 dark:border-gray-700";
+    const defaultColor = "border-border bg-muted/70";
     if (!showMediaType) return defaultColor;
-    if (mediaType === "movie") return "border-2 border-movie";
-    if (mediaType === "series") return "border-2 border-series";
+    if (mediaType === "movie") return "border-2 border-movie bg-muted/70";
+    if (mediaType === "series") return "border-2 border-series bg-muted/70";
     return defaultColor;
   });
 
@@ -135,8 +135,8 @@
         class="w-full h-full object-cover"
       />
     {:else}
-      <div class="w-full h-full flex items-center justify-center bg-gray-800">
-        <FileImage class="size-16 text-gray-500" />
+      <div class="w-full h-full flex items-center justify-center bg-muted">
+        <FileImage class="size-16 text-muted-foreground" />
       </div>
     {/if}
 
@@ -195,11 +195,11 @@
       <!-- protected -->
       {#if media.status.is_protected}
         <div
-          class="rounded-full bg-gray-500 flex items-center justify-center z-20"
+          class="rounded-full bg-muted flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Shield class="{badgeSize} text-white cursor-help m-1" />
+              <Shield class="{badgeSize} text-foreground cursor-help m-1" />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Protected</p>
@@ -211,11 +211,13 @@
       <!-- deletion candidate -->
       {#if media.status.is_candidate}
         <div
-          class="rounded-full bg-yellow-500 flex items-center justify-center z-20"
+          class="rounded-full bg-warning flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Trash_2 class="{badgeSize} text-white cursor-help m-1" />
+              <Trash_2
+                class="{badgeSize} text-warning-foreground cursor-help m-1"
+              />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Reclaim candidate</p>
@@ -227,11 +229,13 @@
       <!-- pending request -->
       {#if media.status.has_pending_request}
         <div
-          class="rounded-full bg-blue-500 flex items-center justify-center z-20"
+          class="rounded-full bg-primary flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Ticket class="{badgeSize} text-white cursor-help m-1" />
+              <Ticket
+                class="{badgeSize} text-primary-foreground cursor-help m-1"
+              />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Pending Request</p>
@@ -242,11 +246,13 @@
 
       {#if media.status.has_pending_delete_request}
         <div
-          class="rounded-full bg-red-500 flex items-center justify-center z-20"
+          class="rounded-full bg-destructive flex items-center justify-center z-20"
         >
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Trash_2 class="{badgeSize} text-white cursor-help m-1" />
+              <Trash_2
+                class="{badgeSize} text-destructive-foreground cursor-help m-1"
+              />
             </Tooltip.Trigger>
             <Tooltip.Content>
               <p>Pending Delete Request</p>

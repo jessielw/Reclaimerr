@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add documentation link to about page
+- Implement pallette theme selector for indigo (default), ocean, ember, and slate
 
 ## [0.1.0-beta.28] - 2026-06-03
 

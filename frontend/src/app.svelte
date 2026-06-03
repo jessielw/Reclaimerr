@@ -4,6 +4,8 @@
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
   import Sidebar from "$lib/components/sidebar.svelte";
+  import { DEFAULT_THEME_FAMILY } from "$lib/theme-families";
+  import { themeFamily } from "$lib/stores/theme-family";
   import Login from "./routes/login.svelte";
   import Setup from "./routes/setup.svelte";
   import Dashboard from "./routes/dashboard.svelte";
@@ -69,11 +71,26 @@
     }
     auth.init();
   });
+
+  // Keep the unauthenticated and setup flows on the hand-picked palette,
+  // while letting the authenticated app use the user-selected family.
+  $effect(() => {
+    if (typeof document !== "undefined" && !$auth.loading) {
+      const theme =
+        needsSetup || !$auth.isAuthenticated
+          ? DEFAULT_THEME_FAMILY
+          : $themeFamily;
+
+      if (document.documentElement.dataset.theme !== theme) {
+        document.documentElement.dataset.theme = theme;
+      }
+    }
+  });
 </script>
 
 {#if $auth.loading}
   <!-- loading screen while checking authentication -->
-  <div class="flex h-screen items-center justify-center bg-background">
+  <div class="dark flex h-screen items-center justify-center bg-background">
     <div class="text-center">
       <div
         class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary

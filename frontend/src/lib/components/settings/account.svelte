@@ -17,6 +17,7 @@
   import * as Avatar from "$lib/components/ui/avatar/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import Info from "@lucide/svelte/icons/info";
+  import Appearance from "$lib/components/settings/appearance.svelte";
 
   interface Props {
     svgIcon: Component | null;
@@ -458,6 +459,8 @@
         </div>
       </form>
     </div>
+
+    <Appearance />
 
     <!-- password change -->
     <div class="bg-card rounded-lg border border-border p-6">
