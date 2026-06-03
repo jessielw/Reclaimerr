@@ -45,21 +45,22 @@
   let mediaLoading = $state(false);
   let mediaHovered = $state(false);
 
-  const selectedMediaProvider = $derived.by(() =>
-    mediaProviders.find(
-      (provider) => String(provider.service_config_id) === mediaProviderId,
-    ),
+  const selectedMediaProvider = $derived.by(
+    () =>
+      mediaProviders.find(
+        (provider) => String(provider.service_config_id) === mediaProviderId,
+      ) ??
+      mediaProviders[0] ??
+      null,
   );
   const selectedMediaIsRedirect = $derived.by(
     () => selectedMediaProvider?.auth_mode === "redirect",
   );
-  const mediaSignInDisabled = $derived.by(
-    () =>
-      mediaLoading ||
-      !selectedMediaProvider ||
-      (!selectedMediaIsRedirect &&
-        (!mediaUsername.trim() || !mediaPassword.trim())),
-  );
+  const mediaSignInDisabled = $derived.by(() => {
+    if (mediaLoading || !selectedMediaProvider) return true;
+    if (selectedMediaProvider.auth_mode === "redirect") return false;
+    return !mediaUsername.trim() || !mediaPassword.trim();
+  });
   const hasMediaMethods = $derived.by(() => mediaProviders.length > 0);
   const hasSsoMethod = $derived.by(() => oidcEnabled);
   const visibleMethods = $derived.by(() => {
@@ -115,7 +116,7 @@
     if (selectedMediaProvider.auth_mode === "redirect") {
       const params = new URLSearchParams({
         service_config_id: String(selectedMediaProvider.service_config_id),
-        return_to: `${window.location.origin}/`,
+        return_to: "/",
       });
       window.location.href = `/api/auth/media/plex/start?${params.toString()}`;
       return;

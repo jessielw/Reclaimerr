@@ -39,5 +39,7 @@ PROXY_TRUSTED_HOSTS=127.0.0.1,::1
 
 If the API sits behind SWAG or another reverse proxy, make sure forwarded
 headers are preserved and `PROXY_TRUSTED_HOSTS` points at the proxy IP or CIDR.
+Set `Application URL` in General Settings if you want Plex and OIDC callbacks
+to use a fixed public base URL.
 
 See the [production guide](production.md) for the hardening checklist.
