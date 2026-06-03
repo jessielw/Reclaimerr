@@ -65,7 +65,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: github-pages
+      # use a dedicated Pages environment so release tags, including betas,
+      # are not blocked by the protected github-pages environment rules.
+      name: docs-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
