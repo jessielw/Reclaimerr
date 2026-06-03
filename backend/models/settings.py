@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -306,6 +307,7 @@ class GeneralSettingsResponse(BaseModel):
     default_arr_delete_behavior: Literal["unmonitor", "remove_if_empty"] = "unmonitor"
     add_arr_import_exclusions_on_delete: bool = True
     auto_delete_enabled: bool = False
+    application_url: str | None = None
 
     # favorites
     favorites_ignore_enabled: bool = False
@@ -390,6 +392,27 @@ class GeneralSettingsResponse(BaseModel):
             seen.add(key)
             deduped.append(mapping)
         self.requester_watch_user_mappings = deduped
+        return self
+
+    @model_validator(mode="after")
+    def normalize_application_url(self) -> GeneralSettingsResponse:
+        value = self.application_url
+        if value is None:
+            return self
+
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            self.application_url = None
+            return self
+
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise PydanticCustomError(
+                "application_url",
+                "Application URL must be an absolute http:// or https:// URL",
+            )
+
+        self.application_url = normalized
         return self
 
     model_config = ConfigDict(from_attributes=True)

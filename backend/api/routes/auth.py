@@ -45,7 +45,7 @@ from backend.core.oidc import (
 )
 from backend.core.settings import settings
 from backend.database import get_db
-from backend.database.models import OIDCSettings, User, UserSession
+from backend.database.models import GeneralSettings, OIDCSettings, User, UserSession
 from backend.enums import Service
 from backend.models.auth import (
     AuthResponse,
@@ -135,13 +135,53 @@ def _oidc_enabled(settings_row: OIDCSettings | None) -> bool:
 def _oidc_callback_redirect_uri(
     request: Request,
     settings_row: OIDCSettings,
+    *,
+    application_url: str | None = None,
 ) -> str:
     if settings_row.redirect_uri_override:
         return settings_row.redirect_uri_override
+    if application_url:
+        return f"{application_url.rstrip('/')}/api/auth/oidc/callback"
     return str(request.url_for("oidc_callback"))
 
 
-def _default_frontend_redirect() -> str:
+async def _get_application_url(db: AsyncSession) -> str | None:
+    result = await db.execute(select(GeneralSettings.application_url))
+    application_url = result.scalars().first()
+    if not application_url:
+        return None
+    normalized = application_url.strip().rstrip("/")
+    return normalized or None
+
+
+def _origin_tuple(value: str) -> tuple[str, str] | None:
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    return (parsed.scheme.lower(), parsed.netloc.lower())
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host.lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_loopback_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return _is_loopback_host(str(parsed.hostname or ""))
+
+
+def _default_frontend_redirect(*, application_url: str | None = None) -> str:
+    if application_url:
+        return f"{application_url.rstrip('/')}/"
+
     for origin in settings.cors_origins_list:
         if origin == "*":
             continue
@@ -154,42 +194,59 @@ def _default_frontend_redirect() -> str:
     return "/"
 
 
-def _is_allowed_return_to_url(value: str | None) -> bool:
+def _is_allowed_return_to_url(
+    value: str | None,
+    *,
+    application_url: str | None = None,
+) -> bool:
     if not value:
         return False
     try:
         parsed = urlsplit(value.strip())
     except ValueError:
         return False
+
+    if not parsed.scheme and not parsed.netloc:
+        return str(value).strip().startswith("/")
+
     if parsed.scheme not in {"http", "https"}:
         return False
     if not parsed.netloc:
         return False
     if parsed.username or parsed.password:
         return False
-    host = str(parsed.hostname or "").lower()
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
 
     candidate = (parsed.scheme.lower(), parsed.netloc.lower())
+    if application_url:
+        application_origin = _origin_tuple(application_url)
+        if application_origin and candidate == application_origin:
+            return True
+        if _is_loopback_url(value) and not _is_loopback_url(application_url):
+            return False
+
+    host = str(parsed.hostname or "").lower()
+    if _is_loopback_host(host):
+        return True
+
     for origin in settings.cors_origins_list:
         if origin == "*":
             continue
-        try:
-            allowed = urlsplit(origin.strip())
-        except ValueError:
+        allowed_origin = _origin_tuple(origin)
+        if allowed_origin is None:
             continue
-        if not allowed.netloc or allowed.scheme not in {"http", "https"}:
-            continue
-        if candidate == (allowed.scheme.lower(), allowed.netloc.lower()):
+        if candidate == allowed_origin:
             return True
     return False
 
 
-def _resolve_post_auth_redirect(value: str | None) -> str:
-    if _is_allowed_return_to_url(value):
+def _resolve_post_auth_redirect(
+    value: str | None,
+    *,
+    application_url: str | None = None,
+) -> str:
+    if _is_allowed_return_to_url(value, application_url=application_url):
         return str(value).strip()
-    return _default_frontend_redirect()
+    return _default_frontend_redirect(application_url=application_url)
 
 
 def _with_auth_error(url: str, message: str) -> str:
@@ -276,7 +333,12 @@ async def oidc_start(
     if not _oidc_enabled(settings_row):
         raise HTTPException(status_code=404, detail="OIDC login is not enabled")
 
-    callback_uri = _oidc_callback_redirect_uri(request, settings_row)
+    application_url = await _get_application_url(db)
+    callback_uri = _oidc_callback_redirect_uri(
+        request,
+        settings_row,
+        application_url=application_url,
+    )
     try:
         client = _create_configured_oidc_client(settings_row)
         return await client.authorize_redirect(request, callback_uri)
@@ -299,18 +361,30 @@ async def oidc_callback(
     error: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
+    application_url = await _get_application_url(db)
+    redirect_target = _resolve_post_auth_redirect(None, application_url=application_url)
     if error:
-        return _auth_error_redirect("OIDC authentication was denied or failed")
+        return _auth_error_redirect(
+            "OIDC authentication was denied or failed",
+            redirect_to=redirect_target,
+        )
 
     result = await db.execute(select(OIDCSettings))
     settings_row = result.scalars().first()
     if settings_row is None:
-        return _auth_error_redirect("OIDC login is not configured")
+        return _auth_error_redirect(
+            "OIDC login is not configured", redirect_to=redirect_target
+        )
     if not _oidc_enabled(settings_row):
-        return _auth_error_redirect("OIDC login is not enabled")
+        return _auth_error_redirect(
+            "OIDC login is not enabled", redirect_to=redirect_target
+        )
 
     if not code or not state:
-        return _auth_error_redirect("OIDC callback is missing required parameters")
+        return _auth_error_redirect(
+            "OIDC callback is missing required parameters",
+            redirect_to=redirect_target,
+        )
 
     email_claim_name = settings_row.email_claim or "email"
     user: User | None = None
@@ -377,16 +451,15 @@ async def oidc_callback(
             raise OIDCValidationError("User account is disabled")
 
     except (OIDCConfigError, OIDCExchangeError, OIDCValidationError) as exc:
-        return _auth_error_redirect(str(exc))
+        return _auth_error_redirect(str(exc), redirect_to=redirect_target)
     except OAuthError as exc:
-        return _auth_error_redirect(str(exc))
+        return _auth_error_redirect(str(exc), redirect_to=redirect_target)
     except OIDCError:
-        return _auth_error_redirect("OIDC authentication failed")
+        return _auth_error_redirect(
+            "OIDC authentication failed", redirect_to=redirect_target
+        )
 
-    if user is None:
-        return _auth_error_redirect("OIDC authentication failed")
-
-    response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
     await _issue_login_session(request=request, response=response, user=user, db=db)
     return response
 
@@ -534,8 +607,16 @@ async def media_plex_start(
             detail="Selected provider is not a Plex server",
         )
 
-    callback_url = str(request.url_for("media_plex_callback"))
-    redirect_target = _resolve_post_auth_redirect(return_to)
+    application_url = await _get_application_url(db)
+    callback_url = (
+        f"{application_url.rstrip('/')}/api/auth/media/plex/callback"
+        if application_url
+        else str(request.url_for("media_plex_callback"))
+    )
+    redirect_target = _resolve_post_auth_redirect(
+        return_to,
+        application_url=application_url,
+    )
     try:
         redirect_url = await start_plex_pin_flow(
             provider=provider,
@@ -559,13 +640,26 @@ async def media_plex_callback(
 ):
     """Handle callback from Plex after user authorizes PIN login. Exchange PIN for token, authenticate,
     and issue session cookie."""
+    application_url = await _get_application_url(db)
+    default_redirect = _resolve_post_auth_redirect(
+        None,
+        application_url=application_url,
+    )
     if not state:
-        return _auth_error_redirect("Plex callback is missing state")
+        return _auth_error_redirect(
+            "Plex callback is missing state", redirect_to=default_redirect
+        )
 
     pending = pop_pending_plex_auth(state)
     if pending is None:
-        return _auth_error_redirect("Plex login session expired. Please try again.")
-    redirect_target = _resolve_post_auth_redirect(pending.return_to)
+        return _auth_error_redirect(
+            "Plex login session expired. Please try again.",
+            redirect_to=default_redirect,
+        )
+    redirect_target = _resolve_post_auth_redirect(
+        pending.return_to,
+        application_url=application_url,
+    )
 
     provider = await get_media_auth_provider(
         db,

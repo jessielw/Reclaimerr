@@ -1,5 +1,6 @@
 ﻿<script lang="ts">
   import Router from "svelte-spa-router";
+  import wrap from "svelte-spa-router/wrap";
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
   import Sidebar from "$lib/components/sidebar.svelte";
@@ -16,22 +17,30 @@
   import Settings from "./routes/settings.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
   import { onMount } from "svelte";
+  import type { Component } from "svelte";
   import Menu from "@lucide/svelte/icons/menu";
   import X from "@lucide/svelte/icons/x";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import logoImage from "$lib/assets/logo.png";
 
+  const route = (component: Component) =>
+    wrap({
+      component: component as unknown as Parameters<
+        typeof wrap
+      >[0]["component"],
+    });
+
   const routes = {
-    "/": Dashboard,
-    "/movies": Movies,
-    "/series": Series,
-    "/protected": Protected,
-    "/requests": Requests,
-    "/candidates": Candidates,
-    "/history": History,
-    "/rules": Rules,
-    "/settings": Settings,
-    "/setup": Setup,
+    "/": route(Dashboard),
+    "/movies": route(Movies),
+    "/series": route(Series),
+    "/protected": route(Protected),
+    "/requests": route(Requests),
+    "/candidates": route(Candidates),
+    "/history": route(History),
+    "/rules": route(Rules),
+    "/settings": route(Settings),
+    "/setup": route(Setup),
   };
 
   const appChannel = (import.meta.env.VITE_APP_CHANNEL ?? "dev")

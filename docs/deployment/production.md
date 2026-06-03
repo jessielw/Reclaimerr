@@ -34,7 +34,9 @@ For production deployments, use this guide.
 
 - Forward `X-Forwarded-For` and `X-Forwarded-Proto`.
 - Set `PROXY_TRUSTED_HOSTS` to the proxy IP or CIDR.
-- Verify the public callback URLs for OIDC or Plex login flows.
+- Verify the public callback URLs for OIDC or Plex login flows. Use
+  `Application URL` in General Settings for the shared public base URL, and
+  keep `redirect_uri_override` for OIDC-only cases.
 - Keep the backend port private if the proxy is the only ingress point.
 
 ## Operational Notes

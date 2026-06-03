@@ -56,6 +56,7 @@
   let mediaServerFallbackEnabled = $state(true);
   let addArrImportExclusionsOnDelete = $state(true);
   let autoDeleteEnabled = $state(false);
+  let applicationUrl = $state("");
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
@@ -161,6 +162,7 @@
         default_arr_delete_behavior: defaultArrDeleteBehavior,
         add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
         auto_delete_enabled: autoDeleteEnabled,
+        application_url: applicationUrl.trim() || null,
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
@@ -376,6 +378,7 @@
         addArrImportExclusionsOnDelete =
           settings.add_arr_import_exclusions_on_delete ?? true;
         autoDeleteEnabled = settings.auto_delete_enabled ?? false;
+        applicationUrl = settings.application_url ?? "";
         favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
         favoritesProtectAllUsers =
           settings.favorites_protect_all_users ?? false;
@@ -639,6 +642,29 @@
         <Plus class="size-4" />
         Add mapping
       </Button>
+    </div>
+
+    <!-- public application URL -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <h3 class="font-semibold text-foreground mb-1">Public Application URL</h3>
+      <p class="text-muted-foreground text-sm mb-3">
+        Set the public URL users use to reach Reclaimerr through your reverse
+        proxy. Reclaimerr uses it when building Plex and OIDC callback URLs.
+        Leave it blank to use the current request URL instead.
+      </p>
+      <div class="max-w-xl">
+        <Label for="applicationUrl" class="mb-2">
+          <span class="text-sm text-foreground">Application URL</span>
+        </Label>
+        <Input
+          id="applicationUrl"
+          name="applicationUrl"
+          type="url"
+          class="input-hover-el text-foreground placeholder:text-muted-foreground"
+          placeholder="https://app.example.com"
+          bind:value={applicationUrl}
+        />
+      </div>
     </div>
 
     <!-- post action webhooks -->

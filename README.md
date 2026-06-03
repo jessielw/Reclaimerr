@@ -12,12 +12,6 @@
 **Reclaimerr** scans media libraries for eligible items, tracks protection and
 deletion requests, and routes the final action through the appropriate service.
 
-The docs site covers setup, usage, deployment, and development notes.
-Docs are built and published by GitHub Actions on pushes to `main`. Manual
-workflow runs can select a source branch, and can optionally deploy when
-needed.
-
-- [Docs home](docs/index.md)
 - [Getting started](docs/getting-started/index.md)
 - [Docker deployment](docs/deployment/docker.md)
 - [Contributing](docs/development/contributing.md)
@@ -40,7 +34,6 @@ needed.
 
 ## Support
 
-- [Documentation](docs/index.md)
+- [Documentation](https://jessielw.github.io/Reclaimerr/)
 - [GitHub Discussions](https://github.com/jessielw/Reclaimerr/discussions)
 - Matrix: https://matrix.to/#/#reclaimerr:matrix.org
-
