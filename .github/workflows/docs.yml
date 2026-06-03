@@ -1,9 +1,6 @@
 name: Docs
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
   workflow_dispatch:
     inputs:
       branch:
@@ -15,6 +12,8 @@ on:
         required: false
         type: boolean
         default: false
+  release:
+    types: [published]
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -61,7 +60,7 @@ jobs:
 
   deploy:
     if: >
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'release' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true')
     needs: build
     runs-on: ubuntu-latest
