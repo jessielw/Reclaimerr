@@ -24,7 +24,11 @@
   import logoImage from "$lib/assets/logo.png";
 
   const route = (component: Component) =>
-    wrap({ component: component as unknown as Parameters<typeof wrap>[0]["component"] });
+    wrap({
+      component: component as unknown as Parameters<
+        typeof wrap
+      >[0]["component"],
+    });
 
   const routes = {
     "/": route(Dashboard),

@@ -42,19 +42,24 @@
   let mediaProviderId = $state("");
   let mediaUsername = $state("");
   let mediaPassword = $state("");
+  let mediaProvidersLoading = $state(false);
   let mediaLoading = $state(false);
   let mediaHovered = $state(false);
 
-  const selectedMediaProvider = $derived.by(() =>
-    mediaProviders.find(
-      (provider) => String(provider.service_config_id) === mediaProviderId,
-    ),
+  const selectedMediaProvider = $derived.by(
+    () =>
+      mediaProviders.find(
+        (provider) => String(provider.service_config_id) === mediaProviderId,
+      ) ??
+      mediaProviders[0] ??
+      null,
   );
   const selectedMediaIsRedirect = $derived.by(
     () => selectedMediaProvider?.auth_mode === "redirect",
   );
   const mediaSignInDisabled = $derived.by(
     () =>
+      mediaProvidersLoading ||
       mediaLoading ||
       !selectedMediaProvider ||
       (!selectedMediaIsRedirect &&
@@ -165,6 +170,7 @@
     MEDIA_SERVER_ICONS[serviceTypeKey(serviceType)] ?? Server;
 
   const loadMediaProviders = async () => {
+    mediaProvidersLoading = true;
     try {
       const payload = await get_api<MediaAuthProvidersResponse>(
         "/api/auth/media/providers",
@@ -175,13 +181,21 @@
         return;
       }
 
-      const defaultId = payload.default_service_config_id
-        ? String(payload.default_service_config_id)
+      const defaultId = String(
+        payload.default_service_config_id ??
+          mediaProviders[0].service_config_id,
+      );
+      const defaultExists = mediaProviders.some(
+        (provider) => String(provider.service_config_id) === defaultId,
+      );
+      mediaProviderId = defaultExists
+        ? defaultId
         : String(mediaProviders[0].service_config_id);
-      mediaProviderId = defaultId;
     } catch {
       mediaProviders = [];
       mediaProviderId = "";
+    } finally {
+      mediaProvidersLoading = false;
     }
   };
 
