@@ -77,7 +77,13 @@
       <!-- docs -->
       <article>
         <h2>Documentation</h2>
-        <p class="text-sm">Coming soon™</p>
+        <a
+          href="https://jessielw.github.io/Reclaimerr/"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-primary underline"
+          >https://jessielw.github.io/Reclaimerr/</a
+        >
       </article>
 
       <!-- github discussions -->

@@ -37,3 +37,18 @@ deletion requests, and routes the final action through the appropriate service.
 - [Documentation](https://jessielw.github.io/Reclaimerr/)
 - [GitHub Discussions](https://github.com/jessielw/Reclaimerr/discussions)
 - Matrix: https://matrix.to/#/#reclaimerr:matrix.org
+
+## Preview
+
+![image](public/login.png)
+![image](public/dashboard.png)
+![image](public/movies.png)
+![image](public/series.png)
+![image](public/reclaim-candidates.png)
+![image](public/rules.png)
+![image](public/rule-node.png)
+![image](public/settings-notifications.png)
+![image](public/settings-servers.png)
+![image](public/settings-tasks.png)
+![image](public/settings-users.png)
+![image](public/user-signals.png)

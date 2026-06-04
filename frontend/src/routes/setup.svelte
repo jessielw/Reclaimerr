@@ -64,98 +64,99 @@
   };
 </script>
 
-<div
-  class="dark min-h-screen flex items-center justify-center bg-background px-4"
->
-  <div class="max-w-md w-full space-y-8">
-    <div
-      class="bg-black/70 backdrop-blur-sm rounded-lg shadow-xl p-8 border border-primary"
-    >
-      {#if done}
-        <div class="text-center space-y-4">
-          <ShieldCheck class="w-16 h-16 text-primary mx-auto" />
-          <h2 class="text-2xl font-bold text-foreground">Setup complete!</h2>
-          <p class="text-muted-foreground">Redirecting to login…</p>
-        </div>
-      {:else}
-        {#if error}
-          <div
-            class="mb-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm"
-          >
-            {error}
+<div class="dark">
+  <div
+    class="min-h-screen flex items-center justify-center bg-background px-4 text-foreground"
+  >
+    <div class="max-w-md w-full space-y-8">
+      <div
+        class="bg-card/90 backdrop-blur-xl rounded-lg shadow-2xl shadow-primary/10 p-8 border border-border"
+      >
+        {#if done}
+          <div class="text-center space-y-4">
+            <ShieldCheck class="w-16 h-16 text-primary mx-auto" />
+            <h2 class="text-2xl font-bold text-foreground">Setup complete!</h2>
+            <p class="text-muted-foreground">Redirecting to login…</p>
           </div>
-        {/if}
-
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            handleSubmit();
-          }}
-          class="space-y-4"
-        >
-          <!-- logo / title -->
-          <div class="text-center">
-            <div class="flex justify-center mb-4">
-              <ReclaimerrSVG
-                class="w-1/2 stroke-13 stroke-primary-stroke fill-primary"
-              />
+        {:else}
+          {#if error}
+            <div
+              class="mb-4 rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              {error}
             </div>
-            <h1 class="text-4xl font-bold text-foreground mb-1">Reclaimerr</h1>
-            <p class="text-muted-foreground text-sm">
-              Welcome! Create your admin account to get started.
-            </p>
-          </div>
+          {/if}
 
-          <div class="space-y-1">
-            <p class="text-xs text-muted-foreground">
-              Your username will be <span class="text-foreground font-medium"
-                >admin</span
-              >. You can add more users after setup.
-            </p>
-          </div>
-
-          <!-- password -->
-          <Input
-            id="password"
-            type="password"
-            bind:value={password}
-            disabled={loading}
-            required
-            class="w-full px-3 py-2 bg-gray-950/60! border border-gray-700 input-hover-el
-              rounded-md text-white placeholder-gray-500"
-            placeholder="Admin password"
-            autocomplete="new-password"
-            minlength={3}
-            maxlength={64}
-          />
-
-          <!-- confirm password -->
-          <Input
-            id="confirm-password"
-            type="password"
-            bind:value={confirmPassword}
-            disabled={loading}
-            required
-            class="w-full px-3 py-2 bg-gray-950/60! border border-gray-700 input-hover-el
-              rounded-md text-white placeholder-gray-500"
-            placeholder="Confirm password"
-            autocomplete="new-password"
-            minlength={3}
-            maxlength={64}
-          />
-
-          <Button
-            type="submit"
-            disabled={loading}
-            size="lg"
-            class="flex justify-center w-full py-2 px-4 bg-primary hover:bg-primary-hover
-              text-white font-medium rounded-md transition-colors cursor-pointer"
+          <form
+            onsubmit={(e) => {
+              e.preventDefault();
+              handleSubmit();
+            }}
+            class="space-y-4"
           >
-            <ShieldCheck class="size-5 mr-2" />
-            {loading ? "Creating account…" : "Create Admin Account"}
-          </Button>
-        </form>
-      {/if}
+            <!-- logo / title -->
+            <div class="text-center">
+              <div class="flex justify-center mb-4">
+                <ReclaimerrSVG
+                  class="w-1/2 stroke-13 stroke-primary-stroke fill-primary"
+                />
+              </div>
+              <h1 class="text-4xl font-bold text-foreground mb-1">
+                Reclaimerr
+              </h1>
+              <p class="text-muted-foreground text-sm">
+                Welcome! Create your admin account to get started.
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs text-muted-foreground">
+                Your username will be <span class="text-foreground font-medium"
+                  >admin</span
+                >. You can add more users after setup.
+              </p>
+            </div>
+
+            <!-- password -->
+            <Input
+              id="password"
+              type="password"
+              bind:value={password}
+              disabled={loading}
+              required
+              class="input-hover-el"
+              placeholder="Admin password"
+              autocomplete="new-password"
+              minlength={3}
+              maxlength={64}
+            />
+
+            <!-- confirm password -->
+            <Input
+              id="confirm-password"
+              type="password"
+              bind:value={confirmPassword}
+              disabled={loading}
+              required
+              class="input-hover-el"
+              placeholder="Confirm password"
+              autocomplete="new-password"
+              minlength={3}
+              maxlength={64}
+            />
+
+            <Button
+              type="submit"
+              disabled={loading}
+              size="lg"
+              class="w-full cursor-pointer hover:bg-primary-hover"
+            >
+              <ShieldCheck class="size-5 mr-2" />
+              {loading ? "Creating account…" : "Create Admin Account"}
+            </Button>
+          </form>
+        {/if}
+      </div>
     </div>
   </div>
 </div>
