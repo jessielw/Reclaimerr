@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta.30] - 2026-06-09
 
+### Changed
+
+- Updated dependency Niquests to v3.19.1
+
 ### Fixed
 
 - Update HTTP status code from UNPROCESSABLE_ENTITY to UNPROCESSABLE_CONTENT
 - Plex could fail when querying episodes with very large libraries/slow IO, this has been resolved with pagination for: Collections, Episodes, Movies, and Series where applicable
 
-## [0.1.0-beta.29] - 2026-06-04
+## [0.1.0-beta.30] - 2026-06-04
 
 ### Added
 
