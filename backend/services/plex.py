@@ -42,6 +42,7 @@ from backend.utils.helpers import normalize_leaving_soon_collection_title
 _HistEntry = tuple[int, datetime | None, int]
 _METADATA_BATCH_SIZE = 50
 _EPISODE_METADATA_BATCH_SIZE = 100
+_SECTION_METADATA_PAGE_SIZE = 1000
 
 
 class PlexService:
@@ -252,12 +253,11 @@ class PlexService:
     async def _find_collection_ids_by_title(
         self, *, section_id: str, collection_title: str
     ) -> list[str]:
-        data, _ = await self._make_request(
-            f"library/sections/{section_id}/all",
+        collections = await self._get_section_metadata_items(
+            section_id=section_id,
             params={"type": 18},
             timeout=60,
         )
-        collections = self._extract_metadata_items(data)
         normalized_title = collection_title.strip().lower()
         collection_ids: list[str] = []
         for collection in collections:
@@ -397,6 +397,56 @@ class PlexService:
                     return [metadata]
         return []
 
+    async def _get_section_metadata_items(
+        self,
+        *,
+        section_id: str,
+        params: dict[str, Any] | None = None,
+        page_size: int = _SECTION_METADATA_PAGE_SIZE,
+        timeout: int = 300,
+    ) -> list[dict[str, Any]]:
+        """Fetch all metadata items for a Plex library section using pagination."""
+        all_items: list[dict[str, Any]] = []
+        container_start = 0
+        base_params = dict(params or {})
+
+        while True:
+            page_params = {
+                **base_params,
+                "X-Plex-Container-Start": container_start,
+                "X-Plex-Container-Size": page_size,
+            }
+            data, _ = await self._make_request(
+                f"library/sections/{section_id}/all",
+                params=page_params,
+                timeout=timeout,
+            )
+            if not isinstance(data, dict):
+                break
+
+            container = data.get("MediaContainer", {})
+            if not isinstance(container, dict):
+                break
+
+            page_items = self._extract_metadata_items(data)
+            if not page_items:
+                break
+
+            all_items.extend(page_items)
+            items_seen = as_int(container.get("size")) or len(page_items)
+            if items_seen <= 0:
+                break
+
+            total_size = as_int(container.get("totalSize"))
+            container_start += items_seen
+            if total_size is not None:
+                if container_start >= total_size:
+                    break
+            elif items_seen < page_size:
+                break
+
+        return all_items
+
     async def scan_item_path(self, item_path: str) -> bool:
         """Scan a specific item path in Plex library.
 
@@ -522,15 +572,13 @@ class PlexService:
             - series_paths: series ratingKey -> series dir path
             - season_data: (series ratingKey, season_number) -> AggregatedSeasonData
         """
-        episodes_data, _ = await self._make_request(
-            f"library/sections/{section_id}/all",
+        episodes = await self._get_section_metadata_items(
+            section_id=section_id,
             params={"type": 4},
             timeout=300,
         )
-        if not episodes_data:
+        if not episodes:
             return {}, {}, {}
-
-        episodes = episodes_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
         series_sizes: dict[str, int] = {}
         series_paths: dict[str, str] = {}
@@ -888,15 +936,13 @@ class PlexService:
 
             # type=1 to only fetch movies, not collections
             # includeGuids=1 to get external IDs
-            items_data, _ = await self._make_request(
-                f"library/sections/{section_id}/all",
+            items = await self._get_section_metadata_items(
+                section_id=section_id,
                 params={"type": 1, "includeGuids": 1},
                 timeout=300,
             )
-            if not items_data:
+            if not items:
                 continue
-
-            items = items_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
             needs_detail_keys: list[str] = []
             for item in items:
@@ -1075,7 +1121,7 @@ class PlexService:
                 movie = PlexMovie(
                     id=item["ratingKey"],
                     name=item.get("title", ""),
-                    year=item.get("year"),
+                    year=item.get("year", 0),
                     library_id=section_uuid,
                     library_name=section_name,
                     added_at=added_at,
@@ -1189,14 +1235,13 @@ class PlexService:
 
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
-            items_data, _ = await self._make_request(
-                f"library/sections/{section_id}/all",
+            items = await self._get_section_metadata_items(
+                section_id=section_id,
                 params={"type": 2, "includeGuids": 1},
                 timeout=300,
             )
-            if not items_data:
+            if not items:
                 continue
-            items = items_data.get("MediaContainer", {}).get("Metadata", [])  # pyright: ignore [reportAttributeAccessIssue]
 
             for item in items:
                 # only include actual shows, not collections or other types
@@ -1227,7 +1272,7 @@ class PlexService:
                 series = PlexSeries(
                     id=item["ratingKey"],
                     name=item.get("title", ""),
-                    year=item.get("year"),
+                    year=item.get("year", 0),
                     library_id=section_uuid,
                     library_name=section_name,
                     path=series_path,
