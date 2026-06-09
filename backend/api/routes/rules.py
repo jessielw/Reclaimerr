@@ -611,7 +611,7 @@ async def create_rule(
     """Create a new cleanup rule."""
     if not rule_data.target_scope:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Rules require target_scope",
         )
     try:
@@ -620,7 +620,7 @@ async def create_rule(
         )
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
         ) from e
 
     effective_media_type = _media_type_for_target(
@@ -743,14 +743,14 @@ async def preview_rule_matches(
     """Dry-run an unsaved advanced rule without writing reclaim candidates."""
     if not body.target_scope:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Rules require target_scope",
         )
     try:
         validate_rule_definition(body.definition, target_scope=body.target_scope)
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(e),
         ) from e
 
@@ -871,7 +871,7 @@ async def update_rule(
     update_data = rule_data.model_dump(exclude_unset=True)
     if "definition" in update_data and update_data["definition"] is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Rules require definition",
         )
     if "definition" in update_data and update_data["definition"] is not None:
@@ -879,11 +879,11 @@ async def update_rule(
             validate_rule_definition(update_data["definition"])
         except ValueError as e:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
             ) from e
     if "target_scope" in update_data and not update_data["target_scope"]:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Rules require target_scope",
         )
 
@@ -915,7 +915,7 @@ async def update_rule(
             )
         except ValueError as e:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
             ) from e
 
         _validate_definition_path_syntax(effective_definition)
