@@ -12,7 +12,7 @@ class SetupRequest(PasswordValidationMixin, BaseModel):
         self.password = self.validate_password(self.password)
         if self.password != self.confirm_password:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Passwords do not match",
             )
 
