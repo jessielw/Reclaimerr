@@ -815,6 +815,7 @@ async def _upsert_series_service_ref(
         existing.library_id = data.library_id
         existing.library_name = data.library_name
         existing.path = data.path
+        existing.media_server_collection_names = data.media_server_collection_names
     else:
         session.add(
             SeriesServiceRef(
@@ -824,6 +825,7 @@ async def _upsert_series_service_ref(
                 library_id=data.library_id,
                 library_name=data.library_name,
                 path=data.path,
+                media_server_collection_names=data.media_server_collection_names,
             )
         )
 
@@ -953,6 +955,7 @@ async def _upsert_movie_versions(
                         subtitle_has_forced=ver.subtitle_has_forced,
                         subtitle_languages=ver.subtitle_languages,
                         has_chapters=ver.has_chapters,
+                        media_server_collection_names=ver.media_server_collection_names,
                     )
                 )
                 continue
@@ -994,6 +997,7 @@ async def _upsert_movie_versions(
         ev.subtitle_has_forced = ver.subtitle_has_forced
         ev.subtitle_languages = ver.subtitle_languages
         ev.has_chapters = ver.has_chapters
+        ev.media_server_collection_names = ver.media_server_collection_names
         if ver.added_at:
             ev.added_at = ver.added_at
 
@@ -1385,6 +1389,7 @@ async def sync_movies(
                                     subtitle_has_forced=ver.subtitle_has_forced,
                                     subtitle_languages=ver.subtitle_languages,
                                     has_chapters=ver.has_chapters,
+                                    media_server_collection_names=ver.media_server_collection_names,
                                 )
                             )
 

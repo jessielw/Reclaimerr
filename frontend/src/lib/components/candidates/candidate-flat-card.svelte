@@ -5,6 +5,7 @@
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
+  import { candidateMediaMetaFields } from "$lib/components/candidates/view-utils";
 
   type PosterSize =
     | "92"
@@ -47,6 +48,8 @@
     posterSize,
     tailWindElSize,
   }: Props = $props();
+
+  const metaFields = $derived(candidateMediaMetaFields(entry, formatDate));
 </script>
 
 <div class="p-4 space-y-3">
@@ -81,8 +84,14 @@
           <div class="mt-2 flex flex-wrap gap-1.5">
             {@render summary()}
           </div>
-          <div class="mt-2 text-xs text-muted-foreground">
-            Date Added: {formatDate(entry.created_at)}
+          <div class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+            {#each metaFields as field}
+              <span class="text-xs text-muted-foreground wrap-break-word">
+                {field.label}:
+                <span class="font-medium text-foreground/80">{field.value}</span
+                >
+              </span>
+            {/each}
           </div>
           <CandidateTmdbMeta {entry} />
         </div>

@@ -21,6 +21,7 @@ class PlexMovie:
     view_count: int
     external_ids: ExternalIDs
     versions: list[MovieVersionData]
+    media_server_collection_names: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -40,3 +41,4 @@ class PlexSeries:
     external_ids: ExternalIDs
     size: int
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
+    media_server_collection_names: list[str] | None = None

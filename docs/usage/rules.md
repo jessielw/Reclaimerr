@@ -27,7 +27,7 @@ These are label-only changes. Existing rules do not need to be adjusted.
 
 ## Example
 
-For a list field:
+For a list field such as `tmdb.genres` or `media_server.collections`:
 
 - **matches any** is the broadest match
 - **matches none** is the strict inverse

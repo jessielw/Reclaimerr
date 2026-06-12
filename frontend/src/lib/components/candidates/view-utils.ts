@@ -46,6 +46,56 @@ export const movieSummaryChips = (entry: ReclaimCandidateEntry): string[] => {
   return chips;
 };
 
+export type CandidateMetaField = {
+  label: string;
+  value: string;
+};
+
+export const candidateLibraryNames = (
+  entry: ReclaimCandidateEntry,
+): string[] => {
+  if (entry.media_library_names?.length) return entry.media_library_names;
+  if (entry.version_library_name) return [entry.version_library_name];
+  if (entry.series_library_refs?.length) {
+    return entry.series_library_refs.map((ref) => ref.library_name);
+  }
+  return [];
+};
+
+export const candidateWatchCountLabel = (
+  entry: ReclaimCandidateEntry,
+): string => {
+  if (!entry.media_last_viewed_at) return "Never watched";
+  const count = entry.media_view_count ?? 0;
+  return `${count} view${count === 1 ? "" : "s"}`;
+};
+
+export const candidateMediaMetaFields = (
+  entry: ReclaimCandidateEntry,
+  formatDate: (value: string) => string,
+  includeFlagged = true,
+): CandidateMetaField[] => {
+  const fields: CandidateMetaField[] = [];
+  const libraries = candidateLibraryNames(entry);
+  if (libraries.length > 0) {
+    fields.push({ label: "Library", value: libraries.join(", ") });
+  }
+  fields.push({ label: "Watch Count", value: candidateWatchCountLabel(entry) });
+  if (entry.media_added_at) {
+    fields.push({ label: "Added", value: formatDate(entry.media_added_at) });
+  }
+  if (entry.media_last_viewed_at) {
+    fields.push({
+      label: "Last Viewed",
+      value: formatDate(entry.media_last_viewed_at),
+    });
+  }
+  if (includeFlagged) {
+    fields.push({ label: "Flagged", value: formatDate(entry.created_at) });
+  }
+  return fields;
+};
+
 export const versionResolutionLabel = (
   entry: ReclaimCandidateEntry,
 ): string => {

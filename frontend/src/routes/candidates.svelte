@@ -126,7 +126,7 @@
   let bulkDeleteSubmitting = $state(false);
 
   const sortByOptions = [
-    { value: "created_at", label: "Date Added" },
+    { value: "created_at", label: "Flagged" },
     { value: "media_title", label: "Title" },
     { value: "estimated_space_bytes", label: "Size" },
   ];
