@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added date
   - Last viewed
 
+### Changed
+
+- Change 'Date Added` to 'Flagged' for candidates for clarity
+
 ## [0.1.0-beta.30] - 2026-06-09
 
 ### Changed
