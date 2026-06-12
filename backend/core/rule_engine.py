@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database.models import (
     Episode,
     Movie,
@@ -43,6 +44,7 @@ FIELD_LABELS: dict[str, str] = {
     "tmdb.release_date": "TMDB release date",
     "tmdb.in_collection": "TMDB in collection",
     "tmdb.collection_name": "TMDB collection name",
+    "tmdb.genres": "TMDB genres",
     "tmdb.first_air_date": "TMDB first air date",
     "tmdb.last_air_date": "TMDB last air date",
     "season.air_date": "Season air date",
@@ -85,6 +87,7 @@ FIELD_LABELS: dict[str, str] = {
     "video.color_transfer": "Color transfer",
     "video.color_primaries": "Color primaries",
     "media.duration": "Duration",
+    "media_server.collections": "Media server collections",
     "arr.tags": "Arr tags",
     "arr.monitored": "Arr monitored",
     "seerr.requested": "Seerr requested",
@@ -162,6 +165,8 @@ NUMERIC_FIELDS = {
 }
 TEXT_FIELDS = {
     "tmdb.collection_name",
+    "tmdb.genres",
+    "media_server.collections",
     "series.status",
     "video.codec_family",
     "audio.codec_family",
@@ -172,6 +177,7 @@ TEXT_FIELDS = {
     "video.color_transfer",
     "video.color_primaries",
     "arr.tags",
+    "media_server.collections",
     "seerr.requested_by_user_ids",
 }
 MULTI_VALUE_TEXT_FIELDS = {
@@ -245,6 +251,14 @@ SEERR_REQUESTER_ID_OPERATORS = {
     "exists",
     "not_exists",
 }
+MULTI_VALUE_TEXT_OPERATORS = {
+    "contains_any",
+    "not_contains_any",
+    "contains_all",
+    "not_contains_all",
+    "exists",
+    "not_exists",
+}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -270,6 +284,8 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(BOOLEAN_OPERATORS) for field in BOOLEAN_FIELDS},
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
+    "tmdb.genres": set(MULTI_VALUE_TEXT_OPERATORS),
+    "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
 }
 
@@ -294,6 +310,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.file_name",
         "media.path",
         "media.size",
+        "media_server.collections",
         "seerr.requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
@@ -301,6 +318,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_release",
         "tmdb.in_collection",
         "tmdb.collection_name",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.release_date",
         "tmdb.vote_average",
@@ -336,6 +354,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.file_name",
         "media.path",
         "media.size",
+        "media_server.collections",
         "seerr.requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
@@ -345,6 +364,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -376,6 +396,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.file_name",
         "media.path",
         "media.size",
+        "media_server.collections",
         "season.air_date",
         "season.days_since_air_date",
         "season.episode_count",
@@ -393,6 +414,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -425,6 +447,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.file_name",
         "media.path",
         "media.size",
+        "media_server.collections",
         "season.air_date",
         "season.days_since_air_date",
         "season.episode_count",
@@ -441,6 +464,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -785,6 +809,13 @@ def _rule_uses_disk_fields(definition: RuleDefinition | None) -> bool:
     )
 
 
+def _collection_names_from_series_refs(refs: Iterable[Any]) -> list[str]:
+    names: list[str] = []
+    for ref in refs:
+        names.extend(ref.media_server_collection_names or [])
+    return normalize_name_list(names) or []
+
+
 def _has_valid_definition(definition: RuleDefinition | None) -> bool:
     """Check if the rule definition has a valid structure with a root group."""
     return isinstance(definition, dict) and isinstance(definition.get("root"), dict)
@@ -899,6 +930,7 @@ def _build_context(
             "media.path": [version.path] if version.path else [],
             "media.file_name": [_file_name] if _file_name else [],
             "media.size": size,
+            "media_server.collections": version.media_server_collection_names or [],
             "media.days_since_added": _days_between(
                 version.added_at or movie.added_at, now
             ),
@@ -913,6 +945,7 @@ def _build_context(
                 else None
             ),
             "tmdb.collection_name": movie.tmdb_collection_name,
+            "tmdb.genres": normalize_genre_names(movie.genres) or [],
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
             "tmdb.vote_average": movie.vote_average,
@@ -962,6 +995,7 @@ def _build_context(
 
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
+        _collections = _collection_names_from_series_refs(refs)
         _series_path = next((ref.path for ref in refs if ref.path), None)
         _series_file_names = [
             file_name
@@ -977,6 +1011,7 @@ def _build_context(
             "media.path": [ref.path for ref in refs if ref.path],
             "media.file_name": _series_file_names,
             "media.size": series.size,
+            "media_server.collections": _collections,
             "media.days_since_added": _days_between(series.added_at, now),
             "watch.view_count": series.view_count,
             "watch.last_viewed_at": _last_viewed,
@@ -993,6 +1028,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,
@@ -1032,6 +1068,7 @@ def _build_context(
 
     if target_scope == TARGET_SEASON and series and season:
         refs = series.service_refs or []
+        _collections = _collection_names_from_series_refs(refs)
         _season_file_name = _path_basename(season.path)
         non_special_nums = sorted(
             s.season_number for s in (series.seasons or []) if s.season_number > 0
@@ -1053,6 +1090,7 @@ def _build_context(
             "media.path": [ref.path for ref in refs if ref.path],
             "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
+            "media_server.collections": _collections,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": season.view_count,
             "watch.last_viewed_at": _last_viewed,
@@ -1078,6 +1116,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,
@@ -1118,6 +1157,7 @@ def _build_context(
 
     if target_scope == TARGET_EPISODE and series and season and episode:
         refs = series.service_refs or []
+        _collections = _collection_names_from_series_refs(refs)
         _episode_file_name = _path_basename(episode.path)
         season_fully_watched_ep, season_watched_percent_ep = _season_watch_progress(
             season
@@ -1147,6 +1187,7 @@ def _build_context(
             "media.path": [episode.path] if episode.path else [],
             "media.file_name": [_episode_file_name] if _episode_file_name else [],
             "media.size": episode.size,
+            "media_server.collections": _collections,
             "media.days_since_added": _days_between(season.added_at, now),
             "watch.view_count": episode.view_count,
             "watch.last_viewed_at": _last_viewed_ep,
@@ -1175,6 +1216,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,

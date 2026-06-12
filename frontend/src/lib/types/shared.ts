@@ -200,8 +200,34 @@ export interface MovieCollectionLookup {
   movie_count: number;
 }
 
+export interface GenreLookup {
+  name: string;
+  media_count: number;
+}
+
+export interface MediaServerCollectionLookup {
+  name: string;
+  media_count: number;
+}
+
 export interface PaginatedMovieCollectionsResponse {
   items: MovieCollectionLookup[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export interface PaginatedGenresResponse {
+  items: GenreLookup[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export interface PaginatedMediaServerCollectionsResponse {
+  items: MediaServerCollectionLookup[];
   total: number;
   page: number;
   per_page: number;
@@ -784,6 +810,10 @@ export interface ReclaimCandidateEntry {
   vote_average: number | null;
   vote_count: number | null;
   tmdb_status: string | null;
+  media_library_names: string[] | null;
+  media_added_at: string | null;
+  media_last_viewed_at: string | null;
+  media_view_count: number | null;
   version_service: string | null;
   version_library_id: string | null;
   version_library_name: string | null;

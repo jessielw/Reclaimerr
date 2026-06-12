@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.api.routes.rules import get_movie_collections
+from backend.api.routes.rules import (
+    get_genres,
+    get_media_server_collections,
+    get_movie_collections,
+)
 from backend.database import Base
-from backend.database.models import Movie, User
-from backend.enums import UserRole
+from backend.database.models import Movie, MovieVersion, Series, SeriesServiceRef, User
+from backend.enums import MediaType, Service, UserRole
 
 
 def _admin_user() -> User:
@@ -179,6 +184,183 @@ def test_get_movie_collections_search_is_case_insensitive() -> None:
             assert len(response.items) == 1
             assert response.items[0].name == "Star Wars Collection"
             assert response.items[0].movie_count == 1
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_genres_paginates_counts_and_filters_by_media_type() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            action_one = Movie(title="Action One", tmdb_id=3001)
+            action_two = Movie(title="Action Two", tmdb_id=3002)
+            drama_show = Series(title="Drama Show", tmdb_id=4001)
+            cast(Any, action_one).genres = [
+                {"id": 28, "name": "Action"},
+                {"id": 35, "name": "Comedy"},
+            ]
+            cast(Any, action_two).genres = [
+                {"id": 28, "name": "action"},
+                {"id": 878, "name": "Science Fiction"},
+            ]
+            cast(Any, drama_show).genres = [{"id": 18, "name": "Drama"}]
+            db.add_all([action_one, action_two, drama_show])
+            removed_movie = Movie(
+                title="Removed Action",
+                tmdb_id=3003,
+            )
+            cast(Any, removed_movie).genres = [{"id": 28, "name": "Action"}]
+            removed_movie.removed_at = datetime(2026, 1, 1, tzinfo=UTC)
+            db.add(removed_movie)
+            await db.commit()
+
+            page_one = await get_genres(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="",
+                page=1,
+                per_page=2,
+            )
+            assert page_one.total == 3
+            assert page_one.total_pages == 2
+            assert [(item.name, item.media_count) for item in page_one.items] == [
+                ("Action", 2),
+                ("Comedy", 1),
+            ]
+
+            search = await get_genres(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="science",
+                page=1,
+                per_page=50,
+            )
+            assert search.total == 1
+            assert search.items[0].name == "Science Fiction"
+            assert search.items[0].media_count == 1
+
+            series_response = await get_genres(
+                admin,
+                db,
+                media_type=MediaType.SERIES,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert series_response.total == 1
+            assert series_response.items[0].name == "Drama"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_media_server_collections_counts_distinct_media() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            movie_one = Movie(title="One", tmdb_id=5001)
+            movie_two = Movie(title="Two", tmdb_id=5002)
+            series = Series(title="Show", tmdb_id=6001)
+            db.add_all([movie_one, movie_two, series])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieVersion(
+                        movie_id=movie_one.id,
+                        service=Service.PLEX,
+                        service_item_id="m1",
+                        service_media_id="mv1",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["Leaving Soon", "Holiday"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie_one.id,
+                        service=Service.JELLYFIN,
+                        service_item_id="m1-jf",
+                        service_media_id="mv1-jf",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["leaving soon"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie_two.id,
+                        service=Service.EMBY,
+                        service_item_id="m2",
+                        service_media_id="mv2",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["Holiday"],
+                    ),
+                    SeriesServiceRef(
+                        series_id=series.id,
+                        service=Service.PLEX,
+                        service_id="s1",
+                        library_id="show-lib",
+                        library_name="Shows",
+                        media_server_collection_names=["Leaving Soon"],
+                    ),
+                ]
+            )
+            await db.commit()
+
+            movies = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert movies.total == 2
+            assert [(item.name, item.media_count) for item in movies.items] == [
+                ("Holiday", 2),
+                ("Leaving Soon", 1),
+            ]
+
+            search = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="leaving",
+                page=1,
+                per_page=50,
+            )
+            assert search.total == 1
+            assert search.items[0].name == "Leaving Soon"
+            assert search.items[0].media_count == 1
+
+            series_response = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.SERIES,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert series_response.total == 1
+            assert series_response.items[0].name == "Leaving Soon"
 
         await engine.dispose()
 
