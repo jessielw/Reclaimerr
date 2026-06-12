@@ -4,6 +4,7 @@
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import { toTitleCase } from "$lib/utils/strings";
   import { ruleNames } from "$lib/utils/candidate-rules";
+  import { candidateMediaMetaFields } from "$lib/components/candidates/view-utils";
 
   type DetailField = { label: string; value: string };
   type DetailSection = { title: string; fields: DetailField[] };
@@ -89,13 +90,7 @@
             .join(", ")
         : unknownValue,
     },
-    {
-      label: "Libraries",
-      value: item.series_library_refs?.length
-        ? item.series_library_refs.map((ref) => ref.library_name).join(", ")
-        : unknownValue,
-    },
-    { label: "Flagged", value: formatDate(item.created_at) },
+    ...candidateMediaMetaFields(item, formatDate),
     { label: "Season", value: textValue(item.season_number) },
   ];
 

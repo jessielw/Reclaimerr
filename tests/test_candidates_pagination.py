@@ -15,6 +15,7 @@ from backend.database.models import (
     ReclaimCandidate,
     Season,
     Series,
+    SeriesServiceRef,
     User,
 )
 from backend.enums import MediaType, Service, UserRole
@@ -70,6 +71,18 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
     bravo = Movie(title="Bravo Movie", tmdb_id=102, year=2002, size=1000)
     charlie = Series(title="Charlie Show", tmdb_id=201, year=2010, size=500)
     delta = Series(title="Delta Show", tmdb_id=202, year=2011, size=900)
+    alpha.added_at = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
+    alpha.last_viewed_at = datetime(2025, 5, 1, 10, 0, tzinfo=UTC)
+    alpha.view_count = 3
+    bravo.added_at = datetime(2025, 1, 2, 10, 0, tzinfo=UTC)
+    bravo.last_viewed_at = datetime(2025, 5, 2, 10, 0, tzinfo=UTC)
+    bravo.view_count = 4
+    charlie.added_at = datetime(2025, 1, 3, 10, 0, tzinfo=UTC)
+    charlie.last_viewed_at = datetime(2025, 5, 3, 10, 0, tzinfo=UTC)
+    charlie.view_count = 5
+    delta.added_at = datetime(2025, 1, 4, 10, 0, tzinfo=UTC)
+    delta.last_viewed_at = datetime(2025, 5, 4, 10, 0, tzinfo=UTC)
+    delta.view_count = 6
     alpha.imdb_id = "tt0000101"
     alpha.imdb_rating = 7.4
     alpha.imdb_vote_count = 12500
@@ -98,6 +111,7 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
         library_id="movies",
         library_name="Movies",
         size=400,
+        added_at=datetime(2025, 2, 1, 10, 0, tzinfo=UTC),
         file_name="bravo-1.mkv",
     )
     bravo_v2 = MovieVersion(
@@ -108,12 +122,27 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
         library_id="movies",
         library_name="Movies",
         size=600,
+        added_at=datetime(2025, 2, 2, 10, 0, tzinfo=UTC),
         file_name="bravo-2.mkv",
     )
-    db.add_all([bravo_v1, bravo_v2])
+    alpha_v1 = MovieVersion(
+        movie_id=alpha.id,
+        service=Service.PLEX,
+        service_item_id="alpha-item-1",
+        service_media_id="alpha-media-1",
+        library_id="movies",
+        library_name="Movies",
+        size=700,
+        added_at=datetime(2025, 2, 3, 10, 0, tzinfo=UTC),
+        file_name="alpha-1.mkv",
+    )
+    db.add_all([alpha_v1, bravo_v1, bravo_v2])
     await db.flush()
 
     charlie_s1 = Season(series_id=charlie.id, season_number=1, size=300)
+    charlie_s1.added_at = datetime(2025, 3, 1, 10, 0, tzinfo=UTC)
+    charlie_s1.last_viewed_at = datetime(2025, 5, 5, 10, 0, tzinfo=UTC)
+    charlie_s1.view_count = 7
     db.add(charlie_s1)
     await db.flush()
 
@@ -122,8 +151,24 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
         episode_number=1,
         name="Pilot",
         size=100,
+        last_viewed_at=datetime(2025, 5, 6, 10, 0, tzinfo=UTC),
+        view_count=8,
     )
-    db.add(charlie_ep1)
+    charlie_ref = SeriesServiceRef(
+        series_id=charlie.id,
+        service=Service.PLEX,
+        service_id="charlie-show",
+        library_id="series",
+        library_name="TV Shows",
+    )
+    delta_ref = SeriesServiceRef(
+        series_id=delta.id,
+        service=Service.PLEX,
+        service_id="delta-show",
+        library_id="series",
+        library_name="TV Shows",
+    )
+    db.add_all([charlie_ep1, charlie_ref, delta_ref])
     await db.flush()
 
     created = lambda day: datetime(2026, 1, day, 12, 0, tzinfo=UTC)
@@ -373,6 +418,67 @@ def test_get_candidates_includes_imdb_fields() -> None:
             assert series_entry.tmdb_collection_id is None
             assert series_entry.tmdb_collection_name is None
             assert series_entry.tmdb_in_collection is None
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_includes_media_page_metadata() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+
+            response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search=None,
+                media_type=None,
+            )
+            by_id = {item.id: item for item in response.items}
+
+            alpha = by_id[ids["alpha_candidate_id"]]
+            assert alpha.media_library_names == ["Movies"]
+            assert alpha.media_added_at == "2025-01-01T10:00:00+00:00"
+            assert alpha.media_last_viewed_at == "2025-05-01T10:00:00+00:00"
+            assert alpha.media_view_count == 3
+
+            bravo_v1 = by_id[ids["bravo_candidate_ids"][0]]
+            assert bravo_v1.media_library_names == ["Movies"]
+            assert bravo_v1.media_added_at == "2025-02-01T10:00:00+00:00"
+            assert bravo_v1.media_last_viewed_at == "2025-05-02T10:00:00+00:00"
+            assert bravo_v1.media_view_count == 4
+
+            charlie_whole = by_id[ids["charlie_candidate_ids"][0]]
+            assert charlie_whole.media_library_names == ["TV Shows"]
+            assert charlie_whole.media_added_at == "2025-01-03T10:00:00+00:00"
+            assert charlie_whole.media_last_viewed_at == "2025-05-03T10:00:00+00:00"
+            assert charlie_whole.media_view_count == 5
+
+            charlie_season = by_id[ids["charlie_candidate_ids"][1]]
+            assert charlie_season.media_library_names == ["TV Shows"]
+            assert charlie_season.media_added_at == "2025-03-01T10:00:00+00:00"
+            assert charlie_season.media_last_viewed_at == "2025-05-05T10:00:00+00:00"
+            assert charlie_season.media_view_count == 7
+
+            charlie_episode = by_id[ids["charlie_candidate_ids"][2]]
+            assert charlie_episode.media_library_names == ["TV Shows"]
+            assert charlie_episode.media_added_at is None
+            assert (
+                charlie_episode.media_last_viewed_at
+                == "2025-05-06T10:00:00+00:00"
+            )
+            assert charlie_episode.media_view_count == 8
 
         await engine.dispose()
 

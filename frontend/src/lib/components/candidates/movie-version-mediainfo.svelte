@@ -7,6 +7,7 @@
     extractPathNoFile,
     fileNameFromPath,
   } from "$lib/utils/candidate-rules";
+  import { candidateMediaMetaFields } from "$lib/components/candidates/view-utils";
 
   type DetailField = { label: string; value: string };
   type DetailSection = { title: string; fields: DetailField[] };
@@ -105,8 +106,7 @@
       label: "Service",
       value: textValue(toTitleCase(item.version_service || "")),
     },
-    { label: "Library", value: textValue(item.version_library_name) },
-    { label: "Flagged", value: formatDate(item.created_at) },
+    ...candidateMediaMetaFields(item, formatDate),
   ];
 
   const visibleFields = (fields: DetailField[]): DetailField[] =>

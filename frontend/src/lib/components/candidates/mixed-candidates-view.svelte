@@ -18,6 +18,7 @@
   import CandidateSeasonInfoDialog from "$lib/components/candidates/candidate-season-info-dialog.svelte";
   import {
     UNKNOWN_VALUE,
+    candidateMediaMetaFields,
     groupEpisodesBySeason,
     movieSummaryChips,
     newestCandidateCreatedAt,
@@ -140,6 +141,13 @@
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.versions)}
       {@const groupDateAdded = newestCandidateCreatedAt(row.versions)}
+      {@const groupMetaFields = candidateMediaMetaFields(
+        {
+          ...row.versions[0],
+          created_at: groupDateAdded ?? row.versions[0].created_at,
+        },
+        formatDate,
+      )}
       <div class="p-4 space-y-3">
         <div class="flex gap-3">
           {#if canBulkSelect}
@@ -192,11 +200,16 @@
                     </span>
                   {/each}
                 </div>
-                {#if groupDateAdded}
-                  <div class="mt-2 text-xs text-muted-foreground">
-                    Date Added: {formatDate(groupDateAdded)}
-                  </div>
-                {/if}
+                <div class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                  {#each groupMetaFields as field}
+                    <span class="text-xs text-muted-foreground wrap-break-word">
+                      {field.label}:
+                      <span class="font-medium text-foreground/80"
+                        >{field.value}</span
+                      >
+                    </span>
+                  {/each}
+                </div>
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}
@@ -217,6 +230,11 @@
             <h2>Versions</h2>
             {#each row.versions as version (version.id)}
               {@const previewRules = rulePreview(version)}
+              {@const metaFields = candidateMediaMetaFields(
+                version,
+                formatDate,
+                false,
+              )}
               <div
                 class="flex gap-3 rounded-md border border-border bg-muted/30 p-3"
               >
@@ -236,7 +254,7 @@
                       >
                         FILE NAME
                         <div class="text-xs text-muted-foreground">
-                          {formatDate(version.created_at)}
+                          Flagged: {formatDate(version.created_at)}
                         </div>
                       </div>
                       <div class="text-foreground break-all">
@@ -280,16 +298,16 @@
                     </div>
                   {/if}
 
-                  {#if version.version_library_name}
+                  {#each metaFields as field}
                     <div class="space-y-1 text-xs">
                       <div class="tracking-wide text-muted-foreground">
-                        LIBRARY
+                        {field.label.toUpperCase()}
                       </div>
-                      <div class="text-foreground">
-                        {version.version_library_name}
+                      <div class="text-foreground break-all">
+                        {field.value}
                       </div>
                     </div>
-                  {/if}
+                  {/each}
 
                   {#if previewRules.length > 0}
                     <div class="space-y-1">
@@ -335,6 +353,14 @@
       {@const groupDateAdded = newestCandidateCreatedAt(
         row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
       )}
+      {@const groupMetaSource = row.seriesEntry ?? row.seasons[0]}
+      {@const seriesGroupMetaFields = candidateMediaMetaFields(
+        {
+          ...groupMetaSource,
+          created_at: groupDateAdded ?? groupMetaSource.created_at,
+        },
+        formatDate,
+      )}
       <div class="p-4 space-y-3">
         <div class="flex gap-3">
           {#if canBulkSelect}
@@ -377,11 +403,16 @@
                 <div class="mt-2 text-xs text-muted-foreground">
                   Total: {formatFileSize(groupTotalBytes(row))}
                 </div>
-                {#if groupDateAdded}
-                  <div class="mt-1 text-xs text-muted-foreground">
-                    Date Added: {formatDate(groupDateAdded)}
-                  </div>
-                {/if}
+                <div class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                  {#each seriesGroupMetaFields as field}
+                    <span class="text-xs text-muted-foreground wrap-break-word">
+                      {field.label}:
+                      <span class="font-medium text-foreground/80"
+                        >{field.value}</span
+                      >
+                    </span>
+                  {/each}
+                </div>
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   {#if allRules.length > 0}
                     {#each allRules as rule}
@@ -413,6 +444,11 @@
               {#each seasonItems as season (season.id)}
                 {@const preview = rulePreview(season)}
                 {@const extraCount = extraRuleCount(season)}
+                {@const metaFields = candidateMediaMetaFields(
+                  season,
+                  formatDate,
+                  false,
+                )}
                 <div
                   class="flex gap-3 rounded-md border border-border bg-muted/30 p-3"
                 >
@@ -431,7 +467,7 @@
                       >
                         SEASON
                         <div class="text-xs text-muted-foreground">
-                          {formatDate(season.created_at)}
+                          Flagged: {formatDate(season.created_at)}
                         </div>
                       </div>
                       <div class="text-foreground">
@@ -465,18 +501,16 @@
                       </div>
                     {/if}
 
-                    {#if season.series_library_refs?.length}
+                    {#each metaFields as field}
                       <div class="space-y-1 text-xs">
                         <div class="tracking-wide text-muted-foreground">
-                          LIBRARIES
+                          {field.label.toUpperCase()}
                         </div>
                         <div class="text-foreground break-all">
-                          {season.series_library_refs
-                            .map((ref) => ref.library_name)
-                            .join(", ")}
+                          {field.value}
                         </div>
                       </div>
-                    {/if}
+                    {/each}
 
                     {#if preview.length > 0}
                       <div class="space-y-1">
@@ -559,6 +593,11 @@
                       {@const preview = rulePreview(ep)}
                       {@const extraCount = extraRuleCount(ep)}
                       {@const epLabel = `S${String(ep.season_number ?? 0).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`}
+                      {@const metaFields = candidateMediaMetaFields(
+                        ep,
+                        formatDate,
+                        false,
+                      )}
                       <div
                         class="flex gap-3 rounded-md border border-border bg-muted/30 p-3"
                       >
@@ -577,7 +616,7 @@
                             >
                               EPISODE
                               <div class="text-xs text-muted-foreground">
-                                {formatDate(ep.created_at)}
+                                Flagged: {formatDate(ep.created_at)}
                               </div>
                             </div>
                             <div class="text-foreground font-mono">
@@ -600,6 +639,17 @@
                               </div>
                             </div>
                           {/if}
+
+                          {#each metaFields as field}
+                            <div class="space-y-1 text-xs">
+                              <div class="tracking-wide text-muted-foreground">
+                                {field.label.toUpperCase()}
+                              </div>
+                              <div class="text-foreground break-all">
+                                {field.value}
+                              </div>
+                            </div>
+                          {/each}
 
                           {#if preview.length > 0}
                             <div class="space-y-1">
