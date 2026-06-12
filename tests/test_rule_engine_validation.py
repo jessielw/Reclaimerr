@@ -191,6 +191,36 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             target_scope=TARGET_SEASON,
         )
 
+    def test_accepts_media_server_collections_multi_value_operator(self) -> None:
+        validate_rule_definition(
+            _definition(
+                "media_server.collections",
+                "contains_all",
+                ["Leaving Soon", "Holiday"],
+            ),
+            target_scope=TARGET_MOVIE_VERSION,
+        )
+
+    def test_rejects_media_server_collections_numeric_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'media_server.collections'",
+        ):
+            validate_rule_definition(
+                _definition("media_server.collections", "greater_than", 1),
+                target_scope=TARGET_MOVIE_VERSION,
+            )
+
+    def test_accepts_media_server_collections_for_season_scope(self) -> None:
+        validate_rule_definition(
+            _definition(
+                "media_server.collections",
+                "contains_any",
+                ["Leaving Soon"],
+            ),
+            target_scope=TARGET_SEASON,
+        )
+
     def test_accepts_temporal_field_before_operator(self) -> None:
         validate_rule_definition(
             _definition("tmdb.release_date", "before", "2026-01-01")

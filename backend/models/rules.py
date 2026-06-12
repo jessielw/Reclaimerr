@@ -75,3 +75,16 @@ class PaginatedGenresResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class MediaServerCollectionLookupResponse(BaseModel):
+    name: str
+    media_count: int
+
+
+class PaginatedMediaServerCollectionsResponse(BaseModel):
+    items: list[MediaServerCollectionLookupResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

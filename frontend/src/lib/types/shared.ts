@@ -205,6 +205,11 @@ export interface GenreLookup {
   media_count: number;
 }
 
+export interface MediaServerCollectionLookup {
+  name: string;
+  media_count: number;
+}
+
 export interface PaginatedMovieCollectionsResponse {
   items: MovieCollectionLookup[];
   total: number;
@@ -215,6 +220,14 @@ export interface PaginatedMovieCollectionsResponse {
 
 export interface PaginatedGenresResponse {
   items: GenreLookup[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export interface PaginatedMediaServerCollectionsResponse {
+  items: MediaServerCollectionLookup[];
   total: number;
   page: number;
   per_page: number;

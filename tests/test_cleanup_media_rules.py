@@ -1118,6 +1118,119 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(_evaluate_movie_rule(movie, exists_rule, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, missing_rule, {}, []))
 
+    def test_evaluate_movie_rule_media_server_collections_matches_version(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(service_media_id="m1", service_item_id="i1")
+        version.media_server_collection_names = ["Leaving Soon", "Holiday"]
+        movie.versions = [version]
+
+        match_rule = _make_single_condition_rule(
+            name="movie-media-server-collection-match",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media_server.collections",
+            operator="contains_any",
+            value=["leaving soon"],
+        )
+        miss_rule = _make_single_condition_rule(
+            name="movie-media-server-collection-miss",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media_server.collections",
+            operator="contains_all",
+            value=["Leaving Soon", "Kids"],
+        )
+        not_all_rule = _make_single_condition_rule(
+            name="movie-media-server-collection-not-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media_server.collections",
+            operator="not_contains_all",
+            value=["Leaving Soon", "Kids"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, match_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, miss_rule, {}, []))
+        self.assertTrue(_evaluate_movie_rule(movie, not_all_rule, {}, []))
+
+    def test_evaluate_series_scopes_use_service_ref_media_server_collections(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        ref = _make_series_ref(service_id="series-1")
+        ref.media_server_collection_names = ["Leaving Soon", "Favorites"]
+        series.service_refs = [ref]
+        season = Season(
+            series_id=1,
+            season_number=1,
+            episode_count=1,
+            size=5 * 1024**3,
+            view_count=0,
+        )
+        episode = Episode(
+            season_id=1,
+            episode_number=1,
+            size=1024,
+            view_count=0,
+        )
+        series.seasons = [season]
+        season.episodes = [episode]
+
+        series_rule = _make_single_condition_rule(
+            name="series-media-server-collection",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="media_server.collections",
+            operator="contains_all",
+            value=["Leaving Soon", "Favorites"],
+        )
+        season_rule = _make_single_condition_rule(
+            name="season-media-server-collection",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="media_server.collections",
+            operator="contains_any",
+            value=["leaving soon"],
+        )
+        episode_rule = _make_single_condition_rule(
+            name="episode-media-server-collection",
+            media_type=MediaType.SERIES,
+            target_scope="episode",
+            field="media_server.collections",
+            operator="not_contains_any",
+            value=["Kids"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, series_rule, {}, []))
+        self.assertTrue(_evaluate_rule_for_season(series, season, season_rule, {}, []))
+        self.assertTrue(
+            _evaluate_rule_for_episode(
+                series,
+                season,
+                episode,
+                episode_rule,
+                {},
+                [],
+            )
+        )
+
+    def test_evaluate_movie_rule_media_server_collections_missing(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-media-server-collection-missing",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media_server.collections",
+            operator="not_exists",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
     def test_evaluate_movie_rule_media_path_contains_all_and_negation(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         movie.versions = [

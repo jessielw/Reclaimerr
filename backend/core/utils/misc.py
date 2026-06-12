@@ -36,4 +36,22 @@ def normalize_genre_names(genres: Any) -> list[str] | None:
         if name:
             names.append(name)
 
+    return normalize_name_list(names)
+
+
+def normalize_name_list(values: Any) -> list[str] | None:
+    """Normalize arbitrary name values into a sorted, case-insensitive unique list."""
+    if values is None:
+        return None
+
+    seen: dict[str, str] = {}
+    for value in values if isinstance(values, list) else [values]:
+        name = str(value or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in seen:
+            seen[key] = name
+
+    names = sorted(seen.values(), key=lambda item: item.lower())
     return names or None

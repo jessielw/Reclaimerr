@@ -20,7 +20,7 @@ from backend.core.rule_engine import (
     validate_rule_definition,
 )
 from backend.core.utils.filesystem import normalize_fpath
-from backend.core.utils.misc import normalize_genre_names
+from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -42,8 +42,10 @@ from backend.models.cleanup import (
 from backend.models.media import PaginatedRulePreviewResponse, RulePreviewMetadata
 from backend.models.rules import (
     GenreLookupResponse,
+    MediaServerCollectionLookupResponse,
     MovieCollectionLookupResponse,
     PaginatedGenresResponse,
+    PaginatedMediaServerCollectionsResponse,
     PaginatedMovieCollectionsResponse,
     RulePreviewRequest,
     SeerrUserLookupResponse,
@@ -640,6 +642,73 @@ async def get_genres(
         items=[
             GenreLookupResponse(name=name, media_count=count)
             for name, count in page_items
+        ],
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
+
+
+@router.get(
+    "/rules/media-server-collections",
+    response_model=PaginatedMediaServerCollectionsResponse,
+)
+async def get_media_server_collections(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+    media_type: MediaType = MediaType.MOVIE,
+    q: Annotated[str, Query(max_length=200)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> PaginatedMediaServerCollectionsResponse:
+    """Return paginated media-server collection names from active local media."""
+    if media_type is MediaType.MOVIE:
+        rows = await db.execute(
+            select(Movie.id, MovieVersion.media_server_collection_names)
+            .join(MovieVersion, MovieVersion.movie_id == Movie.id)
+            .where(
+                Movie.removed_at.is_(None),
+                MovieVersion.media_server_collection_names.is_not(None),
+            )
+        )
+    else:
+        rows = await db.execute(
+            select(Series.id, SeriesServiceRef.media_server_collection_names)
+            .join(SeriesServiceRef, SeriesServiceRef.series_id == Series.id)
+            .where(
+                Series.removed_at.is_(None),
+                SeriesServiceRef.media_server_collection_names.is_not(None),
+            )
+        )
+
+    needle = q.strip().lower()
+    media_ids_by_name: dict[str, tuple[str, set[int]]] = {}
+    for media_id, raw_names in rows.all():
+        for name in normalize_name_list(raw_names) or []:
+            normalized = name.lower()
+            if needle and needle not in normalized:
+                continue
+            display_name, media_ids = media_ids_by_name.get(normalized, (name, set()))
+            media_ids.add(int(media_id))
+            media_ids_by_name[normalized] = (display_name, media_ids)
+
+    sorted_items = sorted(
+        media_ids_by_name.values(),
+        key=lambda item: item[0].lower(),
+    )
+    total = len(sorted_items)
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    offset = (page - 1) * per_page
+    page_items = sorted_items[offset : offset + per_page]
+
+    return PaginatedMediaServerCollectionsResponse(
+        items=[
+            MediaServerCollectionLookupResponse(
+                name=name,
+                media_count=len(media_ids),
+            )
+            for name, media_ids in page_items
         ],
         total=total,
         page=page,

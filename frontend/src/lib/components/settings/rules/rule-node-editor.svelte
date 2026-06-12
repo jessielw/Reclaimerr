@@ -6,6 +6,7 @@
   import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
   import MovieCollectionPicker from "$lib/components/settings/rules/movie-collection-picker.svelte";
   import GenrePicker from "$lib/components/settings/rules/genre-picker.svelte";
+  import MediaServerCollectionPicker from "$lib/components/settings/rules/media-server-collection-picker.svelte";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
@@ -62,6 +63,7 @@
   let seerrPickerOpen = $state(false);
   let collectionPickerOpen = $state(false);
   let genrePickerOpen = $state(false);
+  let mediaServerCollectionPickerOpen = $state(false);
 
   const operatorLabelMap: Record<RuleConditionOperator, string> = {
     equals: "is",
@@ -560,6 +562,13 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "media_server.collections",
+      label: "Media server collections",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
+    },
+    {
       value: "arr.tags",
       label: "Arr tags",
       kind: "text",
@@ -631,6 +640,7 @@
       "media.file_name",
       "media.path",
       "media.size",
+      "media_server.collections",
       "seerr.requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
@@ -674,6 +684,7 @@
       "media.file_name",
       "media.path",
       "media.size",
+      "media_server.collections",
       "seerr.requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
@@ -715,6 +726,7 @@
       "media.file_name",
       "media.path",
       "media.size",
+      "media_server.collections",
       "season.air_date",
       "season.days_since_air_date",
       "season.episode_count",
@@ -765,6 +777,7 @@
       "media.file_name",
       "media.path",
       "media.size",
+      "media_server.collections",
       "season.air_date",
       "season.days_since_air_date",
       "season.episode_count",
@@ -823,6 +836,8 @@
         return "Library";
       case "media":
         return "Media";
+      case "media_server":
+        return "Media Server";
       case "watch":
         return "Watch";
       case "tmdb":
@@ -925,6 +940,8 @@
     if (c.field === "tmdb.collection_name")
       return "Collection names (comma-separated)...";
     if (c.field === "tmdb.genres") return "Genres (comma-separated)...";
+    if (c.field === "media_server.collections")
+      return "Media-server collections (comma-separated)...";
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";
   };
@@ -1071,6 +1088,14 @@
   };
 
   const applyGenres = (c: RuleCondition, names: string[]) => {
+    const cleaned = [
+      ...new Set(names.map((name) => name.trim()).filter(Boolean)),
+    ];
+    c.value = cleaned;
+    onChange();
+  };
+
+  const applyMediaServerCollections = (c: RuleCondition, names: string[]) => {
     const cleaned = [
       ...new Set(names.map((name) => name.trim()).filter(Boolean)),
     ];
@@ -1338,6 +1363,17 @@
                 <span class="md:hidden">Pick</span>
               </Button>
             {/if}
+            {#if node.field === "media_server.collections" && pathPickerMediaType}
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (mediaServerCollectionPickerOpen = true)}
+              >
+                <span class="hidden md:inline">Pick Collections</span>
+                <span class="md:hidden">Pick</span>
+              </Button>
+            {/if}
             {#if node.field === "media.path" && node.operator === "matches_any_regex" && pathPickerMediaType}
               <Button
                 size="sm"
@@ -1407,6 +1443,15 @@
       mediaType={pathPickerMediaType}
       initialSelectedNames={normalizeValueList(node.value)}
       onApply={(names) => applyGenres(node, names)}
+    />
+  {/if}
+
+  {#if node.field === "media_server.collections" && pathPickerMediaType}
+    <MediaServerCollectionPicker
+      bind:open={mediaServerCollectionPickerOpen}
+      mediaType={pathPickerMediaType}
+      initialSelectedNames={normalizeValueList(node.value)}
+      onApply={(names) => applyMediaServerCollections(node, names)}
     />
   {/if}
 {/if}

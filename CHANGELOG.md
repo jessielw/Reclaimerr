@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Rule for TMDB genres
   - Added a TMDB genre rule picker modal
+- Rule for media server collections _(does require a full scan)_
+  - Added a media server collection rule picker modal
 
 ## [0.1.0-beta.30] - 2026-06-09
 

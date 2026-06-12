@@ -20,7 +20,7 @@ from backend.core.codecs import (
 )
 from backend.core.logger import LOG
 from backend.core.utils.filesystem import normalize_fpath
-from backend.core.utils.misc import as_float, as_int
+from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import MediaType, Service
@@ -264,6 +264,46 @@ class EmbyServiceBase:
                 item_ids.add(item_id)
         return item_ids
 
+    async def _get_collection_names_by_item_id(
+        self, *, include_item_types: str
+    ) -> dict[str, list[str]]:
+        data = await self._make_request(
+            "Items",
+            params={
+                "IncludeItemTypes": "BoxSet",
+                "Recursive": "true",
+                "Limit": 1000,
+                "Fields": "CollectionType",
+            },
+            timeout=300,
+        )
+        if not isinstance(data, dict):
+            return {}
+        items = data.get("Items", [])
+        if not isinstance(items, list):
+            return {}
+
+        names_by_item_id: dict[str, list[str]] = {}
+        for collection in items:
+            if not isinstance(collection, dict):
+                continue
+            collection_id = str(collection.get("Id", "")).strip()
+            collection_name = str(collection.get("Name", "")).strip()
+            if not collection_id or not collection_name:
+                continue
+            child_ids = await self._get_collection_item_ids(
+                collection_id=collection_id,
+                include_item_types=include_item_types,
+            )
+            for child_id in child_ids:
+                names_by_item_id.setdefault(child_id, []).append(collection_name)
+
+        return {
+            item_id: names
+            for item_id, raw_names in names_by_item_id.items()
+            if (names := normalize_name_list(raw_names))
+        }
+
     async def _create_collection(
         self, *, collection_title: str, item_ids: set[str]
     ) -> None:
@@ -485,6 +525,7 @@ class EmbyServiceBase:
         user_id: str,
         library_id: str,
         library_name: str,
+        collection_names_by_item_id: dict[str, list[str]] | None = None,
         filters: dict | None = None,
     ) -> list[EmbyMovieBase]:
         """Get movies for a specific user, optionally filtered by library.
@@ -542,6 +583,7 @@ class EmbyServiceBase:
                 tmdb_collection=provider_ids.get("TmdbCollection"),
                 tvdb=provider_ids.get("Tvdb"),
             )
+            collection_names = (collection_names_by_item_id or {}).get(item["Id"])
             # build one MovieVersionData per MediaSource (each = one physical file)
             added_at = (
                 datetime.fromisoformat(item["DateCreated"])
@@ -651,6 +693,7 @@ class EmbyServiceBase:
                                 else None
                             )
                         ),
+                        media_server_collection_names=collection_names,
                     )
                 )
             movie = EmbyMovieBase(
@@ -663,6 +706,7 @@ class EmbyServiceBase:
                 external_ids=external_ids,
                 versions=versions,
                 user_data=user_data,
+                media_server_collection_names=collection_names,
             )
             data.append(movie)
         return data
@@ -673,6 +717,7 @@ class EmbyServiceBase:
         library_id: str,
         library_name: str,
         series_sizes: dict[str, int] | None = None,
+        collection_names_by_item_id: dict[str, list[str]] | None = None,
         filters: dict | None = None,
     ) -> list[EmbySeriesBase]:
         """Get TV series for a specific user, optionally filtered by library.
@@ -747,6 +792,9 @@ class EmbyServiceBase:
                 external_ids=external_ids,
                 size=total_size,
                 user_data=user_data,
+                media_server_collection_names=(collection_names_by_item_id or {}).get(
+                    item["Id"]
+                ),
             )
             data.append(series)
         return data
@@ -1266,6 +1314,9 @@ class EmbyServiceBase:
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data across all users with optional library filters."""
         movie_data: dict[str, dict[str, Any]] = {}
+        collection_names_by_item_id = await self._get_collection_names_by_item_id(
+            include_item_types="Movie"
+        )
 
         # get all movie libraries
         all_libraries = await self.get_movie_libraries()
@@ -1285,7 +1336,10 @@ class EmbyServiceBase:
 
             for user in await self.get_users():
                 user_movies = await self.get_movies_for_user(
-                    user.id, library_id=library_id, library_name=library_name
+                    user.id,
+                    library_id=library_id,
+                    library_name=library_name,
+                    collection_names_by_item_id=collection_names_by_item_id,
                 )
 
                 for movie in user_movies:
@@ -1347,6 +1401,9 @@ class EmbyServiceBase:
         per user in a single API call instead of querying each series individually.
         """
         series_data: dict[str, dict[str, Any]] = {}
+        collection_names_by_item_id = await self._get_collection_names_by_item_id(
+            include_item_types="Series"
+        )
 
         # get all TV libraries
         all_libraries = await self.get_series_libraries()
@@ -1387,6 +1444,7 @@ class EmbyServiceBase:
                     library_id=library_id,
                     library_name=library_name,
                     series_sizes=series_sizes,
+                    collection_names_by_item_id=collection_names_by_item_id,
                 )
 
                 for series in user_series:
@@ -1411,6 +1469,7 @@ class EmbyServiceBase:
                             else 0,
                             "last_viewed_at": episode_last_watched,
                             "played_by_user_count": 1 if episode_last_watched else 0,
+                            "media_server_collection_names": series.media_server_collection_names,
                             "season_data": [
                                 v
                                 for k, v in season_data_map.items()

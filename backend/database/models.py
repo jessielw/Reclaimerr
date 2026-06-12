@@ -663,6 +663,9 @@ class MovieVersion(Base):
 
     # chapter metadata
     has_chapters: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    media_server_collection_names: Mapped[list[str] | None] = mapped_column(
+        JSON, default=None
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -698,6 +701,9 @@ class SeriesServiceRef(Base):
 
     # file info
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    media_server_collection_names: Mapped[list[str] | None] = mapped_column(
+        JSON, default=None
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False

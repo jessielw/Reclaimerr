@@ -38,6 +38,7 @@ class EmbyMovieBase:
     external_ids: ExternalIDs | None
     versions: list[MovieVersionData]
     user_data: EmbyUserDataBase | None
+    media_server_collection_names: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -54,3 +55,4 @@ class EmbySeriesBase:
     external_ids: ExternalIDs | None
     size: int
     user_data: EmbyUserDataBase | None
+    media_server_collection_names: list[str] | None = None

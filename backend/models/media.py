@@ -81,6 +81,7 @@ class MovieVersionData:
 
     # chapters
     has_chapters: bool | None = None
+    media_server_collection_names: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -166,6 +167,7 @@ class AggregatedSeriesData:
     last_viewed_at: datetime | None
     # jellyfin/emby specific (None for Plex)
     played_by_user_count: int | None = None
+    media_server_collection_names: list[str] | None = None
     # season level breakdown (populated by service layer)
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
 

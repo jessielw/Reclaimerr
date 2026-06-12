@@ -6,10 +6,14 @@ from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.api.routes.rules import get_genres, get_movie_collections
+from backend.api.routes.rules import (
+    get_genres,
+    get_media_server_collections,
+    get_movie_collections,
+)
 from backend.database import Base
-from backend.database.models import Movie, Series, User
-from backend.enums import MediaType, UserRole
+from backend.database.models import Movie, MovieVersion, Series, SeriesServiceRef, User
+from backend.enums import MediaType, Service, UserRole
 
 
 def _admin_user() -> User:
@@ -257,6 +261,106 @@ def test_get_genres_paginates_counts_and_filters_by_media_type() -> None:
             )
             assert series_response.total == 1
             assert series_response.items[0].name == "Drama"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_media_server_collections_counts_distinct_media() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            movie_one = Movie(title="One", tmdb_id=5001)
+            movie_two = Movie(title="Two", tmdb_id=5002)
+            series = Series(title="Show", tmdb_id=6001)
+            db.add_all([movie_one, movie_two, series])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieVersion(
+                        movie_id=movie_one.id,
+                        service=Service.PLEX,
+                        service_item_id="m1",
+                        service_media_id="mv1",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["Leaving Soon", "Holiday"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie_one.id,
+                        service=Service.JELLYFIN,
+                        service_item_id="m1-jf",
+                        service_media_id="mv1-jf",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["leaving soon"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie_two.id,
+                        service=Service.EMBY,
+                        service_item_id="m2",
+                        service_media_id="mv2",
+                        library_id="lib",
+                        library_name="Movies",
+                        media_server_collection_names=["Holiday"],
+                    ),
+                    SeriesServiceRef(
+                        series_id=series.id,
+                        service=Service.PLEX,
+                        service_id="s1",
+                        library_id="show-lib",
+                        library_name="Shows",
+                        media_server_collection_names=["Leaving Soon"],
+                    ),
+                ]
+            )
+            await db.commit()
+
+            movies = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert movies.total == 2
+            assert [(item.name, item.media_count) for item in movies.items] == [
+                ("Holiday", 2),
+                ("Leaving Soon", 1),
+            ]
+
+            search = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.MOVIE,
+                q="leaving",
+                page=1,
+                per_page=50,
+            )
+            assert search.total == 1
+            assert search.items[0].name == "Leaving Soon"
+            assert search.items[0].media_count == 1
+
+            series_response = await get_media_server_collections(
+                admin,
+                db,
+                media_type=MediaType.SERIES,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert series_response.total == 1
+            assert series_response.items[0].name == "Leaving Soon"
 
         await engine.dispose()
 

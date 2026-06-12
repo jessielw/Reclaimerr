@@ -23,7 +23,7 @@ from backend.core.codecs import (
 from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
-from backend.core.utils.misc import as_float, as_int
+from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import MediaType, Service
@@ -267,6 +267,47 @@ class PlexService:
             if collection_id:
                 collection_ids.append(collection_id)
         return collection_ids
+
+    async def _get_collection_child_ids(self, collection_id: str) -> set[str]:
+        try:
+            data, _ = await self._make_request(
+                f"library/metadata/{collection_id}/children",
+                timeout=120,
+            )
+        except Exception:
+            LOG.debug(f"Failed to fetch Plex collection children for {collection_id}")
+            return set()
+        if not isinstance(data, dict):
+            return set()
+        item_ids: set[str] = set()
+        for item in self._extract_metadata_items(data):
+            item_id = str(item.get("ratingKey", "")).strip()
+            if item_id:
+                item_ids.add(item_id)
+        return item_ids
+
+    async def _get_collection_names_by_item_id(
+        self, section_id: str
+    ) -> dict[str, list[str]]:
+        collections = await self._get_section_metadata_items(
+            section_id=section_id,
+            params={"type": 18},
+            timeout=120,
+        )
+        names_by_item_id: dict[str, list[str]] = {}
+        for collection in collections:
+            collection_id = str(collection.get("ratingKey", "")).strip()
+            collection_name = str(collection.get("title", "")).strip()
+            if not collection_id or not collection_name:
+                continue
+            child_ids = await self._get_collection_child_ids(collection_id)
+            for child_id in child_ids:
+                names_by_item_id.setdefault(child_id, []).append(collection_name)
+        return {
+            item_id: names
+            for item_id, raw_names in names_by_item_id.items()
+            if (names := normalize_name_list(raw_names))
+        }
 
     async def _create_collection(
         self,
@@ -933,6 +974,9 @@ class PlexService:
                 continue
             section_name = section.get("title", "Unknown")
             LOG.debug(f"Processing movie library: {section_name} (ID: {section_id})")
+            collection_names_by_item_id = await self._get_collection_names_by_item_id(
+                section_id
+            )
 
             # type=1 to only fetch movies, not collections
             # includeGuids=1 to get external IDs
@@ -976,6 +1020,9 @@ class PlexService:
                     source_item.get("Media", [])
                     if source_item
                     else item.get("Media", [])
+                )
+                collection_names = collection_names_by_item_id.get(
+                    str(item["ratingKey"])
                 )
 
                 # build one MovieVersionData per Media entry (each = one physical file/version)
@@ -1115,6 +1162,7 @@ class PlexService:
                                 and len(source_item.get("Chapter", [])) > 0
                                 else None
                             ),
+                            media_server_collection_names=collection_names,
                         )
                     )
 
@@ -1130,6 +1178,9 @@ class PlexService:
                     view_count=item.get("viewCount", 0),
                     external_ids=ext_ids,
                     versions=versions,
+                    media_server_collection_names=collection_names_by_item_id.get(
+                        str(item["ratingKey"])
+                    ),
                 )
                 all_movies.append(movie)
 
@@ -1225,6 +1276,9 @@ class PlexService:
                 continue
             section_name = section.get("title", "Unknown")
             LOG.debug(f"Processing series library: {section_name} (ID: {section_id})")
+            collection_names_by_item_id = await self._get_collection_names_by_item_id(
+                section_id
+            )
 
             # fetch all episode sizes and paths for this section in one API call
             (
@@ -1284,6 +1338,9 @@ class PlexService:
                     size=total_size,
                     season_data=list(
                         v for k, v in season_data_map.items() if k[0] == rating_key
+                    ),
+                    media_server_collection_names=collection_names_by_item_id.get(
+                        rating_key
                     ),
                 )
                 all_series.append(series)
@@ -1763,6 +1820,7 @@ class PlexService:
                     view_count=self._merge_view_count(s.view_count, s_hist),
                     last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
                     played_by_user_count=s_hist[2] if s_hist else None,
+                    media_server_collection_names=s.media_server_collection_names,
                     season_data=merged_seasons,
                 )
             )
