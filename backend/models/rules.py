@@ -62,3 +62,16 @@ class PaginatedMovieCollectionsResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class GenreLookupResponse(BaseModel):
+    name: str
+    media_count: int
+
+
+class PaginatedGenresResponse(BaseModel):
+    items: list[GenreLookupResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

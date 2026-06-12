@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
+from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
 from backend.database.models import (
@@ -69,9 +70,7 @@ def extract_genre_names(genres: list[dict] | None) -> list[str] | None:
 
     Comes in format [{'id': 16, 'name': 'Animation'}, ...] but we only want the names.
     """
-    if not genres:
-        return None
-    return [g["name"] for g in genres]
+    return normalize_genre_names(genres)
 
 
 def _whole_series_scope_clause(model):

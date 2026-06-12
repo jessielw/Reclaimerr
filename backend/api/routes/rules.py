@@ -20,6 +20,7 @@ from backend.core.rule_engine import (
     validate_rule_definition,
 )
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.misc import normalize_genre_names
 from backend.database import get_db
 from backend.database.models import (
     Movie,
@@ -40,7 +41,9 @@ from backend.models.cleanup import (
 )
 from backend.models.media import PaginatedRulePreviewResponse, RulePreviewMetadata
 from backend.models.rules import (
+    GenreLookupResponse,
     MovieCollectionLookupResponse,
+    PaginatedGenresResponse,
     PaginatedMovieCollectionsResponse,
     RulePreviewRequest,
     SeerrUserLookupResponse,
@@ -582,6 +585,62 @@ async def get_movie_collections(
 
     return PaginatedMovieCollectionsResponse(
         items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
+
+
+@router.get(
+    "/rules/genres",
+    response_model=PaginatedGenresResponse,
+)
+async def get_genres(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+    media_type: MediaType = MediaType.MOVIE,
+    q: Annotated[str, Query(max_length=200)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> PaginatedGenresResponse:
+    """Return paginated genre names sourced from local active media."""
+    model = Movie if media_type is MediaType.MOVIE else Series
+    rows = await db.execute(
+        select(model.genres).where(
+            model.removed_at.is_(None),
+            model.genres.is_not(None),
+        )
+    )
+
+    needle = q.strip().lower()
+    counts: dict[str, tuple[str, int]] = {}
+    for (raw_genres,) in rows.all():
+        seen_for_media: set[str] = set()
+        for name in normalize_genre_names(raw_genres) or []:
+            normalized = name.lower()
+            if needle and needle not in normalized:
+                continue
+            if normalized in seen_for_media:
+                continue
+            seen_for_media.add(normalized)
+            display_name, count = counts.get(normalized, (name, 0))
+            counts[normalized] = (display_name, count + 1)
+
+    sorted_items = sorted(
+        counts.values(),
+        key=lambda item: item[0].lower(),
+    )
+    total = len(sorted_items)
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    offset = (page - 1) * per_page
+    page_items = sorted_items[offset : offset + per_page]
+
+    return PaginatedGenresResponse(
+        items=[
+            GenreLookupResponse(name=name, media_count=count)
+            for name, count in page_items
+        ],
         total=total,
         page=page,
         per_page=per_page,

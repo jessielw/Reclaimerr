@@ -200,8 +200,21 @@ export interface MovieCollectionLookup {
   movie_count: number;
 }
 
+export interface GenreLookup {
+  name: string;
+  media_count: number;
+}
+
 export interface PaginatedMovieCollectionsResponse {
   items: MovieCollectionLookup[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export interface PaginatedGenresResponse {
+  items: GenreLookup[];
   total: number;
   page: number;
   per_page: number;

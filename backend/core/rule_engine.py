@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.misc import normalize_genre_names
 from backend.database.models import (
     Episode,
     Movie,
@@ -43,6 +44,7 @@ FIELD_LABELS: dict[str, str] = {
     "tmdb.release_date": "TMDB release date",
     "tmdb.in_collection": "TMDB in collection",
     "tmdb.collection_name": "TMDB collection name",
+    "tmdb.genres": "TMDB genres",
     "tmdb.first_air_date": "TMDB first air date",
     "tmdb.last_air_date": "TMDB last air date",
     "season.air_date": "Season air date",
@@ -162,6 +164,7 @@ NUMERIC_FIELDS = {
 }
 TEXT_FIELDS = {
     "tmdb.collection_name",
+    "tmdb.genres",
     "series.status",
     "video.codec_family",
     "audio.codec_family",
@@ -245,6 +248,14 @@ SEERR_REQUESTER_ID_OPERATORS = {
     "exists",
     "not_exists",
 }
+MULTI_VALUE_TEXT_OPERATORS = {
+    "contains_any",
+    "not_contains_any",
+    "contains_all",
+    "not_contains_all",
+    "exists",
+    "not_exists",
+}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -270,6 +281,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(BOOLEAN_OPERATORS) for field in BOOLEAN_FIELDS},
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
+    "tmdb.genres": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
 }
 
@@ -301,6 +313,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_release",
         "tmdb.in_collection",
         "tmdb.collection_name",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.release_date",
         "tmdb.vote_average",
@@ -345,6 +358,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -393,6 +407,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -441,6 +456,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.days_since_last_air_date",
         "tmdb.first_air_date",
         "tmdb.last_air_date",
+        "tmdb.genres",
         "tmdb.popularity",
         "tmdb.vote_average",
         "tmdb.vote_count",
@@ -913,6 +929,7 @@ def _build_context(
                 else None
             ),
             "tmdb.collection_name": movie.tmdb_collection_name,
+            "tmdb.genres": normalize_genre_names(movie.genres) or [],
             "tmdb.days_since_release": _days_between(movie.tmdb_release_date, now),
             "tmdb.popularity": movie.popularity,
             "tmdb.vote_average": movie.vote_average,
@@ -993,6 +1010,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,
@@ -1078,6 +1096,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,
@@ -1175,6 +1194,7 @@ def _build_context(
             "tmdb.popularity": series.popularity,
             "tmdb.vote_average": series.vote_average,
             "tmdb.vote_count": series.vote_count,
+            "tmdb.genres": normalize_genre_names(series.genres) or [],
             "imdb.rating": series.imdb_rating,
             "imdb.vote_count": series.imdb_vote_count,
             "anilist.score": series.anilist_score,
