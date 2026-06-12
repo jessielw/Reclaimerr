@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -419,7 +420,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertIn("media.size", matched_criteria)
         self.assertIn("library.id", matched_criteria)
         self.assertNotIn("imdb.rating", matched_criteria)
-        self.assertEqual(len(reasons[0]["conditions"]), 2)
+        self.assertEqual(len(reasons[0]["conditions"]), 2)  # type: ignore[reportArgumentType]
 
     def test_nested_and_or_series_scope_requires_all_and_children(self) -> None:
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3, status="ended")
@@ -483,7 +484,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertEqual(matched_criteria["season.season_number"], 1)
         self.assertEqual(matched_criteria["season.episode_count"], 4)
-        self.assertEqual(len(reasons[0]["conditions"]), 2)
+        self.assertEqual(len(reasons[0]["conditions"]), 2)  # type: ignore[reportArgumentType]
 
     def test_nested_and_or_episode_scope_matches_expected_branch(self) -> None:
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
@@ -993,6 +994,129 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_movie_rule(movie, contains_all_rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(movie, missing_one_rule, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, not_contains_all_rule, {}, []))
+
+    def test_evaluate_movie_rule_tmdb_genres_matches_tmdb_objects(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        cast(Any, movie).genres = [
+            {"id": 28, "name": "Action"},
+            {"id": 878, "name": "Science Fiction"},
+        ]
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+
+        match_rule = _make_single_condition_rule(
+            name="movie-genre-match",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.genres",
+            operator="contains_any",
+            value=["science fiction"],
+        )
+        miss_rule = _make_single_condition_rule(
+            name="movie-genre-miss",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.genres",
+            operator="contains_all",
+            value=["Action", "Comedy"],
+        )
+        not_all_rule = _make_single_condition_rule(
+            name="movie-genre-not-all",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.genres",
+            operator="not_contains_all",
+            value=["Action", "Comedy"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, match_rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, miss_rule, {}, []))
+        self.assertTrue(_evaluate_movie_rule(movie, not_all_rule, {}, []))
+
+    def test_evaluate_series_season_episode_rules_use_series_tmdb_genres(
+        self,
+    ) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.genres = ["Drama", "Mystery"]
+        season = Season(
+            series_id=1,
+            season_number=1,
+            episode_count=1,
+            size=5 * 1024**3,
+            view_count=0,
+        )
+        episode = Episode(
+            season_id=1,
+            episode_number=1,
+            size=1024,
+            view_count=0,
+        )
+        series.seasons = [season]
+        season.episodes = [episode]
+
+        series_rule = _make_single_condition_rule(
+            name="series-genre",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="tmdb.genres",
+            operator="contains_all",
+            value=["Drama", "Mystery"],
+        )
+        season_rule = _make_single_condition_rule(
+            name="season-genre",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="tmdb.genres",
+            operator="contains_any",
+            value=["drama"],
+        )
+        episode_rule = _make_single_condition_rule(
+            name="episode-genre",
+            media_type=MediaType.SERIES,
+            target_scope="episode",
+            field="tmdb.genres",
+            operator="not_contains_any",
+            value=["Comedy"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, series_rule, {}, []))
+        self.assertTrue(_evaluate_rule_for_season(series, season, season_rule, {}, []))
+        self.assertTrue(
+            _evaluate_rule_for_episode(
+                series,
+                season,
+                episode,
+                episode_rule,
+                {},
+                [],
+            )
+        )
+
+    def test_evaluate_movie_rule_tmdb_genres_exists_and_missing(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.genres = []
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+
+        exists_rule = _make_single_condition_rule(
+            name="movie-genre-exists",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.genres",
+            operator="exists",
+        )
+        missing_rule = _make_single_condition_rule(
+            name="movie-genre-missing",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="tmdb.genres",
+            operator="not_exists",
+        )
+
+        self.assertFalse(_evaluate_movie_rule(movie, exists_rule, {}, []))
+        self.assertTrue(_evaluate_movie_rule(movie, missing_rule, {}, []))
 
     def test_evaluate_movie_rule_media_path_contains_all_and_negation(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)

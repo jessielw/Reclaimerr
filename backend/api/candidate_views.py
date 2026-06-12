@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.utils.misc import normalize_genre_names
 from backend.database.models import (
     Episode,
     Movie,
@@ -312,6 +313,13 @@ async def build_rule_preview_items(
                 tmdb_in_collection=(
                     movie.tmdb_collection_id is not None
                     if is_movie and movie and movie.tmdb_collection_checked
+                    else None
+                ),
+                genres=normalize_genre_names(
+                    movie.genres
+                    if is_movie and movie
+                    else series.genres
+                    if series
                     else None
                 ),
                 movie_version_id=record.movie_version_id,
