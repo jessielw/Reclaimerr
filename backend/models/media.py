@@ -501,6 +501,10 @@ class CandidateEntryBase(BaseModel):
     vote_average: float | None = None
     vote_count: int | None = None
     tmdb_status: str | None = None
+    media_library_names: list[str] | None = None
+    media_added_at: str | None = None
+    media_last_viewed_at: str | None = None
+    media_view_count: int | None = None
     movie_version_id: int | None = None
     version_service: str | None = None
     version_library_id: str | None = None
