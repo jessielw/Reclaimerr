@@ -6,6 +6,7 @@
   import Sidebar from "$lib/components/sidebar.svelte";
   import { DEFAULT_THEME_FAMILY } from "$lib/theme-families";
   import { themeFamily } from "$lib/stores/theme-family";
+  import AuthComplete from "./routes/auth-complete.svelte";
   import Login from "./routes/login.svelte";
   import Setup from "./routes/setup.svelte";
   import Dashboard from "./routes/dashboard.svelte";
@@ -52,24 +53,40 @@
 
   let sidebarOpen = $state(false);
   let needsSetup = $state(false);
+  let currentHash = $state("");
+  const isAuthCompleteRoute = $derived(
+    currentHash.startsWith("#/auth/complete"),
+  );
 
   function closeSidebar() {
     sidebarOpen = false;
   }
 
-  onMount(async () => {
-    // Check setup status before auth so we show the wizard immediately on
-    // first run instead of briefly flashing the login screen.
-    try {
-      const res = await fetch("/api/setup/status");
-      if (res.ok) {
-        const data = await res.json();
-        needsSetup = data.needs_setup ?? false;
+  onMount(() => {
+    currentHash = window.location.hash;
+    const syncHash = () => {
+      currentHash = window.location.hash;
+    };
+    window.addEventListener("hashchange", syncHash);
+
+    void (async () => {
+      // Check setup status before auth so we show the wizard immediately on
+      // first run instead of briefly flashing the login screen.
+      try {
+        const res = await fetch("/api/setup/status");
+        if (res.ok) {
+          const data = await res.json();
+          needsSetup = data.needs_setup ?? false;
+        }
+      } catch {
+        // server not yet ready (auth.init() will handle the loading state)
       }
-    } catch {
-      // server not yet ready (auth.init() will handle the loading state)
-    }
-    auth.init();
+      auth.init();
+    })();
+
+    return () => {
+      window.removeEventListener("hashchange", syncHash);
+    };
   });
 
   // Keep the unauthenticated and setup flows on the hand-picked palette,
@@ -88,7 +105,9 @@
   });
 </script>
 
-{#if $auth.loading}
+{#if isAuthCompleteRoute}
+  <AuthComplete />
+{:else if $auth.loading}
   <!-- loading screen while checking authentication -->
   <div class="dark flex h-screen items-center justify-center bg-background">
     <div class="text-center">

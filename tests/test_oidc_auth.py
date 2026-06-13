@@ -228,6 +228,209 @@ def test_oidc_callback_redirect_uri_prefers_application_url() -> None:
     assert callback_uri == "https://public.example.com/api/auth/oidc/callback"
 
 
+def test_oidc_start_stores_sanitized_return_to(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            db_session.add(
+                OIDCSettings(
+                    enabled=True,
+                    issuer_url="https://auth.example.com",
+                    client_id="reclaimerr",
+                    client_secret=fer_encrypt("secret"),
+                    scopes="openid profile email",
+                    email_claim="email",
+                )
+            )
+            await db_session.commit()
+
+            class FakeOIDCClient:
+                async def authorize_redirect(
+                    self,
+                    request: Request,
+                    callback_uri: str,
+                ):
+                    assert callback_uri == ("http://testserver/api/auth/oidc/callback")
+                    return auth_routes.RedirectResponse("https://auth.example.com")
+
+            monkeypatch.setattr(
+                auth_routes,
+                "_create_configured_oidc_client",
+                lambda _settings_row: FakeOIDCClient(),
+            )
+
+            request = _make_oidc_start_request()
+            request.scope["session"] = {}
+            response = await auth_routes.oidc_start(
+                request=request,
+                return_to="/#/auth/complete",
+                db=db_session,
+            )
+
+            assert response.status_code == 307
+            assert request.scope["session"]["oidc_return_to"] == "/#/auth/complete"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_oidc_start_uses_absolute_return_to_origin_for_callback(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            db_session.add(
+                OIDCSettings(
+                    enabled=True,
+                    issuer_url="https://auth.example.com",
+                    client_id="reclaimerr",
+                    client_secret=fer_encrypt("secret"),
+                    scopes="openid profile email",
+                    email_claim="email",
+                )
+            )
+            await db_session.commit()
+
+            captured: dict[str, str] = {}
+
+            class FakeOIDCClient:
+                async def authorize_redirect(
+                    self,
+                    request: Request,
+                    callback_uri: str,
+                ):
+                    captured["callback_uri"] = callback_uri
+                    return auth_routes.RedirectResponse("https://auth.example.com")
+
+            monkeypatch.setattr(
+                auth_routes,
+                "_create_configured_oidc_client",
+                lambda _settings_row: FakeOIDCClient(),
+            )
+
+            request = _make_oidc_start_request()
+            request.scope["session"] = {}
+            response = await auth_routes.oidc_start(
+                request=request,
+                return_to="http://localhost:3000/#/auth/complete",
+                db=db_session,
+            )
+
+            assert response.status_code == 307
+            assert captured["callback_uri"] == (
+                "http://localhost:3000/api/auth/oidc/callback"
+            )
+            assert request.scope["session"]["oidc_return_to"] == (
+                "http://localhost:3000/#/auth/complete"
+            )
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_oidc_callback_uses_session_return_to(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            user = _new_user(
+                username="member",
+                email="member@example.com",
+                role=UserRole.USER,
+            )
+            db_session.add(user)
+            db_session.add(
+                OIDCSettings(
+                    enabled=True,
+                    issuer_url="https://auth.example.com",
+                    client_id="reclaimerr",
+                    client_secret=fer_encrypt("secret"),
+                    scopes="openid profile email",
+                    email_claim="email",
+                    redirect_uri_override="http://testserver/api/auth/oidc/callback",
+                )
+            )
+            await db_session.commit()
+            await db_session.refresh(user)
+
+            async def fake_load_provider_metadata(
+                _client: object, **kwargs: object
+            ) -> OIDCProviderMetadata:
+                issuer_url = str(kwargs["issuer_url"])
+                return OIDCProviderMetadata(
+                    issuer=issuer_url,
+                    authorization_endpoint=f"{issuer_url}/authorize",
+                    token_endpoint=f"{issuer_url}/token",
+                    jwks_uri=f"{issuer_url}/jwks",
+                    userinfo_endpoint=f"{issuer_url}/userinfo",
+                )
+
+            class FakeOIDCClient:
+                async def authorize_access_token(
+                    self, request: Request
+                ) -> dict[str, object]:
+                    return {
+                        "access_token": "access-token",
+                        "userinfo": {
+                            "sub": "oidc-subject-1",
+                            "email": "member@example.com",
+                        },
+                    }
+
+            monkeypatch.setattr(
+                auth_routes,
+                "create_oidc_client",
+                lambda **_: FakeOIDCClient(),
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "load_provider_metadata",
+                fake_load_provider_metadata,
+            )
+
+            request = _make_callback_request()
+            request.scope["session"] = {"oidc_return_to": "/#/auth/complete"}
+            response = await auth_routes.oidc_callback(
+                request=request,
+                code="test-code",
+                state="expected-state",
+                error=None,
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location") == "/#/auth/complete"
+            assert "oidc_return_to" not in request.scope["session"]
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_post_auth_redirect_uses_application_url_default() -> None:
     redirect = auth_routes._resolve_post_auth_redirect(  # pyright: ignore[reportPrivateUsage]
         None,
@@ -741,6 +944,79 @@ def test_media_plex_start_uses_application_url(monkeypatch) -> None:
                 "https://public.example.com/api/auth/media/plex/callback"
             )
             assert captured["return_to"] == "https://public.example.com/"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_start_uses_absolute_return_to_origin_without_application_url(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            provider = auth_routes.MediaAuthProviderConfig(
+                service_config_id=1,
+                service_type=Service.PLEX,
+                name="plex-main",
+                base_url="http://plex.local",
+                auth_mode="redirect",
+            )
+            captured: dict[str, str] = {}
+
+            async def fake_get_media_auth_provider(
+                _db: AsyncSession,
+                *,
+                service_config_id: int,
+            ) -> object | None:
+                assert service_config_id == 1
+                return provider
+
+            async def fake_start_plex_pin_flow(
+                *,
+                provider: object,
+                callback_url: str,
+                return_to: str | None = None,
+            ) -> str:
+                captured["callback_url"] = callback_url
+                captured["return_to"] = return_to or ""
+                assert isinstance(provider, auth_routes.MediaAuthProviderConfig)
+                return "http://plex.local/auth"
+
+            monkeypatch.setattr(
+                auth_routes,
+                "get_media_auth_provider",
+                fake_get_media_auth_provider,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "start_plex_pin_flow",
+                fake_start_plex_pin_flow,
+            )
+
+            request = _make_plex_start_request()
+            response = await auth_routes.media_plex_start(
+                request=request,
+                service_config_id=1,
+                return_to="http://localhost:3000/#/auth/complete",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert response.headers.get("location") == "http://plex.local/auth"
+            assert captured["callback_url"] == (
+                "http://localhost:3000/api/auth/media/plex/callback"
+            )
+            assert captured["return_to"] == "http://localhost:3000/#/auth/complete"
 
         await engine.dispose()
 

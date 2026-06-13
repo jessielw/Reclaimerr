@@ -249,6 +249,18 @@ def _resolve_post_auth_redirect(
     return _default_frontend_redirect(application_url=application_url)
 
 
+def _absolute_base_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
 def _with_auth_error(url: str, message: str) -> str:
     parsed = urlsplit(url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -312,6 +324,11 @@ def _create_configured_oidc_client(settings_row: OIDCSettings):
     )
 
 
+def _request_session(request: Request) -> dict | None:
+    session = request.scope.get("session")
+    return session if isinstance(session, dict) else None
+
+
 @router.get("/oidc/status", response_model=OIDCAuthStatusResponse)
 async def oidc_auth_status(
     db: AsyncSession = Depends(get_db),
@@ -324,6 +341,7 @@ async def oidc_auth_status(
 @router.get("/oidc/start")
 async def oidc_start(
     request: Request,
+    return_to: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(OIDCSettings))
@@ -334,10 +352,17 @@ async def oidc_start(
         raise HTTPException(status_code=404, detail="OIDC login is not enabled")
 
     application_url = await _get_application_url(db)
+    redirect_target = _resolve_post_auth_redirect(
+        return_to,
+        application_url=application_url,
+    )
+    session = _request_session(request)
+    if session is not None:
+        session["oidc_return_to"] = redirect_target
     callback_uri = _oidc_callback_redirect_uri(
         request,
         settings_row,
-        application_url=application_url,
+        application_url=application_url or _absolute_base_url(redirect_target),
     )
     try:
         client = _create_configured_oidc_client(settings_row)
@@ -362,7 +387,11 @@ async def oidc_callback(
     db: AsyncSession = Depends(get_db),
 ):
     application_url = await _get_application_url(db)
-    redirect_target = _resolve_post_auth_redirect(None, application_url=application_url)
+    session = _request_session(request)
+    redirect_target = _resolve_post_auth_redirect(
+        session.pop("oidc_return_to", None) if session is not None else None,
+        application_url=application_url,
+    )
     if error:
         return _auth_error_redirect(
             "OIDC authentication was denied or failed",
@@ -608,14 +637,15 @@ async def media_plex_start(
         )
 
     application_url = await _get_application_url(db)
-    callback_url = (
-        f"{application_url.rstrip('/')}/api/auth/media/plex/callback"
-        if application_url
-        else str(request.url_for("media_plex_callback"))
-    )
     redirect_target = _resolve_post_auth_redirect(
         return_to,
         application_url=application_url,
+    )
+    callback_base_url = application_url or _absolute_base_url(redirect_target)
+    callback_url = (
+        f"{callback_base_url.rstrip('/')}/api/auth/media/plex/callback"
+        if callback_base_url
+        else str(request.url_for("media_plex_callback"))
     )
     try:
         redirect_url = await start_plex_pin_flow(
