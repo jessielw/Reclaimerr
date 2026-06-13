@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { get } from "svelte/store";
   import { auth } from "$lib/stores/auth";
   import type {
     MediaAuthProvider,
@@ -36,6 +37,7 @@
   let loginMethod = $state<LoginMethod>("local");
 
   let oidcEnabled = $state(false);
+  let oidcLoading = $state(false);
   let oidcHovered = $state(false);
 
   let mediaProviders = $state<MediaAuthProvider[]>([]);
@@ -69,7 +71,7 @@
     if (hasSsoMethod) methods.push("sso");
     return methods;
   });
-  const isBusy = $derived.by(() => localLoading || mediaLoading);
+  const isBusy = $derived.by(() => localLoading || mediaLoading || oidcLoading);
   const mediaMethodIconTypes = $derived.by(() => {
     const unique = new Set<string>();
     const types: string[] = [];
@@ -87,6 +89,10 @@
   const RANDOM_BACKGROUND_IMG_INTERVAL = 5000;
   let imageBaseUrl = TMDB_BASE_URL_ORIGINAL;
   let refreshInterval: number | null = null;
+  let popupCheckInterval: number | null = null;
+  let authPopup: Window | null = null;
+  let authPopupCompleted = false;
+  let authChannel: BroadcastChannel | null = null;
   let overlay: HTMLElement | null;
   let backDropUrls: string[] = [];
 
@@ -96,6 +102,75 @@
   const usernameMaxLength = $derived.by(() => {
     return username.includes("@") ? 120 : 32;
   });
+
+  const authCompleteUrl = () => `${window.location.origin}/#/auth/complete`;
+
+  const stopPopupTracking = () => {
+    if (popupCheckInterval) {
+      clearInterval(popupCheckInterval);
+      popupCheckInterval = null;
+    }
+    authPopup = null;
+  };
+
+  const handleAuthMessage = (event: MessageEvent) => {
+    if (event.origin !== window.location.origin) return;
+    if (event.data?.type !== "reclaimerr-auth-complete") return;
+    void finishRedirectAuth(event.data.error ?? null);
+  };
+
+  const finishRedirectAuth = async (authError: string | null) => {
+    if (authPopupCompleted) return;
+    authPopupCompleted = true;
+    stopPopupTracking();
+    mediaLoading = false;
+    oidcLoading = false;
+
+    if (authError) {
+      error = authError;
+      return;
+    }
+
+    await auth.init();
+    if (!get(auth).isAuthenticated) {
+      error = "Sign-in completed but no session was created.";
+    }
+  };
+
+  const startRedirectAuth = (url: string, fallbackUrl: string) => {
+    authPopupCompleted = false;
+    error = "";
+    stopPopupTracking();
+
+    const width = 520;
+    const height = 720;
+    const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2);
+    const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2);
+    const features = [
+      "popup=yes",
+      `width=${width}`,
+      `height=${height}`,
+      `left=${Math.round(left)}`,
+      `top=${Math.round(top)}`,
+      "resizable=yes",
+      "scrollbars=yes",
+    ].join(",");
+
+    authPopup = window.open(url, "reclaimerr-auth", features);
+    if (!authPopup) {
+      window.location.href = fallbackUrl;
+      return;
+    }
+
+    authPopup.focus();
+    popupCheckInterval = window.setInterval(() => {
+      if (!authPopup || !authPopup.closed || authPopupCompleted) return;
+      stopPopupTracking();
+      mediaLoading = false;
+      oidcLoading = false;
+      error = "Sign-in window was closed before authentication completed.";
+    }, 500);
+  };
 
   const handleLocalLogin = async () => {
     error = "";
@@ -114,11 +189,13 @@
     error = "";
 
     if (selectedMediaProvider.auth_mode === "redirect") {
+      mediaLoading = true;
       const params = new URLSearchParams({
         service_config_id: String(selectedMediaProvider.service_config_id),
-        return_to: "/",
+        return_to: authCompleteUrl(),
       });
-      window.location.href = `/api/auth/media/plex/start?${params.toString()}`;
+      const url = `/api/auth/media/plex/start?${params.toString()}`;
+      startRedirectAuth(url, url);
       return;
     }
 
@@ -149,7 +226,12 @@
   };
 
   const startOidcLogin = () => {
-    window.location.href = "/api/auth/oidc/start";
+    oidcLoading = true;
+    const params = new URLSearchParams({
+      return_to: authCompleteUrl(),
+    });
+    const url = `/api/auth/oidc/start?${params.toString()}`;
+    startRedirectAuth(url, url);
   };
 
   const setLoginMethod = (method: LoginMethod) => {
@@ -237,6 +319,18 @@
       }
     }
 
+    window.addEventListener("message", handleAuthMessage);
+
+    try {
+      authChannel = new BroadcastChannel("reclaimerr-auth");
+      authChannel.onmessage = (event) => {
+        if (event.data?.type !== "reclaimerr-auth-complete") return;
+        void finishRedirectAuth(event.data.error ?? null);
+      };
+    } catch {
+      authChannel = null;
+    }
+
     try {
       const response = await fetch("/api/auth/oidc/status", {
         credentials: "include",
@@ -273,6 +367,9 @@
 
   onDestroy(() => {
     if (refreshInterval) clearInterval(refreshInterval);
+    stopPopupTracking();
+    window.removeEventListener("message", handleAuthMessage);
+    authChannel?.close();
     if (observer && container) observer.unobserve(container);
   });
 </script>
@@ -530,7 +627,9 @@
             {:else}
               <Lock class="size-5" />
             {/if}
-            <span class="font-medium">Sign In with SSO</span>
+            <span class="font-medium">
+              {oidcLoading ? "Opening SSO..." : "Sign In with SSO"}
+            </span>
           </Button>
         {/if}
       </div>
