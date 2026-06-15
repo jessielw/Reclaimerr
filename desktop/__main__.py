@@ -30,7 +30,7 @@ server.prepare_env()
 
 # expose a shutdown callback to the API so the web UI can trigger a clean exit
 # (must happen AFTER prepare_env so backend env vars are set before import)
-from backend.api.main import app as _app
+from backend.api.main import fastapi_app as _app
 
 # hook into the callback
 _app.state.shutdown_callback = server.stop
