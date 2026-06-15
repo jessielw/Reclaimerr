@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from sqlalchemy import delete, select
 
@@ -26,7 +26,7 @@ async def _trim_task_runs(keep_recent: int) -> None:
             )
             del_stmt = delete(TaskRun).where(TaskRun.id.in_(rows_to_del))
             result = await session.execute(del_stmt)
-            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            count = int(getattr(result, "rowcount", 0) or 0)
             await session.commit()
             if count > 0:
                 LOG.debug(f"Trimmed {count} old task runs")
@@ -46,7 +46,7 @@ async def _trim_background_jobs(keep_recent: int) -> None:
             )
             del_stmt = delete(BackgroundJob).where(BackgroundJob.id.in_(rows_to_del))
             result = await session.execute(del_stmt)
-            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            count = int(getattr(result, "rowcount", 0) or 0)
             await session.commit()
             if count > 0:
                 LOG.debug(f"Trimmed {count} old background jobs")
@@ -65,7 +65,7 @@ async def _trim_admin_notices(retain_days: int) -> None:
                 (AdminNotice.is_active == False) | (AdminNotice.is_read == True),
             )
             result = await session.execute(del_stmt)
-            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            count = int(getattr(result, "rowcount", 0) or 0)
             await session.commit()
             if count > 0:
                 LOG.debug(f"Trimmed {count} old admin notices")
@@ -87,7 +87,7 @@ async def _trim_user_sessions(retain_days: int) -> None:
                 | (UserSession.expires_at < cutoff)
             )
             result = await session.execute(del_stmt)
-            count = result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
+            count = int(getattr(result, "rowcount", 0) or 0)
             await session.commit()
             if count > 0:
                 LOG.debug(f"Trimmed {count} old user sessions")
@@ -100,9 +100,9 @@ class HouseKeepingTask(NamedTuple):
     """Represents a house keeping task (used only internally for this module)."""
 
     name: str
-    func: Callable
-    args: tuple | None = None
-    kwargs: dict | None = None
+    func: Callable[..., Awaitable[None]]
+    args: tuple[Any, ...] | None = None
+    kwargs: dict[str, Any] | None = None
 
 
 # keep a tuple of house keeping tasks to run in the weekly house keeping task

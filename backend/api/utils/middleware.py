@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 import jwt
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -40,9 +41,9 @@ class SetupGuardMiddleware(BaseHTTPMiddleware):
 
     _ALLOWED_PREFIXES = ("/api/setup", "/api/info")
 
-    async def dispatch(self, request, call_next):
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
         if not setup_state.needs_setup:
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         path = request.url.path
 
@@ -50,7 +51,7 @@ class SetupGuardMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") or any(
             path.startswith(p) for p in self._ALLOWED_PREFIXES
         ):
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         return JSONResponse(
             status_code=503,
@@ -92,8 +93,8 @@ def sliding_session_middleware(app: FastAPI) -> None:
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = cast(Response, await call_next(request))
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -118,8 +119,8 @@ class SlidingSessionMiddleware(BaseHTTPMiddleware):
 
     REFRESH_THRESHOLD = SESSION_TTL_SECONDS / 2  # 12 hours for a 24-hour TTL
 
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = cast(Response, await call_next(request))
 
         token = request.cookies.get(COOKIE_NAME)
         if not token:
