@@ -44,6 +44,10 @@ worker, or deletion behavior.
 - Backend: `ruff check .` and `ruff format .`
 - Frontend: `npm run format` and `npm run check`
 
+## Desktop
+
+- To run desktop in development use `uv run --extra desktop python -m desktop`
+
 ## AI Contributions
 
 AI can help with search, boilerplate, and debugging, but large AI-generated
