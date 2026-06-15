@@ -44,7 +44,7 @@ from backend.services.jellyfin import JellyfinService
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.plex import PlexService
-from backend.types import MEDIA_SERVERS, MediaServerType
+from backend.user_types import MEDIA_SERVERS, MediaServerType
 
 __all__ = [
     "sync_media",

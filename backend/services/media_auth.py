@@ -21,7 +21,7 @@ from backend.services.admin_notices import (
     resolve_singleton_notice,
     upsert_singleton_notice,
 )
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 MediaAuthMode = Literal["credentials", "redirect"]
 

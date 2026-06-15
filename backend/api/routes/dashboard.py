@@ -37,7 +37,7 @@ from backend.models.dashboard import (
     DashboardServiceSummary,
     DashboardViewer,
 )
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 

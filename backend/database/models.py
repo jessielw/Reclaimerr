@@ -32,7 +32,7 @@ from backend.enums import (
     TaskStatus,
     UserRole,
 )
-from backend.types.media import AudioCodecFamily, VideoCodecFamily
+from backend.user_types import AudioCodecFamily, VideoCodecFamily
 
 
 class User(Base):
