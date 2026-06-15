@@ -1,6 +1,6 @@
 import re
 
-from backend.types.media import AudioCodecFamily, VideoCodecFamily
+from backend.user_types import AudioCodecFamily, VideoCodecFamily
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 

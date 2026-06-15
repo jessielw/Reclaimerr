@@ -9,7 +9,7 @@ from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
 from backend.enums import MediaType, NotificationType, Service
-from backend.types import MEDIA_SERVERS, MediaServerType
+from backend.user_types import MEDIA_SERVERS, MediaServerType
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 

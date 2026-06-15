@@ -24,7 +24,7 @@ from backend.models.settings import (
     UpdateMediaLibrariesRequest,
 )
 from backend.tasks.sync import sync_media_libraries
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(tags=["settings", "services"])
 

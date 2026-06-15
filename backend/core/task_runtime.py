@@ -31,7 +31,7 @@ from backend.tasks.sync import (
     sync_media_libraries,
 )
 from backend.tasks.update_check import check_app_updates
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
     {
