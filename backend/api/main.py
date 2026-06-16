@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -11,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from granian.utils.proxies import wrap_asgi_with_proxy_headers
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
@@ -48,23 +51,25 @@ from backend.utils.create_admin import create_initial_admin
 limiter = Limiter(key_func=get_remote_address)
 
 
-def _wrap_proxy_headers(asgi_app, *, trusted_hosts: list[str] | str):
+def _wrap_proxy_headers(
+    asgi_app: ASGIApp, *, trusted_hosts: list[str] | str
+) -> ASGIApp:
     """Return an ASGI3-compatible proxy-header wrapper for the given app."""
     wrapped_app = wrap_asgi_with_proxy_headers(
         asgi_app,
         trusted_hosts=trusted_hosts,
     )
 
-    async def _asgi(scope, receive, send) -> None:
+    async def _asgi(scope: Scope, receive: Receive, send: Send) -> None:
         await wrapped_app(scope, receive, send)
 
     return _asgi
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize client manager on startup."""
-    worker_tasks: list[asyncio.Task] = []
+    worker_tasks: list[asyncio.Task[Any]] = []
     scheduler_started = False
 
     try:
@@ -197,7 +202,7 @@ if settings.frontend_dist and settings.frontend_dist.is_dir():
     )
 
     @fastapi_app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str) -> FileResponse:
         candidate = fe_dist / full_path
         if candidate.is_file():
             return FileResponse(candidate)
