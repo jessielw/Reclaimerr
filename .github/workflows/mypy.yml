@@ -2,8 +2,7 @@ name: Mypy
 
 on:
   push:
-    branches:
-      - branches: ["main"]
+    branches: ["main"]
   pull_request:
     branches:
       - "**"
