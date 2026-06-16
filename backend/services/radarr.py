@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import niquests
 from niquests.exceptions import ReadTimeout
 from tenacity import (
@@ -15,7 +17,7 @@ from backend.models.media import ArrTag
 from backend.models.services.radarr import RadarrMovie
 
 
-def build_radarr_movie_from_dict(data: dict) -> RadarrMovie:
+def build_radarr_movie_from_dict(data: dict[str, Any]) -> RadarrMovie:
     return RadarrMovie(
         id=data["id"],
         title=data.get("title", ""),
@@ -69,8 +71,8 @@ class RadarrClient:
         endpoint: str,
         *,
         error_context: str | None = None,
-        **kwargs,
-    ) -> tuple[int, dict | list | None]:
+        **kwargs: Any,
+    ) -> tuple[int, dict[str, Any] | list[dict[str, Any]] | None]:
         """Make HTTP request to Radarr API with automatic retry.
 
         Returns:
@@ -98,7 +100,9 @@ class RadarrClient:
             raise ValueError("Status code should not be None")
 
         if response.content:
-            return status_code, response.json()
+            return status_code, cast(
+                dict[str, Any] | list[dict[str, Any]], response.json()
+            )
         return status_code, None
 
     async def health(self) -> bool:
@@ -125,7 +129,7 @@ class RadarrClient:
             return []
         return [build_radarr_movie_from_dict(movie) for movie in data]
 
-    async def get_disk_space(self) -> list[dict]:
+    async def get_disk_space(self) -> list[dict[str, Any]]:
         """Get disk space stats from Radarr (GET /diskspace).
 
         Returns a list of dicts with keys: path, free_space, total_space.

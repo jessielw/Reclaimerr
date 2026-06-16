@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True, frozen=True)
@@ -9,7 +10,7 @@ class SonarrSeason:
 
     season_number: int
     monitored: bool
-    statistics: dict | None = None
+    statistics: dict[str, Any] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,7 +28,7 @@ class SonarrSeries:
     season_count: int
     seasons: list[SonarrSeason]
     tags: list[int]
-    raw: dict | None = None
+    raw: dict[str, Any] | None = None
 
     def __repr__(self) -> str:
         return (

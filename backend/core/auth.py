@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 import jwt
@@ -43,7 +43,7 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(
-    data: dict,
+    data: dict[str, Any],
     expires_delta: timedelta | None = None,
     token_version: int = 0,
     session_id: str | None = None,
@@ -55,7 +55,7 @@ def create_access_token(
     else:
         expire = datetime.now(UTC) + SESSION_TTL
 
-    token_payload: dict[str, object] = {"exp": expire, "tv": token_version}
+    token_payload: dict[str, Any] = {"exp": expire, "tv": token_version}
     if session_id:
         token_payload["sid"] = session_id
     to_encode.update(token_payload)
@@ -68,7 +68,7 @@ def create_access_token(
     return encoded_jwt
 
 
-def decode_token(token: str) -> dict:
+def decode_token(token: str) -> dict[str, Any]:
     """Decode and verify a JWT token."""
     try:
         payload = jwt.decode(
@@ -96,7 +96,7 @@ def build_session_expires_at() -> datetime:
     return datetime.now(UTC) + SESSION_TTL
 
 
-def get_session_id_from_payload(payload: dict) -> str | None:
+def get_session_id_from_payload(payload: dict[str, Any]) -> str | None:
     """Extract a validated session id from JWT payload."""
     sid = payload.get("sid")
     if isinstance(sid, str) and sid.strip():
@@ -240,7 +240,7 @@ def has_permission(user: User, permission: Permission) -> bool:
     return permission.value in user_permissions
 
 
-def require_permission(permission: Permission):
+def require_permission(permission: Permission) -> Any:
     """Dependency factory requiring a specific permission (admins always pass)."""
 
     async def _require_permission(
