@@ -92,5 +92,11 @@ exclude = '''
 '''
 
 [[tool.mypy.overrides]]
-module = ["authlib.*", "apscheduler.*", "pystray.*"]
+module = [
+    "authlib.*",
+    "apscheduler.*",
+    "pystray.*",
+    "platformdirs.*",
+    "filelock.*",
+]
 ignore_missing_imports = true
