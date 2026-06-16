@@ -32,7 +32,7 @@ class ServiceConfigUpdate(BaseModel):
     extra_settings: dict[str, Any] | None = None
     # only plex/jellyfin/emby are eligible; at most one server may have this True
     is_main: bool = False
-    libraries: list[dict] | None = None
+    libraries: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> ServiceConfigUpdate:
@@ -113,6 +113,10 @@ def normalize_notification_preferences(
             normalized[key]["detail"] = detail
 
     return normalized
+
+
+def default_post_action_webhook_actions() -> list[Literal["deleted", "moved"]]:
+    return ["deleted", "moved"]
 
 
 class NotificationSettingItem(BaseModel):
@@ -212,7 +216,7 @@ class PostActionWebhookConfig(BaseModel):
     auth_username: str | None = None
     auth_password: str | None = None
     actions: list[Literal["deleted", "moved"]] = Field(
-        default_factory=lambda: ["deleted", "moved"]
+        default_factory=default_post_action_webhook_actions
     )
     media_types: list[MediaType] = Field(
         default_factory=lambda: [MediaType.MOVIE, MediaType.SERIES]
