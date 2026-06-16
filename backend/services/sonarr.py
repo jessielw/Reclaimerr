@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Mapping
+from typing import Any
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -12,35 +13,81 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.models.media import ArrTag
 from backend.models.services.sonarr import SonarrSeason, SonarrSeries
 
 
-def build_sonarr_series_from_dict(data: dict[str, Any]) -> SonarrSeries:
+def _as_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _as_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _as_int_list(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    values: list[int] = []
+    for item in value:
+        parsed = as_int(item)
+        if parsed is not None:
+            values.append(parsed)
+    return values
+
+
+def _mapping_list(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    items: list[Mapping[str, object]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            items.append(item)
+    return items
+
+
+def _season_from_mapping(data: Mapping[str, object]) -> SonarrSeason:
+    statistics = data.get("statistics")
+    return SonarrSeason(
+        season_number=as_int(data.get("seasonNumber")) or 0,
+        monitored=_as_bool(data.get("monitored")),
+        statistics=dict(statistics) if isinstance(statistics, Mapping) else None,
+    )
+
+
+def build_sonarr_series_from_dict(data: Mapping[str, object]) -> SonarrSeries:
     """Build SonarrSeries from API response dict."""
-    seasons_data = data.get("seasons", [])
     seasons = [
-        SonarrSeason(
-            season_number=s.get("seasonNumber", 0),
-            monitored=s.get("monitored", False),
-            statistics=s.get("statistics"),
-        )
-        for s in seasons_data
+        _season_from_mapping(season) for season in _mapping_list(data.get("seasons"))
     ]
 
     return SonarrSeries(
-        id=data["id"],
-        title=data.get("title", ""),
-        tvdb_id=data.get("tvdbId"),
-        tmdb_id=data.get("tmdbId"),
-        imdb_id=data.get("imdbId"),
-        year=data.get("year"),
-        path=data.get("path", ""),
-        monitored=data.get("monitored", False),
+        id=as_int(data.get("id")) or 0,
+        title=_as_optional_str(data.get("title")) or "",
+        tvdb_id=as_int(data.get("tvdbId")),
+        tmdb_id=as_int(data.get("tmdbId")),
+        imdb_id=_as_optional_str(data.get("imdbId")),
+        year=as_int(data.get("year")),
+        path=_as_optional_str(data.get("path")) or "",
+        monitored=_as_bool(data.get("monitored")),
         season_count=len(seasons),
         seasons=seasons,
-        tags=data.get("tags", []),
+        tags=_as_int_list(data.get("tags")),
         raw=data,
     )
 
@@ -85,7 +132,7 @@ class SonarrClient:
         *,
         error_context: str | None = None,
         **kwargs: Any,
-    ) -> tuple[int, dict[str, Any] | list[dict[str, Any]] | None]:
+    ) -> tuple[int, Mapping[str, object] | list[Mapping[str, object]] | None]:
         """Make HTTP request to Sonarr API with automatic retry.
 
         Returns:
@@ -113,9 +160,7 @@ class SonarrClient:
             raise ValueError("Status code should not be None")
 
         if response.content:
-            return status_code, cast(
-                dict[str, Any] | list[dict[str, Any]], response.json()
-            )
+            return status_code, response.json()
         return status_code, None
 
     async def health(self) -> bool:
@@ -136,7 +181,7 @@ class SonarrClient:
             Series object
         """
         status_code, data = await self._make_request("GET", f"series/{series_id}")
-        if not isinstance(data, dict):
+        if not isinstance(data, Mapping):
             raise ValueError(
                 f"Invalid response for series {series_id} (status: {status_code})"
             )
@@ -151,9 +196,13 @@ class SonarrClient:
         _, data = await self._make_request("GET", "series", timeout=self.timeout)
         if not isinstance(data, list):
             return []
-        return [build_sonarr_series_from_dict(series) for series in data]
+        return [
+            build_sonarr_series_from_dict(series)
+            for series in data
+            if isinstance(series, Mapping)
+        ]
 
-    async def get_disk_space(self) -> list[dict[str, Any]]:
+    async def get_disk_space(self) -> list[dict[str, int | str]]:
         """Get disk space stats from Sonarr (GET /diskspace).
 
         Returns a list of dicts with keys: path, free_space, total_space.
@@ -163,15 +212,21 @@ class SonarrClient:
         _, data = await self._make_request("GET", "diskspace")
         if not isinstance(data, list):
             return []
-        return [
-            {
-                "path": entry.get("path", ""),
-                "free_space": entry.get("freeSpace", 0) or 0,
-                "total_space": entry.get("totalSpace", 0) or 0,
-            }
-            for entry in data
-            if entry.get("path")
-        ]
+        disk_space: list[dict[str, int | str]] = []
+        for entry in data:
+            if not isinstance(entry, Mapping):
+                continue
+            path = _as_optional_str(entry.get("path"))
+            if path is None:
+                continue
+            disk_space.append(
+                {
+                    "path": path,
+                    "free_space": as_int(entry.get("freeSpace")) or 0,
+                    "total_space": as_int(entry.get("totalSpace")) or 0,
+                }
+            )
+        return disk_space
 
     async def get_tags(self) -> list[ArrTag]:
         """Get all tags from Sonarr.
@@ -182,7 +237,16 @@ class SonarrClient:
         _, data = await self._make_request("GET", "tag", timeout=60)
         if not isinstance(data, list):
             return []
-        return [ArrTag(id=tag["id"], label=tag["label"]) for tag in data]
+        tags: list[ArrTag] = []
+        for tag in data:
+            if not isinstance(tag, Mapping):
+                continue
+            tag_id = as_int(tag.get("id"))
+            label = _as_optional_str(tag.get("label"))
+            if tag_id is None or label is None:
+                continue
+            tags.append(ArrTag(id=tag_id, label=label))
+        return tags
 
     async def get_all_tag_details(self) -> dict[str, list[int]]:
         """Get all tags with their associated series IDs in a single call.
@@ -192,13 +256,15 @@ class SonarrClient:
         _, data = await self._make_request("GET", "tag/detail", timeout=60)
         if not isinstance(data, list):
             return {}
-        return {
-            str(tag.get("label", "")).lower(): [
-                int(i) for i in tag.get("seriesIds", []) if i is not None
-            ]
-            for tag in data
-            if tag.get("label")
-        }
+        tag_details: dict[str, list[int]] = {}
+        for tag in data:
+            if not isinstance(tag, Mapping):
+                continue
+            label = _as_optional_str(tag.get("label"))
+            if label is None:
+                continue
+            tag_details[label.lower()] = _as_int_list(tag.get("seriesIds"))
+        return tag_details
 
     async def create_tag(self, label: str) -> ArrTag:
         """Create a new tag.
@@ -212,11 +278,17 @@ class SonarrClient:
         status_code, data = await self._make_request(
             "POST", "tag", json={"label": label}
         )
-        if not isinstance(data, dict):
+        if not isinstance(data, Mapping):
             raise ValueError(
                 f"Invalid response when creating tag {label} (status: {status_code})"
             )
-        return ArrTag(id=data["id"], label=data["label"])
+        tag_id = as_int(data.get("id"))
+        tag_label = _as_optional_str(data.get("label"))
+        if tag_id is None or tag_label is None:
+            raise ValueError(
+                f"Invalid response when creating tag {label} (status: {status_code})"
+            )
+        return ArrTag(id=tag_id, label=tag_label)
 
     async def get_or_create_tag(self, label: str) -> ArrTag:
         """Get existing tag by label or create if doesn't exist.
@@ -401,15 +473,23 @@ class SonarrClient:
         status_code, series_data = await self._make_request(
             "GET", f"series/{series_id}"
         )
-        if not isinstance(series_data, dict):
+        if not isinstance(series_data, Mapping):
             raise ValueError(
                 f"Invalid response for series {series_id} (status: {status_code})"
             )
 
         # update the specific season's monitoring status
-        seasons = series_data.get("seasons", [])
+        series_payload = dict(series_data)
+        seasons = series_payload.get("seasons", [])
+        if not isinstance(seasons, list):
+            raise ValueError(
+                f"Invalid response for series {series_id} (status: {status_code})"
+            )
         for season in seasons:
-            if season.get("seasonNumber") == season_number:
+            if (
+                isinstance(season, dict)
+                and as_int(season.get("seasonNumber")) == season_number
+            ):
                 season["monitored"] = monitored
                 break
 
@@ -417,9 +497,9 @@ class SonarrClient:
         status_code, updated_data = await self._make_request(
             "PUT",
             f"series/{series_id}",
-            json=series_data,
+            json=series_payload,
         )
-        if not isinstance(updated_data, dict):
+        if not isinstance(updated_data, Mapping):
             raise ValueError(
                 f"Invalid response updating series {series_id} (status: {status_code})"
             )
@@ -447,12 +527,15 @@ class SonarrClient:
             )
 
         # filter to episodes in the specified season that have files
-        episode_file_ids = [
-            ep.get("episodeFileId")
-            for ep in episodes
-            if ep.get("seasonNumber") == season_number
-            and ep.get("episodeFileId") is not None
-        ]
+        episode_file_ids: list[int] = []
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            if as_int(episode.get("seasonNumber")) != season_number:
+                continue
+            episode_file_id = as_int(episode.get("episodeFileId"))
+            if episode_file_id is not None:
+                episode_file_ids.append(episode_file_id)
 
         if not episode_file_ids:
             return
@@ -473,7 +556,7 @@ class SonarrClient:
                 f"Failed to delete season {season_number} files for series {series_id} (status: {status_code})"
             )
 
-    async def get_episodes(self, series_id: int) -> list[dict[str, Any]]:
+    async def get_episodes(self, series_id: int) -> list[dict[str, object]]:
         """Get all episodes for a series from Sonarr.
 
         Args:
@@ -489,7 +572,7 @@ class SonarrClient:
             raise ValueError(
                 f"Invalid response getting episodes for series {series_id} (status: {status_code})"
             )
-        return data
+        return [dict(episode) for episode in data if isinstance(episode, Mapping)]
 
     async def delete_episode_file(self, episode_file_id: int) -> None:
         """Delete a single episode file by its episode file ID.
