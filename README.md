@@ -7,6 +7,7 @@
 <picture><img alt="Docker Build" src="https://img.shields.io/github/actions/workflow/status/jessielw/reclaimerr/.github%2Fworkflows%2Fdocker.yml?style=flat&logo=docker&logoColor=white&label=Docker%20Build"></picture>
 <picture><img alt="Frontend Check" src="https://img.shields.io/github/actions/workflow/status/jessielw/reclaimerr/.github%2Fworkflows%2Ffrontend.yml?style=flat&logo=svelte&logoColor=white&label=Frontend"></picture>
 <picture><img alt="Backend Check" src="https://img.shields.io/github/actions/workflow/status/jessielw/reclaimerr/.github%2Fworkflows%2Fruff.yml?style=flat&logo=python&logoColor=white&label=Backend"></picture>
+<picture><img alt="MyPy" src="https://img.shields.io/github/actions/workflow/status/jessielw/reclaimerr/.github%2Fworkflows%2Fmypy.yml?style=flat&logo=python&logoColor=white&label=MyPy"></picture>
 </p>
 
 **Reclaimerr** scans media libraries for eligible items, tracks protection and
