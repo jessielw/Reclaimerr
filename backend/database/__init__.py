@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -24,7 +25,7 @@ engine = create_async_engine(
 
 
 @event.listens_for(engine.sync_engine, "connect")
-def set_sqlite_pragma(dbapi_conn, _connection_record):
+def set_sqlite_pragma(dbapi_conn: Any, _connection_record: Any) -> None:
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -64,7 +65,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def init_db():
+async def init_db() -> None:
     """Run pending Alembic migrations and configure WAL mode."""
     # derive the alembic scripts path from __file__ so it resolves correctly
     # in all three deployment modes (docker, source, pyinstaller bundle) without
@@ -80,13 +81,13 @@ async def init_db():
         await conn.run_sync(_run_alembic_upgrade, cfg)
 
 
-def _run_alembic_upgrade(sync_conn, cfg: AlembicConfig) -> None:
+def _run_alembic_upgrade(sync_conn: Any, cfg: AlembicConfig) -> None:
     """Synchronous bridge called by run_sync to execute Alembic upgrades."""
     cfg.attributes["connection"] = sync_conn
     alembic_command.upgrade(cfg, "head")
 
 
-async def close_db():
+async def close_db() -> None:
     """
     Close database connections and dispose of the engine.
     Should be called during application shutdown.
