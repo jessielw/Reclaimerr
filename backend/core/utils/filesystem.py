@@ -5,6 +5,7 @@ import shutil
 from os import PathLike
 from os import rename as os_rename
 from pathlib import Path
+from typing import Any
 
 from backend.core.logger import LOG
 
@@ -43,7 +44,7 @@ def normalize_fpath(
 
 def resolve_path(
     media_server_path: str | None,
-    mappings: list[dict] | None,
+    mappings: list[dict[str, Any]] | None,
     service_type: str | None = None,
     service_config_id: int | None = None,
 ) -> Path | None:
@@ -249,7 +250,7 @@ def move_season_files(
     series_path: Path,
     destination_root: Path,
     episode_paths: list[str],
-    path_mappings: list[dict] | None = None,
+    path_mappings: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Move only the episode files belonging to a season out of a flat series directory.
 

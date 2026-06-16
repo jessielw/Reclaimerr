@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -11,7 +13,7 @@ from backend.core.logger import LOG
 __all__ = ["register_exception_handlers"]
 
 
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all exception handler with logging."""
     LOG.exception(f"Unhandled exception on {request.url.path}: {exc}")
     return JSONResponse(
@@ -50,9 +52,11 @@ async def rate_limit_handler(
     )
 
 
-def register_exception_handlers(app: FastAPI):
+def register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers for the FastAPI app."""
-    app.add_exception_handler(Exception, global_exception_handler)  # type: ignore
-    app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore
-    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore
-    app.add_exception_handler(RateLimitExceeded, rate_limit_handler)  # type: ignore
+    app.add_exception_handler(Exception, global_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, cast(Any, http_exception_handler))
+    app.add_exception_handler(
+        RequestValidationError, cast(Any, validation_exception_handler)
+    )
+    app.add_exception_handler(RateLimitExceeded, cast(Any, rate_limit_handler))

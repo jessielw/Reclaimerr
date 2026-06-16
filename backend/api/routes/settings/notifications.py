@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -55,7 +55,7 @@ async def get_notification_settings(
 async def test_notification(
     data: NotificationTestRequest,
     _current_user: Annotated[User, Depends(get_current_user)],
-) -> dict:
+) -> dict[str, str]:
     """Test a notification by sending a test payload to the provided URL."""
     if not data.url:
         raise HTTPException(status_code=400, detail="Apprise URL is required to test")
@@ -72,7 +72,7 @@ async def create_or_update_notification(
     data: NotificationSettingItem,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Create or update a notification setting."""
     # validate that non-admin users cannot enable admin-only notifications
     if current_user.role is not UserRole.ADMIN:
@@ -168,7 +168,7 @@ async def delete_notification(
     notification_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, str]:
     """Remove a notification setting."""
     result = await db.execute(
         select(NotificationSetting).where(NotificationSetting.id == notification_id)

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from backend.core.utils.request import summarize_error_message
 from backend.database import async_db
-from backend.database.models import DeleteRequest, ReclaimCandidate
+from backend.database.models import BackgroundJob, DeleteRequest, ReclaimCandidate
 from backend.enums import BackgroundJobType, CandidateFileOpOperation
 from backend.jobs.queue import enqueue_background_job, update_background_job_payload
 from backend.models.jobs import (
@@ -29,7 +29,7 @@ async def queue_candidate_file_op_job(
     item_labels: list[str] | None = None,
     item_label_total: int | None = None,
     item_details: list[CandidateFileOpJobItem] | None = None,
-):
+) -> BackgroundJob:
     """Queues a background job to perform file operations (delete/move) on candidates."""
     payload = CandidateFileOpJobPayload(
         operation=operation,

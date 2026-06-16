@@ -32,7 +32,7 @@ from backend.enums import (
     TaskStatus,
     UserRole,
 )
-from backend.types.media import AudioCodecFamily, VideoCodecFamily
+from backend.user_types import AudioCodecFamily, VideoCodecFamily
 
 
 class User(Base):
@@ -152,7 +152,7 @@ class NotificationSetting(Base):
     # admin notification types
     task_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     # per notification content preferences (formatting/detail controls)
-    preferences: Mapped[dict | None] = mapped_column(JSON, default=None)
+    preferences: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
     # last updated
     updated_at: Mapped[datetime] = mapped_column(
@@ -275,10 +275,14 @@ class GeneralSettings(Base):
     worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
 
     # path mapping (media-server paths -> local paths)
-    path_mappings: Mapped[list] = mapped_column(JSON, default_factory=list)
+    path_mappings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default_factory=list
+    )
 
     # post action webhooks (generic hooks fired after successful delete/move)
-    post_action_webhooks: Mapped[list] = mapped_column(JSON, default_factory=list)
+    post_action_webhooks: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default_factory=list
+    )
 
     # move settings
     move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -304,7 +308,7 @@ class GeneralSettings(Base):
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
-    requester_watch_user_mappings: Mapped[list] = mapped_column(
+    requester_watch_user_mappings: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default_factory=list
     )
 
@@ -748,7 +752,7 @@ class SupplementalMediaMatch(Base):
     source_media_id: Mapped[str | None] = mapped_column(String(100), default=None)
     path_tail: Mapped[str | None] = mapped_column(String(1024), default=None)
     confidence: Mapped[int] = mapped_column(SmallInteger, default=100)
-    signals: Mapped[dict | None] = mapped_column(JSON, default=None)
+    signals: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -1112,8 +1116,8 @@ class ReclaimRule(Base):
 
     # advanced rule engine fields
     target_scope: Mapped[str | None] = mapped_column(String(32), default=None)
-    definition: Mapped[dict | None] = mapped_column(JSON, default=None)
-    action: Mapped[dict | None] = mapped_column(JSON, default=None)
+    definition: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    action: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
     # metadata
     created_at: Mapped[datetime] = mapped_column(
@@ -1139,11 +1143,11 @@ class ReclaimCandidate(Base):
     # multiple rule matching support (required fields first for dataclass)
     matched_rule_ids: Mapped[list[int]] = mapped_column(JSON)
     # snapshot of values: {"popularity": 2.5, "vote_average": 4.2, "view_count": 0}
-    matched_criteria: Mapped[dict] = mapped_column(JSON)
+    matched_criteria: Mapped[dict[str, Any]] = mapped_column(JSON)
     # easily readable combined reasons from all matched rules
     reason: Mapped[str] = mapped_column(Text)
     # structured reason payload produced by advanced rule engine
-    reason_data: Mapped[list[dict] | None] = mapped_column(JSON, default=None)
+    reason_data: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
 
     # foreign keys (movie_id or series_id will be set based on media_type)
     movie_id: Mapped[int | None] = mapped_column(ForeignKey("movies.id"), default=None)

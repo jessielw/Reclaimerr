@@ -158,7 +158,7 @@ class CachedWebhookConfigs:
 
     __slots__ = ("configs",)
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.configs: list[dict[str, Any]] | None = None
 
 

@@ -4,6 +4,8 @@ import asyncio
 import time
 from base64 import b64decode
 from collections import deque
+from types import TracebackType
+from typing import Any, Self, cast
 
 from niquests import AsyncSession, ConnectionError, ConnectTimeout, HTTPError
 from tenacity import (
@@ -48,11 +50,16 @@ class AsyncTMDBClient:
             }
         )
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """Enter async context manager."""
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         """Ensure session is closed on exit."""
         await self.session.close()
 
@@ -87,8 +94,8 @@ class AsyncTMDBClient:
         reraise=False,  # return None on failure instead of raising
     )
     async def _make_request(
-        self, mode: str, endpoint: str, **kwargs
-    ) -> dict | None | bool:
+        self, mode: str, endpoint: str, **kwargs: Any
+    ) -> dict[str, Any] | None | bool:
         """Make HTTP request to TMDB API with automatic retry.
 
         Args:
@@ -113,7 +120,7 @@ class AsyncTMDBClient:
                 return False
 
             resp.raise_for_status()
-            return resp.json()
+            return cast(dict[str, Any], resp.json())
         except HTTPError as e:
             # for non-404 HTTP errors, re-raise to let tenacity retry
             LOG.warning(f"HTTP error for {endpoint}: {e}")
@@ -122,7 +129,9 @@ class AsyncTMDBClient:
             LOG.warning(f"Connection error for {endpoint}: {e}")
             raise
 
-    async def get_movie_details(self, tmdb_id: int | str) -> dict | None | bool:
+    async def get_movie_details(
+        self, tmdb_id: int | str
+    ) -> dict[str, Any] | None | bool:
         """Get movie details by TMDB ID.
 
         Args:
@@ -135,7 +144,7 @@ class AsyncTMDBClient:
             "GET", f"movie/{tmdb_id}?append_to_response=external_ids"
         )
 
-    async def get_tv_details(self, tmdb_id: int | str) -> dict | None | bool:
+    async def get_tv_details(self, tmdb_id: int | str) -> dict[str, Any] | None | bool:
         """Get TV show details by TMDB ID.
 
         Args:
@@ -150,7 +159,7 @@ class AsyncTMDBClient:
 
     async def find_by_external_id(
         self, external_id: str, source: str
-    ) -> dict | None | bool:
+    ) -> dict[str, Any] | None | bool:
         """Find media by an external provider ID (tvdb_id, imdb_id, etc).
 
         Args:

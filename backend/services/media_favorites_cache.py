@@ -20,7 +20,7 @@ from backend.enums import MediaType, Service
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 _PLEX_WATCHLIST_ENDPOINT = (
     "https://discover.provider.plex.tv/library/sections/watchlist/all"

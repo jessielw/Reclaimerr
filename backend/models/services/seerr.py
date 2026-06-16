@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from backend.enums import MediaType, SeerrRequestStatus
 
@@ -27,7 +29,7 @@ class SeerrRequest:
     created_at: datetime
     requested_by_id: int
     is_4k: bool
-    raw: dict | None = None
+    raw: Mapping[str, Any] | None = None
 
     def __repr__(self) -> str:
         return (
@@ -45,4 +47,4 @@ class SeerrUser:
     username: str | None
     display_name: str | None
     email: str | None = None
-    raw: dict | None = None
+    raw: Mapping[str, Any] | None = None

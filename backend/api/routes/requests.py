@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, delete, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.auth import get_current_user, has_permission, require_permission
 from backend.core.logger import LOG
@@ -90,7 +91,7 @@ def _series_scope_exact_clause(
     *,
     season_id: int | None,
     episode_id: int | None,
-):
+) -> ColumnElement[bool]:
     """Build a SQLAlchemy clause to match entries that exactly match the specified season/episode scope."""
     if episode_id is not None:
         return model.episode_id == episode_id
@@ -103,7 +104,7 @@ def _series_scope_covered_candidate_clause(
     *,
     season_id: int | None,
     episode_id: int | None,
-):
+) -> ColumnElement[bool]:
     """Match candidate rows covered by a newly approved series protection scope."""
     if episode_id is not None:
         return ReclaimCandidate.episode_id == episode_id
@@ -117,7 +118,7 @@ def _series_scope_overlap_clause(
     *,
     season_id: int | None,
     episode_id: int | None,
-):
+) -> ColumnElement[bool]:
     """Build a SQLAlchemy clause to match entries that overlap with the specified season/episode scope."""
     if episode_id is not None:
         return or_(
@@ -285,7 +286,7 @@ async def create_protection_request(
     request_data: CreateProtectionRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> ProtectionRequestResponse:
     """Create a new exception request for a media item."""
     if not has_permission(user, Permission.REQUEST):
         raise HTTPException(
@@ -576,7 +577,7 @@ async def get_my_requests(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
-):
+) -> list[ProtectionRequestResponse]:
     """Get current user's exception requests."""
     query = (
         select(ProtectionRequest)
@@ -649,7 +650,7 @@ async def get_all_requests(
     _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
-):
+) -> list[ProtectionRequestResponse]:
     """Get all exception requests (manage-requests permission)."""
     query = select(ProtectionRequest).options(
         selectinload(ProtectionRequest.movie),
@@ -715,7 +716,7 @@ async def approve_request(
     review_data: ReviewProtectionRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> ProtectionRequestResponse:
     """
     Approve an exception request.
 
@@ -869,7 +870,7 @@ async def deny_request(
     review_data: ReviewProtectionRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> ProtectionRequestResponse:
     """
     Deny an exception request.
 
@@ -968,7 +969,7 @@ async def cancel_request(
     request_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Cancel own pending exception request."""
     # get request
     result = await db.execute(

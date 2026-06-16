@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
@@ -41,6 +43,39 @@ from backend.models.services.emby_base import (
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 RawSQL: TypeAlias = str
+JsonDict: TypeAlias = dict[str, Any]
+JsonList: TypeAlias = list[JsonDict]
+JsonPayload: TypeAlias = JsonDict | JsonList
+
+
+@dataclass(slots=True)
+class _MovieAggregate:
+    name: str
+    year: int | None
+    external_ids: ExternalIDs
+    versions: list[MovieVersionData]
+    view_count: int
+    last_viewed_at: datetime | None
+    played_by_user_count: int
+
+
+@dataclass(slots=True)
+class _SeriesAggregate:
+    id: str
+    name: str
+    year: int | None
+    service: Literal[Service.JELLYFIN, Service.EMBY, Service.PLEX]
+    library_id: str
+    library_name: str
+    path: str | None
+    added_at: datetime | None
+    external_ids: ExternalIDs
+    size: int
+    view_count: int
+    last_viewed_at: datetime | None
+    played_by_user_count: int
+    media_server_collection_names: list[str] | None
+    season_data: list[AggregatedSeasonData]
 
 
 class EmbyServiceBase:
@@ -58,7 +93,7 @@ class EmbyServiceBase:
         self.service_url = service_url.rstrip("/")
         if service_type not in {Service.EMBY, Service.JELLYFIN}:
             raise ValueError(f"EmbyServiceBase does not support {service_type}")
-        self.service_type = service_type
+        self.service_type: Literal[Service.EMBY, Service.JELLYFIN] = service_type
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
@@ -78,8 +113,8 @@ class EmbyServiceBase:
         ),
     )
     async def _make_request(
-        self, endpoint: str, params: dict | None = None, **kwargs
-    ) -> list | dict:
+        self, endpoint: str, params: JsonDict | None = None, **kwargs: Any
+    ) -> JsonPayload:
         """Make HTTP request to Emby's/Jellyfin's API with automatic retry."""
         response = await self.session.get(
             f"{self.service_url}/{endpoint}",
@@ -87,7 +122,8 @@ class EmbyServiceBase:
             **kwargs,
         )
         response.raise_for_status()
-        return response.json()
+        resp: JsonPayload = response.json()
+        return resp
 
     async def health(self) -> bool:
         """Check server health and API key."""
@@ -178,8 +214,7 @@ class EmbyServiceBase:
                 await self._delete_collection(collection_id)
             return
 
-        collection_id = existing_collection_ids[0] if existing_collection_ids else None
-        if collection_id is None:
+        if not existing_collection_ids:
             await self._create_collection(
                 collection_title=collection_title,
                 item_ids=normalized_expected_ids,
@@ -187,6 +222,7 @@ class EmbyServiceBase:
             for stale_collection_id in existing_collection_ids[1:]:
                 await self._delete_collection(stale_collection_id)
             return
+        collection_id = existing_collection_ids[0]
 
         current_item_ids = await self._get_collection_item_ids(
             collection_id=collection_id,
@@ -420,13 +456,17 @@ class EmbyServiceBase:
         virtual_folders = await self._make_request(
             "Library/VirtualFolders", timeout=300
         )
-        media_libs = []
+        media_libs: list[dict[str, str]] = []
+        if not isinstance(virtual_folders, list):
+            return media_libs
         for vf in virtual_folders:
+            if not isinstance(vf, dict):
+                continue
             if vf.get("CollectionType") == media_type:
                 item_id = vf.get("ItemId")
                 name = vf.get("Name")
                 if item_id and name:
-                    media_libs.append({"id": item_id, "name": name})
+                    media_libs.append({"id": str(item_id), "name": str(name)})
         return media_libs
 
     async def get_movie_libraries(self) -> list[dict[str, str]]:
@@ -440,9 +480,13 @@ class EmbyServiceBase:
     async def get_users(self) -> list[EmbyUserBase]:
         """Get all Emby/Jellyfin users."""
         users_data = await self._make_request("Users")
-        if not users_data:
+        if not isinstance(users_data, list):
             return []
-        return [EmbyUserBase(name=user["Name"], id=user["Id"]) for user in users_data]
+        return [
+            EmbyUserBase(name=str(user["Name"]), id=str(user["Id"]))
+            for user in users_data
+            if isinstance(user, dict) and "Name" in user and "Id" in user
+        ]
 
     async def get_favorite_tmdb_ids_by_user(
         self, media_type: Literal["movie", "series"]
@@ -526,7 +570,7 @@ class EmbyServiceBase:
         library_id: str,
         library_name: str,
         collection_names_by_item_id: dict[str, list[str]] | None = None,
-        filters: dict | None = None,
+        filters: JsonDict | None = None,
     ) -> list[EmbyMovieBase]:
         """Get movies for a specific user, optionally filtered by library.
 
@@ -551,9 +595,11 @@ class EmbyServiceBase:
         if filters:
             params.update(filters)
         get_data = await self._make_request("Items", params=params, timeout=300)
-        if not get_data:
+        if not isinstance(get_data, dict):
             return []
-        items_data = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
+        items_data = get_data.get("Items", [])
+        if not isinstance(items_data, list):
+            return []
 
         data = []
         for item in items_data:
@@ -624,7 +670,7 @@ class EmbyServiceBase:
                 height = as_int(first_video.get("Height"))
                 versions.append(
                     MovieVersionData(
-                        service=self.service_type,  # type: ignore[reportArgumentType]
+                        service=self.service_type,
                         service_item_id=item["Id"],
                         service_media_id=source["Id"],
                         library_id=library_id,
@@ -718,7 +764,7 @@ class EmbyServiceBase:
         library_name: str,
         series_sizes: dict[str, int] | None = None,
         collection_names_by_item_id: dict[str, list[str]] | None = None,
-        filters: dict | None = None,
+        filters: JsonDict | None = None,
     ) -> list[EmbySeriesBase]:
         """Get TV series for a specific user, optionally filtered by library.
 
@@ -744,9 +790,11 @@ class EmbyServiceBase:
         if filters:
             params.update(filters)
         get_data = await self._make_request("Items", params=params, timeout=300)
-        if not get_data:
+        if not isinstance(get_data, dict):
             return []
-        items_data = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
+        items_data = get_data.get("Items", [])
+        if not isinstance(items_data, list):
+            return []
 
         data = []
         for item in items_data:
@@ -854,10 +902,15 @@ class EmbyServiceBase:
             }
 
             get_data = await self._make_request("Items", params=params, timeout=60)
-            if not get_data:
+            if not isinstance(get_data, dict):
                 break
 
-            episodes = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
+            raw_episodes = get_data.get("Items", [])
+            if not isinstance(raw_episodes, list) or not raw_episodes:
+                break
+            episodes = [
+                episode for episode in raw_episodes if isinstance(episode, dict)
+            ]
             if not episodes:
                 break
 
@@ -1072,7 +1125,7 @@ class EmbyServiceBase:
                                     str(lang).lower()
                                 )
 
-            total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
+            total_record_count = int(get_data.get("TotalRecordCount", 0) or 0)
             start_index += len(episodes)
             if start_index >= total_record_count:
                 break
@@ -1082,14 +1135,14 @@ class EmbyServiceBase:
         for sk, size in season_sizes.items():
             series_id, season_num = sk
             agg_view = season_view_counts.get(sk, 0)
-            lva = season_last_viewed.get(sk)
+            season_last_viewed_at: datetime | None = season_last_viewed.get(sk)
             season_data[sk] = AggregatedSeasonData(
                 service_series_id=series_id,
                 season_number=season_num,
                 size=size,
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
-                last_viewed_at=lva,
+                last_viewed_at=season_last_viewed_at,
                 added_at=season_added_at.get(sk),
                 air_date=season_air_date.get(sk),
                 service_season_id=season_ids.get(sk),
@@ -1139,10 +1192,13 @@ class EmbyServiceBase:
                     "Limit": str(limit),
                 }
                 get_data = await self._make_request("Items", params=params, timeout=60)
-                if not get_data:
+                if not isinstance(get_data, dict):
                     break
 
-                items_data = get_data.get("Items", [])  # pyright: ignore [reportAttributeAccessIssue]
+                raw_items_data = get_data.get("Items", [])
+                if not isinstance(raw_items_data, list) or not raw_items_data:
+                    break
+                items_data = [item for item in raw_items_data if isinstance(item, dict)]
                 if not items_data:
                     break
 
@@ -1161,7 +1217,7 @@ class EmbyServiceBase:
                             series_watch_dates[series_id] = watch_date
 
                 # check if we've fetched all episodes
-                total_record_count = get_data.get("TotalRecordCount", 0)  # pyright: ignore [reportAttributeAccessIssue]
+                total_record_count = int(get_data.get("TotalRecordCount", 0) or 0)
                 start_index += len(items_data)
                 if start_index >= total_record_count:
                     break
@@ -1176,7 +1232,7 @@ class EmbyServiceBase:
         return key or None
 
     @staticmethod
-    def _safe_tmdb_id(provider_ids: dict[str, Any] | None) -> int | None:
+    def _safe_tmdb_id(provider_ids: Mapping[str, object] | None) -> int | None:
         raw = (provider_ids or {}).get("Tmdb")
         if raw is None:
             return None
@@ -1186,7 +1242,7 @@ class EmbyServiceBase:
         return int(text)
 
     @staticmethod
-    def _safe_iso_datetime(raw: Any) -> datetime | None:
+    def _safe_iso_datetime(raw: object) -> datetime | None:
         if not raw:
             return None
         try:
@@ -1313,7 +1369,7 @@ class EmbyServiceBase:
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data across all users with optional library filters."""
-        movie_data: dict[str, dict[str, Any]] = {}
+        movie_data: dict[str, _MovieAggregate] = {}
         collection_names_by_item_id = await self._get_collection_names_by_item_id(
             include_item_types="Movie"
         )
@@ -1343,50 +1399,54 @@ class EmbyServiceBase:
                 )
 
                 for movie in user_movies:
+                    if movie.external_ids is None:
+                        continue
                     if movie.id not in movie_data:
                         # first time seeing this movie - capture versions once (same files for all users)
-                        movie_data[movie.id] = {
-                            "name": movie.name,
-                            "year": movie.year,
-                            "external_ids": movie.external_ids,
-                            "versions": list(movie.versions),
-                            "view_count": movie.user_data.play_count
-                            if movie.user_data
-                            else 0,
-                            "last_viewed_at": movie.user_data.last_played_date
-                            if movie.user_data
-                            else None,
-                            "played_by_user_count": 1
-                            if (movie.user_data and movie.user_data.played)
-                            else 0,
-                        }
+                        movie_data[movie.id] = _MovieAggregate(
+                            name=movie.name,
+                            year=movie.year,
+                            external_ids=movie.external_ids,
+                            versions=list(movie.versions),
+                            view_count=(
+                                movie.user_data.play_count if movie.user_data else 0
+                            ),
+                            last_viewed_at=(
+                                movie.user_data.last_played_date
+                                if movie.user_data
+                                else None
+                            ),
+                            played_by_user_count=(
+                                1 if (movie.user_data and movie.user_data.played) else 0
+                            ),
+                        )
                     else:
                         # aggregate data
                         existing = movie_data[movie.id]
                         if movie.user_data:
-                            existing["view_count"] += movie.user_data.play_count
+                            existing.view_count += movie.user_data.play_count
                             if movie.user_data.last_played_date:
                                 if (
-                                    not existing["last_viewed_at"]
+                                    existing.last_viewed_at is None
                                     or movie.user_data.last_played_date
-                                    > existing["last_viewed_at"]
+                                    > existing.last_viewed_at
                                 ):
-                                    existing["last_viewed_at"] = (
+                                    existing.last_viewed_at = (
                                         movie.user_data.last_played_date
                                     )
                             if movie.user_data.played:
-                                existing["played_by_user_count"] += 1
+                                existing.played_by_user_count += 1
 
         # convert to final format
         return [
             AggregatedMovieData(
-                name=data["name"],
-                year=data["year"],
-                external_ids=data["external_ids"],
-                versions=data["versions"],
-                view_count=data["view_count"],
-                last_viewed_at=data["last_viewed_at"],
-                played_by_user_count=data["played_by_user_count"],
+                name=data.name,
+                year=data.year,
+                external_ids=data.external_ids,
+                versions=data.versions,
+                view_count=data.view_count,
+                last_viewed_at=data.last_viewed_at,
+                played_by_user_count=data.played_by_user_count,
             )
             for data in movie_data.values()
         ]
@@ -1400,7 +1460,7 @@ class EmbyServiceBase:
         episodes to get accurate watch dates. We optimize by getting all watched episodes
         per user in a single API call instead of querying each series individually.
         """
-        series_data: dict[str, dict[str, Any]] = {}
+        series_data: dict[str, _SeriesAggregate] = {}
         collection_names_by_item_id = await self._get_collection_names_by_item_id(
             include_item_types="Series"
         )
@@ -1448,54 +1508,71 @@ class EmbyServiceBase:
                 )
 
                 for series in user_series:
+                    if series.external_ids is None:
+                        continue
                     # get watch date from our pre-fetched data
                     episode_last_watched = user_series_watch_dates.get(series.id)
 
                     if series.id not in series_data:
                         # first time seeing this series
-                        series_data[series.id] = {
-                            "id": series.id,
-                            "name": series.name,
-                            "year": series.year,
-                            "service": self.service_type,
-                            "library_id": series.library_id,
-                            "library_name": series.library_name,
-                            "path": series.path,
-                            "added_at": series.date_created,
-                            "external_ids": series.external_ids,
-                            "size": series.size,
-                            "view_count": series.user_data.play_count
-                            if series.user_data
-                            else 0,
-                            "last_viewed_at": episode_last_watched,
-                            "played_by_user_count": 1 if episode_last_watched else 0,
-                            "media_server_collection_names": series.media_server_collection_names,
-                            "season_data": [
+                        series_data[series.id] = _SeriesAggregate(
+                            id=series.id,
+                            name=series.name,
+                            year=series.year,
+                            service=self.service_type,
+                            library_id=series.library_id,
+                            library_name=series.library_name,
+                            path=series.path,
+                            added_at=series.date_created,
+                            external_ids=series.external_ids,
+                            size=series.size,
+                            view_count=(
+                                series.user_data.play_count if series.user_data else 0
+                            ),
+                            last_viewed_at=episode_last_watched,
+                            played_by_user_count=1 if episode_last_watched else 0,
+                            media_server_collection_names=(
+                                series.media_server_collection_names
+                            ),
+                            season_data=[
                                 v
                                 for k, v in season_data_map.items()
                                 if k[0] == series.id
                             ],
-                        }
+                        )
                     else:
                         # aggregate data
                         existing = series_data[series.id]
                         if series.user_data:
-                            existing["view_count"] += series.user_data.play_count
+                            existing.view_count += series.user_data.play_count
 
                         # update last_viewed_at if this user's episodes were watched more recently
                         if episode_last_watched:
                             if (
-                                not existing["last_viewed_at"]
-                                or episode_last_watched > existing["last_viewed_at"]
+                                existing.last_viewed_at is None
+                                or episode_last_watched > existing.last_viewed_at
                             ):
-                                existing["last_viewed_at"] = episode_last_watched
-                            existing["played_by_user_count"] += 1
+                                existing.last_viewed_at = episode_last_watched
+                            existing.played_by_user_count += 1
 
         # convert to final format
         return [
             AggregatedSeriesData(
-                **{k: v for k, v in data.items() if k != "season_data"},
-                season_data=data.get("season_data", []),
+                id=data.id,
+                name=data.name,
+                year=data.year,
+                service=data.service,
+                library_id=data.library_id,
+                library_name=data.library_name,
+                path=data.path,
+                added_at=data.added_at,
+                external_ids=data.external_ids,
+                size=data.size,
+                view_count=data.view_count,
+                last_viewed_at=data.last_viewed_at,
+                played_by_user_count=data.played_by_user_count,
+                media_server_collection_names=data.media_server_collection_names,
+                season_data=data.season_data,
             )
             for data in series_data.values()
         ]
@@ -1565,7 +1642,7 @@ class EmbyServiceBase:
                 json={"CustomQueryString": query, "ReplaceUserId": False},
             )
             response.raise_for_status()
-            data = response.json()
+            data: dict[str, object] = response.json()
         except Exception as e:
             LOG.error(f"Playback Reporting plugin query failed: {e}")
             return {}
@@ -1575,10 +1652,18 @@ class EmbyServiceBase:
         # in case some plugin builds use the correctly spelled key, we handle that too
         if raw_columns is None:
             raw_columns = data.get("columns")
-        columns: list[str] = raw_columns if isinstance(raw_columns, list) else []
+        columns = (
+            [str(column) for column in raw_columns]
+            if isinstance(raw_columns, list)
+            else []
+        )
         # cSpell: enable
         raw_results = data.get("results", [])
-        results: list[list] = raw_results if isinstance(raw_results, list) else []
+        results: list[Sequence[object]] = (
+            [row for row in raw_results if isinstance(row, (list, tuple))]
+            if isinstance(raw_results, list)
+            else []
+        )
 
         # no row queries can legitimately return empty columns and results
         if not columns and not results:
@@ -1600,14 +1685,15 @@ class EmbyServiceBase:
 
         parsed: dict[str, int] = {}
         for row in results:
-            if not isinstance(row, (list, tuple)):
-                continue
             if len(row) <= max(item_id_idx, play_count_idx):
                 continue
             item_id = row[item_id_idx]
             if not item_id:
                 continue
-            parsed[str(item_id)] = int(row[play_count_idx])
+            try:
+                parsed[str(item_id)] = int(str(row[play_count_idx]))
+            except (TypeError, ValueError):
+                continue
         return parsed
 
     async def get_series_ids_for_episode_ids(
@@ -1716,16 +1802,21 @@ class EmbyServiceBase:
 
     @staticmethod
     def _media_streams_by_type(
-        media_source: dict[str, Any],
-    ) -> tuple[list[dict], list[dict], list[dict]]:
-        streams = media_source.get("MediaStreams", []) or []
+        media_source: JsonDict,
+    ) -> tuple[JsonList, JsonList, JsonList]:
+        streams_value = media_source.get("MediaStreams", [])
+        streams: JsonList = (
+            [stream for stream in streams_value if isinstance(stream, dict)]
+            if isinstance(streams_value, list)
+            else []
+        )
         video = [s for s in streams if str(s.get("Type", "")).lower() == "video"]
         audio = [s for s in streams if str(s.get("Type", "")).lower() == "audio"]
         subtitle = [s for s in streams if str(s.get("Type", "")).lower() == "subtitle"]
         return video, audio, subtitle
 
     @staticmethod
-    def _unique_languages(streams: list[dict]) -> list[str] | None:
+    def _unique_languages(streams: JsonList) -> list[str] | None:
         langs: list[str] = []
         seen: set[str] = set()
         for stream in streams:
@@ -1740,7 +1831,7 @@ class EmbyServiceBase:
         return langs or None
 
     @staticmethod
-    def _is_hdr(stream: dict) -> bool:
+    def _is_hdr(stream: JsonDict) -> bool:
         # bit depth (if less than 10 bits it's not hdr)
         try:
             if int(stream["BitDepth"]) < 10:
