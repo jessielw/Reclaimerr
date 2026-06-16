@@ -31,7 +31,7 @@ from backend.tasks.sync import (
     sync_media_libraries,
 )
 from backend.tasks.update_check import check_app_updates
-from backend.user_types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS, MediaServerType
 
 MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
     {
@@ -153,13 +153,13 @@ async def _run_linked_data_sync() -> None:
 
     for service_config in media_servers:
         if service_config.service_type != main_service_type:
-            await sync_linked_data(service_config.service_type)  # type: ignore[reportArgumentType]
+            await sync_linked_data(service_config.service_type)  # type: ignore
 
 
 async def execute_task(task: Task) -> dict[str, Any] | None:
     if not await is_task_enabled(task):
         LOG.info(f"Skipped task execution for {task.friendly_name()} (disabled)")
-        return
+        return None
 
     if task is Task.SYNC_MEDIA:
         return await sync_media()
@@ -167,29 +167,29 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
         return await sync_media_libraries()
     if task is Task.SYNC_LINKED_DATA:
         await _run_linked_data_sync()
-        return
+        return None
     if task is Task.RESYNC_MEDIA:
         await resync_media()
-        return
+        return None
     if task is Task.SCAN_CLEANUP_CANDIDATES:
         await scan_cleanup_candidates()
-        return
+        return None
     if task is Task.TAG_CLEANUP_CANDIDATES:
         await tag_cleanup_candidates()
-        return
+        return None
     if task is Task.DELETE_CLEANUP_CANDIDATES:
         return await delete_cleanup_candidates()
     if task is Task.WEEKLY_HOUSE_KEEPING:
         await weekly_house_keeping()
-        return
+        return None
     if task is Task.CHECK_APP_UPDATES:
         await check_app_updates()
-        return
+        return None
     if task is Task.IMDB_RATINGS_REFRESH:
         await refresh_imdb_ratings()
-        return
+        return None
     if task is Task.ANILIST_RATINGS_REFRESH:
         await refresh_anilist_ratings()
-        return
+        return None
 
     raise ValueError(f"Unsupported task for background execution: {task}")
