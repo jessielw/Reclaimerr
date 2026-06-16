@@ -160,7 +160,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
                 continue
         return parsed
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def avatar_url(self) -> str | None:
         """Generate full URL for avatar if avatar_path exists."""
