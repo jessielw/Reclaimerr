@@ -28,6 +28,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy",
     "basedpyright>=1.39.3",
     "pytest>=9.0.3",
     "ruff>=0.14.10",
@@ -43,6 +44,11 @@ desktop = [
     "uvicorn>=0.41.0",
 ]
 docs = ["zensical", "pymdown-extensions"]
+
+[project.urls]
+Homepage = "https://github.com/jessielw/Reclaimerr"
+Source = "https://github.com/jessielw/Reclaimerr"
+Documentation = "https://jessielw.github.io/Reclaimerr"
 
 [build-system]
 requires = ["hatchling"]
@@ -70,3 +76,21 @@ typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+namespace_packages = true
+explicit_package_bases = true
+files = ["backend", "desktop"]
+exclude = '''
+(?x)(
+    ^backend/alembic/|
+    ^backend/types/|
+    ^scripts/build_desktop\.py$
+)
+'''
+
+[[tool.mypy.overrides]]
+module = ["authlib.*", "apscheduler.*", "pystray.*"]
+ignore_missing_imports = true
