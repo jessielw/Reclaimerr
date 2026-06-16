@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, TypeAlias
 from xml.etree import ElementTree as ET
 
 import niquests
@@ -40,9 +40,33 @@ from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
+JsonDict: TypeAlias = dict[str, Any]
+JsonList: TypeAlias = list[JsonDict]
+JsonPayload: TypeAlias = JsonDict | JsonList
 _METADATA_BATCH_SIZE = 50
 _EPISODE_METADATA_BATCH_SIZE = 100
 _SECTION_METADATA_PAGE_SIZE = 1000
+
+
+class _HistoryAggregate:
+    __slots__ = ("account_ids", "last_viewed_at", "view_count")
+
+    def __init__(self) -> None:
+        self.view_count = 0
+        self.last_viewed_at: datetime | None = None
+        self.account_ids: set[str] = set()
+
+    def add(self, viewed_at: datetime | None, account_id: str) -> None:
+        self.view_count += 1
+        if viewed_at is not None and (
+            self.last_viewed_at is None or viewed_at > self.last_viewed_at
+        ):
+            self.last_viewed_at = viewed_at
+        if account_id:
+            self.account_ids.add(account_id)
+
+    def as_entry(self) -> _HistEntry:
+        return (self.view_count, self.last_viewed_at, len(self.account_ids))
 
 
 class PlexService:
@@ -68,9 +92,7 @@ class PlexService:
         self._plex_user_map_cache: dict[str, str] | None = None
         self._plex_user_map_expires_at: datetime | None = None
         self._plex_user_map_ttl = timedelta(minutes=15)
-        self._history_records_cache: dict[
-            tuple[tuple[str, ...], int], list[dict[str, Any]]
-        ] = {}
+        self._history_records_cache: dict[tuple[tuple[str, ...], int], JsonList] = {}
         self._history_records_cache_expires_at: dict[
             tuple[tuple[str, ...], int], datetime
         ] = {}
@@ -94,8 +116,8 @@ class PlexService:
         ),
     )
     async def _make_request(
-        self, endpoint: str, params: dict | None = None, **kwargs
-    ) -> tuple[dict | list, int | None]:
+        self, endpoint: str, params: JsonDict | None = None, **kwargs: Any
+    ) -> tuple[JsonPayload, int | None]:
         """Make HTTP request to Plex API with automatic retry."""
         response = await self.session.get(
             f"{self.plex_url}/{endpoint}", params=params, **kwargs
@@ -104,12 +126,12 @@ class PlexService:
         return response.json(), response.status_code
 
     @staticmethod
-    def _fromtimestamp(ts: Any) -> datetime | None:
+    def _fromtimestamp(ts: object) -> datetime | None:
         """Safe wrapper around datetime.fromtimestamp (returns None for invalid/out of range values)."""
         if not ts:
             return None
         try:
-            return datetime.fromtimestamp(int(ts), tz=UTC)
+            return datetime.fromtimestamp(int(str(ts)), tz=UTC)
         except (OSError, OverflowError, ValueError):
             return None
 
@@ -427,7 +449,7 @@ class PlexService:
         return item_section_ids
 
     @staticmethod
-    def _extract_metadata_items(payload: dict | list) -> list[dict[str, Any]]:
+    def _extract_metadata_items(payload: JsonPayload) -> JsonList:
         if isinstance(payload, dict):
             media_container = payload.get("MediaContainer", {})
             if isinstance(media_container, dict):
@@ -442,12 +464,12 @@ class PlexService:
         self,
         *,
         section_id: str,
-        params: dict[str, Any] | None = None,
+        params: JsonDict | None = None,
         page_size: int = _SECTION_METADATA_PAGE_SIZE,
         timeout: int = 300,
-    ) -> list[dict[str, Any]]:
+    ) -> JsonList:
         """Fetch all metadata items for a Plex library section using pagination."""
-        all_items: list[dict[str, Any]] = []
+        all_items: JsonList = []
         container_start = 0
         base_params = dict(params or {})
 
@@ -516,8 +538,15 @@ class PlexService:
                     f"library/sections/{section_id}",
                     timeout=60,
                 )
-                directories = section_details.get("MediaContainer", {}).get(  # pyright: ignore [reportAttributeAccessIssue]
-                    "Directory", []
+                media_container = (
+                    section_details.get("MediaContainer", {})
+                    if isinstance(section_details, dict)
+                    else {}
+                )
+                directories = (
+                    media_container.get("Directory", [])
+                    if isinstance(media_container, dict)
+                    else []
                 )
                 if not directories:
                     continue
@@ -551,9 +580,19 @@ class PlexService:
 
     async def _get_media_libraries(self, media_type: str) -> list[dict[str, str]]:
         """Get list of media libraries of a specific type with their IDs and names."""
-        virtual_folders, _ = await self._make_request("library/sections/all")  # pyright: ignore [reportAttributeAccessIssue]
-        media_libs = []
-        for section in virtual_folders.get("MediaContainer", {}).get("Directory", []):  # pyright: ignore [reportAttributeAccessIssue]
+        virtual_folders, _ = await self._make_request("library/sections/all")
+        media_libs: list[dict[str, str]] = []
+        container = (
+            virtual_folders.get("MediaContainer", {})
+            if isinstance(virtual_folders, dict)
+            else {}
+        )
+        directories = (
+            container.get("Directory", []) if isinstance(container, dict) else []
+        )
+        for section in directories:
+            if not isinstance(section, dict):
+                continue
             if section.get("type") == media_type:
                 item_id = section.get("uuid")
                 name = section.get("title")
@@ -569,12 +608,20 @@ class PlexService:
         """Get list of TV series libraries with their IDs and names."""
         return await self._get_media_libraries("show")
 
-    async def get_library_sections(self) -> list[dict]:
+    async def get_library_sections(self) -> JsonList:
         """Get all library sections."""
         data, _ = await self._make_request("library/sections")
         if not isinstance(data, dict):
             return []
-        return data.get("MediaContainer", {}).get("Directory", [])  # pyright: ignore [reportAttributeAccessIssue]
+        container = data.get("MediaContainer", {})
+        if not isinstance(container, dict):
+            return []
+        directories = container.get("Directory", [])
+        return (
+            [section for section in directories if isinstance(section, dict)]
+            if isinstance(directories, list)
+            else []
+        )
 
     async def get_series_sizes_for_section(self, section_id: str) -> dict[str, int]:
         """Get total sizes for all series in a library section by fetching all episodes in one call.
@@ -919,14 +966,14 @@ class PlexService:
         for sk, size in season_sizes.items():
             series_key, season_num = sk
             agg_view = season_view_counts.get(sk, 0)
-            lva = season_last_viewed.get(sk)
+            season_last_viewed_at: datetime | None = season_last_viewed.get(sk)
             season_data[sk] = AggregatedSeasonData(
                 service_series_id=series_key,
                 season_number=season_num,
                 size=size,
                 episode_count=season_episode_counts.get(sk, 0),
                 view_count=agg_view,
-                last_viewed_at=lva,
+                last_viewed_at=season_last_viewed_at,
                 added_at=season_added_at.get(sk),
                 air_date=season_air_date.get(sk),
                 service_season_id=season_keys.get(sk),
@@ -1188,12 +1235,12 @@ class PlexService:
 
     async def _get_movies_metadata_batch(
         self, rating_keys: list[str]
-    ) -> dict[str, dict]:
+    ) -> dict[str, JsonDict]:
         """Fetch full movie metadata in batches via /library/metadata/{id1,id2,...}."""
         if not rating_keys:
             return {}
 
-        detailed: dict[str, dict] = {}
+        detailed: dict[str, JsonDict] = {}
         for i in range(0, len(rating_keys), _METADATA_BATCH_SIZE):
             batch = rating_keys[i : i + _METADATA_BATCH_SIZE]
             if not batch:
@@ -1211,6 +1258,8 @@ class PlexService:
                 if not isinstance(metadata, list):
                     continue
                 for item in metadata:
+                    if not isinstance(item, dict):
+                        continue
                     key = str(item.get("ratingKey", ""))
                     if key:
                         detailed[key] = item
@@ -1220,12 +1269,12 @@ class PlexService:
 
     async def _get_episodes_metadata_batch(
         self, rating_keys: list[str]
-    ) -> dict[str, dict]:
+    ) -> dict[str, JsonDict]:
         """Fetch full episode metadata in batches via /library/metadata/{id1,id2,...}."""
         if not rating_keys:
             return {}
 
-        detailed: dict[str, dict] = {}
+        detailed: dict[str, JsonDict] = {}
         for i in range(0, len(rating_keys), _EPISODE_METADATA_BATCH_SIZE):
             batch = rating_keys[i : i + _EPISODE_METADATA_BATCH_SIZE]
             if not batch:
@@ -1242,6 +1291,8 @@ class PlexService:
                 if not isinstance(metadata, list):
                     continue
                 for item in metadata:
+                    if not isinstance(item, dict):
+                        continue
                     key = str(item.get("ratingKey", ""))
                     if key:
                         detailed[key] = item
@@ -1380,7 +1431,7 @@ class PlexService:
             page_size=page_size,
         )
         # key -> [view_count, max_lva, set(accountIDs)]
-        aggregated: dict[str, list[Any]] = {}
+        aggregated: dict[str, _HistoryAggregate] = {}
         for record in records:
             key = str(record.get(key_field, ""))
             if not key:
@@ -1392,16 +1443,11 @@ class PlexService:
             account_id = str(record.get("accountID", ""))
 
             if key not in aggregated:
-                aggregated[key] = [0, None, set()]
+                aggregated[key] = _HistoryAggregate()
 
-            aggregated[key][0] += 1  # each history record = one play
-            if viewed_at:
-                if aggregated[key][1] is None or viewed_at > aggregated[key][1]:
-                    aggregated[key][1] = viewed_at
-            if account_id:
-                aggregated[key][2].add(account_id)
+            aggregated[key].add(viewed_at, account_id)
 
-        return {k: (v[0], v[1], len(v[2])) for k, v in aggregated.items()}
+        return {key: aggregate.as_entry() for key, aggregate in aggregated.items()}
 
     @staticmethod
     def _history_cache_key(
@@ -1420,9 +1466,9 @@ class PlexService:
         library_section_ids: list[str] | None = None,
         page_size: int = 1000,
         viewed_at_gte: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> JsonList:
         """Fetch raw watch history records for all users (uncached)."""
-        records_out: list[dict[str, Any]] = []
+        records_out: JsonList = []
         cutoff_ts = (
             int(viewed_at_gte.astimezone(UTC).timestamp())
             if viewed_at_gte is not None
@@ -1434,7 +1480,7 @@ class PlexService:
         for section_id in sections_to_fetch:
             container_start = 0
             while True:
-                params: dict[str, Any] = {
+                params: JsonDict = {
                     "X-Plex-Container-Start": container_start,
                     "X-Plex-Container-Size": page_size,
                     "sort": "viewedAt:desc",
@@ -1454,6 +1500,8 @@ class PlexService:
                 if not isinstance(data, dict):
                     break
                 container = data.get("MediaContainer", {})
+                if not isinstance(container, dict):
+                    break
                 records = container.get("Metadata", [])
                 if not records:
                     break
@@ -1461,7 +1509,7 @@ class PlexService:
                     record for record in records if isinstance(record, dict)
                 ]
                 if cutoff_ts is not None:
-                    filtered_records: list[dict[str, Any]] = []
+                    filtered_records: JsonList = []
                     hit_older_record = False
                     for record in page_records:
                         raw_viewed_at = record.get("viewedAt")
@@ -1493,7 +1541,7 @@ class PlexService:
         page_size: int = 1000,
         viewed_at_gte: datetime | None = None,
         use_cache: bool = True,
-    ) -> list[dict[str, Any]]:
+    ) -> JsonList:
         """Fetch raw watch history records for all users (cached)."""
         if viewed_at_gte is not None or not use_cache:
             return await self._fetch_all_history_records(
@@ -1597,7 +1645,7 @@ class PlexService:
 
     @staticmethod
     def _pick_watch_user_key(
-        record: dict[str, Any], plex_users_by_account_id: Mapping[str, str]
+        record: Mapping[str, object], plex_users_by_account_id: Mapping[str, str]
     ) -> str | None:
         for field in (
             "user",
@@ -1831,9 +1879,9 @@ class PlexService:
         try:
             async with AsyncTMDBClient() as tmdb:
                 data = await tmdb.find_by_external_id(tvdb_id, "tvdb_id")
-            if not data or data is False:
+            if not isinstance(data, dict):
                 return None
-            results = data.get("tv_results", [])  # type: ignore[reportAttributeAccessIssue]
+            results = data.get("tv_results", [])
             if results:
                 return int(results[0]["id"])
         except Exception:
@@ -1841,7 +1889,7 @@ class PlexService:
         return None
 
     @staticmethod
-    def _parse_external_ids(media: dict) -> ExternalIDs | None:
+    def _parse_external_ids(media: JsonDict) -> ExternalIDs | None:
         imdb_id = None
         tmdb_id = None
         tvdb_id = None
@@ -1888,7 +1936,7 @@ class PlexService:
         return None
 
     @staticmethod
-    def _is_hdr(stream: dict) -> bool:
+    def _is_hdr(stream: JsonDict) -> bool:
         # bit depth (if less than 10 bits it's not hdr)
         try:
             if int(stream["bitDepth"]) < 10:
@@ -1914,7 +1962,7 @@ class PlexService:
         return False
 
     @staticmethod
-    def _unique_languages(streams: list[dict]) -> list[str] | None:
+    def _unique_languages(streams: JsonList) -> list[str] | None:
         """Extract unique language codes from Plex stream data.
 
         We maintain the order and only keep the unique values.
@@ -1937,7 +1985,7 @@ class PlexService:
         return langs or None
 
     @staticmethod
-    def _extract_legacy_tvdb_id(media: dict) -> str | None:
+    def _extract_legacy_tvdb_id(media: JsonDict) -> str | None:
         """Extract a TVDB ID from a legacy Plex agent GUID attribute.
 
         Handles both show level and episode level GUIDs:
@@ -1972,7 +2020,7 @@ class PlexService:
         return max(scan_lva, hist_lva)
 
     @staticmethod
-    def _check_plex_healthy(response: Any) -> bool:
+    def _check_plex_healthy(response: object) -> bool:
         """Check if the Plex /identity response indicates a healthy connection.
 
         We'll verify the response is a dict and has the expected structure:
@@ -1982,9 +2030,9 @@ class PlexService:
         ```
         """
         return (
-            isinstance(response, dict)
+            isinstance(response, Mapping)
             and "MediaContainer" in response
-            and isinstance(response["MediaContainer"], dict)
+            and isinstance(response["MediaContainer"], Mapping)
             and "machineIdentifier" in response["MediaContainer"]
         )
 
