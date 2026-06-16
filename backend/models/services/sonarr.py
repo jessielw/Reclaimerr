@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,7 +11,7 @@ class SonarrSeason:
 
     season_number: int
     monitored: bool
-    statistics: dict[str, Any] | None = None
+    statistics: Mapping[str, Any] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -28,7 +29,7 @@ class SonarrSeries:
     season_count: int
     seasons: list[SonarrSeason]
     tags: list[int]
-    raw: dict[str, Any] | None = None
+    raw: Mapping[str, Any] | None = None
 
     def __repr__(self) -> str:
         return (
