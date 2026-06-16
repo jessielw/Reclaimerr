@@ -2,7 +2,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from os import PathLike
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -91,7 +91,7 @@ def _media_type_for_target(target_scope: str | None, fallback: MediaType) -> Med
     return fallback
 
 
-def _action_or_default(action: dict | None) -> dict:
+def _action_or_default(action: dict[str, Any] | None) -> dict[str, Any]:
     """Return the action dictionary with default values applied."""
     return {
         "candidate": True,
@@ -117,8 +117,8 @@ def _slugify_rule_tag(value: str) -> str:
 
 
 def _normalize_rule_action(
-    action: dict | None, rule_name: str, target_scope: str | None
-) -> dict:
+    action: dict[str, Any] | None, rule_name: str, target_scope: str | None
+) -> dict[str, Any]:
     """Normalize the rule action dictionary."""
     normalized = _action_or_default(action)
     normalized["tag_enabled"] = bool(normalized.get("tag_enabled", True))
@@ -256,30 +256,30 @@ def _collect_unique_path_criteria(
         unique.append(criterion)
 
     for condition in conditions or []:
-        criterion = _normalize_path_criterion(
+        normalized = _normalize_path_criterion(
             condition.field, condition.operator, condition.value
         )
-        if criterion is None:
+        if normalized is None:
             continue
-        key = (criterion.field, criterion.operator, criterion.value)
+        key = (normalized.field, normalized.operator, normalized.value)
         if key in seen:
             continue
         seen.add(key)
-        unique.append(criterion)
+        unique.append(normalized)
 
     for raw_path in legacy_paths or []:
-        criterion = _normalize_path_criterion(
+        normalized = _normalize_path_criterion(
             "media.path",
             PATH_REGEX_OPERATOR,
             raw_path,
         )
-        if criterion is None:
+        if normalized is None:
             continue
-        key = (criterion.field, criterion.operator, criterion.value)
+        key = (normalized.field, normalized.operator, normalized.value)
         if key in seen:
             continue
         seen.add(key)
-        unique.append(criterion)
+        unique.append(normalized)
 
     return unique
 
@@ -411,7 +411,7 @@ async def _validate_rule_paths(
 
 async def _validate_definition_paths(
     db: AsyncSession,
-    definition: dict | None,
+    definition: dict[str, Any] | None,
     media_type: MediaType,
 ) -> None:
     raw_criteria: list[_PathCriterion] = []
@@ -433,7 +433,7 @@ async def _validate_definition_paths(
     )
 
 
-def _validate_definition_path_syntax(definition: dict | None) -> None:
+def _validate_definition_path_syntax(definition: dict[str, Any] | None) -> None:
     """Validate path criteria in a rule definition without requiring indexed media."""
     for condition in collect_rule_path_conditions(definition):
         criterion = _normalize_path_criterion(
@@ -458,7 +458,7 @@ async def get_path_tree(
     media_type: Annotated[MediaType, Query()],
     library_ids: Annotated[list[str] | None, Query()] = None,
     db: AsyncSession = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return a navigable tree of directories derived from indexed media paths.
 
     Each node has ``path``, ``name``, and ``children``. Roots are the
@@ -486,7 +486,7 @@ async def get_path_tree(
     child_set = {c for kids in children.values() for c in kids}
     roots = sorted(all_paths - child_set)
 
-    def build_node(p: str) -> dict:
+    def build_node(p: str) -> dict[str, Any]:
         kids = sorted(children.get(p, set()))
         name = p.rsplit("/", 1)[-1] or p
         return {
@@ -721,7 +721,7 @@ async def get_media_server_collections(
 async def get_rules(
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-):
+) -> list[CleanupRuleResponse]:
     """Get all cleanup rules."""
     result = await db.execute(select(ReclaimRule))
     rules = result.scalars().all()
@@ -735,7 +735,7 @@ async def create_rule(
     rule_data: CleanupRuleCreate,
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-):
+) -> CleanupRuleResponse:
     """Create a new cleanup rule."""
     if not rule_data.target_scope:
         raise HTTPException(
@@ -984,7 +984,7 @@ async def update_rule(
     rule_data: CleanupRuleUpdate,
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-):
+) -> CleanupRuleResponse:
     """Updates an existing cleanup rule."""
     result = await db.execute(select(ReclaimRule).where(ReclaimRule.id == rule_id))
     rule = result.scalar_one_or_none()
@@ -1064,7 +1064,7 @@ async def delete_rule(
     rule_id: int,
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Remove a cleanup rule."""
     result = await db.execute(select(ReclaimRule).where(ReclaimRule.id == rule_id))
     rule = result.scalar_one_or_none()
