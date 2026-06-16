@@ -6,8 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from backend.types import MediaServerType
-from backend.types.media import AudioCodecFamily, VideoCodecFamily
+from backend.user_types import AudioCodecFamily, MediaServerType, VideoCodecFamily
 
 
 @dataclass(slots=True, frozen=True)

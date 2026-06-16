@@ -8,7 +8,7 @@ class SetupState:
 
     __slots__ = ("_needs_setup",)
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._needs_setup: bool = True
 
     @property

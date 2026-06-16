@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, TypedDict
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -22,7 +24,17 @@ from backend.jobs import cancel_pending_background_jobs_by_dedupe_key
 scheduler = AsyncIOScheduler()
 
 
-DEFAULT_SCHEDULES = (
+class DefaultSchedule(TypedDict):
+    task: Task
+    description: str
+    schedule_type: ScheduleType
+    schedule_value: str
+    default_schedule_type: ScheduleType
+    default_schedule_value: str
+    enabled: bool
+
+
+DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
     {
         "task": Task.SYNC_MEDIA,
         "description": (
@@ -161,7 +173,15 @@ async def ensure_default_schedules(db: AsyncSession) -> None:
                 db.add(existing)
                 LOG.info(f"Updated schedule defaults for {task.friendly_name()}")
         else:
-            task_schedule = TaskSchedule(**default)
+            task_schedule = TaskSchedule(
+                task=task,
+                description=default["description"],
+                schedule_type=default["schedule_type"],
+                schedule_value=default["schedule_value"],
+                default_schedule_type=default["default_schedule_type"],
+                default_schedule_value=default["default_schedule_value"],
+                enabled=default["enabled"],
+            )
             db.add(task_schedule)
             LOG.info(f"Created default schedule for {task.friendly_name()}")
 
@@ -324,14 +344,14 @@ async def update_task_schedule(
     return task_schedule
 
 
-async def start_scheduler():
+async def start_scheduler() -> None:
     """Start the scheduler."""
     await setup_scheduler()
     scheduler.start()
     LOG.info("Scheduler started")
 
 
-async def shutdown_scheduler():
+async def shutdown_scheduler() -> None:
     """Gracefully shutdown the scheduler."""
     if scheduler.running:
         LOG.info("Shutting down scheduler...")

@@ -17,28 +17,28 @@ from backend.models.settings import ServiceConfigUpdate
 
 async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
     if job.job_type is BackgroundJobType.SERVICE_TOGGLE:
-        payload = ServiceToggleJobPayload.model_validate(job.payload)
+        service_payload = ServiceToggleJobPayload.model_validate(job.payload)
         service_update = ServiceConfigUpdate(
-            id=payload.service_config_id,
-            name=payload.name,
-            service_type=payload.service_type,
-            base_url=payload.base_url,
-            api_key=payload.api_key,
-            enabled=payload.enabled,
-            is_main=payload.is_main,
-            extra_settings=payload.extra_settings,
+            id=service_payload.service_config_id,
+            name=service_payload.name,
+            service_type=service_payload.service_type,
+            base_url=service_payload.base_url,
+            api_key=service_payload.api_key,
+            enabled=service_payload.enabled,
+            is_main=service_payload.is_main,
+            extra_settings=service_payload.extra_settings,
         )
         await handle_service_toggle(
-            service_update, trigger_resync=payload.trigger_resync
+            service_update, trigger_resync=service_payload.trigger_resync
         )
-        return
+        return None
 
     if job.job_type is BackgroundJobType.TASK_RUN:
-        payload = TaskRunJobPayload.model_validate(job.payload)
-        return await execute_task(payload.task)
+        task_payload = TaskRunJobPayload.model_validate(job.payload)
+        return await execute_task(task_payload.task)
 
     if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
-        payload = CandidateFileOpJobPayload.model_validate(job.payload)
-        return await run_candidate_file_op_job(job.id, payload)
+        file_op_payload = CandidateFileOpJobPayload.model_validate(job.payload)
+        return await run_candidate_file_op_job(job.id, file_op_payload)
 
     raise ValueError(f"Unsupported background job type: {job.job_type}")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -15,7 +15,7 @@ class ServiceToggleJobPayload(BaseModel):
     api_key: str
     enabled: bool
     is_main: bool = False
-    extra_settings: dict | None = None
+    extra_settings: dict[str, Any] | None = None
     trigger_resync: bool = False
 
 

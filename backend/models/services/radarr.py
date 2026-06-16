@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True, frozen=True)
@@ -14,7 +16,7 @@ class RadarrMovie:
     has_file: bool
     monitored: bool
     tags: list[int]
-    raw: dict | None = None
+    raw: Mapping[str, Any] | None = None
 
     def __repr__(self) -> str:
         return (
@@ -23,7 +25,7 @@ class RadarrMovie:
         )
 
 
-def build_radarr_movie_from_dict(data: dict) -> RadarrMovie:
+def build_radarr_movie_from_dict(data: Mapping[str, Any]) -> RadarrMovie:
     return RadarrMovie(
         id=data["id"],
         title=data.get("title", ""),

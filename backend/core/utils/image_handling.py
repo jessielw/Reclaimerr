@@ -3,9 +3,10 @@ from io import BytesIO
 from os import PathLike
 from pathlib import Path
 
-from core.logger import LOG
-from core.settings import settings
 from PIL import Image
+
+from backend.core.logger import LOG
+from backend.core.settings import settings
 
 
 def delete_avatar(image_path: PathLike[str]) -> None:
@@ -52,8 +53,8 @@ def save_picture_from_bytes(
         Image.MAX_IMAGE_PIXELS = 25_000_000  # ~5000x5000
 
         # open image from bytes and verify it's a real image
-        i = Image.open(BytesIO(image_bytes))
-        i.verify()
+        verify_img = Image.open(BytesIO(image_bytes))
+        verify_img.verify()
 
         # re-open after verify() (verify closes the file)
         i = Image.open(BytesIO(image_bytes))
@@ -63,12 +64,12 @@ def save_picture_from_bytes(
             i.save(picture_path, format="GIF", optimize=False, save_all=True)
         else:
             # convert the image to RGBA mode to preserve transparency for formats like PNG
-            i = i.convert("RGBA")
+            img = i.convert("RGBA")
             # resize the image if it's larger than 500x500
-            if i.width > 500 or i.height > 500:
-                i.thumbnail((500, 500), resample=Image.Resampling.LANCZOS)
+            if img.width > 500 or img.height > 500:
+                img.thumbnail((500, 500), resample=Image.Resampling.LANCZOS)
             # save the converted image to the new picture path
-            i.save(picture_path, format="PNG", quality=95)
+            img.save(picture_path, format="PNG", quality=95)
 
         # delete the old picture if provided
         if del_old_path:

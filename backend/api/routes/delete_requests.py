@@ -93,7 +93,7 @@ def _series_scope_overlap_clause(
     *,
     season_id: int | None,
     episode_id: int | None,
-):
+) -> ColumnElement[bool]:
     """Build a SQLAlchemy clause to match delete requests or protections that overlap
     with the specified series scope."""
     if episode_id is not None:
@@ -483,7 +483,7 @@ async def create_delete_request(
     request_data: CreateDeleteRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> DeleteRequestResponse:
     """Create a delete request for a movie or series."""
     if not has_permission(user, Permission.REQUEST):
         raise HTTPException(
@@ -722,7 +722,7 @@ async def get_my_delete_requests(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
-):
+) -> list[DeleteRequestResponse]:
     """Get the current user's delete requests, optionally filtered by status."""
     query = (
         select(DeleteRequest)
@@ -768,7 +768,7 @@ async def get_all_delete_requests(
     _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
-):
+) -> list[DeleteRequestResponse]:
     """Get all delete requests, optionally filtered by status. Manager permission required."""
     query = (
         select(DeleteRequest)
@@ -817,7 +817,7 @@ async def approve_delete_request(
     review_data: ReviewDeleteRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> DeleteRequestResponse:
     """Approve a delete request and queue it for background execution."""
     result = await db.execute(
         select(DeleteRequest).where(DeleteRequest.id == request_id)
@@ -928,7 +928,7 @@ async def deny_delete_request(
     review_data: ReviewDeleteRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> DeleteRequestResponse:
     """Deny a delete request. Manager permission required."""
     result = await db.execute(
         select(DeleteRequest).where(DeleteRequest.id == request_id)
@@ -989,7 +989,7 @@ async def cancel_delete_request(
     request_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Cancel a pending delete request. The request must be owned by the current user, and still pending."""
     result = await db.execute(
         select(DeleteRequest).where(

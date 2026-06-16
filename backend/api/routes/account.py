@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import (
     APIRouter,
@@ -15,6 +15,7 @@ from fastapi import (
     status,
 )
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
@@ -69,7 +70,7 @@ async def _revoke_user_sessions(
     if exclude_session_id:
         statement = statement.where(UserSession.session_id != exclude_session_id)
 
-    result = await db.execute(statement)
+    result = cast(CursorResult[Any], await db.execute(statement))
     return result.rowcount or 0  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -97,7 +98,9 @@ def _serialize_media_identity(
 
 
 @router.get("/me", response_model=UserInfo)
-async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
+async def get_me(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> UserInfo:
     """Get current user info."""
     return UserInfo.from_user(current_user)
 
@@ -107,7 +110,7 @@ async def update_profile(
     new_info: ChangeProfileInfoRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str | None]:
     """Modify current user's profile."""
     # ensure email is not taken
     if new_info.email:
@@ -140,7 +143,7 @@ async def change_password(
     current_user: Annotated[User, Depends(get_current_user)],
     response: Response,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Change password."""
     requires_old_password = bool(current_user.password_hash) and not bool(
         current_user.require_password_change
@@ -308,7 +311,7 @@ async def create_user(
     request: CreateUserRequest,
     actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> UserInfo:
     """Create a user (manage-users/admin)."""
     if actor.role is not UserRole.ADMIN and request.role is UserRole.ADMIN:
         raise HTTPException(
@@ -356,7 +359,7 @@ async def create_user(
 async def list_users(
     _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> list[UserInfo]:
     """List all users (manage-users/admin)."""
     result = await db.execute(select(User))
     return [UserInfo.from_user(u) for u in result.scalars().all()]
@@ -367,7 +370,7 @@ async def delete_user(
     user_id: int,
     actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Delete a user (manage-users/admin)."""
     # prevent deleting own account
     if user_id == actor.id:
@@ -404,7 +407,7 @@ async def update_user(
     request: UpdateUserRequest,
     actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Update a user (manage-users/admin)."""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -465,7 +468,7 @@ async def list_sessions(
     request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> list[UserSessionInfo]:
     """List active sessions for the current user."""
     now = datetime.now(UTC)
     result = await db.execute(
@@ -501,7 +504,7 @@ async def revoke_session(
     response: Response,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> RevokeSessionResponse:
     """Revoke a single session for the current user."""
     result = await db.execute(
         select(UserSession).where(
@@ -541,7 +544,7 @@ async def revoke_other_sessions(
     request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> RevokeOtherSessionsResponse:
     """Revoke all other sessions for the current user."""
     current_session_id = get_request_session_id(request)
     if current_session_id is None:

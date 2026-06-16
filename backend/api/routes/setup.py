@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +15,7 @@ router = APIRouter(prefix="/api/setup", tags=["setup"])
 
 
 @router.get("/status", response_model=SetupStatusResponse)
-async def setup_status():
+async def setup_status() -> SetupStatusResponse:
     """Return whether initial setup is still required."""
     return SetupStatusResponse(needs_setup=setup_state.needs_setup)
 
@@ -22,7 +24,7 @@ async def setup_status():
 async def complete_setup(
     body: SetupRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """Create the initial admin account. Only callable when setup is pending."""
     if not setup_state.needs_setup:
         raise HTTPException(

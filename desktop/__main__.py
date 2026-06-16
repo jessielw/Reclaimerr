@@ -6,6 +6,8 @@ multiprocessing.freeze_support()
 import os
 import signal
 import sys
+from pathlib import Path
+from typing import Any
 
 from filelock import FileLock, Timeout
 
@@ -30,16 +32,18 @@ server.prepare_env()
 
 # expose a shutdown callback to the API so the web UI can trigger a clean exit
 # (must happen AFTER prepare_env so backend env vars are set before import)
-from backend.api.main import app as _app
+from backend.api.main import fastapi_app as _app
 
 # hook into the callback
 _app.state.shutdown_callback = server.stop
 
 # write a PID file so power users can send signals from the CLI
-_pid_path = server.data_dir / "reclaimerr.pid"
+_pid_path: Path | None = None
 try:
-    _pid_path.parent.mkdir(parents=True, exist_ok=True)
-    _pid_path.write_text(str(os.getpid()))
+    pid_path = server.data_dir / "reclaimerr.pid"
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()))
+    _pid_path = pid_path
 except OSError:
     _pid_path = None
 
@@ -47,7 +51,7 @@ icon = create_icon(server)
 
 
 # handle Ctrl+C / SIGTERM in dev (frozen: no console so these never fire).
-def _handle_signal(_signum, _frame) -> None:
+def _handle_signal(_signum: int, _frame: Any) -> None:
     if icon is not None:
         icon.stop()  # removes tray icon immediately
     server.stop()  # signals uvicorn to exit -> unblocks serve()
@@ -61,7 +65,8 @@ signal.signal(signal.SIGTERM, _handle_signal)
 # a compatible tray backend) pystray will raise - we catch it and continue
 # without a tray so the app is still usable via the web UI.
 try:
-    icon.run_detached()
+    if icon is not None:
+        icon.run_detached()
 except Exception as _tray_err:
     import warnings
 

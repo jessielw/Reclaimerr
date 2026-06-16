@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any
@@ -497,13 +497,13 @@ class DiskStatsResolver:
 
     def __init__(
         self,
-        arr_entries: list[dict] | None = None,
-        path_mappings: list[dict] | None = None,
+        arr_entries: list[dict[str, Any]] | None = None,
+        path_mappings: list[dict[str, Any]] | None = None,
     ) -> None:
-        self._arr_entries: list[dict] = sorted(
+        self._arr_entries: list[dict[str, Any]] = sorted(
             arr_entries or [], key=lambda e: -len(str(e.get("path") or ""))
         )
-        self._path_mappings: list[dict] = sorted(
+        self._path_mappings: list[dict[str, Any]] = sorted(
             path_mappings or [], key=lambda m: -len(str(m.get("source_prefix") or ""))
         )
         self._cache: dict[str, tuple[int, float] | None] = {}
@@ -821,7 +821,9 @@ def _has_valid_definition(definition: RuleDefinition | None) -> bool:
     return isinstance(definition, dict) and isinstance(definition.get("root"), dict)
 
 
-def _iter_condition_nodes(node: dict[str, Any], *, field: str | None = None):
+def _iter_condition_nodes(
+    node: dict[str, Any], *, field: str | None = None
+) -> Iterator[dict[str, Any]]:
     """Recursively iterate through the rule definition tree, yielding condition nodes
     that match the specified field if provided."""
     if node.get("type") == "condition":
@@ -1571,11 +1573,12 @@ def _date_value(value: Any) -> date | None:
     if value is None:
         return None
     if isinstance(value, datetime):
+        parsed_datetime = value
         if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
+            parsed_datetime = value.replace(tzinfo=UTC)
         else:
-            value = value.astimezone(UTC)
-        return value.date()
+            parsed_datetime = value.astimezone(UTC)
+        return parsed_datetime.date()
     if isinstance(value, date):
         return value
     if isinstance(value, str):

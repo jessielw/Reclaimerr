@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -64,7 +64,7 @@ from backend.models.media import (
 router = APIRouter(prefix="/api/media", tags=["media"])
 
 
-def extract_genre_names(genres: list[dict] | None) -> list[str] | None:
+def extract_genre_names(genres: Any) -> list[str] | None:
     """
     Extract genre names from TMDB genre objects.
 
@@ -73,23 +73,23 @@ def extract_genre_names(genres: list[dict] | None) -> list[str] | None:
     return normalize_genre_names(genres)
 
 
-def _whole_series_scope_clause(model):
+def _whole_series_scope_clause(model: Any) -> Any:
     """Clause to filter for entries that apply to a whole series (not season or episode specific)."""
     return and_(model.season_id.is_(None), model.episode_id.is_(None))
 
 
-def _season_only_scope_clause(model):
+def _season_only_scope_clause(model: Any) -> Any:
     """Clause to filter for entries that apply to a season only (not whole series or episode specific)."""
     return and_(model.season_id.isnot(None), model.episode_id.is_(None))
 
 
-def _episode_scope_clause(model):
+def _episode_scope_clause(model: Any) -> Any:
     """Clause to filter for entries that apply to an episode (not whole series or season specific)."""
     return model.episode_id.isnot(None)
 
 
 def _candidate_row_sort_key(
-    row,
+    row: Any,
 ) -> tuple[int, int, int, str]:
     """Keep whole-series rows first, then seasons, then episodes within each series."""
     if row.ReclaimCandidate.episode_id is not None:
@@ -106,7 +106,7 @@ def _candidate_row_sort_key(
     )
 
 
-def _candidate_effective_size_expr():
+def _candidate_effective_size_expr() -> Any:
     return func.coalesce(
         ReclaimCandidate.estimated_space_bytes,
         MovieVersion.size,
@@ -118,7 +118,9 @@ def _candidate_effective_size_expr():
     )
 
 
-def _apply_candidate_filters(query, media_type: MediaType | None, search: str | None):
+def _apply_candidate_filters(
+    query: Any, media_type: MediaType | None, search: str | None
+) -> Any:
     if media_type is not None:
         query = query.where(ReclaimCandidate.media_type == media_type)
 
@@ -154,7 +156,7 @@ def _quality_suffix(
     return f" - {' '.join(parts)}" if parts else ""
 
 
-def _candidate_job_item_from_row(row) -> CandidateFileOpJobItem | None:
+def _candidate_job_item_from_row(row: Any) -> CandidateFileOpJobItem | None:
     if row.media_type is MediaType.MOVIE:
         if not row.movie_title:
             return None
@@ -166,10 +168,13 @@ def _candidate_job_item_from_row(row) -> CandidateFileOpJobItem | None:
             row.version_video_dolby_vision if row.movie_version_id is not None else None
         )
         title = _title_with_year(row.movie_title, row.movie_year)
+        movie_scope: Literal["movie", "version"] = (
+            "version" if row.movie_version_id is not None else "movie"
+        )
         return CandidateFileOpJobItem(
             candidate_id=row.candidate_id,
             media_type=MediaType.MOVIE,
-            scope="version" if row.movie_version_id is not None else "movie",
+            scope=movie_scope,
             title=row.movie_title,
             year=row.movie_year,
             tmdb_id=row.movie_tmdb_id,
@@ -199,7 +204,7 @@ def _candidate_job_item_from_row(row) -> CandidateFileOpJobItem | None:
             title = f"{title} - {episode_tag} - {row.episode_name}"
         else:
             title = f"{title} - {episode_tag}"
-        scope = "episode"
+        scope: Literal["series", "season", "episode"] = "episode"
     elif row.season_id is not None and row.season_number is not None:
         title = f"{title} - Season {int(row.season_number)}"
         scope = "season"
@@ -402,7 +407,7 @@ async def get_movies(
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     candidates_only: bool = Query(False),
-):
+) -> PaginatedMediaResponse:
     """
     Get all movies with status information.
 
@@ -497,7 +502,7 @@ async def get_movies(
     delete_requests = {r.movie_id: r for r in delete_requests_result.scalars().all()}
 
     # build response with status
-    items = []
+    items: list[MovieWithStatus | SeriesWithStatus] = []
     for movie in movies:
         candidate = candidates.get(movie.id)
         protection_entry = protected.get(movie.id)
@@ -531,7 +536,7 @@ async def get_movies(
         )
         movie_arr_refs = movie_arr_refs_result.scalars().all()
 
-        movie_dict = {
+        movie_dict: dict[str, Any] = {
             "id": movie.id,
             "title": movie.title,
             "year": movie.year,
@@ -616,7 +621,7 @@ async def get_movies(
             "poster_url": movie.poster_url,
             "backdrop_url": movie.backdrop_url,
             "overview": movie.overview,
-            "genres": extract_genre_names(movie.genres),  # type: ignore
+            "genres": extract_genre_names(movie.genres),
             "popularity": movie.popularity,
             "vote_average": movie.vote_average,
             "vote_count": movie.vote_count,
@@ -650,7 +655,7 @@ async def get_series(
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     candidates_only: bool = Query(False),
-):
+) -> PaginatedMediaResponse:
     """
     Get all series with status information.
 
@@ -780,7 +785,7 @@ async def get_series(
     delete_requests = {r.series_id: r for r in delete_requests_result.scalars().all()}
 
     # build response with status
-    items = []
+    items: list[MovieWithStatus | SeriesWithStatus] = []
     for series in series_list:
         candidate = candidates.get(series.id)
         protection_entry = protected.get(series.id)
@@ -814,7 +819,7 @@ async def get_series(
         )
         series_arr_refs = series_arr_refs_result.scalars().all()
 
-        series_dict = {
+        series_dict: dict[str, Any] = {
             "id": series.id,
             "title": series.title,
             "year": series.year,
@@ -858,7 +863,7 @@ async def get_series(
             "poster_url": series.poster_url,
             "backdrop_url": series.backdrop_url,
             "overview": series.overview,
-            "genres": extract_genre_names(series.genres),  # type: ignore
+            "genres": extract_genre_names(series.genres),
             "popularity": series.popularity,
             "vote_average": series.vote_average,
             "vote_count": series.vote_count,
@@ -899,7 +904,7 @@ async def get_series_seasons(
     series_id: int,
     _user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> list[SeasonWithStatus]:
     """Get per-season status for a series."""
     series_result = await db.execute(
         select(Series).where(Series.id == series_id, Series.removed_at.is_(None))
@@ -1044,7 +1049,7 @@ async def get_series_episodes(
     series_id: int,
     _user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> list[EpisodeWithStatus]:
     """Get per episode status for a series."""
     series_result = await db.execute(
         select(Series).where(Series.id == series_id, Series.removed_at.is_(None))
@@ -1207,7 +1212,7 @@ async def get_candidates(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     media_type: MediaType | None = Query(None),
-):
+) -> PaginatedCandidatesResponse:
     """Get reclaim candidates paginated by display group, with media info and request status."""
     base_query = (
         select(
@@ -1476,7 +1481,7 @@ async def get_candidates(
             row.movie_anilist_favourites if is_movie else row.series_anilist_favourites
         )
         genres = extract_genre_names(
-            row.movie_genres if is_movie else row.series_genres  # type: ignore[arg-type]
+            row.movie_genres if is_movie else row.series_genres
         )
         popularity = row.movie_popularity if is_movie else row.series_popularity
         vote_average = row.movie_vote_average if is_movie else row.series_vote_average
@@ -1667,7 +1672,7 @@ async def get_candidates(
 async def get_candidates_presence(
     _user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> CandidatesPresenceResponse:
     """Return whether any reclaim candidates currently exist."""
     result = await db.execute(select(ReclaimCandidate.id).limit(1))
     return CandidatesPresenceResponse(
@@ -1680,7 +1685,7 @@ async def delete_candidates(
     request: DeleteCandidatesRequest,
     user: Annotated[User, Depends(get_current_user)],
     _db: AsyncSession = Depends(get_db),
-):
+) -> CandidateOperationQueuedResponse:
     """Deletes specific reclaim candidates, removing them from the media server.
 
     Requires admin or manage_reclaim permission. Uses same deletion priority as
@@ -1725,7 +1730,7 @@ async def move_candidates(
     request: MoveCandidatesRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> CandidateOperationQueuedResponse:
     """Move specific reclaim candidates to the configured destination instead of deleting.
 
     Requires admin or manage_reclaim permission and move must be enabled in General Settings.
@@ -1786,7 +1791,7 @@ async def get_reclaim_history(
     media_type: MediaType | None = Query(None),
     search: str | None = Query(None, max_length=200),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
-):
+) -> PaginatedReclaimHistoryResponse:
     """Get paginated reclaim history records."""
     base = select(ReclaimHistory)
 

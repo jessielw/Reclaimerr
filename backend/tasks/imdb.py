@@ -8,6 +8,7 @@ from sqlalchemy import case, exists, func, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.imdb import (
     IMDB_TITLE_RATINGS_URL,
@@ -155,7 +156,9 @@ async def _ingest_payload(
     return processed_rows
 
 
-async def _denormalize_media_imdb_ratings(db, refreshed_at: datetime) -> None:
+async def _denormalize_media_imdb_ratings(
+    db: AsyncSession, refreshed_at: datetime
+) -> None:
     movie_rating_subq = (
         select(IMDbTitleRating.rating)
         .where(IMDbTitleRating.imdb_id == Movie.imdb_id)

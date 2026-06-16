@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.auth import get_current_user, has_permission
 from backend.core.utils.datetime_utils import to_utc_isoformat
@@ -79,7 +80,7 @@ def _series_scope_overlap_clause(
     *,
     season_id: int | None,
     episode_id: int | None,
-):
+) -> ColumnElement[bool]:
     """Construct a SQLAlchemy clause to check for overlapping protection scopes based on season and episode IDs."""
     if episode_id is not None:
         return or_(
@@ -122,7 +123,7 @@ async def get_protected_entries(
     sort_by: str = Query("created_at", pattern="^(created_at|media_title|expires_at)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     media_type: MediaType | None = Query(None),
-):
+) -> PaginatedProtectedResponse:
     """Retrieve a paginated list of protected media entries."""
     base_query = (
         select(
@@ -204,6 +205,7 @@ async def get_protected_entries(
     total = total_result.scalar_one() or 0
 
     media_title_expr = func.coalesce(Movie.title, Series.title)
+    order_expr: Any
     if sort_by == "media_title":
         order_expr = media_title_expr
     elif sort_by == "expires_at":
@@ -211,14 +213,11 @@ async def get_protected_entries(
     else:
         order_expr = ProtectedMedia.created_at
 
-    if sort_order == "desc":
-        order_expr = order_expr.desc()
-    else:
-        order_expr = order_expr.asc()
+    ordered_expr = order_expr.desc() if sort_order == "desc" else order_expr.asc()
 
     offset = (page - 1) * per_page
     result = await db.execute(
-        base_query.order_by(order_expr).offset(offset).limit(per_page)
+        base_query.order_by(ordered_expr).offset(offset).limit(per_page)
     )
     rows = result.all()
 
@@ -344,7 +343,7 @@ async def create_protection_entry(
     request_data: CreateProtectedEntryRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> ProtectedEntryResponse:
     """Add a new media entry to the protected list."""
     if not can_manage_protection(user):
         raise HTTPException(
@@ -497,7 +496,7 @@ async def update_protection_duration(
     request_data: UpdateProtectionDurationRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> ProtectedEntryResponse:
     """Update the duration of a protected media entry."""
     if not can_manage_protection(user):
         raise HTTPException(
@@ -600,7 +599,7 @@ async def delete_protection_entry(
     entry_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Remove a media entry from the protected list."""
     if not can_manage_protection(user):
         raise HTTPException(

@@ -2,6 +2,7 @@ import logging
 import queue
 from logging.handlers import QueueHandler, QueueListener, TimedRotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 from backend.core.__version__ import __version__, program_name
 from backend.core.settings import settings
@@ -52,7 +53,7 @@ class Logger:
             sinks.append(console_handler)
 
         # QueueListener runs the sinks on a background thread, keeping I/O off the event loop
-        log_queue: queue.Queue = queue.Queue(maxsize=-1)
+        log_queue: queue.Queue[Any] = queue.Queue(maxsize=-1)
         self._queue_listener = QueueListener(
             log_queue, *sinks, respect_handler_level=True
         )

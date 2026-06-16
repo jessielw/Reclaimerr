@@ -8,7 +8,7 @@ from backend.core.task_runtime import enqueue_task_run
 from backend.enums import Service, Task
 from backend.models.settings import ServiceConfigUpdate
 from backend.scheduler import refresh_main_server_tasks
-from backend.types import MEDIA_SERVERS
+from backend.user_types import MEDIA_SERVERS
 
 _service_toggle_lock = asyncio.Lock()
 

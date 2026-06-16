@@ -513,6 +513,7 @@ def _library_root(path: str) -> str | None:
     p_pos = PurePosixPath(path)
 
     # prefer Windows if the path contains a drive letter or UNC prefix
+    p: PureWindowsPath | PurePosixPath
     if p_win.drive:
         p = p_win
     elif path.startswith("/"):
@@ -566,7 +567,7 @@ async def get_path_suggestions(
 async def get_path_mapping_scopes(
     _admin: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return service configs that path mappings can be scoped to."""
     result = await db.execute(
         select(

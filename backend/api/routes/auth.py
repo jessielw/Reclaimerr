@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from authlib.integrations.base_client import OAuthError
@@ -311,7 +312,7 @@ def _resolve_oidc_client_secret(settings_row: OIDCSettings) -> str:
         ) from exc
 
 
-def _create_configured_oidc_client(settings_row: OIDCSettings):
+def _create_configured_oidc_client(settings_row: OIDCSettings) -> Any:
     resolved_secret = _resolve_oidc_client_secret(settings_row)
     return create_oidc_client(
         issuer_url=settings_row.issuer_url,
@@ -324,7 +325,7 @@ def _create_configured_oidc_client(settings_row: OIDCSettings):
     )
 
 
-def _request_session(request: Request) -> dict | None:
+def _request_session(request: Request) -> dict[str, Any] | None:
     session = request.scope.get("session")
     return session if isinstance(session, dict) else None
 
@@ -343,7 +344,7 @@ async def oidc_start(
     request: Request,
     return_to: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     result = await db.execute(select(OIDCSettings))
     settings_row = result.scalars().first()
     if settings_row is None:
@@ -366,7 +367,10 @@ async def oidc_start(
     )
     try:
         client = _create_configured_oidc_client(settings_row)
-        return await client.authorize_redirect(request, callback_uri)
+        auth_redirect: RedirectResponse = await client.authorize_redirect(
+            request, callback_uri
+        )
+        return auth_redirect
     except (OIDCConfigError, OIDCExchangeError, OIDCValidationError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OAuthError as exc:
@@ -385,7 +389,7 @@ async def oidc_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     application_url = await _get_application_url(db)
     session = _request_session(request)
     redirect_target = _resolve_post_auth_redirect(
@@ -502,7 +506,7 @@ async def login(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
-):
+) -> AuthResponse:
     """Login with username and password."""
     # email or username can be used as the identifier for login, so we need to check both fields for a match
     result = await db.execute(
@@ -550,7 +554,7 @@ async def media_login(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
-):
+) -> AuthResponse:
     """Login with media server credentials for providers that support it (e.g. Emby/Jellyfin family users)."""
     provider = await get_media_auth_provider(
         db,
@@ -619,7 +623,7 @@ async def media_plex_start(
     service_config_id: int = Query(..., ge=1),
     return_to: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     """Start Plex login flow by requesting a PIN and redirecting user to Plex auth page."""
     provider = await get_media_auth_provider(
         db,
@@ -667,7 +671,7 @@ async def media_plex_callback(
     request: Request,
     state: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     """Handle callback from Plex after user authorizes PIN login. Exchange PIN for token, authenticate,
     and issue session cookie."""
     application_url = await _get_application_url(db)
@@ -750,7 +754,7 @@ async def logout(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, str]:
     """Logout and clear authentication cookie."""
     token = request.cookies.get(COOKIE_NAME)
     if token:

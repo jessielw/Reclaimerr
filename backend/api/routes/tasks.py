@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -84,7 +84,7 @@ async def _get_latest_task_job(db: AsyncSession, task: Task) -> BackgroundJob | 
 @router.get("/tasks")
 async def list_tasks(
     _admin: Annotated[User, Depends(require_admin)], db: AsyncSession = Depends(get_db)
-) -> dict[str, list[dict] | bool]:
+) -> dict[str, list[dict[str, Any]] | bool]:
     """
     List all tasks from the database, enriched with live scheduler state.
     Manual tasks (default_schedule_type == MANUAL) are always present but not editable.
@@ -146,7 +146,7 @@ async def task_status(
     task_id: str,
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """
     Get the status of a specific task.
     """
@@ -184,7 +184,9 @@ async def task_status(
 
 
 @router.post("/tasks/{task_id}/run")
-async def run_task_now(task_id: str, _admin: Annotated[User, Depends(require_admin)]):
+async def run_task_now(
+    task_id: str, _admin: Annotated[User, Depends(require_admin)]
+) -> dict[str, Any]:
     """Trigger a task to run immediately via the standalone worker."""
     try:
         task_enum = Task(task_id)
@@ -233,7 +235,7 @@ async def update_schedule(
     task_id: str,
     request: TaskScheduleRequest,
     _admin: Annotated[User, Depends(require_admin)],
-):
+) -> dict[str, Any]:
     """
     Update a task's schedule configuration.
     Requires admin role.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 import niquests
 from niquests.exceptions import ReadTimeout
@@ -17,8 +17,210 @@ from backend.core.utils.request import format_http_failure, should_retry_on_stat
 from backend.enums import MediaType, SeerrRequestStatus
 from backend.models.services.seerr import SeerrPageInfo, SeerrRequest, SeerrUser
 
+SeerrResponseData: TypeAlias = dict[str, Any] | list[dict[str, Any]]
 
-def build_seerr_request_from_dict(data: dict[str, Any]) -> SeerrRequest:
+
+class SeerrPageInfoData(TypedDict):
+    page: int
+    pages: int
+    results: int
+
+
+class SeerrRequestMediaData(TypedDict):
+    id: int
+    tmdbId: int
+
+
+class SeerrRequestedByData(TypedDict):
+    id: int
+
+
+class SeerrRequestData(TypedDict):
+    id: int
+    status: int
+    type: Literal["movie", "tv"]
+    media: SeerrRequestMediaData
+    createdAt: str
+    requestedBy: SeerrRequestedByData
+    is4k: NotRequired[bool]
+
+
+class SeerrUserData(TypedDict):
+    id: int
+    username: NotRequired[str | None]
+    displayName: NotRequired[str | None]
+    email: NotRequired[str | None]
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _page_info_from_response(data: Any, *, default_results: int = 0) -> SeerrPageInfo:
+    if not isinstance(data, dict):
+        return SeerrPageInfo(0, 0, default_results)
+    page_info = data.get("pageInfo")
+    if not isinstance(page_info, dict):
+        return SeerrPageInfo(0, 0, default_results)
+    return SeerrPageInfo(
+        page=_as_int(page_info.get("page")),
+        pages=_as_int(page_info.get("pages")),
+        results=_as_int(page_info.get("results"), default_results),
+    )
+
+
+def _request_data_from_dict(data: dict[str, Any]) -> SeerrRequestData | None:
+    media = data.get("media")
+    requested_by = data.get("requestedBy")
+    if not isinstance(media, dict) or not isinstance(requested_by, dict):
+        return None
+
+    request_id = _as_int_or_none(data.get("id"))
+    status = _as_int_or_none(data.get("status"))
+    media_id = _as_int_or_none(media.get("id"))
+    tmdb_id = _as_int_or_none(media.get("tmdbId"))
+    requested_by_id = _as_int_or_none(requested_by.get("id"))
+    created_at = data.get("createdAt")
+    request_type = data.get("type")
+    if (
+        request_id is None
+        or status is None
+        or media_id is None
+        or tmdb_id is None
+        or requested_by_id is None
+        or request_type not in ("movie", "tv")
+        or not isinstance(created_at, str)
+    ):
+        return None
+
+    if request_type == "movie":
+        request_type_literal: Literal["movie", "tv"] = "movie"
+    elif request_type == "tv":
+        request_type_literal = "tv"
+    else:
+        return None
+
+    request: SeerrRequestData = {
+        "id": request_id,
+        "status": status,
+        "type": request_type_literal,
+        "media": {"id": media_id, "tmdbId": tmdb_id},
+        "createdAt": created_at,
+        "requestedBy": {"id": requested_by_id},
+    }
+    if "is4k" in data:
+        request["is4k"] = bool(data.get("is4k"))
+    return request
+
+
+def _user_data_from_dict(data: dict[str, Any]) -> SeerrUserData | None:
+    user_id = _as_int_or_none(data.get("id"))
+    if user_id is None:
+        return None
+
+    user: SeerrUserData = {"id": user_id}
+    username = _as_optional_str(data.get("username"))
+    if username is not None:
+        user["username"] = username
+    display_name = _as_optional_str(data.get("displayName"))
+    if display_name is not None:
+        user["displayName"] = display_name
+    email = _as_optional_str(data.get("email"))
+    if email is not None:
+        user["email"] = email
+    return user
+
+
+def _request_records_from_response(data: Any) -> list[SeerrRequestData]:
+    if not isinstance(data, dict):
+        return []
+    results = data.get("results", [])
+    if not isinstance(results, list):
+        return []
+    request_records: list[SeerrRequestData] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        request = _request_data_from_dict(item)
+        if request is not None:
+            request_records.append(request)
+    return request_records
+
+
+def _user_records_from_response(data: Any) -> tuple[SeerrPageInfo, list[SeerrUserData]]:
+    if isinstance(data, list):
+        users: list[SeerrUserData] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            user = _user_data_from_dict(item)
+            if user is not None:
+                users.append(user)
+        return SeerrPageInfo(page=1, pages=1, results=len(users)), users
+
+    if isinstance(data, dict):
+        results = data.get("results")
+        if not isinstance(results, list):
+            alt_results = data.get("users")
+            results = alt_results if isinstance(alt_results, list) else []
+        users = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            user = _user_data_from_dict(item)
+            if user is not None:
+                users.append(user)
+        return _page_info_from_response(data, default_results=len(users)), users
+
+    return SeerrPageInfo(0, 0, 0), []
+
+
+def _requests_from_media_response(data: Any) -> list[SeerrRequestData] | None:
+    if not isinstance(data, dict):
+        return None
+    media_info = data.get("mediaInfo")
+    if not isinstance(media_info, dict):
+        return None
+    requests = media_info.get("requests", [])
+    if not isinstance(requests, list):
+        return []
+    request_records: list[SeerrRequestData] = []
+    for item in requests:
+        if not isinstance(item, dict):
+            continue
+        request = _request_data_from_dict(item)
+        if request is not None:
+            request_records.append(request)
+    return request_records
+
+
+def _media_id_from_response(data: Any) -> int | None:
+    if not isinstance(data, dict):
+        return None
+    media_info = data.get("mediaInfo")
+    if not isinstance(media_info, dict):
+        return None
+    return _as_int_or_none(media_info.get("id"))
+
+
+def build_seerr_request_from_dict(data: SeerrRequestData) -> SeerrRequest:
     """Build SeerrRequest from API response dict."""
     media_type = MediaType.MOVIE if data["type"] == "movie" else MediaType.SERIES
     return SeerrRequest(
@@ -34,15 +236,13 @@ def build_seerr_request_from_dict(data: dict[str, Any]) -> SeerrRequest:
     )
 
 
-def build_seerr_user_from_dict(data: dict[str, Any]) -> SeerrUser:
+def build_seerr_user_from_dict(data: SeerrUserData) -> SeerrUser:
     """Build SeerrUser from API response dict."""
     return SeerrUser(
-        id=int(data["id"]),
-        username=(str(data.get("username")) if data.get("username") else None),
-        display_name=(
-            str(data.get("displayName")) if data.get("displayName") else None
-        ),
-        email=(str(data.get("email")) if data.get("email") else None),
+        id=data["id"],
+        username=_as_optional_str(data.get("username")),
+        display_name=_as_optional_str(data.get("displayName")),
+        email=_as_optional_str(data.get("email")),
         raw=data,
     )
 
@@ -84,8 +284,8 @@ class SeerrClient:
         endpoint: str,
         *,
         error_context: str | None = None,
-        **kwargs,
-    ) -> tuple[int, dict | list | None]:
+        **kwargs: Any,
+    ) -> tuple[int, Any | None]:
         """Make HTTP request to Seerr API with automatic retry.
 
         Returns:
@@ -122,6 +322,7 @@ class SeerrClient:
             raise ValueError("Status code should not be None")
 
         if response.content:
+            # return status_code, cast(SeerrResponseData, response.json())
             return status_code, response.json()
         return status_code, None
 
@@ -152,16 +353,9 @@ class SeerrClient:
             params={"take": take, "skip": skip},
             timeout=60,
         )
-        if not isinstance(data, dict):
-            return SeerrPageInfo(0, 0, 0), []
-
-        results = data.get("results", [])
-        page_info = SeerrPageInfo(
-            page=data.get("pageInfo", {}).get("page", 0),
-            pages=data.get("pageInfo", {}).get("pages", 0),
-            results=data.get("pageInfo", {}).get("results", 0),
-        )
-        return page_info, [build_seerr_request_from_dict(req) for req in results]
+        requests = _request_records_from_response(data)
+        page_info = _page_info_from_response(data, default_results=len(requests))
+        return page_info, [build_seerr_request_from_dict(req) for req in requests]
 
     async def delete_request(self, request_id: int) -> None:
         """Delete/un-request a media request.
@@ -202,16 +396,9 @@ class SeerrClient:
             params["requestedBy"] = requested_by
 
         _, data = await self._make_request("GET", "request", params=params, timeout=300)
-        if not isinstance(data, dict):
-            return SeerrPageInfo(0, 0, 0), []
-
-        results = data.get("results", [])
-        page_info = SeerrPageInfo(
-            page=data.get("pageInfo", {}).get("page", 0),
-            pages=data.get("pageInfo", {}).get("pages", 0),
-            results=data.get("pageInfo", {}).get("results", 0),
-        )
-        return page_info, [build_seerr_request_from_dict(req) for req in results]
+        requests = _request_records_from_response(data)
+        page_info = _page_info_from_response(data, default_results=len(requests))
+        return page_info, [build_seerr_request_from_dict(req) for req in requests]
 
     async def get_all_requests(self, *, filter: str = "all") -> list[SeerrRequest]:
         """Fetch all requests via paginated /request."""
@@ -249,33 +436,8 @@ class SeerrClient:
         if sort and sort.strip():
             params["sort"] = sort.strip()
         _, data = await self._make_request("GET", "user", params=params, timeout=120)
-        if isinstance(data, list):
-            users = [
-                build_seerr_user_from_dict(item)
-                for item in data
-                if isinstance(item, dict)
-            ]
-            return SeerrPageInfo(page=1, pages=1, results=len(users)), users
-
-        if isinstance(data, dict):
-            results = data.get("results")
-            if not isinstance(results, list):
-                # Defensive fallback for non-standard shapes.
-                alt_results = data.get("users")
-                results = alt_results if isinstance(alt_results, list) else []
-            users = [
-                build_seerr_user_from_dict(item)
-                for item in results
-                if isinstance(item, dict)
-            ]
-            page_info = SeerrPageInfo(
-                page=data.get("pageInfo", {}).get("page", 0),
-                pages=data.get("pageInfo", {}).get("pages", 0),
-                results=data.get("pageInfo", {}).get("results", len(users)),
-            )
-            return page_info, users
-
-        return SeerrPageInfo(0, 0, 0), []
+        page_info, users_payload = _user_records_from_response(data)
+        return page_info, [build_seerr_user_from_dict(item) for item in users_payload]
 
     async def get_all_users(self) -> list[SeerrUser]:
         """Fetch all users via paginated /user."""
@@ -301,12 +463,10 @@ class SeerrClient:
             tmdb_id: TMDB movie ID
         """
         _, data = await self._make_request("GET", f"movie/{tmdb_id}")
-        if not isinstance(data, dict):
+        requests = _requests_from_media_response(data)
+        if requests is None:
             raise ValueError(f"Movie {tmdb_id} not found")
-        return [
-            build_seerr_request_from_dict(req)
-            for req in data.get("mediaInfo", {}).get("requests", [])
-        ]
+        return [build_seerr_request_from_dict(req) for req in requests]
 
     async def delete_movie_requests(self, tmdb_id: int) -> None:
         """Collect and delete movie requests by TMDB ID.
@@ -325,12 +485,10 @@ class SeerrClient:
             tmdb_id: TMDB TV series ID
         """
         _, data = await self._make_request("GET", f"tv/{tmdb_id}")
-        if not isinstance(data, dict):
+        requests = _requests_from_media_response(data)
+        if requests is None:
             raise ValueError(f"TV series {tmdb_id} not found")
-        return [
-            build_seerr_request_from_dict(req)
-            for req in data.get("mediaInfo", {}).get("requests", [])
-        ]
+        return [build_seerr_request_from_dict(req) for req in requests]
 
     async def delete_tv_requests(self, tmdb_id: int) -> None:
         """Collect and delete TV series requests by TMDB ID.
@@ -355,9 +513,7 @@ class SeerrClient:
         try:
             endpoint = "movie" if media_type is MediaType.MOVIE else "tv"
             _, data = await self._make_request("GET", f"{endpoint}/{tmdb_id}")
-            if not isinstance(data, dict):
-                return None
-            return data.get("mediaInfo", {}).get("id")
+            return _media_id_from_response(data)
         except Exception:
             return None
 
