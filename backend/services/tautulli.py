@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,40 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.utils.misc import as_int
 from backend.core.utils.request import should_retry_on_status
+
+
+def _mapping_from(data: Mapping[str, object], key: str) -> Mapping[str, object] | None:
+    value = data.get(key)
+    return value if isinstance(value, Mapping) else None
+
+
+def _mapping_list(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    items: list[Mapping[str, object]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            items.append(item)
+    return items
+
+
+def _history_payload(data: Mapping[str, object]) -> Mapping[str, object] | None:
+    response = _mapping_from(data, "response")
+    if response is None:
+        return None
+    return _mapping_from(response, "data")
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    key = as_int(value)
+    if key is None:
+        return None
+    try:
+        return datetime.fromtimestamp(key, tz=None).replace(tzinfo=None)
+    except (ValueError, OSError):
+        return None
 
 
 class TautulliClient:
@@ -36,7 +70,7 @@ class TautulliClient:
             | retry_if_exception(should_retry_on_status)
         ),
     )
-    async def _make_request(self, cmd: str, **params: Any) -> dict:
+    async def _make_request(self, cmd: str, **params: Any) -> dict[str, object]:
         url = f"{self.base_url}/api/v2"
         response = await self.session.get(
             url,
@@ -44,13 +78,15 @@ class TautulliClient:
             timeout=self.timeout,
         )
         response.raise_for_status()
-        return response.json()
+        resp: dict[str, object] = response.json()
+        return resp
 
     async def health(self) -> bool:
         """Check server health and API key."""
         try:
             data = await self._make_request("status")
-            return data.get("response", {}).get("result") == "success"
+            response = _mapping_from(data, "response")
+            return bool(response and response.get("result") == "success")
         except Exception:
             return False
 
@@ -60,7 +96,7 @@ class TautulliClient:
         section_id: int | None = None,
         length: int = 10000,
         start: int = 0,
-    ) -> dict:
+    ) -> dict[str, object]:
         """Fetch play history from Tautulli.
 
         Args:
@@ -80,7 +116,8 @@ class TautulliClient:
             params["section_id"] = section_id
 
         result = await self._make_request("get_history", **params)
-        return result.get("response", {}).get("data", {})
+        payload = _history_payload(result)
+        return dict(payload) if payload is not None else {}
 
     async def get_play_counts(
         self,
@@ -107,7 +144,7 @@ class TautulliClient:
                 ``{grandparent_rating_key: (play_count, last_played_at)}``
                 (i.e. series-level rollup keyed by the show's rating key)
         """
-        params: dict[str, Any] = {"media_type": media_type, "length": page_size}
+        params: dict[str, str | int] = {"media_type": media_type, "length": page_size}
 
         if since is not None:
             # subtract 1 day buffer (tautulli start_date is date granularity only)
@@ -120,9 +157,13 @@ class TautulliClient:
         while True:
             params["start"] = offset
             data = await self._make_request("get_history", **params)
-            payload = data.get("response", {}).get("data", {})
-            records: list[dict] = payload.get("data", [])
-            records_total: int = payload.get("recordsFiltered", 0)
+            payload = _history_payload(data)
+            if payload is None:
+                records: list[Mapping[str, object]] = []
+                records_total = 0
+            else:
+                records = _mapping_list(payload.get("data"))
+                records_total = as_int(payload.get("recordsFiltered")) or 0
 
             for record in records:
                 if media_type == "episode":
@@ -130,25 +171,16 @@ class TautulliClient:
                 else:
                     key = record.get("rating_key")
 
-                if not key:
+                parsed_key = as_int(key)
+                if parsed_key is None:
                     continue
 
-                key = int(key)
-
                 # parse stopped timestamp as UTC datetime
-                stopped_ts = record.get("stopped")
-                last_played: datetime | None = None
-                if stopped_ts:
-                    try:
-                        last_played = datetime.fromtimestamp(
-                            int(stopped_ts), tz=None
-                        ).replace(tzinfo=None)
-                    except (ValueError, OSError):
-                        last_played = None
+                last_played = _optional_datetime(record.get("stopped"))
 
-                existing = aggregated.get(key)
+                existing = aggregated.get(parsed_key)
                 if existing is None:
-                    aggregated[key] = (1, last_played)
+                    aggregated[parsed_key] = (1, last_played)
                 else:
                     prev_count, prev_last = existing
                     merged_last = (
@@ -156,7 +188,7 @@ class TautulliClient:
                         if (prev_last or last_played)
                         else None
                     )
-                    aggregated[key] = (prev_count + 1, merged_last)
+                    aggregated[parsed_key] = (prev_count + 1, merged_last)
 
             offset += page_size
             if offset >= records_total:
@@ -174,7 +206,9 @@ class TautulliClient:
                 timeout=10,
             )
             response.raise_for_status()
-            data = response.json()
-            if data.get("response", {}).get("result") == "success":
+            data: dict[str, object] = response.json()
+
+            response_data = _mapping_from(data, "response")
+            if response_data and response_data.get("result") == "success":
                 return True
             raise ValueError("Tautulli returned an unsuccessful status response")
