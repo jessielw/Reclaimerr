@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, TypeGuard
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -59,6 +59,10 @@ __all__ = [
 COMMIT_BATCH_SIZE = 100
 
 
+def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
+    return service in MEDIA_SERVERS
+
+
 def _path_tail(path: str | None, depth: int) -> str | None:
     """Extract the last `depth` segments of a file path (normalized for consistent matching)."""
     if not path:
@@ -110,7 +114,7 @@ def _play_entry(
 
 
 async def _get_configured_media_servers(
-    session,
+    session: AsyncSession,
     service: MediaServerType | None = None,
 ) -> list[ServiceConfig]:
     """Return enabled/valid configured media servers, optionally filtered by service."""
@@ -123,7 +127,7 @@ async def _get_configured_media_servers(
     if service is not None:
         query = query.where(ServiceConfig.service_type == service)
     result = await session.execute(query)
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 async def _get_main_media_server(session: AsyncSession) -> ServiceConfig | None:
@@ -428,10 +432,10 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
         return True
 
     # check if it's a recent release that might need updates
-    if media_type is MediaType.MOVIE:
-        release_date = obj.tmdb_release_date  # pyright: ignore[reportAttributeAccessIssue]
+    if isinstance(obj, Movie):
+        release_date = obj.tmdb_release_date
     else:
-        release_date = obj.tmdb_first_air_date  # pyright: ignore[reportAttributeAccessIssue]
+        release_date = obj.tmdb_first_air_date
 
     if release_date:
         days_since_release = (time_now - release_date.replace(tzinfo=UTC)).days
@@ -446,7 +450,9 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     return False
 
 
-def _rollup_series_media_from_seasons(season_data: list[AggregatedSeasonData]) -> dict:
+def _rollup_series_media_from_seasons(
+    season_data: list[AggregatedSeasonData],
+) -> dict[str, Any]:
     """Roll up minimal media aggregate signals from seasons to series-level values."""
     if not season_data:
         return {
@@ -839,7 +845,7 @@ def _make_fp(
     dv: bool | None,
     size: int,
     container: str | None,
-) -> tuple | None:
+) -> tuple[Any, ...] | None:
     """Build a fingerprint map of existing versions for rename resilient fallback matching.
     Fingerprint covers fields that are stable across file renames but change on re-encode.
     Entries with duplicate fingerprints are marked None (ambiguous - we skip to avoid a mis-match)
@@ -858,11 +864,11 @@ async def _upsert_movie_versions(
     result = await session.execute(
         select(MovieVersion).where(MovieVersion.movie_id == db_movie.id)
     )
-    existing: dict[tuple, MovieVersion] = {
+    existing: dict[tuple[Any, ...], MovieVersion] = {
         (v.service, v.service_media_id): v for v in result.scalars().all()
     }
 
-    fp_map: dict[tuple, MovieVersion | None] = {}
+    fp_map: dict[tuple[Any, ...], MovieVersion | None] = {}
     for ev in existing.values():
         fp = _make_fp(
             ev.service,
@@ -879,7 +885,7 @@ async def _upsert_movie_versions(
         # None = ambiguous, skip
         fp_map[fp] = None if fp in fp_map else ev
 
-    incoming_keys: set[tuple] = set()
+    incoming_keys: set[tuple[Any, ...]] = set()
     for ver in versions:
         key = (ver.service, ver.service_media_id)
         incoming_keys.add(key)
@@ -1069,7 +1075,7 @@ async def gather_movies(
             existing = unique_movies[tmdb_id]
             # deduplicate by (service, service_media_id) as the same physical file can appear
             # in multiple Jellyfin/Plex/Emby libraries with identical MediaSource IDs
-            seen_version_keys: set[tuple] = {
+            seen_version_keys: set[tuple[Any, ...]] = {
                 (v.service, v.service_media_id) for v in existing.versions
             }
             merged_versions = existing.versions + [
@@ -1117,7 +1123,7 @@ async def gather_series(
         media_servers = await _get_configured_media_servers(session, service)
 
         if not media_servers:
-            return
+            return None
 
         # fetch series from each media server
         for server in media_servers:
@@ -1340,7 +1346,7 @@ async def sync_movies(
                         )
                         session.add(new_movie)
                         await session.flush()
-                        seen_new_ver_keys: set[tuple] = set()
+                        seen_new_ver_keys: set[tuple[Any, ...]] = set()
                         for ver in movie.versions:
                             key = (ver.service, ver.service_media_id)
                             if key in seen_new_ver_keys:
@@ -1478,11 +1484,14 @@ async def sync_movies(
                         f"Soft-deleting {len(movies_to_delete)} movies no longer in {effective_service.value}"
                     )
                     deleted_movie_ids = []
-                    for movie in movies_to_delete:
-                        movie.removed_at = datetime.now(UTC)
-                        movie.added_at = None
-                        deleted_movie_ids.append(movie.id)
-                        LOG.debug(f"Soft-deleted: {movie.title} ({movie.tmdb_id})")
+                    for db_movie_to_delete in movies_to_delete:
+                        db_movie_to_delete.removed_at = datetime.now(UTC)
+                        db_movie_to_delete.added_at = None
+                        deleted_movie_ids.append(db_movie_to_delete.id)
+                        LOG.debug(
+                            f"Soft-deleted: {db_movie_to_delete.title} "
+                            f"({db_movie_to_delete.tmdb_id})"
+                        )
 
                     # clean up orphaned candidates and protection entries
                     if deleted_movie_ids:
@@ -1525,7 +1534,7 @@ async def sync_movies(
 
 async def _update_movie_tmdb_metadata(
     movie: Movie, tmdb_id: int, tmdb_service: AsyncTMDBClient
-):
+) -> None:
     """Update movie with TMDB metadata."""
     try:
         movie_metadata = await tmdb_service.get_movie_details(tmdb_id)
@@ -2004,7 +2013,7 @@ async def _sync_playback_reporting_for_service(
             f"movies from {server_service}"
         )
         async with async_db() as session:
-            rows = (
+            movie_rows = (
                 await session.execute(
                     select(MovieVersion.service_item_id, Movie.id, Movie.view_count)
                     .join(Movie, MovieVersion.movie_id == Movie.id)
@@ -2016,7 +2025,7 @@ async def _sync_playback_reporting_for_service(
             ).all()
 
             updated = 0
-            for item_id, movie_id, current_count in rows:
+            for item_id, movie_id, current_count in movie_rows:
                 plugin_count = movie_stats.get(item_id)
                 if plugin_count and plugin_count > current_count:
                     await session.execute(
@@ -2101,7 +2110,7 @@ async def _sync_playback_reporting_for_service(
     async with async_db() as session:
         updated_series = 0
         if series_play_counts:
-            rows = (
+            series_rows = (
                 await session.execute(
                     select(
                         SeriesServiceRef.service_id,
@@ -2116,7 +2125,7 @@ async def _sync_playback_reporting_for_service(
                 )
             ).all()
 
-            for service_id, series_id, current_count in rows:
+            for service_id, series_id, current_count in series_rows:
                 plugin_count = series_play_counts.get(service_id)
                 if plugin_count and plugin_count > (current_count or 0):
                     await session.execute(
@@ -2161,7 +2170,7 @@ async def _sync_playback_reporting_for_service(
                 if server_service == Service.JELLYFIN
                 else Season.emby_season_id
             )
-            rows = (
+            season_rows = (
                 await session.execute(
                     select(
                         season_service_col,
@@ -2170,7 +2179,7 @@ async def _sync_playback_reporting_for_service(
                     ).where(season_service_col.is_not(None))
                 )
             ).all()
-            for service_id, season_id, current_count in rows:
+            for service_id, season_id, current_count in season_rows:
                 plugin_count = season_play_counts.get(service_id)
                 if plugin_count and plugin_count > (current_count or 0):
                     await session.execute(
@@ -2181,7 +2190,7 @@ async def _sync_playback_reporting_for_service(
                     updated_seasons += 1
 
             if use_mapped_matches:
-                mapped_rows = (
+                mapped_season_rows = (
                     await session.execute(
                         select(
                             SupplementalMediaMatch.source_item_id,
@@ -2196,7 +2205,7 @@ async def _sync_playback_reporting_for_service(
                         )
                     )
                 ).all()
-                for service_id, season_id, current_count in mapped_rows:
+                for service_id, season_id, current_count in mapped_season_rows:
                     plugin_count = season_play_counts.get(service_id)
                     if plugin_count and plugin_count > (current_count or 0):
                         await session.execute(
@@ -2331,7 +2340,7 @@ async def sync_tautulli_playback_data() -> None:
             f"Tautulli returned play data for {len(movie_counts)} unique movie rating keys"
         )
         async with async_db() as session:
-            rows = (
+            tautulli_movie_rows = (
                 await session.execute(
                     select(
                         MovieVersion.service_item_id,
@@ -2348,7 +2357,7 @@ async def sync_tautulli_playback_data() -> None:
             ).all()
 
             updated = 0
-            for item_id, movie_id, current_count, current_lva in rows:
+            for item_id, movie_id, current_count, current_lva in tautulli_movie_rows:
                 entry = _play_entry(movie_counts, item_id)
                 if not entry:
                     continue
@@ -2407,7 +2416,7 @@ async def sync_tautulli_playback_data() -> None:
             f"Tautulli returned episode play data for {len(episode_counts)} unique series rating keys"
         )
         async with async_db() as session:
-            rows = (
+            tautulli_series_rows = (
                 await session.execute(
                     select(
                         SeriesServiceRef.service_id,
@@ -2424,7 +2433,12 @@ async def sync_tautulli_playback_data() -> None:
             ).all()
 
             updated = 0
-            for service_id, series_id, current_count, current_lva in rows:
+            for (
+                service_id,
+                series_id,
+                current_count,
+                current_lva,
+            ) in tautulli_series_rows:
                 entry = _play_entry(episode_counts, service_id)
                 if not entry:
                     continue
@@ -2484,7 +2498,7 @@ async def sync_tautulli_playback_data() -> None:
             f"Tautulli returned episode play data for {len(season_counts)} unique season rating keys"
         )
         async with async_db() as session:
-            rows = (
+            tautulli_season_rows = (
                 await session.execute(
                     select(
                         Season.plex_season_rating_key,
@@ -2496,7 +2510,12 @@ async def sync_tautulli_playback_data() -> None:
             ).all()
 
             updated = 0
-            for service_id, season_id, current_count, current_lva in rows:
+            for (
+                service_id,
+                season_id,
+                current_count,
+                current_lva,
+            ) in tautulli_season_rows:
                 entry = _play_entry(season_counts, service_id)
                 if not entry:
                     continue
@@ -2512,7 +2531,7 @@ async def sync_tautulli_playback_data() -> None:
                     updated += 1
 
             if use_mapped_matches:
-                mapped_rows = (
+                mapped_tautulli_season_rows = (
                     await session.execute(
                         select(
                             SupplementalMediaMatch.source_item_id,
@@ -2528,7 +2547,12 @@ async def sync_tautulli_playback_data() -> None:
                         )
                     )
                 ).all()
-                for service_id, season_id, current_count, current_lva in mapped_rows:
+                for (
+                    service_id,
+                    season_id,
+                    current_count,
+                    current_lva,
+                ) in mapped_tautulli_season_rows:
                     entry = _play_entry(season_counts, service_id)
                     if not entry:
                         continue
@@ -2555,7 +2579,7 @@ async def sync_tautulli_playback_data() -> None:
             f"{len(individual_episode_counts)} episode rating keys"
         )
         async with async_db() as session:
-            rows = (
+            tautulli_episode_rows = (
                 await session.execute(
                     select(
                         Episode.plex_rating_key,
@@ -2567,7 +2591,7 @@ async def sync_tautulli_playback_data() -> None:
             ).all()
 
             updated = 0
-            for plex_key, ep_id, current_count, current_lva in rows:
+            for plex_key, ep_id, current_count, current_lva in tautulli_episode_rows:
                 entry = _play_entry(individual_episode_counts, plex_key)
                 if not entry:
                     continue
@@ -2601,7 +2625,7 @@ async def sync_media() -> dict[str, Any] | None:
     """
     if not service_manager.main_media_server:
         LOG.debug("No main media server configured - skipping sync")
-        return
+        return None
 
     # determine main server
     async with track_task_execution(Task.SYNC_MEDIA):
@@ -2609,34 +2633,37 @@ async def sync_media() -> dict[str, Any] | None:
             get_main_server = await _get_main_media_server(session)
             if not get_main_server:
                 LOG.error("No main media server configured for sync")
-                return
+                return None
         main_server = get_main_server.service_type
-        if main_server not in MEDIA_SERVERS:
+        if not _is_media_server_type(main_server):
             LOG.error(f"Unsupported main media server {main_server} for sync")
-            return
+            return None
 
         # update libraries
         library_sync_result = await sync_media_libraries()
 
         # sync movies
-        await sync_movies(main_server)  # type: ignore[reportArgumentType]
+        await sync_movies(main_server)
 
         # sync series
-        await sync_series(main_server)  # type: ignore[reportArgumentType]
+        await sync_series(main_server)
 
         # sync linked watch data from any non-main servers
         async with async_db() as linked_session:
             all_servers = await _get_configured_media_servers(linked_session)
-        active_linked_services = {
+        active_linked_services: set[Service] = {
             svr.service_type
             for svr in all_servers
-            if svr.service_type != main_server and svr.service_type in MEDIA_SERVERS
+            if svr.service_type != main_server
+            and _is_media_server_type(svr.service_type)
         }
         await _prune_supplemental_matches(active_linked_services)
         for svr in all_servers:
-            if svr.service_type != main_server and svr.service_type in MEDIA_SERVERS:
+            if svr.service_type != main_server and _is_media_server_type(
+                svr.service_type
+            ):
                 LOG.debug(f"Linked watch sync from {svr.service_type}")
-                await sync_linked_data(svr.service_type)  # type: ignore[reportArgumentType]
+                await sync_linked_data(svr.service_type)
 
         # refresh favorites snapshot from supported media servers
         ok, error = await media_favorites_snapshot_cache.refresh_snapshot(
@@ -2711,18 +2738,18 @@ async def sync_linked_data(
                     )
                 )
                 updated = 0
-                for movie in result.scalars().all():
-                    view_count, last_viewed_at = watch_by_tmdb[movie.tmdb_id]
+                for db_movie in result.scalars().all():
+                    view_count, last_viewed_at = watch_by_tmdb[db_movie.tmdb_id]
                     last_viewed_at = _merge_last_viewed(None, last_viewed_at)
                     changed = False
-                    if view_count > movie.view_count:
-                        movie.view_count = view_count
+                    if view_count > db_movie.view_count:
+                        db_movie.view_count = view_count
                         changed = True
                     if last_viewed_at and (
-                        not movie.last_viewed_at
-                        or last_viewed_at > movie.last_viewed_at
+                        not db_movie.last_viewed_at
+                        or last_viewed_at > db_movie.last_viewed_at
                     ):
-                        movie.last_viewed_at = last_viewed_at
+                        db_movie.last_viewed_at = last_viewed_at
                         changed = True
                     if changed:
                         updated += 1
@@ -2894,7 +2921,7 @@ async def resync_media() -> None:
 
 async def _update_series_tmdb_metadata(
     series: Series, tmdb_id: int, tmdb_service: AsyncTMDBClient
-):
+) -> None:
     """Update series with TMDB metadata."""
     try:
         series_metadata = await tmdb_service.get_tv_details(tmdb_id)
@@ -2994,9 +3021,9 @@ async def sync_media_libraries() -> dict[str, Any]:
 
             # delete libraries no longer present on the main server
             removed_ids: set[str] = set()
-            for lib_id, lib in existing_map.items():
+            for lib_id, existing_library in existing_map.items():
                 if lib_id not in current_ids:
-                    await session.delete(lib)
+                    await session.delete(existing_library)
                     removed_ids.add(lib_id)
 
             # Advanced rules now keep library scope inside the rule definition.
