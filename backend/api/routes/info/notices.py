@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ from backend.services.admin_notices import (
 router = APIRouter(tags=["notices"])
 
 
-def _to_notice_response(row) -> AdminNoticeResponse:
+def _to_notice_response(row: Any) -> AdminNoticeResponse:
     return AdminNoticeResponse(
         id=row.id,
         kind=row.kind,

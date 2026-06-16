@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api", tags=["dashboard"])
 async def get_dashboard(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-):
+) -> DashboardResponse:
     """Role aware dashboard summary."""
     now = datetime.now(UTC)
     seven_days_ago = now - timedelta(days=7)

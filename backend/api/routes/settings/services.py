@@ -46,7 +46,7 @@ def _mask_api_key(key: str) -> str:
 async def get_service_settings(
     _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Get current service settings."""
     # service configs
     get_service_configs = await db.execute(select(ServiceConfig))
@@ -118,7 +118,7 @@ async def set_service_settings(
     data: ServiceConfigUpdate,
     _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Set service settings for a given service."""
     service_name = data.name or _default_service_name(data.service_type)
     # if the client omitted the api_key (unchanged masked field), resolve the
@@ -283,7 +283,7 @@ async def delete_service_settings(
 
 async def _find_existing_service_config(
     db: AsyncSession, data: ServiceConfigUpdate, service_name: str
-):
+) -> Any:
     """Find existing service configuration by ID or service type/name."""
     if data.id is not None:
         return await db.execute(
@@ -324,7 +324,7 @@ async def _upsert_service_config(
         )
 
     service_name = data.name or _default_service_name(data.service_type)
-    values = dict(
+    values: dict[str, Any] = dict(
         service_type=data.service_type,
         name=service_name,
         base_url=data.base_url,
@@ -359,7 +359,7 @@ async def _upsert_service_config(
 
 async def _upsert_service_libraries(
     db: AsyncSession,
-    libraries: list[dict],
+    libraries: list[dict[str, Any]],
 ) -> None:
     """Update library selections by ID."""
     LOG.info("Updating library selections")
@@ -381,7 +381,7 @@ async def test_service_settings(
     data: ServiceConfigUpdate,
     _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Test service settings for a given service."""
     service_name = data.name or _default_service_name(data.service_type)
     resolved_api_key = data.api_key
@@ -435,7 +435,7 @@ async def update_library_selections(
     data: list[LibrarySelectionUpdate],
     _current_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, str]:
     """Update library selected state by ID."""
     await _upsert_service_libraries(
         db, [{"id": item.id, "selected": item.selected} for item in data]

@@ -2,7 +2,7 @@ import re
 import sys
 from pathlib import Path
 from random import sample as random_sample
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, desc, func, select
@@ -61,10 +61,10 @@ def _find_changelog() -> Path | None:
     return None
 
 
-def _parse_changelog(text: str) -> list[dict]:
+def _parse_changelog(text: str) -> list[dict[str, Any]]:
     """Split changelog text into per-release dicts sorted newest first."""
     matches = list(_RELEASE_HEADER.finditer(text))
-    releases: list[dict] = []
+    releases: list[dict[str, Any]] = []
     for i, m in enumerate(matches):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
@@ -99,7 +99,7 @@ async def get_version() -> dict[str, str]:
 async def get_update_status(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, bool | str | None]:
     """Return update status for sidebar indicators (admin visible only)."""
     state = (await db.execute(select(AppUpdateState))).scalars().first()
     return _update_status_payload(current_user, state)
@@ -225,7 +225,7 @@ async def get_ui_indicators(
 
 
 @router.get("/changelog")
-async def get_changelog() -> list[dict]:
+async def get_changelog() -> list[dict[str, Any]]:
     """Return bundled changelog split into per-release entries."""
     path = _find_changelog()
     if path is None:
