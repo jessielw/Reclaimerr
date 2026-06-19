@@ -1598,6 +1598,207 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
     await db.commit()
 
 
+async def _build_leaving_soon_prune_item_ids(
+    db: AsyncSession,
+    candidate_ids: Iterable[int],
+) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
+    """Resolve media-server collection item IDs affected by candidate actions."""
+    normalized_candidate_ids = {int(candidate_id) for candidate_id in candidate_ids}
+    movie_item_ids: dict[Service, set[str]] = {}
+    series_item_ids: dict[Service, set[str]] = {}
+    if not normalized_candidate_ids:
+        return movie_item_ids, series_item_ids
+
+    candidates = (
+        (
+            await db.execute(
+                select(ReclaimCandidate).where(
+                    ReclaimCandidate.id.in_(normalized_candidate_ids)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    movie_ids = {
+        int(candidate.movie_id)
+        for candidate in candidates
+        if candidate.media_type == MediaType.MOVIE and candidate.movie_id is not None
+    }
+    movie_version_ids = {
+        int(candidate.movie_version_id)
+        for candidate in candidates
+        if candidate.media_type == MediaType.MOVIE
+        and candidate.movie_version_id is not None
+    }
+    series_ids = {
+        int(candidate.series_id)
+        for candidate in candidates
+        if candidate.media_type == MediaType.SERIES and candidate.series_id is not None
+    }
+
+    if movie_version_ids:
+        version_rows = (
+            await db.execute(
+                select(MovieVersion.service, MovieVersion.service_item_id).where(
+                    MovieVersion.id.in_(movie_version_ids)
+                )
+            )
+        ).all()
+        for service, service_item_id in version_rows:
+            _append_service_item_id(
+                movie_item_ids,
+                service=service,
+                item_id=service_item_id,
+            )
+
+    if movie_ids:
+        version_rows = (
+            await db.execute(
+                select(MovieVersion.service, MovieVersion.service_item_id).where(
+                    MovieVersion.movie_id.in_(movie_ids)
+                )
+            )
+        ).all()
+        for service, service_item_id in version_rows:
+            _append_service_item_id(
+                movie_item_ids,
+                service=service,
+                item_id=service_item_id,
+            )
+
+    if movie_ids:
+        supplemental_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.MOVIE,
+                    SupplementalMediaMatch.movie_id.in_(movie_ids),
+                )
+            )
+        ).all()
+        for service, service_item_id in supplemental_rows:
+            _append_service_item_id(
+                movie_item_ids,
+                service=service,
+                item_id=service_item_id,
+            )
+
+    if series_ids:
+        series_ref_rows = (
+            await db.execute(
+                select(SeriesServiceRef.service, SeriesServiceRef.service_id).where(
+                    SeriesServiceRef.series_id.in_(series_ids)
+                )
+            )
+        ).all()
+        for service, service_item_id in series_ref_rows:
+            _append_service_item_id(
+                series_item_ids,
+                service=service,
+                item_id=service_item_id,
+            )
+
+        supplemental_rows = (
+            await db.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                ).where(
+                    SupplementalMediaMatch.media_type == MediaType.SERIES,
+                    SupplementalMediaMatch.series_id.in_(series_ids),
+                )
+            )
+        ).all()
+        for service, service_item_id in supplemental_rows:
+            _append_service_item_id(
+                series_item_ids,
+                service=service,
+                item_id=service_item_id,
+            )
+
+    return movie_item_ids, series_item_ids
+
+
+async def _prune_leaving_soon_before_candidate_actions(
+    candidate_ids: Iterable[int],
+) -> None:
+    """Remove affected items from managed collections before destructive actions."""
+    normalized_candidate_ids = {int(candidate_id) for candidate_id in candidate_ids}
+    if not normalized_candidate_ids:
+        return
+
+    async with async_db() as db:
+        (
+            _settings_row,
+            enabled,
+            collection_base_title,
+            last_success_titles,
+        ) = await _load_leaving_soon_collection_settings(db)
+        if not enabled:
+            return
+        movie_item_ids, series_item_ids = (
+            await _build_leaving_soon_prune_item_ids(db, normalized_candidate_ids)
+        )
+
+    service_clients: list[tuple[Service, Any]] = [
+        (Service.PLEX, service_manager.plex),
+        (Service.JELLYFIN, service_manager.jellyfin),
+        (Service.EMBY, service_manager.emby),
+    ]
+    for service_type, service_client in service_clients:
+        service_movie_ids = movie_item_ids.get(service_type, set())
+        service_series_ids = series_item_ids.get(service_type, set())
+        if not service_movie_ids and not service_series_ids:
+            continue
+
+        titles = {
+            collection_base_title,
+            *(
+                [last_success_titles[service_type]]
+                if service_type in last_success_titles
+                else []
+            ),
+        }
+        if service_client is None:
+            if service_type in last_success_titles:
+                raise RuntimeError(
+                    f"{service_type.value} is unavailable; cannot safely prune "
+                    "its Leaving Soon collection"
+                )
+            continue
+
+        prune_method = getattr(service_client, "prune_leaving_soon_items", None)
+        if not callable(prune_method):
+            raise RuntimeError(
+                f"{service_type.value} Leaving Soon prune method is unavailable"
+            )
+        prune_func = cast(Callable[..., Awaitable[Any]], prune_method)
+        for title in titles:
+            try:
+                await prune_func(
+                    base_title=title,
+                    movie_item_ids=service_movie_ids,
+                    series_item_ids=service_series_ids,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed pruning {service_type.value} Leaving Soon collection "
+                    f"{title!r}: {e}"
+                ) from e
+
+
+async def _reconcile_leaving_soon_after_candidate_actions() -> None:
+    """Best-effort reconciliation after candidate deletion or move attempts."""
+    try:
+        async with async_db() as db:
+            await _sync_leaving_soon_collections(db)
+    except Exception as e:
+        LOG.warning(f"Leaving Soon post-action reconciliation failed: {e}")
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -6450,6 +6651,32 @@ async def _reset_seerr_request(tmdb_id: int, media_type: MediaType) -> None:
 async def delete_specific_candidates(
     candidate_ids: list[int], approved_by: str = "system"
 ) -> tuple[int, int]:
+    """Safely delete candidates after pruning managed Leaving Soon collections."""
+    unique_candidate_ids = list(dict.fromkeys(candidate_ids))
+    if not unique_candidate_ids:
+        return 0, 0
+
+    try:
+        await _prune_leaving_soon_before_candidate_actions(unique_candidate_ids)
+    except Exception as e:
+        error = f"Deletion blocked by Leaving Soon collection cleanup: {e}"
+        LOG.error(error)
+        await _mark_candidate_delete_failures(unique_candidate_ids, error)
+        await _reconcile_leaving_soon_after_candidate_actions()
+        return 0, len(unique_candidate_ids)
+
+    try:
+        return await _delete_specific_candidates_impl(
+            unique_candidate_ids,
+            approved_by=approved_by,
+        )
+    finally:
+        await _reconcile_leaving_soon_after_candidate_actions()
+
+
+async def _delete_specific_candidates_impl(
+    candidate_ids: list[int], approved_by: str = "system"
+) -> tuple[int, int]:
     """Deletes specific reclaim candidates by their IDs.
 
     Uses the same deletion priority as delete_cleanup_candidates:
@@ -6516,6 +6743,32 @@ async def delete_specific_candidates(
 
 
 async def move_specific_candidates(
+    candidate_ids: list[int], approved_by: str = "system"
+) -> tuple[int, int]:
+    """Safely move candidates after pruning managed Leaving Soon collections."""
+    unique_candidate_ids = list(dict.fromkeys(candidate_ids))
+    if not unique_candidate_ids:
+        return 0, 0
+
+    try:
+        await _prune_leaving_soon_before_candidate_actions(unique_candidate_ids)
+    except Exception as e:
+        error = f"Move blocked by Leaving Soon collection cleanup: {e}"
+        LOG.error(error)
+        await _mark_candidate_delete_failures(unique_candidate_ids, error)
+        await _reconcile_leaving_soon_after_candidate_actions()
+        return 0, len(unique_candidate_ids)
+
+    try:
+        return await _move_specific_candidates_impl(
+            unique_candidate_ids,
+            approved_by=approved_by,
+        )
+    finally:
+        await _reconcile_leaving_soon_after_candidate_actions()
+
+
+async def _move_specific_candidates_impl(
     candidate_ids: list[int], approved_by: str = "system"
 ) -> tuple[int, int]:
     """Move specific reclaim candidates to the configured destination root.

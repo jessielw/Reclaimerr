@@ -217,6 +217,62 @@ class PlexService:
             expected_item_ids=set(),
         )
 
+    async def prune_leaving_soon_items(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        """Remove items from managed collections before destructive media actions."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._prune_leaving_soon_collection_for_type(
+            section_type="movie",
+            collection_title=f"{collection_base} [Movies]",
+            item_ids=movie_item_ids,
+        )
+        await self._prune_leaving_soon_collection_for_type(
+            section_type="show",
+            collection_title=f"{collection_base} [Series]",
+            item_ids=series_item_ids,
+        )
+
+    async def _prune_leaving_soon_collection_for_type(
+        self,
+        *,
+        section_type: str,
+        collection_title: str,
+        item_ids: set[str],
+    ) -> None:
+        normalized_item_ids = {
+            str(item_id).strip() for item_id in item_ids if str(item_id).strip()
+        }
+        if not normalized_item_ids:
+            return
+
+        section_ids = await self._get_section_ids_by_type(section_type)
+        for section_id in section_ids:
+            collection_ids = await self._find_collection_ids_by_title(
+                section_id=section_id,
+                collection_title=collection_title,
+            )
+            for collection_id in collection_ids:
+                current_item_ids = await self._get_collection_child_ids(collection_id)
+                if not current_item_ids.intersection(normalized_item_ids):
+                    continue
+                remaining_item_ids = current_item_ids - normalized_item_ids
+                await self._delete_collection(
+                    section_id=section_id,
+                    collection_id=collection_id,
+                )
+                if remaining_item_ids:
+                    await self._create_collection(
+                        section_id=section_id,
+                        section_type=section_type,
+                        collection_title=collection_title,
+                        item_ids=remaining_item_ids,
+                    )
+
     async def _sync_leaving_soon_collection_for_type(
         self,
         *,

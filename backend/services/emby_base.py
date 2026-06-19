@@ -193,6 +193,52 @@ class EmbyServiceBase:
             include_item_types="Series",
         )
 
+    async def prune_leaving_soon_items(
+        self,
+        *,
+        base_title: str,
+        movie_item_ids: set[str],
+        series_item_ids: set[str],
+    ) -> None:
+        """Remove items from managed collections before destructive media actions."""
+        collection_base = normalize_leaving_soon_collection_title(base_title)
+        await self._prune_leaving_soon_collection(
+            collection_title=f"{collection_base} [Movies]",
+            item_ids=movie_item_ids,
+            include_item_types="Movie",
+        )
+        await self._prune_leaving_soon_collection(
+            collection_title=f"{collection_base} [Series]",
+            item_ids=series_item_ids,
+            include_item_types="Series",
+        )
+
+    async def _prune_leaving_soon_collection(
+        self,
+        *,
+        collection_title: str,
+        item_ids: set[str],
+        include_item_types: str,
+    ) -> None:
+        normalized_item_ids = {
+            str(item_id).strip() for item_id in item_ids if str(item_id).strip()
+        }
+        if not normalized_item_ids:
+            return
+
+        collection_ids = await self._find_collection_ids_by_title(collection_title)
+        for collection_id in collection_ids:
+            current_item_ids = await self._get_collection_item_ids(
+                collection_id=collection_id,
+                include_item_types=include_item_types,
+            )
+            items_to_remove = current_item_ids & normalized_item_ids
+            if items_to_remove:
+                await self._remove_items_from_collection(
+                    collection_id=collection_id,
+                    item_ids=items_to_remove,
+                )
+
     async def _sync_leaving_soon_collection(
         self,
         *,
