@@ -2,6 +2,13 @@
 
 Reclaimerr deletes candidates in a fixed order.
 
+When Leaving Soon collections are enabled, Reclaimerr first removes the affected
+movie or series from its managed Plex, Jellyfin, and Emby collections. This
+prevents media-server collections from retaining links to files that are about
+to disappear. If an affected collection cannot be updated, the delete or move is
+blocked and retried later. After the operation, Reclaimerr reconciles the
+collections so failed or partially completed actions remain represented.
+
 ## Deletion Modes
 
 | Mode | Behavior |
