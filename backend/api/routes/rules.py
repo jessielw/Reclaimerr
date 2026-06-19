@@ -722,8 +722,8 @@ async def get_rules(
     _admin: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ) -> list[CleanupRuleResponse]:
-    """Get all cleanup rules."""
-    result = await db.execute(select(ReclaimRule))
+    """Get all cleanup rules. We sort it in ASC order by name."""
+    result = await db.execute(select(ReclaimRule).order_by(ReclaimRule.name))
     rules = result.scalars().all()
     return [_rule_response(rule) for rule in rules]
 
