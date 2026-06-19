@@ -901,7 +901,8 @@
     return groups;
   });
 
-  const MAX_TOTAL_GROUPS = 5;
+  const MAX_TOTAL_GROUPS = 10;
+  const MAX_GROUP_DEPTH = 4;
 
   const TMDB_SERIES_STATUSES = [
     "Returning Series",
@@ -963,8 +964,13 @@
       : 1 + n.children.reduce((s, c) => s + countGroups(c), 0);
 
   const canAddGroup = (root: RuleNode) => countGroups(root) < MAX_TOTAL_GROUPS;
-  const hasChildGroup = (group: RuleGroup) =>
-    group.children.some((c) => c.type === "group");
+  const canNestGroup = (currentDepth: number) => currentDepth < MAX_GROUP_DEPTH;
+  const addGroupDisabledTitle = (currentDepth: number) => {
+    if (!canAddGroup(rootNode)) return `Max ${MAX_TOTAL_GROUPS} groups`;
+    if (!canNestGroup(currentDepth))
+      return `Max nesting depth of ${MAX_GROUP_DEPTH}`;
+    return undefined;
+  };
 
   // mutations
   const ensureValidOperator = (c: RuleCondition) => {
@@ -1121,19 +1127,20 @@
       "bg-amber-50/45 dark:bg-amber-950/18",
       "bg-violet-50/45 dark:bg-violet-950/18",
     ][Math.min(d, 4)];
-
-  // single indent scale (halved on mobile via the CSS variable approach below)
-  const indentPx = (d: number) => `${d * 12}px`;
 </script>
 
 {#if node.type === "group"}
-  <div style={`padding-left: ${indentPx(depth)}`}>
+  <div
+    class:rule-group-root={depth === 0}
+    class:rule-group-nested={depth > 0}
+    style={`--rule-depth: ${depth}`}
+  >
     <div
-      class={`rounded-lg border border-border/70 ${groupBg(depth)} overflow-hidden`}
+      class={`rule-group-card rounded-lg border border-border/70 ${groupBg(depth)} overflow-hidden`}
     >
       <!-- group header -->
       <div
-        class="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-border/60"
+        class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5 border-b border-border/60"
       >
         <!-- AND / OR toggle -->
         <div
@@ -1156,10 +1163,15 @@
           {/each}
         </div>
 
-        <span class="text-xs text-muted-foreground grow">
-          {node.op === "and"
-            ? "All conditions must match"
-            : "Any condition can match"}
+        <span class="min-w-0 text-xs text-muted-foreground grow">
+          <span class="md:hidden">
+            {node.op === "and" ? "All match" : "Any match"}
+          </span>
+          <span class="hidden md:inline">
+            {node.op === "and"
+              ? "All conditions must match"
+              : "Any condition can match"}
+          </span>
         </span>
 
         {#if onRemove}
@@ -1174,7 +1186,7 @@
       </div>
 
       <!-- children -->
-      <div class="p-3 space-y-2">
+      <div class="rule-group-children p-2 md:p-3 space-y-2">
         {#each node.children as child, index}
           <Self
             node={child}
@@ -1190,7 +1202,9 @@
       </div>
 
       <!-- footer actions -->
-      <div class="flex flex-wrap items-center gap-2 px-3 pb-3">
+      <div
+        class="rule-group-footer flex flex-wrap items-center gap-2 px-2 pb-2 md:px-3 md:pb-3"
+      >
         <Button
           size="sm"
           variant="secondary"
@@ -1201,25 +1215,27 @@
           Add condition
         </Button>
 
-        {#if !hasChildGroup(node)}
-          <Button
-            size="sm"
-            variant="secondary"
-            class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground"
-            onclick={() => addGroup(node)}
-            disabled={!canAddGroup(rootNode)}
-            title={!canAddGroup(rootNode)
-              ? `Max ${MAX_TOTAL_GROUPS} groups`
-              : undefined}
-          >
-            <Plus class="size-3.5" />
-            Add group
-          </Button>
-        {/if}
+        <Button
+          size="sm"
+          variant="secondary"
+          class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground"
+          onclick={() => addGroup(node)}
+          disabled={!canAddGroup(rootNode) || !canNestGroup(depth)}
+          title={addGroupDisabledTitle(depth)}
+        >
+          <Plus class="size-3.5" />
+          Add group
+        </Button>
 
         {#if !canAddGroup(rootNode)}
           <span class="text-xs text-muted-foreground"
             >Max {MAX_TOTAL_GROUPS} groups reached</span
+          >
+        {/if}
+
+        {#if !canNestGroup(depth)}
+          <span class="text-xs text-muted-foreground"
+            >Max nesting depth reached</span
           >
         {/if}
       </div>
@@ -1228,8 +1244,8 @@
 {:else}
   <!-- condition row -->
   <div
-    class={`rounded-md border border-border/70 px-3 py-2.5 ${conditionBg(depth)}`}
-    style={`margin-left: ${indentPx(Math.max(depth - 1, 0))}`}
+    class={`rule-condition rounded-md border border-border/70 px-2 py-2 md:px-3 md:py-2.5 ${conditionBg(depth)}`}
+    style={`--rule-depth: ${depth}`}
   >
     <!--
       Layout strategy (attempt to keep things nice):
@@ -1239,7 +1255,7 @@
       gets squeezed out at awkward breakpoints
     -->
     <div
-      class="flex flex-col md:flex-row md:flex-wrap items-stretch md:items-center gap-2"
+      class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 md:flex md:flex-row md:flex-wrap md:items-center"
     >
       <!-- field selector -->
       <Select.Root
@@ -1248,7 +1264,7 @@
         onValueChange={(value) => setConditionField(node, value)}
       >
         <Select.Trigger
-          class="h-8 w-full md:w-auto md:flex-1 md:min-w-36 text-sm text-foreground cursor-pointer bg-background"
+          class="col-start-1 row-start-1 h-8 w-full min-w-0 md:col-auto md:row-auto md:w-auto md:flex-1 md:min-w-36 text-sm text-foreground cursor-pointer bg-background"
         >
           {fieldLabel(node.field)}
         </Select.Trigger>
@@ -1278,7 +1294,7 @@
           setConditionOperator(node, value as RuleConditionOperator)}
       >
         <Select.Trigger
-          class="h-8 w-full md:w-auto md:flex-1 md:min-w-32 text-sm text-foreground cursor-pointer bg-background"
+          class="col-span-2 row-start-2 h-8 w-full min-w-0 md:col-auto md:row-auto md:w-auto md:flex-1 md:min-w-32 text-sm text-foreground cursor-pointer bg-background"
         >
           {operatorLabel(node.operator)}
         </Select.Trigger>
@@ -1295,7 +1311,7 @@
         screen by the selects above -->
       {#if !valuelessOperators.has(node.operator)}
         <div
-          class="flex flex-wrap items-center gap-2 w-full md:flex-1 md:min-w-[18rem]"
+          class="col-span-2 row-start-3 flex flex-wrap items-center gap-2 w-full min-w-0 md:col-auto md:row-auto md:flex-1 md:min-w-[18rem]"
         >
           {#if node.field === "series.status" && !listOperators.has(node.operator)}
             <Select.Root
@@ -1320,7 +1336,7 @@
             </Select.Root>
           {:else}
             <Input
-              class="h-8 flex-1 min-w-40 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+              class="h-8 flex-1 min-w-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
               type={isNumericInput(node)
                 ? "number"
                 : isTemporalInput(node)
@@ -1396,7 +1412,7 @@
       {#if onRemove}
         <Button
           size="icon-sm"
-          class="cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground self-end md:self-center shrink-0"
+          class="col-start-2 row-start-1 cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground self-center shrink-0 md:col-auto md:row-auto"
           onclick={onRemove}
         >
           <Trash2 class="size-3.5" />
@@ -1455,3 +1471,49 @@
     />
   {/if}
 {/if}
+
+<style>
+  .rule-group-root {
+    padding-left: 0;
+  }
+
+  .rule-group-nested {
+    margin-left: 0.125rem;
+    padding-left: 0.25rem;
+    border-left: 2px solid color-mix(in oklab, var(--border) 75%, transparent);
+  }
+
+  .rule-group-nested .rule-group-children {
+    padding: 0.375rem;
+  }
+
+  .rule-group-nested .rule-group-footer {
+    padding-inline: 0.375rem;
+    padding-bottom: 0.375rem;
+  }
+
+  .rule-condition {
+    margin-left: 0;
+  }
+
+  @media (min-width: 768px) {
+    .rule-group-nested {
+      margin-left: 0;
+      padding-left: calc(var(--rule-depth) * 12px);
+      border-left: 0;
+    }
+
+    .rule-group-nested .rule-group-children {
+      padding: 0.75rem;
+    }
+
+    .rule-group-nested .rule-group-footer {
+      padding-inline: 0.75rem;
+      padding-bottom: 0.75rem;
+    }
+
+    .rule-condition {
+      margin-left: calc(var(--rule-depth) * 12px);
+    }
+  }
+</style>

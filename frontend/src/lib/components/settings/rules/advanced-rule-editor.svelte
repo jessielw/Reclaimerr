@@ -914,7 +914,8 @@
         checks.
       </p>
       <p class="text-xs text-muted-foreground mt-1">
-        Up to 5 groups total are supported per rule.
+        Up to 10 groups total are supported per rule, with up to 4 levels of
+        nesting.
       </p>
       {#if !hasValidConditions(definition.root)}
         <p class="text-xs text-amber-500 mt-1">
@@ -922,7 +923,7 @@
         </p>
       {/if}
     </div>
-    <div class="rounded-lg border border-border/60 bg-muted/20 p-4 md:p-5">
+    <div class="rounded-lg border border-border/60 bg-muted/20 p-2 md:p-5">
       <RuleNodeEditor
         node={definition.root}
         {targetScope}
