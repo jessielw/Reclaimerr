@@ -1566,6 +1566,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-iso639"
+version = "2026.4.20"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/c8/22c80367213029ea3abc4e7ab6e1ed8545542f98e5db6e1ab4f2973890ad/python_iso639-2026.4.20.tar.gz", hash = "sha256:00570376d24788f889578991bb2ad93c030a014c1d373f64f2ceffe84732a537", size = 173955, upload-time = "2026-04-20T14:15:47.748Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/71/520fbac49c0650aba66093396282e1e4a1315a7242461c21480132a1b0df/python_iso639-2026.4.20-py3-none-any.whl", hash = "sha256:60a380571fafdbcc6190c5c1ee78e217194332cbe3caec76345327712e5a65cb", size = 167842, upload-time = "2026-04-20T14:15:46.308Z" },
+]
+
+[[package]]
 name = "python-multipart"
 version = "0.0.21"
 source = { registry = "https://pypi.org/simple" }
@@ -1704,6 +1713,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "python-dotenv" },
+    { name = "python-iso639" },
     { name = "semver" },
     { name = "slowapi" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -1754,6 +1764,7 @@ requires-dist = [
     { name = "pymdown-extensions", marker = "extra == 'docs'" },
     { name = "pystray", marker = "extra == 'desktop'" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "python-iso639", specifier = ">=2026.4.20" },
     { name = "semver", specifier = ">=3.0.4" },
     { name = "slowapi", specifier = ">=0.1.9" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.49" },

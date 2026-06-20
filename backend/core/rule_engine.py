@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.language import normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database.models import (
     Episode,
@@ -187,6 +188,7 @@ MULTI_VALUE_TEXT_FIELDS = {
     "audio.languages",
     "subtitle.languages",
 }
+LANGUAGE_FIELDS = {"audio.languages", "subtitle.languages"}
 LIBRARY_FIELDS = {"library.id"}
 BOOLEAN_FIELDS = {
     "tmdb.in_collection",
@@ -1319,8 +1321,12 @@ def _matches_operator(
 ) -> bool:
     """Evaluate a single condition operator against the provided actual and expected values."""
     if operator == "exists":
+        if field in LANGUAGE_FIELDS:
+            return bool(_normalized_language_values(actual))
         return _exists(actual)
     if operator == "not_exists":
+        if field in LANGUAGE_FIELDS:
+            return not _normalized_language_values(actual)
         return not _exists(actual)
     if operator == "is_true":
         return actual is True
@@ -1427,10 +1433,18 @@ def _matches_list_operator(
             return not has_all
         return False
 
-    actual_values = {_normalize(value) for value in _as_list(actual) if _exists(value)}
-    expected_values = {
-        _normalize(value) for value in _as_list(expected) if _exists(value)
-    }
+    if field in LANGUAGE_FIELDS:
+        actual_values = _normalized_language_values(actual)
+        expected_values = _normalized_language_values(expected)
+        if not actual_values or not expected_values:
+            return False
+    else:
+        actual_values = {
+            _normalize(value) for value in _as_list(actual) if _exists(value)
+        }
+        expected_values = {
+            _normalize(value) for value in _as_list(expected) if _exists(value)
+        }
     if not expected_values:
         return False
     has_any = bool(actual_values & expected_values)
@@ -1444,6 +1458,14 @@ def _matches_list_operator(
     if operator == "not_contains_all":
         return not has_all
     return False
+
+
+def _normalized_language_values(value: Any) -> set[str]:
+    return {
+        normalized
+        for item in _as_list(value)
+        if (normalized := normalize_language(item)) is not None
+    }
 
 
 def _matches_path_prefix(actual: Any, expected: Any) -> bool:

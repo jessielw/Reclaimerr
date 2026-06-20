@@ -22,6 +22,7 @@ from backend.core.codecs import (
 )
 from backend.core.logger import LOG
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
@@ -950,11 +951,7 @@ class EmbyServiceBase:
                             audio_codec_raw
                         ),
                         audio_title=first_audio.get("DisplayTitle"),
-                        audio_language=(
-                            str(first_audio.get("Language")).lower()
-                            if first_audio.get("Language")
-                            else None
-                        ),
+                        audio_language=normalize_language(first_audio.get("Language")),
                         audio_channels=as_int(first_audio.get("Channels")),
                         audio_channel_layout=first_audio.get("ChannelLayout"),
                         audio_bitrate=as_int(first_audio.get("BitRate")),
@@ -1345,9 +1342,10 @@ class EmbyServiceBase:
                                 if af:
                                     season_audio_families.setdefault(sk, set()).add(af)
                             alang = stream.get("Language")
-                            if alang:
+                            normalized_alang = normalize_language(alang)
+                            if normalized_alang:
                                 season_audio_languages.setdefault(sk, set()).add(
-                                    str(alang).lower()
+                                    normalized_alang
                                 )
                             channels = as_int(stream.get("Channels"))
                             if channels is not None:
@@ -1356,9 +1354,10 @@ class EmbyServiceBase:
                                 )
                         elif stream_type == "subtitle":
                             lang = stream.get("Language")
-                            if lang:
+                            normalized_lang = normalize_language(lang)
+                            if normalized_lang:
                                 season_subtitle_languages.setdefault(sk, set()).add(
-                                    str(lang).lower()
+                                    normalized_lang
                                 )
 
             total_record_count = int(get_data.get("TotalRecordCount", 0) or 0)
@@ -2053,18 +2052,7 @@ class EmbyServiceBase:
 
     @staticmethod
     def _unique_languages(streams: JsonList) -> list[str] | None:
-        langs: list[str] = []
-        seen: set[str] = set()
-        for stream in streams:
-            raw = stream.get("Language")
-            if not raw:
-                continue
-            value = str(raw).strip().lower()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            langs.append(value)
-        return langs or None
+        return normalize_languages([stream.get("Language") for stream in streams])
 
     @staticmethod
     def _is_hdr(stream: JsonDict) -> bool:

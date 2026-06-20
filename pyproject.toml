@@ -19,6 +19,7 @@ dependencies = [
     "pillow>=12.2.0",
     "pydantic-settings>=2.14.0",
     "pyjwt>=2.12.1",
+    "python-iso639>=2026.4.20",
     "python-dotenv>=1.2.2",
     "semver>=3.0.4",
     "slowapi>=0.1.9",

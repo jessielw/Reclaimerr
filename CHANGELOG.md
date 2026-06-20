@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dependency [python-iso639](https://github.com/jacksonllee/iso639)
+
 ### Changed
 
 - Collection mutations are now executed in 100 item batches
@@ -14,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Missing Jellyfin IDs are skipped and logged
 - HTTP failures now include status, method, endpoint, and response context
 - Falsey 404 responses correctly trigger compatibility fallback
+- Improved language handling:
+  - Tags like `en`, `eng`, and case variants now normalize to `eng`
+  - Regional tags like `en-US` and `fr-FR` now normalize to `fra`
+  - Rule missing operator identifies unknown languages
+  - Plex, Jellyfin, Emby, movie, season, audio, and subtitle ingestion now share normalization
+  - Plex requests detailed metadata when lightweight stream metadata lacks languages
 
 ## [0.1.5] - 2026-06-19
 

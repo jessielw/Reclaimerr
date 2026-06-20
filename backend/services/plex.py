@@ -23,6 +23,7 @@ from backend.core.codecs import (
 from backend.core.logger import LOG
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
@@ -935,9 +936,10 @@ class PlexService:
                                 or stream.get("languageTag")
                                 or stream.get("language")
                             )
-                            if alang:
+                            normalized_alang = normalize_language(alang)
+                            if normalized_alang:
                                 season_audio_languages.setdefault(sk, set()).add(
-                                    str(alang).lower()
+                                    normalized_alang
                                 )
                             channels = as_int(stream.get("channels"))
                             if channels is not None:
@@ -950,9 +952,10 @@ class PlexService:
                                 or stream.get("languageTag")
                                 or stream.get("language")
                             )
-                            if lang:
+                            normalized_lang = normalize_language(lang)
+                            if normalized_lang:
                                 season_subtitle_languages.setdefault(sk, set()).add(
-                                    str(lang).lower()
+                                    normalized_lang
                                 )
 
             # watch data per season
@@ -1096,10 +1099,7 @@ class PlexService:
                 if item.get("type") != "movie":
                     continue
                 media_entries = item.get("Media", [])
-                if any(
-                    not (m.get("Part") and m["Part"] and m["Part"][0].get("Stream"))
-                    for m in media_entries
-                ):
+                if any(self._needs_detailed_stream_metadata(m) for m in media_entries):
                     rk = str(item.get("ratingKey", ""))
                     if rk:
                         needs_detail_keys.append(rk)
@@ -1231,18 +1231,10 @@ class PlexService:
                                 audio_codec_raw
                             ),
                             audio_title=first_audio.get("displayTitle"),
-                            audio_language=(
-                                str(
-                                    first_audio.get("languageCode")
-                                    or first_audio.get("languageTag")
-                                    or first_audio.get("language")
-                                ).lower()
-                                if (
-                                    first_audio.get("languageCode")
-                                    or first_audio.get("languageTag")
-                                    or first_audio.get("language")
-                                )
-                                else None
+                            audio_language=normalize_language(
+                                first_audio.get("languageCode")
+                                or first_audio.get("languageTag")
+                                or first_audio.get("language")
                             ),
                             audio_channels=as_int(
                                 first_audio.get("channels")
@@ -2023,22 +2015,37 @@ class PlexService:
 
         We maintain the order and only keep the unique values.
         """
-        langs: list[str] = []
-        seen: set[str] = set()
-        for stream in streams:
-            raw = (
+        return normalize_languages(
+            [
                 stream.get("languageCode")
                 or stream.get("languageTag")
                 or stream.get("language")
-            )
-            if not raw:
-                continue
-            value = str(raw).strip().lower()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            langs.append(value)
-        return langs or None
+                for stream in streams
+            ]
+        )
+
+    @classmethod
+    def _needs_detailed_stream_metadata(cls, media: JsonDict) -> bool:
+        parts = media.get("Part")
+        if not isinstance(parts, list) or not parts:
+            return True
+        first_part = parts[0]
+        if not isinstance(first_part, dict):
+            return True
+        streams = first_part.get("Stream")
+        if not isinstance(streams, list) or not streams:
+            return True
+
+        typed_streams = [stream for stream in streams if isinstance(stream, dict)]
+        for stream_type in {"2", "3"}:
+            matching = [
+                stream
+                for stream in typed_streams
+                if str(stream.get("streamType")) == stream_type
+            ]
+            if matching and cls._unique_languages(matching) is None:
+                return True
+        return False
 
     @staticmethod
     def _extract_legacy_tvdb_id(media: JsonDict) -> str | None:
