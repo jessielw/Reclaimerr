@@ -33,6 +33,7 @@ Use those generated docs for the exact request and response models.
 - `PUT /api/settings/general`
 - `GET /api/settings/services`
 - `POST /api/settings/save/service`
+- `DELETE /api/settings/service/{service_config_id}`
 - `POST /api/settings/notifications/test`
 - `GET /api/settings/oidc`
 
@@ -73,6 +74,10 @@ Use those generated docs for the exact request and response models.
 
 - Most endpoints require authentication.
 - Some endpoints are admin-only, especially settings and task management.
+- Saving an existing service with `enabled: false` does not require the
+  external service to be reachable. Enabling it still performs connection
+  validation.
+- Deleting the active main media server returns a conflict until another main
+  server is assigned.
 - Task execution and file operations are queued when appropriate; the API often
   returns a queued-job response instead of doing the work inline.
-
