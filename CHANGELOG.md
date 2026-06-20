@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] - 2026-06-16
+## [0.1.5] - 2026-06-19
+
+### Changed
+
+- Sonarr/Radarr, media servers, and Tautulli can now be deleted
+  - Main media server still cannot be deleted without swapping it out for another main server first
+  - Radarr/Sonarr deletion cleans ARR references, disables dependent rules, and removes scoped path mappings
+
+### Fixed
+
+- Unable to disable a no longer active service if Reclaimerr couldn't reach a connection to it
+
+## [0.1.4] - 2026-06-19
 
 ### Changed
 
@@ -13,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Substantially improved layout for the rule editor
   - Rules are now in ABC order on the rules page
 
-## [0.1.3] - 2026-06-16
+## [0.1.3] - 2026-06-18
 
 ### Fixed
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,8 +15,17 @@ from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.database import get_db
-from backend.database.models import ServiceConfig, ServiceMediaLibrary, User
-from backend.enums import BackgroundJobType, Service
+from backend.database.models import (
+    BackgroundJob,
+    GeneralSettings,
+    MovieArrRef,
+    ReclaimRule,
+    SeriesArrRef,
+    ServiceConfig,
+    ServiceMediaLibrary,
+    User,
+)
+from backend.enums import BackgroundJobStatus, BackgroundJobType, Service
 from backend.jobs import enqueue_background_job
 from backend.models.jobs import ServiceToggleJobPayload
 from backend.models.settings import (
@@ -134,12 +144,26 @@ async def set_service_settings(
             )
         resolved_api_key = fer_decrypt(existing_config.api_key)
 
-    # test service settings before saving
-    success, error_msg = await service_manager.test_service(
-        data.service_type, data.base_url, resolved_api_key
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail=error_msg)
+    existing_result = await _find_existing_service_config(db, data, service_name)
+    existing_config = existing_result.scalar_one_or_none()
+    if (
+        not data.enabled
+        and data.service_type in MEDIA_SERVERS
+        and ((existing_config and existing_config.is_main) or data.is_main)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot disable the active main media server. Assign a different main server first.",
+        )
+
+    # Enabling requires a verified connection. Disabling is a local configuration
+    # operation and must remain available while the external service is offline.
+    if data.enabled:
+        success, error_msg = await service_manager.test_service(
+            data.service_type, data.base_url, resolved_api_key
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail=error_msg)
 
     # detect if the main server is switching before we write the new config
     main_switched = False
@@ -252,24 +276,68 @@ async def delete_service_settings(
 
     service_type = config.service_type
     config_id = config.id
-
-    await db.execute(sql_delete(ServiceConfig).where(ServiceConfig.id == config_id))
-    await db.commit()
+    affected_rules: list[dict[str, Any]] = []
+    removed_path_mappings = 0
 
     if service_type is Service.RADARR:
-        await service_manager.clear_radarr(config_id)
+        await db.execute(
+            sql_delete(MovieArrRef).where(MovieArrRef.service_config_id == config_id)
+        )
     elif service_type is Service.SONARR:
-        await service_manager.clear_sonarr(config_id)
-    elif service_type is Service.SEERR:
-        await service_manager.clear_seerr()
-    elif service_type is Service.TAUTULLI:
-        await service_manager.clear_tautulli()
-    elif service_type is Service.JELLYFIN:
-        await service_manager.clear_jellyfin()
-    elif service_type is Service.EMBY:
-        await service_manager.clear_emby()
-    elif service_type is Service.PLEX:
-        await service_manager.clear_plex()
+        await db.execute(
+            sql_delete(SeriesArrRef).where(SeriesArrRef.service_config_id == config_id)
+        )
+
+    if service_type in ARR_SERVICES:
+        action_key = (
+            "radarr_service_config_id"
+            if service_type is Service.RADARR
+            else "sonarr_service_config_id"
+        )
+        rules = (await db.execute(select(ReclaimRule))).scalars().all()
+        for rule in rules:
+            action = dict(rule.action or {})
+            if action.get(action_key) != config_id:
+                continue
+            action[action_key] = None
+            rule.action = action
+            rule.enabled = False
+            affected_rules.append({"id": rule.id, "name": rule.name})
+
+    settings = (await db.execute(select(GeneralSettings))).scalars().first()
+    if settings is not None:
+        current_mappings = list(settings.path_mappings or [])
+        retained_mappings = [
+            mapping
+            for mapping in current_mappings
+            if mapping.get("service_config_id") != config_id
+        ]
+        removed_path_mappings = len(current_mappings) - len(retained_mappings)
+        if removed_path_mappings:
+            settings.path_mappings = retained_mappings
+
+    await db.execute(
+        sql_update(BackgroundJob)
+        .where(
+            BackgroundJob.dedupe_key == f"service-toggle-{config_id}",
+            BackgroundJob.status == BackgroundJobStatus.PENDING,
+        )
+        .values(
+            status=BackgroundJobStatus.CANCELED,
+            completed_at=datetime.now(UTC),
+            error_message="Service configuration deleted",
+        )
+    )
+    await db.execute(sql_delete(ServiceConfig).where(ServiceConfig.id == config_id))
+    await db.commit()
+    try:
+        from backend.core.service_runtime import clear_deleted_service_runtime
+
+        await clear_deleted_service_runtime(service_type, config_id)
+    except Exception as e:
+        LOG.warning(
+            f"Service config {config_id} was deleted, but runtime cleanup failed: {e}"
+        )
 
     return {
         "message": f"{service_type.value.title()} configuration deleted",
@@ -277,6 +345,8 @@ async def delete_service_settings(
             "id": config_id,
             "service_type": service_type.value,
             "deleted": True,
+            "affected_rules": affected_rules,
+            "removed_path_mappings": removed_path_mappings,
         },
     }
 

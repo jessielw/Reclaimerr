@@ -377,17 +377,40 @@
     const current = serviceState[serviceId as SettingsTab].config;
     if (!current.id) return;
     try {
-      const response: { message: string } = await delete_api(
-        `/api/settings/service/${current.id}`,
-      );
+      const response: {
+        message: string;
+        data: {
+          affected_rules?: Array<{ id: number; name: string }>;
+          removed_path_mappings?: number;
+        };
+      } = await delete_api(`/api/settings/service/${current.id}`);
       arrInstances[serviceId] = (arrInstances[serviceId] ?? []).filter(
         (x) => x.id !== current.id,
       );
       const next = (arrInstances[serviceId] ?? [])[0];
       if (next?.id) selectArrInstance(serviceId, next.id);
-      else
+      else {
         serviceState[serviceId as SettingsTab] = emptyServiceState(serviceId);
+        serviceState[serviceId as SettingsTab].config.enabled = false;
+      }
       toast.success(response.message);
+      const affectedRules = response.data.affected_rules ?? [];
+      const removedMappings = response.data.removed_path_mappings ?? 0;
+      if (affectedRules.length || removedMappings) {
+        toast.warning(
+          [
+            affectedRules.length
+              ? `${affectedRules.length} dependent rule(s) were disabled`
+              : "",
+            removedMappings
+              ? `${removedMappings} scoped path mapping(s) were removed`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(". "),
+          { duration: 8000 },
+        );
+      }
     } catch (err: any) {
       toast.error(
         `Error deleting ${toTitleCase(serviceId)} instance: ${err.message}`,
@@ -818,6 +841,16 @@
 
             <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
             <div class="flex gap-3 justify-end mt-3">
+              {#if activeTab !== SettingsTab.Radarr && activeTab !== SettingsTab.Sonarr && serviceState[activeTab].config.id}
+                <Button
+                  onclick={() => deleteArrInstance(activeTab)}
+                  disabled={savingService || testingService}
+                  class="cursor-pointer gap-2 bg-destructive/80 hover:bg-destructive text-destructive-foreground"
+                >
+                  <Trash2 class="size-4" />
+                  Delete
+                </Button>
+              {/if}
               <TestButton
                 onclick={() => testServiceConnection(activeTab)}
                 disabled={testingService || savingService}

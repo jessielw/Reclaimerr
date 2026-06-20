@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
   import { onMount } from "svelte";
-  import { get_api, post_api } from "$lib/api";
+  import { delete_api, get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
@@ -12,17 +12,20 @@
   import Save from "@lucide/svelte/icons/save";
   import X from "@lucide/svelte/icons/x";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import Server from "@lucide/svelte/icons/server";
   import { toast } from "svelte-sonner";
   import { SettingsTab } from "$lib/types/shared";
   import * as Select from "$lib/components/ui/select/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import Checkbox from "$lib/components/ui/checkbox/checkbox.svelte";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { MEDIA_SERVERS as SERVERS } from "$lib/types/shared";
 
   type ServerKey = (typeof SERVERS)[number];
 
   type MediaServerConfig = {
+    id: number | null;
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
@@ -83,7 +86,13 @@
   };
 
   const emptyState = (): MediaServerState => ({
-    config: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
+    config: {
+      id: null,
+      enabled: false,
+      baseUrl: "",
+      apiKey: "",
+      isMain: false,
+    },
     apiKeyIsSet: false,
     testing: false,
     saving: false,
@@ -101,6 +110,8 @@
   let syncingMedia = $state(false);
   let confirmServerChange = $state(false);
   let syncBanner = $state<"resync" | "sync" | null>(null);
+  let deleteTarget = $state<ServerKey | null>(null);
+  let deletingServer = $state(false);
 
   // stores each server's enabled state from just before it was promoted to main,
   // so we can restore it if it gets demoted back to linked
@@ -172,12 +183,14 @@
         message: string;
         sync_action: "resync" | "sync" | null;
         data: {
+          id: number;
           service_type: string;
           enabled: boolean;
           base_url: string;
           is_main: boolean;
         };
       } = await post_api("/api/settings/save/service", {
+        id: config.id,
         service_type: serverKey,
         enabled: config.enabled,
         base_url: config.baseUrl,
@@ -185,6 +198,7 @@
         ...(config.apiKey ? { api_key: config.apiKey } : {}),
       });
       servers[serverKey].config = {
+        id: response.data.id,
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
         apiKey: "",
@@ -192,6 +206,7 @@
       };
       // update baseline so subsequent saves detect changes correctly
       originalConfigs[serverKey] = {
+        id: response.data.id,
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
         apiKey: "",
@@ -221,10 +236,40 @@
 
   // track original config for change detection
   let originalConfigs = $state<Record<ServerKey, MediaServerConfig>>({
-    jellyfin: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
-    emby: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
-    plex: { enabled: false, baseUrl: "", apiKey: "", isMain: false },
+    jellyfin: { ...emptyState().config },
+    emby: { ...emptyState().config },
+    plex: { ...emptyState().config },
   });
+
+  const deleteLinkedServer = async () => {
+    const serverKey = deleteTarget;
+    if (!serverKey) return;
+    const configId = servers[serverKey].config.id;
+    if (!configId) return;
+
+    deletingServer = true;
+    try {
+      const response: {
+        message: string;
+        data: { removed_path_mappings?: number };
+      } = await delete_api(`/api/settings/service/${configId}`);
+      servers[serverKey] = emptyState();
+      originalConfigs[serverKey] = { ...emptyState().config };
+      deleteTarget = null;
+      toast.success(response.message);
+      const removedMappings = response.data.removed_path_mappings ?? 0;
+      if (removedMappings) {
+        toast.warning(
+          `${removedMappings} scoped path mapping(s) were removed.`,
+          { duration: 8000 },
+        );
+      }
+    } catch (err: any) {
+      toast.error(`Error deleting ${SERVER_LABELS[serverKey]}: ${err.message}`);
+    } finally {
+      deletingServer = false;
+    }
+  };
 
   // save all servers, prioritizing the main server first
   const saveAll = async () => {
@@ -332,6 +377,7 @@
         Record<
           string,
           {
+            id?: number;
             enabled: boolean;
             is_main: boolean | null;
             base_url: string;
@@ -344,6 +390,7 @@
         const config = rawServices[serverKey];
         if (!config) continue;
         servers[serverKey].config = {
+          id: config.id ?? null,
           enabled: config.enabled,
           baseUrl: config.base_url,
           apiKey: "",
@@ -351,6 +398,7 @@
         };
         // save original config for change detection
         originalConfigs[serverKey] = {
+          id: config.id ?? null,
           enabled: config.enabled,
           baseUrl: config.base_url,
           apiKey: "",
@@ -567,6 +615,17 @@
                 onchange={(e) => handleConfigChange(serverKey, e)}
               />
               <div class="flex gap-2 justify-end">
+                {#if servers[serverKey].config.id}
+                  <Button
+                    size="sm"
+                    class="cursor-pointer gap-2 bg-destructive/80 hover:bg-destructive text-destructive-foreground"
+                    disabled={servers[serverKey].saving || globalSaving}
+                    onclick={() => (deleteTarget = serverKey)}
+                  >
+                    <Trash2 class="size-4" />
+                    Delete
+                  </Button>
+                {/if}
                 <TestButton
                   onclick={() => testServer(serverKey)}
                   disabled={servers[serverKey].testing ||
@@ -661,3 +720,32 @@
     {/if}
   </div>
 {/if}
+
+<AlertDialog.Root
+  open={deleteTarget !== null}
+  onOpenChange={(open) => {
+    if (!open && !deletingServer) deleteTarget = null;
+  }}
+>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete linked media server?</AlertDialog.Title>
+      <AlertDialog.Description>
+        {#if deleteTarget}
+          Permanently delete the {SERVER_LABELS[deleteTarget]} configuration? This
+          cannot be undone.
+        {/if}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel disabled={deletingServer}>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
+        disabled={deletingServer}
+        onclick={deleteLinkedServer}
+        class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+      >
+        {deletingServer ? "Deleting..." : "Delete"}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
