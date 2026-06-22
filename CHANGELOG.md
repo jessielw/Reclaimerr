@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plex, Jellyfin, Emby, movie, season, audio, and subtitle ingestion now share normalization
   - Plex requests detailed metadata when lightweight stream metadata lacks languages
 
+### Fixed
+
+- Dev
+  - Ruff not targeting desktop/scripts
+
 ## [0.1.5] - 2026-06-19
 
 ### Changed

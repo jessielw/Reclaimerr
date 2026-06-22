@@ -65,6 +65,8 @@ include = [
     "backend/core/**/*.py",
     "backend/api/**/*.py",
     "backend/services/**/*.py",
+    "desktop/**/*.py",
+    "scripts/**/*.py",
 ]
 exclude = ["backend/alembic/**/versions/*.py"]
 
