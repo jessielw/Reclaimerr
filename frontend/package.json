@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:rule-dnd": "node --test src/lib/components/settings/rules/rule-tree-dnd.test.js"
   },
   "devDependencies": {
     "@internationalized/date": "^3.12.1",
@@ -15,6 +16,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tailwindcss/vite": "^4.1.18",
     "@tsconfig/svelte": "^5.0.6",
+    "@types/node": "^26.0.0",
     "autoprefixer": "^10.4.23",
     "bits-ui": "^2.18.1",
     "clsx": "^2.1.1",
@@ -24,6 +26,7 @@
     "prettier-plugin-svelte": "^3.4.1",
     "svelte": "^5.48.0",
     "svelte-check": "^4.3.5",
+    "svelte-dnd-action": "^0.9.69",
     "svelte-sonner": "^1.0.7",
     "tailwind-merge": "^3.4.0",
     "tailwind-variants": "^3.2.2",

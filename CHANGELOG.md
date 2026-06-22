@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Dependency [python-iso639](https://github.com/jacksonllee/iso639)
+- Dependency [svelte-dnd-action](https://github.com/isaacHagoel/svelte-dnd-action)
+- Rule conditions and nested groups can be reordered or moved between groups with accessible drag handles
 - Automated protection rule outcome:
   - Rules can create managed protections instead of deletion candidates
   - Managed protections reconcile during cleanup scans and take precedence over candidate rules

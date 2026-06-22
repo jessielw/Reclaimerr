@@ -1,4 +1,9 @@
+<script lang="ts" module>
+  const RULE_DND_CONTEXT = Symbol("rule-dnd-context");
+</script>
+
 <script lang="ts">
+  import { getContext, setContext, untrack } from "svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
@@ -9,10 +14,21 @@
   import MediaServerCollectionPicker from "$lib/components/settings/rules/media-server-collection-picker.svelte";
   import MetadataValuePicker from "$lib/components/settings/rules/metadata-value-picker.svelte";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
+  import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Users from "@lucide/svelte/icons/users";
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import { canMoveRuleNodeToGroup } from "$lib/components/settings/rules/rule-tree-dnd.js";
+  import {
+    dragHandle,
+    dragHandleZone,
+    SHADOW_ITEM_MARKER_PROPERTY_NAME,
+    SHADOW_PLACEHOLDER_ITEM_ID,
+    TRIGGERS,
+    type DndEvent,
+    type Options as DndOptions,
+  } from "svelte-dnd-action";
   import type {
     MediaType,
     RuleCondition,
@@ -49,6 +65,21 @@
     items: FieldConfig[];
   }
 
+  interface RuleDndItem {
+    id: string;
+    node: RuleNode;
+    isDndShadowItem?: boolean;
+  }
+
+  interface RuleDragState {
+    ids: WeakMap<RuleNode, string>;
+    nodesById: Map<string, RuleNode>;
+    nextId: number;
+    activeNode: RuleNode | null;
+    activeSourceGroup: RuleGroup | null;
+    clearScheduled: boolean;
+  }
+
   let {
     node,
     rootNode = node,
@@ -67,6 +98,47 @@
   let mediaServerCollectionPickerOpen = $state(false);
   let originalLanguagePickerOpen = $state(false);
   let originCountryPickerOpen = $state(false);
+
+  const MAX_TOTAL_GROUPS = 10;
+  const MAX_GROUP_DEPTH = 4;
+  const RULE_DND_TYPE = "reclaimerr-rule-node";
+
+  const inheritedDragState = getContext<RuleDragState>(RULE_DND_CONTEXT);
+  const localDragState = $state<RuleDragState>({
+    ids: new WeakMap(),
+    nodesById: new Map(),
+    nextId: 0,
+    activeNode: null,
+    activeSourceGroup: null,
+    clearScheduled: false,
+  });
+  const dragState = inheritedDragState ?? localDragState;
+  if (!inheritedDragState) {
+    setContext(RULE_DND_CONTEXT, dragState);
+  }
+
+  const getNodeId = (ruleNode: RuleNode): string => {
+    const existing = dragState.ids.get(ruleNode);
+    if (existing) return existing;
+
+    dragState.nextId += 1;
+    const id = `rule-node-${dragState.nextId}`;
+    dragState.ids.set(ruleNode, id);
+    dragState.nodesById.set(id, ruleNode);
+    return id;
+  };
+
+  const toDndItems = (children: RuleNode[]): RuleDndItem[] =>
+    children.map((child) => ({
+      id: getNodeId(child),
+      node: child,
+    }));
+
+  const isShadowItem = (item: RuleDndItem): boolean =>
+    item.id === SHADOW_PLACEHOLDER_ITEM_ID ||
+    item[SHADOW_ITEM_MARKER_PROPERTY_NAME] === true;
+
+  let dndItems = $state<RuleDndItem[]>([]);
 
   const operatorLabelMap: Record<RuleConditionOperator, string> = {
     equals: "is",
@@ -1025,9 +1097,6 @@
     return groups;
   });
 
-  const MAX_TOTAL_GROUPS = 10;
-  const MAX_GROUP_DEPTH = 4;
-
   const TMDB_SERIES_STATUSES = [
     "Returning Series",
     "Ended",
@@ -1049,6 +1118,10 @@
 
   const fieldLabel = (value: string) =>
     fields.find((f) => f.value === value)?.label ?? value;
+  const ruleNodeLabel = (ruleNode: RuleNode) =>
+    ruleNode.type === "group"
+      ? `${ruleNode.op.toUpperCase()} group`
+      : `${fieldLabel(ruleNode.field)} condition`;
   const isFieldCompatibleForScope = (fieldValue: string) =>
     SCOPE_FIELD_VALUES[targetScope].has(fieldValue);
   const operatorLabel = (value: RuleConditionOperator) =>
@@ -1099,6 +1172,69 @@
       return `Max nesting depth of ${MAX_GROUP_DEPTH}`;
     return undefined;
   };
+
+  const canAcceptActiveNode = (): boolean =>
+    node.type === "group" &&
+    canMoveRuleNodeToGroup(dragState.activeNode, node, depth, MAX_GROUP_DEPTH);
+
+  const dndOptions = $derived.by(
+    (): DndOptions<RuleDndItem> => ({
+      items: dndItems,
+      type: RULE_DND_TYPE,
+      flipDurationMs: 150,
+      dropFromOthersDisabled:
+        dragState.activeNode !== null && !canAcceptActiveNode(),
+      dropTargetClasses: ["rule-drop-target"],
+      delayTouchStart: 120,
+      useCursorForDetection: true,
+    }),
+  );
+
+  const handleDndConsider = (event: CustomEvent<DndEvent<RuleDndItem>>) => {
+    if (node.type !== "group") return;
+
+    if (event.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
+      dragState.activeNode =
+        dragState.nodesById.get(event.detail.info.id) ?? null;
+      dragState.activeSourceGroup = node;
+    }
+    dndItems = event.detail.items;
+  };
+
+  const scheduleDragStateClear = () => {
+    if (dragState.clearScheduled) return;
+    dragState.clearScheduled = true;
+    queueMicrotask(() => {
+      dragState.activeNode = null;
+      dragState.activeSourceGroup = null;
+      dragState.clearScheduled = false;
+    });
+  };
+
+  const handleDndFinalize = (event: CustomEvent<DndEvent<RuleDndItem>>) => {
+    if (node.type !== "group") return;
+    if (
+      dragState.activeSourceGroup !== node &&
+      dragState.activeNode !== null &&
+      !canAcceptActiveNode()
+    ) {
+      scheduleDragStateClear();
+      return;
+    }
+
+    dndItems = event.detail.items;
+    node.children = dndItems
+      .filter((item) => !isShadowItem(item))
+      .map((item) => item.node);
+    onChange();
+    scheduleDragStateClear();
+  };
+
+  $effect(() => {
+    if (node.type !== "group" || dragState.activeNode !== null) return;
+    const children = node.children;
+    dndItems = untrack(() => toDndItems(children));
+  });
 
   // mutations
   const ensureValidOperator = (c: RuleCondition) => {
@@ -1183,8 +1319,8 @@
     onChange();
   };
 
-  const removeChild = (group: RuleGroup, index: number) => {
-    group.children = group.children.filter((_, i) => i !== index);
+  const removeChild = (group: RuleGroup, child: RuleNode) => {
+    group.children = group.children.filter((item) => item !== child);
     onChange();
   };
 
@@ -1278,6 +1414,18 @@
       <div
         class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5 border-b border-border/60"
       >
+        {#if onRemove}
+          <button
+            type="button"
+            use:dragHandle
+            aria-label={`Move ${ruleNodeLabel(node)}`}
+            title="Drag to move this group"
+            class="rule-drag-handle flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <GripVertical class="size-4" />
+          </button>
+        {/if}
+
         <!-- AND / OR toggle -->
         <div
           class="flex items-center rounded-md border border-border overflow-hidden shrink-0"
@@ -1322,18 +1470,40 @@
       </div>
 
       <!-- children -->
-      <div class="rule-group-children p-2 md:p-3 space-y-2">
-        {#each node.children as child, index}
-          <Self
-            node={child}
-            {rootNode}
-            depth={depth + 1}
-            {targetScope}
-            {pathPickerMediaType}
-            {pathPickerLibraryIds}
-            {onChange}
-            onRemove={() => removeChild(node, index)}
-          />
+      <div
+        use:dragHandleZone={dndOptions}
+        onconsider={handleDndConsider}
+        onfinalize={handleDndFinalize}
+        aria-label={`Items in ${ruleNodeLabel(node)}`}
+        class:rule-drop-disabled={dragState.activeNode !== null &&
+          !canAcceptActiveNode()}
+        class="rule-group-children p-2 md:p-3 space-y-2"
+      >
+        {#each dndItems as item (item.id)}
+          <div
+            class:rule-dnd-shadow={isShadowItem(item)}
+            class="rule-dnd-item"
+            aria-label={`Move ${ruleNodeLabel(item.node)}`}
+          >
+            {#if isShadowItem(item)}
+              <div
+                class="rule-drop-placeholder rounded-md border-2 border-dashed border-primary/60 bg-primary/10 px-3 py-4 text-center text-xs font-medium text-primary"
+              >
+                Drop here
+              </div>
+            {:else}
+              <Self
+                node={item.node}
+                {rootNode}
+                depth={depth + 1}
+                {targetScope}
+                {pathPickerMediaType}
+                {pathPickerLibraryIds}
+                {onChange}
+                onRemove={() => removeChild(node, item.node)}
+              />
+            {/if}
+          </div>
         {/each}
       </div>
 
@@ -1380,9 +1550,21 @@
 {:else}
   <!-- condition row -->
   <div
-    class={`rule-condition rounded-md border border-border/70 px-2 py-2 md:px-3 md:py-2.5 ${conditionBg(depth)}`}
+    class={`rule-condition relative rounded-md border border-border/70 py-2 pr-2 pl-10 md:py-2.5 md:pr-3 md:pl-11 ${conditionBg(depth)}`}
     style={`--rule-depth: ${depth}`}
   >
+    {#if onRemove}
+      <button
+        type="button"
+        use:dragHandle
+        aria-label={`Move ${ruleNodeLabel(node)}`}
+        title="Drag to move this condition"
+        class="rule-drag-handle absolute top-2 left-1.5 flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:top-2.5 md:left-2"
+      >
+        <GripVertical class="size-4" />
+      </button>
+    {/if}
+
     <!--
       Layout strategy (attempt to keep things nice):
       - stack vertically on mobile (flex-col)
@@ -1665,6 +1847,44 @@
 {/if}
 
 <style>
+  .rule-drag-handle {
+    touch-action: none;
+    user-select: none;
+  }
+
+  .rule-group-children {
+    min-height: 2rem;
+    transition:
+      outline-color 120ms ease,
+      background-color 120ms ease,
+      opacity 120ms ease;
+  }
+
+  .rule-group-children:empty::after {
+    display: block;
+    padding: 0.75rem;
+    border: 1px dashed color-mix(in oklab, var(--border) 80%, transparent);
+    border-radius: 0.375rem;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    text-align: center;
+    content: "Drop rule nodes here";
+  }
+
+  .rule-drop-disabled {
+    opacity: 0.55;
+  }
+
+  :global(.rule-drop-target) {
+    outline: 2px solid color-mix(in oklab, var(--primary) 65%, transparent);
+    outline-offset: -2px;
+    background-color: color-mix(in oklab, var(--primary) 8%, transparent);
+  }
+
+  .rule-dnd-shadow {
+    opacity: 0.9;
+  }
+
   .rule-group-root {
     padding-left: 0;
   }
