@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -59,6 +59,7 @@ class DiscoveredMediaUser:
     email: str | None
     display_name: str | None
     raw: dict[str, Any]
+    local_role: UserRole = UserRole.USER
 
 
 class MediaAuthError(Exception):
@@ -336,6 +337,7 @@ def _build_discovered_user(
     email: str | None,
     display_name: str | None,
     raw: dict[str, Any],
+    local_role: UserRole = UserRole.USER,
 ) -> DiscoveredMediaUser:
     normalized_username = normalize_username(username or display_name or email or "")
     if not source_user_id or not normalized_username:
@@ -350,7 +352,19 @@ def _build_discovered_user(
         email=normalize_email(email),
         display_name=display_name or username or source_user_id,
         raw=raw,
+        local_role=local_role,
     )
+
+
+def _media_policy_bool(policy: object, key: str) -> bool:
+    if not isinstance(policy, Mapping):
+        return False
+    value = policy.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
 async def authenticate_emby_family_credentials(
@@ -390,13 +404,15 @@ async def authenticate_emby_family_credentials(
         if not isinstance(user_payload, dict):
             raise MediaAuthProviderError("Media server auth response is missing user")
 
-        is_disabled = bool(
-            (user_payload.get("Policy") or {}).get("IsDisabled")
-            if isinstance(user_payload.get("Policy"), dict)
-            else False
-        )
+        policy = user_payload.get("Policy")
+        is_disabled = _media_policy_bool(policy, "IsDisabled")
         if is_disabled:
             raise MediaAuthAccessDeniedError("Media server account is disabled")
+        local_role = (
+            UserRole.ADMIN
+            if _media_policy_bool(policy, "IsAdministrator")
+            else UserRole.USER
+        )
 
         source_user_id = str(user_payload.get("Id") or "").strip()
         display_name = str(user_payload.get("Name") or "").strip() or None
@@ -419,6 +435,7 @@ async def authenticate_emby_family_credentials(
                 "auth_user": user_payload,
                 "provider": provider.service_type.value,
             },
+            local_role=local_role,
         )
 
 
@@ -902,7 +919,7 @@ async def resolve_or_create_user_for_identity(
         password_hash="",
         email=identity.email,
         display_name=_display_name(identity.display_name, local_username),
-        role=UserRole.USER,
+        role=identity.local_role,
         permissions=[Permission.REQUEST.value],
         is_active=True,
         require_password_change=False,

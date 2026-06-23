@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playback-history provider refreshes now decrypt stored service API keys, use
   Tautulli's incremental history date filter, and redact API keys from provider
   HTTP errors.
+- New Jellyfin/Emby media-login users now inherit admin role on first
+  provisioning when the media server reports them as administrators.
 - Dev
   - Ruff not targeting desktop/scripts
 

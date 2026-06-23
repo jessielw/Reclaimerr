@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import Response
+from niquests.exceptions import HTTPError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -18,6 +20,8 @@ from backend.models.auth import ChangePasswordRequest, MediaIdentityLinkRequest
 from backend.services.admin_notices import upsert_singleton_notice
 from backend.services.media_auth import (
     DiscoveredMediaUser,
+    MediaAuthProvider,
+    authenticate_emby_family_credentials,
     media_auth_conflict_notice_key_for_source,
     persist_plex_identity_token,
     resolve_or_create_user_for_identity,
@@ -54,6 +58,41 @@ def _new_service_config(
         api_key="key",
         enabled=enabled,
     )
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        json_data: dict | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self._json_data = json_data
+        self.content = b"json" if json_data is not None else b""
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise HTTPError(f"{self.status_code} error")
+
+    def json(self) -> dict:
+        if self._json_data is None:
+            raise ValueError("No JSON payload")
+        return self._json_data
+
+
+class _FakeSession:
+    def __init__(self, responder: Callable[..., _FakeResponse]) -> None:
+        self._responder = responder
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs) -> _FakeResponse:
+        return self._responder(url, **kwargs)
 
 
 def test_change_password_allows_passwordless_user_without_old_password() -> None:
@@ -159,6 +198,134 @@ def test_resolve_or_create_user_aggregates_case_insensitive_usernames() -> None:
             )
             assert len(identities) == 2
             assert all(identity.user_id == local_user.id for identity in identities)
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_authenticate_emby_family_credentials_sets_admin_role(monkeypatch) -> None:
+    async def run() -> None:
+        provider = MediaAuthProvider(
+            service_config_id=42,
+            service_type=Service.JELLYFIN,
+            name="jelly-main",
+            base_url="https://jellyfin.example.com",
+            auth_mode="credentials",
+        )
+
+        def responder(url: str, **_kwargs) -> _FakeResponse:
+            assert url == "https://jellyfin.example.com/Users/AuthenticateByName"
+            return _FakeResponse(
+                json_data={
+                    "User": {
+                        "Id": "jf-admin",
+                        "Name": "Jelly Admin",
+                        "Username": "jellyadmin",
+                        "Policy": {
+                            "IsAdministrator": True,
+                            "IsDisabled": False,
+                        },
+                    }
+                }
+            )
+
+        monkeypatch.setattr(
+            "backend.services.media_auth.niquests.AsyncSession",
+            lambda: _FakeSession(responder),
+        )
+
+        identity = await authenticate_emby_family_credentials(
+            provider=provider,
+            username="jellyadmin",
+            password="secret",
+        )
+
+        assert identity.source_user_id == "jf-admin"
+        assert identity.local_role is UserRole.ADMIN
+
+    asyncio.run(run())
+
+
+def test_media_auth_new_user_uses_provider_role_and_existing_roles_are_preserved() -> (
+    None
+):
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            service = _new_service_config(
+                service_type=Service.JELLYFIN,
+                name="jelly-main",
+            )
+            existing_user = _new_user("existing_user", role=UserRole.USER)
+            existing_admin = _new_user("existing_admin", role=UserRole.ADMIN)
+            db_session.add_all([service, existing_user, existing_admin])
+            await db_session.commit()
+            await db_session.refresh(service)
+            await db_session.refresh(existing_user)
+            await db_session.refresh(existing_admin)
+
+            new_admin_identity = DiscoveredMediaUser(
+                source_service=Service.JELLYFIN,
+                source_service_config_id=service.id,
+                source_service_name=service.name,
+                source_user_id="jf-admin-new",
+                username="new_admin",
+                username_normalized="new_admin",
+                email=None,
+                display_name="New Admin",
+                raw={"source": "jellyfin"},
+                local_role=UserRole.ADMIN,
+            )
+            created = await resolve_or_create_user_for_identity(
+                db_session,
+                identity=new_admin_identity,
+            )
+            assert created.role is UserRole.ADMIN
+
+            promoted_identity = DiscoveredMediaUser(
+                source_service=Service.JELLYFIN,
+                source_service_config_id=service.id,
+                source_service_name=service.name,
+                source_user_id="jf-existing-user",
+                username="existing_user",
+                username_normalized="existing_user",
+                email=None,
+                display_name="Existing User",
+                raw={"source": "jellyfin"},
+                local_role=UserRole.ADMIN,
+            )
+            preserved_user = await resolve_or_create_user_for_identity(
+                db_session,
+                identity=promoted_identity,
+            )
+            assert preserved_user.id == existing_user.id
+            assert preserved_user.role is UserRole.USER
+
+            demoted_identity = DiscoveredMediaUser(
+                source_service=Service.JELLYFIN,
+                source_service_config_id=service.id,
+                source_service_name=service.name,
+                source_user_id="jf-existing-admin",
+                username="existing_admin",
+                username_normalized="existing_admin",
+                email=None,
+                display_name="Existing Admin",
+                raw={"source": "jellyfin"},
+                local_role=UserRole.USER,
+            )
+            preserved_admin = await resolve_or_create_user_for_identity(
+                db_session,
+                identity=demoted_identity,
+            )
+            assert preserved_admin.id == existing_admin.id
+            assert preserved_admin.role is UserRole.ADMIN
 
         await engine.dispose()
 
