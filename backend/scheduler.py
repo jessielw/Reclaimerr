@@ -66,6 +66,18 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "enabled": True,
     },
     {
+        "task": Task.REFRESH_PLAYBACK_HISTORY,
+        "description": (
+            "Refreshes durable playback history from Playback Reporting and "
+            "Tautulli without running a full media sync"
+        ),
+        "schedule_type": ScheduleType.MANUAL,
+        "schedule_value": "",
+        "default_schedule_type": ScheduleType.MANUAL,
+        "default_schedule_value": "",
+        "enabled": True,
+    },
+    {
         "task": Task.RESYNC_MEDIA,
         "description": (
             "Resynchronizes media from connected media servers (deletes and "

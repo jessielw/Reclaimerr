@@ -71,6 +71,7 @@ class Task(StrEnum):
     CHECK_APP_UPDATES = auto()
     IMDB_RATINGS_REFRESH = auto()
     ANILIST_RATINGS_REFRESH = auto()
+    REFRESH_PLAYBACK_HISTORY = auto()
 
     def friendly_name(self) -> str:
         return self.name.replace("_", " ").title()
