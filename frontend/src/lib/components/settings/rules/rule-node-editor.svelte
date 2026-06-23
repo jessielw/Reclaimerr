@@ -749,6 +749,20 @@
       defaultOperator: "is_true",
     },
     {
+      value: "sonarr.latest_season_has_unaired_episodes",
+      label: "Latest season has unaired episodes",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "sonarr.latest_season_has_finale",
+      label: "Latest season has finale",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "seerr.requested",
       label: "Seerr requested",
       kind: "boolean",
@@ -869,6 +883,8 @@
       "series.status",
       "series.library_season_count",
       "series.tmdb_season_count",
+      "sonarr.latest_season_has_unaired_episodes",
+      "sonarr.latest_season_has_finale",
       "subtitle.languages",
       "tmdb.days_since_first_air_date",
       "tmdb.days_since_last_air_date",
@@ -1056,6 +1072,8 @@
         return "Subtitle";
       case "arr":
         return "Arr";
+      case "sonarr":
+        return "Sonarr";
       case "seerr":
         return "Seerr";
       case "disk":

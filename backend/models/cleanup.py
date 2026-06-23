@@ -88,6 +88,8 @@ class RulePreviewMatchMetadata:
     source_media_count: int = 0
     skipped_favorites_count: int = 0
     skipped_protected_count: int = 0
+    sonarr_unavailable_count: int = 0
+    sonarr_error: str | None = None
     matched_count: int = 0
 
 

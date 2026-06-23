@@ -556,21 +556,28 @@ class SonarrClient:
                 f"Failed to delete season {season_number} files for series {series_id} (status: {status_code})"
             )
 
-    async def get_episodes(self, series_id: int) -> list[dict[str, object]]:
-        """Get all episodes for a series from Sonarr.
+    async def get_episodes(
+        self, series_id: int, season_number: int | None = None
+    ) -> list[dict[str, object]]:
+        """Get episodes for a series, optionally limited to one season.
 
         Args:
             series_id: Sonarr series ID
+            season_number: Optional Sonarr season number
 
         Returns:
             List of episode dicts
         """
+        params: dict[str, int] = {"seriesId": series_id}
+        if season_number is not None:
+            params["seasonNumber"] = season_number
         status_code, data = await self._make_request(
-            "GET", "episode", params={"seriesId": series_id}, timeout=60
+            "GET", "episode", params=params, timeout=60
         )
         if not isinstance(data, list):
             raise ValueError(
-                f"Invalid response getting episodes for series {series_id} (status: {status_code})"
+                "Invalid response getting episodes for "
+                f"series {series_id}, season {season_number} (status: {status_code})"
             )
         return [dict(episode) for episode in data if isinstance(episode, Mapping)]
 

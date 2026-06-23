@@ -1046,6 +1046,8 @@ async def preview_rule_matches(
             source_media_count=preview_result.metadata.source_media_count,
             skipped_favorites_count=preview_result.metadata.skipped_favorites_count,
             skipped_protected_count=preview_result.metadata.skipped_protected_count,
+            sonarr_unavailable_count=preview_result.metadata.sonarr_unavailable_count,
+            sonarr_error=preview_result.metadata.sonarr_error,
             matched_count=preview_result.metadata.matched_count,
         ),
     )

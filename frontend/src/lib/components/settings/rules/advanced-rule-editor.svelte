@@ -1207,6 +1207,16 @@
           />
         {/if}
       </div>
+      {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
+        <Notice type="warning" title="Sonarr Data Unavailable">
+          Sonarr episode-state conditions could not be evaluated for
+          {previewData.metadata.sonarr_unavailable_count}
+          series. Those unknown values did not match.
+          {#if previewData.metadata.sonarr_error}
+            {previewData.metadata.sonarr_error}
+          {/if}
+        </Notice>
+      {/if}
       <div class="h-[55vh] overflow-y-auto overflow-x-hidden pr-2">
         {#if previewError}
           <Notice type="error" title="Preview Failed">

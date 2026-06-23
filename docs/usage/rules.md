@@ -159,6 +159,54 @@ episode rules and are inherited from the parent series.
 These values may differ when the local library contains only part of a series,
 TMDB metadata has changed, or specials are present.
 
+### Sonarr Episode State
+
+These fields are available only to whole-series rules:
+
+| Field                              | Meaning                                                         |
+| ---------------------------------- | --------------------------------------------------------------- |
+| Latest season has unaired episodes | The latest regular Sonarr season has an episode airing later    |
+| Latest season has finale           | The latest regular season has a `season` or `series` finale tag |
+
+Reclaimerr ignores season 0 and checks only the highest-numbered regular
+season. This keeps scans efficient while covering upcoming seasons and split
+cours. Episode monitoring status is not considered.
+
+Sonarr's series statistics may provide a future `nextAiring` value. Reclaimerr
+uses that value to prove that an unaired episode exists without requesting the
+season's episodes. A missing `nextAiring` value cannot prove that no future
+episode exists, so Reclaimerr requests only the latest season's episodes when
+the rule result still depends on Sonarr data.
+
+Episode-state data is loaded only when an enabled rule uses one of these
+fields. Requests are cached for the current preview or cleanup scan and are
+limited to eight concurrent episode requests per Sonarr instance.
+
+Unavailable, empty, or malformed Sonarr data is treated as unknown. Unknown
+values match neither `is true`, `is false`, `exists`, nor `does not exist`.
+They cannot create a cleanup candidate. Existing automated protections are
+preserved for the affected rule and series until Sonarr can be evaluated
+again.
+
+When a series is mapped to multiple Sonarr instances, `true` wins if any
+instance proves it. `false` is returned only when every mapped instance
+successfully reports false. Otherwise the value remains unknown.
+
+Typical protection rules are:
+
+```text
+Latest season has unaired episodes is true
+```
+
+```text
+Latest season has finale is false
+```
+
+The finale field depends on Sonarr's metadata and may remain false while a
+season is incomplete or its finale metadata has not been updated. Combine it
+with status, age, watch-history, or library conditions and inspect the preview
+before enabling the rule.
+
 ## Validation and Editing
 
 - Operator choices are limited to operators supported by the selected field.

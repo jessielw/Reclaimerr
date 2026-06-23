@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - movie.version_count
   - series.tmdb_season_count
   - series.library_season_count
+  - sonarr.latest_season_has_unaired_episodes
+  - sonarr.latest_season_has_finale
   - Rule Documentation:
     - Target scopes and condition groups
     - Operator and missing-metadata behavior
@@ -38,16 +40,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Plex/Jellyfin/Emby bitrate handling
     - Movie version-count warning
     - TMDB versus library season counts
+    - Sonarr latest-season episode-state rules
     - Recommended preview workflow
     - Complete rule API endpoint list
 
 ### Changed
 
 - Collection mutations are now executed in 100 item batches
+- Sonarr episode-state rules inspect only the latest regular season, reuse
+  per-scan results, and limit episode requests to eight concurrent calls per
+  Sonarr instance
 - Membership queries paginate past 1000 items
 - Missing Jellyfin IDs are skipped and logged
 - HTTP failures now include status, method, endpoint, and response context
 - Falsey 404 responses correctly trigger compatibility fallback
+- Sonarr series metadata is fetched once per instance and reused across rule
+  evaluation within each cleanup scan or preview
 - Improved language handling:
   - Tags like `en`, `eng`, and case variants now normalize to `eng`
   - Regional tags like `en-US` and `fr-FR` now normalize to `fra`

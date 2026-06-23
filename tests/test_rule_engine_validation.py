@@ -66,6 +66,18 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             (TARGET_MOVIE_VERSION, "subtitle.has_forced", "is_true", None),
             (TARGET_MOVIE_VERSION, "movie.version_count", "greater_than", 1),
             (TARGET_SERIES, "series.tmdb_season_count", "greater_than", 2),
+            (
+                TARGET_SERIES,
+                "sonarr.latest_season_has_unaired_episodes",
+                "is_true",
+                None,
+            ),
+            (
+                TARGET_SERIES,
+                "sonarr.latest_season_has_finale",
+                "is_false",
+                None,
+            ),
             (TARGET_SEASON, "series.library_season_count", "greater_than", 2),
             (TARGET_EPISODE, "tmdb.original_language", "contains_any", ["jpn"]),
         ]
@@ -85,6 +97,19 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             validate_rule_definition(
                 _definition("video.bitrate_kbps", "greater_than", 8000),
                 target_scope=TARGET_SERIES,
+            )
+
+    def test_rejects_sonarr_episode_state_for_non_series_scope(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Rule field\\(s\\) not available for target_scope 'season'",
+        ):
+            validate_rule_definition(
+                _definition(
+                    "sonarr.latest_season_has_unaired_episodes",
+                    "is_true",
+                ),
+                target_scope=TARGET_SEASON,
             )
 
     def test_accepts_nested_and_or_groups(self) -> None:

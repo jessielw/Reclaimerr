@@ -11,6 +11,7 @@ from backend.database.models import AdminNotice, ReclaimRule, ServiceMediaLibrar
 
 NOTICE_KEY_UPDATE_AVAILABLE = "update_available"
 NOTICE_KEY_SEERR_RULE_SKIP = "seerr_rules_skipped"
+NOTICE_KEY_SONARR_RULE_DATA = "sonarr_rule_data_unavailable"
 NOTICE_KEY_STALE_LIBRARY_IDS = "stale_library_ids"
 
 
@@ -288,6 +289,37 @@ async def set_seerr_rule_skip_notice(
 async def clear_seerr_rule_skip_notice(db: AsyncSession) -> None:
     """Resolves the notice about Seerr dependent rules being skipped."""
     await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_SEERR_RULE_SKIP)
+
+
+async def set_sonarr_rule_data_notice(
+    db: AsyncSession,
+    *,
+    unavailable_series: int,
+    reason: str,
+) -> None:
+    """Create or update a notice for unavailable Sonarr rule data."""
+    await upsert_singleton_notice(
+        db,
+        dedupe_key=NOTICE_KEY_SONARR_RULE_DATA,
+        kind="sonarr_rule_data_unavailable",
+        severity="warning",
+        title="Sonarr rule data is unavailable",
+        message=(
+            f"The latest cleanup scan could not evaluate Sonarr episode-state "
+            f"rules for {unavailable_series} series: {reason}."
+        ),
+        action_label="Go to Settings",
+        action_href="#/settings",
+        context_json={
+            "unavailable_series": unavailable_series,
+            "reason": reason,
+        },
+    )
+
+
+async def clear_sonarr_rule_data_notice(db: AsyncSession) -> None:
+    """Resolve the notice for unavailable Sonarr rule data."""
+    await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_SONARR_RULE_DATA)
 
 
 async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:

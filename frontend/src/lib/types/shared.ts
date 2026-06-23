@@ -907,6 +907,8 @@ export interface RulePreviewMetadata {
   source_media_count: number;
   skipped_favorites_count: number;
   skipped_protected_count: number;
+  sonarr_unavailable_count: number;
+  sonarr_error: string | null;
   matched_count: number;
 }
 

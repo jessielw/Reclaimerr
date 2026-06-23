@@ -1,5 +1,7 @@
+import asyncio
 import shutil
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
@@ -13,14 +15,19 @@ from backend.core.logger import LOG
 from backend.core.rule_engine import (
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
+    RULE_VALUE_UNAVAILABLE,
+    SONARR_RULE_FIELDS,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
     DiskStatsResolver,
     SeerrRequestResolver,
+    SonarrEpisodeStateResolver,
+    SonarrRuleValue,
     collect_rule_conditions,
     evaluate_advanced_rule,
+    evaluate_advanced_rule_state,
     normalize_rule_outcome,
     normalize_rule_target,
 )
@@ -74,7 +81,9 @@ from backend.models.cleanup import (
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.admin_notices import (
     clear_seerr_rule_skip_notice,
+    clear_sonarr_rule_data_notice,
     set_seerr_rule_skip_notice,
+    set_sonarr_rule_data_notice,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.notifications import (
@@ -100,6 +109,48 @@ __all__ = [
 
 ArrDeleteFallback: TypeAlias = Literal["unmonitor", "remove_if_empty"]
 ArrDeleteAction: TypeAlias = Literal["delete", "unmonitor", "remove_if_empty"]
+SonarrProtectionPreserveKey: TypeAlias = tuple[int, int]
+
+SONARR_UNAIRED_FIELD = "sonarr.latest_season_has_unaired_episodes"
+SONARR_FINALE_FIELD = "sonarr.latest_season_has_finale"
+SONARR_EPISODE_FETCH_CONCURRENCY = 8
+
+
+@dataclass(slots=True)
+class _SonarrRuleDataResult:
+    unavailable_series_ids: set[int]
+    preserve_protection_keys: set[SonarrProtectionPreserveKey]
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class _SonarrRefEpisodeState:
+    config_id: int
+    arr_series_id: int
+    latest_season_number: int | None = None
+    has_unaired_episodes: SonarrRuleValue = RULE_VALUE_UNAVAILABLE
+    has_finale: SonarrRuleValue = RULE_VALUE_UNAVAILABLE
+
+
+class _SonarrSeriesSnapshot:
+    """Deduplicate bulk Sonarr series requests within one rule evaluation run."""
+
+    __slots__ = ("clients", "_series_tasks")
+
+    def __init__(self) -> None:
+        clients = service_manager.sonarr_clients()
+        if not clients and service_manager.sonarr:
+            clients = {0: service_manager.sonarr}
+        self.clients = clients
+        self._series_tasks: dict[int, asyncio.Task[list[Any]]] = {}
+
+    async def get_all_series(self, client: Any) -> list[Any]:
+        client_key = id(client)
+        task = self._series_tasks.get(client_key)
+        if task is None:
+            task = asyncio.create_task(client.get_all_series())
+            self._series_tasks[client_key] = task
+        return await task
 
 
 def _build_reclaim_history_attributes(
@@ -557,8 +608,15 @@ async def collect_rule_preview_matches_with_metadata(
         arr_entries=await _load_arr_disk_space(),
         path_mappings=await _load_path_mappings(),
     ).activate()
-    await _refresh_arr_tags_for_rules(list(rules))
-    await _refresh_arr_monitoring_for_rules(list(rules))
+    sonarr_series_snapshot = _SonarrSeriesSnapshot()
+    await _refresh_arr_tags_for_rules(
+        list(rules),
+        sonarr_series_snapshot=sonarr_series_snapshot,
+    )
+    await _refresh_arr_monitoring_for_rules(
+        list(rules),
+        sonarr_series_snapshot=sonarr_series_snapshot,
+    )
     await _activate_seerr_request_resolver_for_rules(
         db,
         list(rules),
@@ -567,6 +625,13 @@ async def collect_rule_preview_matches_with_metadata(
     )
 
     metadata = RulePreviewMatchMetadata()
+    sonarr_result = await _activate_sonarr_episode_state_for_rules(
+        db,
+        list(rules),
+        sonarr_series_snapshot=sonarr_series_snapshot,
+    )
+    metadata.sonarr_unavailable_count = len(sonarr_result.unavailable_series_ids)
+    metadata.sonarr_error = sonarr_result.error
     is_protection_preview = bool(rules) and all(
         normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT for rule in rules
     )
@@ -630,8 +695,10 @@ async def _reconcile_rule_managed_protections(
     rules: list[ReclaimRule],
     *,
     preserve_rule_ids: set[int] | None = None,
+    preserve_rule_series_keys: set[SonarrProtectionPreserveKey] | None = None,
 ) -> tuple[int, int, int]:
     preserve_rule_ids = preserve_rule_ids or set()
+    preserve_rule_series_keys = preserve_rule_series_keys or set()
     records = await _collect_rule_match_records(
         db,
         rules,
@@ -718,8 +785,15 @@ async def _reconcile_rule_managed_protections(
             updated += 1
 
     for row in existing.values():
-        if row.source_rule_id not in preserve_rule_ids:
-            rows_to_delete.append(row)
+        if row.source_rule_id in preserve_rule_ids:
+            continue
+        if (
+            row.source_rule_id is not None
+            and row.series_id is not None
+            and (row.source_rule_id, row.series_id) in preserve_rule_series_keys
+        ):
+            continue
+        rows_to_delete.append(row)
 
     for row in rows_to_delete:
         await db.delete(row)
@@ -814,7 +888,11 @@ def _collect_arr_item_ids_by_label(
     return label_to_arr_ids
 
 
-async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
+async def _refresh_arr_tags_for_rules(
+    rules: list[ReclaimRule],
+    *,
+    sonarr_series_snapshot: _SonarrSeriesSnapshot | None = None,
+) -> None:
     """Refresh arr_tags on Movie/Series rows for tag labels referenced by active rules.
 
     Steps:
@@ -931,9 +1009,8 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####
     if series_tag_labels:
-        sonarr_clients = service_manager.sonarr_clients()
-        if not sonarr_clients and service_manager.sonarr:
-            sonarr_clients = {0: service_manager.sonarr}
+        sonarr_series_snapshot = sonarr_series_snapshot or _SonarrSeriesSnapshot()
+        sonarr_clients = sonarr_series_snapshot.clients
 
         if sonarr_clients:
             series_label_additions: dict[int, set[str]] = {}
@@ -958,7 +1035,9 @@ async def _refresh_arr_tags_for_rules(rules: list[ReclaimRule]) -> None:
 
             for config_id, sonarr_client in sonarr_clients.items():
                 try:
-                    all_series = await sonarr_client.get_all_series()
+                    all_series = await sonarr_series_snapshot.get_all_series(
+                        sonarr_client
+                    )
                     tag_list = await sonarr_client.get_tags()
                 except Exception as e:
                     sonarr_failed_config_ids.add(config_id)
@@ -1024,7 +1103,305 @@ def _rules_use_field(rules: list[ReclaimRule], field: str) -> bool:
     return any(collect_rule_conditions(rule.definition, field=field) for rule in rules)
 
 
-async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
+def _rule_uses_sonarr_episode_fields(rule: ReclaimRule) -> bool:
+    return any(
+        collect_rule_conditions(rule.definition, field=field)
+        for field in SONARR_RULE_FIELDS
+    )
+
+
+def _parse_sonarr_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return ensure_utc(parsed)
+
+
+def _sonarr_episode_season_number(episode: Mapping[str, object]) -> int | None:
+    value = episode.get("seasonNumber")
+    if not isinstance(value, (int, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _aggregate_sonarr_ref_field(
+    states: Sequence[_SonarrRefEpisodeState],
+    field: str,
+) -> SonarrRuleValue:
+    values = [getattr(state, field) for state in states]
+    if any(value is True for value in values):
+        return True
+    if values and all(value is False for value in values):
+        return False
+    return RULE_VALUE_UNAVAILABLE
+
+
+def _sonarr_values_by_series(
+    series_ids: Iterable[int],
+    states_by_series_id: Mapping[int, Sequence[_SonarrRefEpisodeState]],
+) -> dict[int, dict[str, SonarrRuleValue]]:
+    return {
+        series_id: {
+            SONARR_UNAIRED_FIELD: _aggregate_sonarr_ref_field(
+                states_by_series_id.get(series_id, []),
+                "has_unaired_episodes",
+            ),
+            SONARR_FINALE_FIELD: _aggregate_sonarr_ref_field(
+                states_by_series_id.get(series_id, []),
+                "has_finale",
+            ),
+        }
+        for series_id in series_ids
+    }
+
+
+async def _activate_sonarr_episode_state_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    sonarr_series_snapshot: _SonarrSeriesSnapshot | None = None,
+) -> _SonarrRuleDataResult:
+    """Load only the latest Sonarr season needed by active series rules."""
+    sonarr_rules = [
+        rule
+        for rule in rules
+        if normalize_rule_target(rule) == TARGET_SERIES
+        and _rule_uses_sonarr_episode_fields(rule)
+    ]
+    if not sonarr_rules:
+        SonarrEpisodeStateResolver({}).activate()
+        return _SonarrRuleDataResult(set(), set())
+
+    query_options = [selectinload(Series.service_refs)]
+    if _rules_use_field(sonarr_rules, "series.library_season_count"):
+        query_options.append(selectinload(Series.seasons))
+    series_rows = (
+        (
+            await db.execute(
+                select(Series)
+                .where(Series.removed_at.is_(None))
+                .options(*query_options)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    series_by_id = {series.id: series for series in series_rows}
+    series_ids = set(series_by_id)
+
+    ref_rows = (
+        await db.execute(
+            select(
+                SeriesArrRef.series_id,
+                SeriesArrRef.service_config_id,
+                SeriesArrRef.arr_series_id,
+            ).where(SeriesArrRef.series_id.in_(series_ids))
+        )
+    ).all()
+    refs_by_series_id: dict[int, list[tuple[int, int]]] = {}
+    config_ids: set[int] = set()
+    for series_id, config_id, arr_series_id in ref_rows:
+        refs_by_series_id.setdefault(series_id, []).append((config_id, arr_series_id))
+        config_ids.add(config_id)
+
+    sonarr_series_snapshot = sonarr_series_snapshot or _SonarrSeriesSnapshot()
+    clients = sonarr_series_snapshot.clients
+    if set(clients) == {0}:
+        clients = {config_id: clients[0] for config_id in config_ids}
+
+    errors: list[str] = []
+    sonarr_series_by_config: dict[int, dict[int, Any]] = {}
+
+    async def load_series(config_id: int, client: Any) -> None:
+        try:
+            items = await sonarr_series_snapshot.get_all_series(client)
+        except Exception as exc:
+            errors.append(
+                f"config {config_id} series list: {summarize_error_message(str(exc))}"
+            )
+            return
+        sonarr_series_by_config[config_id] = {
+            item.id: item for item in items if getattr(item, "id", None) is not None
+        }
+
+    await asyncio.gather(
+        *(load_series(config_id, client) for config_id, client in clients.items())
+    )
+
+    now = datetime.now(UTC)
+    states_by_series_id: dict[int, list[_SonarrRefEpisodeState]] = {}
+    for series_id, refs in refs_by_series_id.items():
+        states: list[_SonarrRefEpisodeState] = []
+        for config_id, arr_series_id in refs:
+            state = _SonarrRefEpisodeState(
+                config_id=config_id,
+                arr_series_id=arr_series_id,
+            )
+            states.append(state)
+            sonarr_series = sonarr_series_by_config.get(config_id, {}).get(
+                arr_series_id
+            )
+            if sonarr_series is None:
+                continue
+            regular_seasons = [
+                season
+                for season in getattr(sonarr_series, "seasons", [])
+                if getattr(season, "season_number", 0) > 0
+            ]
+            if not regular_seasons:
+                continue
+            latest_season = max(
+                regular_seasons,
+                key=lambda season: season.season_number,
+            )
+            state.latest_season_number = latest_season.season_number
+            statistics = getattr(latest_season, "statistics", None)
+            next_airing = (
+                _parse_sonarr_datetime(statistics.get("nextAiring"))
+                if isinstance(statistics, Mapping)
+                else None
+            )
+            if next_airing is not None and next_airing > now:
+                state.has_unaired_episodes = True
+        states_by_series_id[series_id] = states
+
+    partial_values = _sonarr_values_by_series(series_ids, states_by_series_id)
+    SonarrEpisodeStateResolver(partial_values).activate()
+
+    needed_series_ids: set[int] = set()
+    for series_id, series in series_by_id.items():
+        if any(
+            evaluate_advanced_rule_state(
+                rule,
+                target_scope=TARGET_SERIES,
+                series=series,
+            )
+            is None
+            for rule in sonarr_rules
+        ):
+            needed_series_ids.add(series_id)
+
+    semaphores: dict[int, asyncio.Semaphore] = {}
+
+    async def load_latest_season(
+        series_id: int,
+        state: _SonarrRefEpisodeState,
+    ) -> None:
+        if state.latest_season_number is None:
+            return
+        client = clients.get(state.config_id)
+        if client is None:
+            return
+        semaphore = semaphores.setdefault(
+            id(client), asyncio.Semaphore(SONARR_EPISODE_FETCH_CONCURRENCY)
+        )
+        try:
+            async with semaphore:
+                episodes = await client.get_episodes(
+                    state.arr_series_id,
+                    season_number=state.latest_season_number,
+                )
+        except Exception as exc:
+            errors.append(
+                "config "
+                f"{state.config_id} series {state.arr_series_id} season "
+                f"{state.latest_season_number}: {summarize_error_message(str(exc))}"
+            )
+            return
+
+        latest_episodes = [
+            episode
+            for episode in episodes
+            if _sonarr_episode_season_number(episode) == state.latest_season_number
+            and state.latest_season_number > 0
+        ]
+        if not latest_episodes:
+            return
+        state.has_unaired_episodes = any(
+            (air_date := _parse_sonarr_datetime(episode.get("airDateUtc"))) is not None
+            and air_date > now
+            for episode in latest_episodes
+        )
+        state.has_finale = any(
+            str(episode.get("finaleType") or "").strip().lower() in {"season", "series"}
+            for episode in latest_episodes
+        )
+
+    await asyncio.gather(
+        *(
+            load_latest_season(series_id, state)
+            for series_id in needed_series_ids
+            for state in states_by_series_id.get(series_id, [])
+        )
+    )
+
+    final_values = _sonarr_values_by_series(series_ids, states_by_series_id)
+    SonarrEpisodeStateResolver(final_values).activate()
+
+    unavailable_series_ids: set[int] = set()
+    preserve_protection_keys: set[SonarrProtectionPreserveKey] = set()
+    for series_id, series in series_by_id.items():
+        for rule in sonarr_rules:
+            if (
+                evaluate_advanced_rule_state(
+                    rule,
+                    target_scope=TARGET_SERIES,
+                    series=series,
+                )
+                is not None
+            ):
+                continue
+            unavailable_series_ids.add(series_id)
+            if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT and isinstance(
+                rule.id, int
+            ):
+                preserve_protection_keys.add((rule.id, series_id))
+
+    error: str | None = None
+    if unavailable_series_ids:
+        if errors:
+            details = "; ".join(errors[:3])
+            suffix = f"; and {len(errors) - 3} more" if len(errors) > 3 else ""
+            error = f"{details}{suffix}"
+        elif not clients:
+            error = "Sonarr is not configured"
+        else:
+            error = (
+                "Sonarr returned no usable latest-season episode data for "
+                f"{len(unavailable_series_ids)} series"
+            )
+        LOG.warning(
+            "Sonarr episode-state rules have unavailable data for "
+            f"{len(unavailable_series_ids)} series: {error}"
+        )
+    else:
+        LOG.debug(
+            "Activated Sonarr latest-season rule data for "
+            f"{len(series_ids)} series; fetched episodes for "
+            f"{len(needed_series_ids)} series"
+        )
+
+    return _SonarrRuleDataResult(
+        unavailable_series_ids=unavailable_series_ids,
+        preserve_protection_keys=preserve_protection_keys,
+        error=error,
+    )
+
+
+async def _refresh_arr_monitoring_for_rules(
+    rules: list[ReclaimRule],
+    *,
+    sonarr_series_snapshot: _SonarrSeriesSnapshot | None = None,
+) -> None:
     """Sync arr monitoring status (series + season for Sonarr, movie for Radarr) into the DB.
 
     Only runs if at least one active rule uses arr.monitored.
@@ -1095,9 +1472,8 @@ async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
 
     #### sonarr: refresh series + season monitoring ####
     if series_rules:
-        sonarr_clients = service_manager.sonarr_clients()
-        if not sonarr_clients and service_manager.sonarr:
-            sonarr_clients = {0: service_manager.sonarr}
+        sonarr_series_snapshot = sonarr_series_snapshot or _SonarrSeriesSnapshot()
+        sonarr_clients = sonarr_series_snapshot.clients
 
         if sonarr_clients:
             async with async_db() as db:
@@ -1124,7 +1500,9 @@ async def _refresh_arr_monitoring_for_rules(rules: list[ReclaimRule]) -> None:
 
             for config_id, sonarr_client in sonarr_clients.items():
                 try:
-                    all_sonarr_series = await sonarr_client.get_all_series()
+                    all_sonarr_series = await sonarr_series_snapshot.get_all_series(
+                        sonarr_client
+                    )
                 except Exception as e:
                     LOG.warning(
                         f"Failed to fetch Sonarr series for monitoring (config {config_id}): {e}"
@@ -1998,6 +2376,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             await _reconcile_rule_managed_protections(db, [])
             await db.execute(delete(ReclaimCandidate))
+            await clear_sonarr_rule_data_notice(db)
             await db.commit()
             try:
                 await _sync_leaving_soon_collections(db)
@@ -2027,8 +2406,15 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             arr_entries=await _load_arr_disk_space(),
             path_mappings=await _load_path_mappings(),
         ).activate()
-        await _refresh_arr_tags_for_rules(list(rules))
-        await _refresh_arr_monitoring_for_rules(list(rules))
+        sonarr_series_snapshot = _SonarrSeriesSnapshot()
+        await _refresh_arr_tags_for_rules(
+            list(rules),
+            sonarr_series_snapshot=sonarr_series_snapshot,
+        )
+        await _refresh_arr_monitoring_for_rules(
+            list(rules),
+            sonarr_series_snapshot=sonarr_series_snapshot,
+        )
 
         preserved_protection_rule_ids: set[int] = set()
         seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
@@ -2075,6 +2461,20 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             else:
                 await clear_seerr_rule_skip_notice(db)
 
+        sonarr_rule_result = await _activate_sonarr_episode_state_for_rules(
+            db,
+            list(rules),
+            sonarr_series_snapshot=sonarr_series_snapshot,
+        )
+        if sonarr_rule_result.unavailable_series_ids:
+            await set_sonarr_rule_data_notice(
+                db,
+                unavailable_series=len(sonarr_rule_result.unavailable_series_ids),
+                reason=sonarr_rule_result.error or "unknown Sonarr data error",
+            )
+        else:
+            await clear_sonarr_rule_data_notice(db)
+
         protection_rules = [
             rule
             for rule in rules
@@ -2093,6 +2493,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             db,
             protection_rules,
             preserve_rule_ids=preserved_protection_rule_ids,
+            preserve_rule_series_keys=(sonarr_rule_result.preserve_protection_keys),
         )
         LOG.info(
             "Automated protection reconciliation completed: "

@@ -5,7 +5,7 @@ import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Final, TypeAlias
 
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.language import normalize_language
@@ -32,8 +32,23 @@ VALID_TARGET_SCOPES = {
 }
 RULE_OUTCOME_CANDIDATE = "candidate"
 RULE_OUTCOME_PROTECT = "protect"
+SONARR_RULE_FIELDS = {
+    "sonarr.latest_season_has_unaired_episodes",
+    "sonarr.latest_season_has_finale",
+}
 
 RuleDefinition = dict[str, Any]
+
+
+class UnavailableRuleValue:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "RULE_VALUE_UNAVAILABLE"
+
+
+RULE_VALUE_UNAVAILABLE: Final[UnavailableRuleValue] = UnavailableRuleValue()
+SonarrRuleValue: TypeAlias = bool | UnavailableRuleValue
 
 
 def normalize_rule_outcome(rule: ReclaimRule) -> str:
@@ -116,6 +131,10 @@ FIELD_LABELS: dict[str, str] = {
     "media_server.collections": "Media server collections",
     "arr.tags": "Arr tags",
     "arr.monitored": "Arr monitored",
+    "sonarr.latest_season_has_unaired_episodes": (
+        "Sonarr latest season has unaired episodes"
+    ),
+    "sonarr.latest_season_has_finale": "Sonarr latest season has finale",
     "seerr.requested": "Seerr requested",
     "seerr.requested_by_user_ids": "Seerr requested by user IDs",
     "seerr.requester_has_watched": "Seerr requester has watched",
@@ -244,6 +263,8 @@ BOOLEAN_FIELDS = {
     "season.is_latest_season",
     "watch.never_watched",
     "arr.monitored",
+    "sonarr.latest_season_has_unaired_episodes",
+    "sonarr.latest_season_has_finale",
     "seerr.requested",
     "seerr.requester_has_watched",
 }
@@ -421,6 +442,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "series.status",
         "series.library_season_count",
         "series.tmdb_season_count",
+        "sonarr.latest_season_has_unaired_episodes",
+        "sonarr.latest_season_has_finale",
         "subtitle.languages",
         "tmdb.days_since_first_air_date",
         "tmdb.days_since_last_air_date",
@@ -710,6 +733,42 @@ class SeerrRequestResolver:
         return bool(value)
 
 
+class SonarrEpisodeStateResolver:
+    """Holds Sonarr latest-season episode state for one rule evaluation run."""
+
+    _ctx: ContextVar[SonarrEpisodeStateResolver | None] = ContextVar(
+        "sonarr_episode_state_resolver", default=None
+    )
+
+    __slots__ = ("_values_by_series_id",)
+
+    def __init__(
+        self,
+        values_by_series_id: Mapping[int, Mapping[str, object]] | None = None,
+    ) -> None:
+        self._values_by_series_id: dict[int, dict[str, object]] = {
+            int(series_id): dict(values)
+            for series_id, values in (values_by_series_id or {}).items()
+        }
+
+    def activate(self) -> None:
+        """Install this resolver for the current async context."""
+        SonarrEpisodeStateResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> SonarrEpisodeStateResolver | None:
+        """Return the resolver active in the current async context, or None."""
+        return cls._ctx.get()
+
+    def resolve(self, series_id: int | None, field: str) -> object:
+        """Return a Sonarr field value or the unavailable sentinel."""
+        if series_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        return self._values_by_series_id.get(series_id, {}).get(
+            field, RULE_VALUE_UNAVAILABLE
+        )
+
+
 def normalize_rule_target(rule: ReclaimRule) -> str:
     """Normalize the target scope of a rule, defaulting to movie version or series based on media
     type if not explicitly set or invalid."""
@@ -875,6 +934,73 @@ def evaluate_advanced_rule(
     return True, matched, reasons
 
 
+def evaluate_advanced_rule_state(
+    rule: ReclaimRule,
+    *,
+    target_scope: str,
+    movie: Movie | None = None,
+    version: MovieVersion | None = None,
+    series: Series | None = None,
+    season: Season | None = None,
+    episode: Episode | None = None,
+) -> bool | None:
+    """Evaluate a rule using three-valued logic for unavailable external data."""
+    definition = normalize_rule_definition(rule)
+    if not definition:
+        return False
+    root = definition.get("root")
+    if not isinstance(root, dict):
+        return False
+    context = _build_context(
+        target_scope,
+        movie,
+        version,
+        series,
+        season,
+        episode,
+        _rule_uses_disk_fields(definition),
+    )
+    return _evaluate_node_state(root, context)
+
+
+def _evaluate_node_state(
+    node: dict[str, Any],
+    context: dict[str, Any],
+) -> bool | None:
+    """Return True, False, or None when unavailable values affect the result."""
+    if node.get("type") == "group":
+        op = str(node.get("op", "")).lower()
+        children = node.get("children")
+        if (
+            op not in {"and", "or"}
+            or not isinstance(children, list)
+            or not children
+            or not all(isinstance(child, dict) for child in children)
+        ):
+            return False
+        child_states = [_evaluate_node_state(child, context) for child in children]
+        if op == "and":
+            if False in child_states:
+                return False
+            return None if None in child_states else True
+        if True in child_states:
+            return True
+        return None if None in child_states else False
+
+    if node.get("type") != "condition":
+        return False
+    field = str(node.get("field", ""))
+    actual = context.get(field)
+    if actual is RULE_VALUE_UNAVAILABLE:
+        return None
+    return _matches_operator(
+        actual,
+        str(node.get("operator", "")),
+        node.get("value"),
+        field=field,
+    )
+
+
 def _rule_uses_disk_fields(definition: RuleDefinition | None) -> bool:
     """Return True if the rule definition references any disk.* fields."""
     return bool(
@@ -993,6 +1119,7 @@ def _build_context(
     now = datetime.now(UTC)
     _resolver = DiskStatsResolver.current() if compute_disk else None
     _seerr_resolver = SeerrRequestResolver.current()
+    _sonarr_resolver = SonarrEpisodeStateResolver.current()
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
@@ -1137,6 +1264,18 @@ def _build_context(
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
             "arr.monitored": series.is_monitored,
+            "sonarr.latest_season_has_unaired_episodes": (
+                _sonarr_resolver.resolve(
+                    series.id, "sonarr.latest_season_has_unaired_episodes"
+                )
+                if _sonarr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "sonarr.latest_season_has_finale": (
+                _sonarr_resolver.resolve(series.id, "sonarr.latest_season_has_finale")
+                if _sonarr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
                 if _seerr_resolver
@@ -1418,6 +1557,8 @@ def _matches_operator(
     actual: Any, operator: str, expected: Any, *, field: str | None = None
 ) -> bool:
     """Evaluate a single condition operator against the provided actual and expected values."""
+    if actual is RULE_VALUE_UNAVAILABLE:
+        return False
     if operator == "exists":
         if field in LANGUAGE_FIELDS:
             return bool(_normalized_language_values(actual))
