@@ -43,6 +43,10 @@ from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
+from backend.services.playback_history import (
+    PlaybackRefreshResult,
+    refresh_playback_history,
+)
 from backend.services.plex import PlexService
 from backend.user_types import MEDIA_SERVERS, MediaServerType
 
@@ -50,6 +54,7 @@ __all__ = [
     "sync_media",
     "resync_media",
     "sync_media_libraries",
+    "refresh_playback_history_task",
     "sync_linked_data",
     "sync_emby_playback_reporting_data",
     "sync_tautulli_playback_data",
@@ -1929,14 +1934,27 @@ async def sync_series(
         await tmdb_service.session.close()
 
 
-async def _run_supplemental_syncs() -> None:
+async def _run_supplemental_syncs() -> PlaybackRefreshResult:
     """Run all supplemental play-count sync steps (Emby plugin + Tautulli).
     Called at the end of both sync_media() and resync_media().
     """
-    # emby/jellyfin playback reporting plugin sync (if applicable)
-    await sync_emby_playback_reporting_data()
-    # tautulli play history sync (if applicable) for plex
-    await sync_tautulli_playback_data()
+    return await refresh_playback_history(force=True)
+
+
+async def refresh_playback_history_task() -> dict[str, Any]:
+    """Refresh durable playback-history providers without a full media sync."""
+    async with track_task_execution(Task.REFRESH_PLAYBACK_HISTORY):
+        result = await _run_supplemental_syncs()
+        return {
+            "providers": len(result.statuses),
+            "available_services": sorted(
+                service.value for service in result.available_services
+            ),
+            "imported_events": sum(
+                status.imported_events for status in result.statuses
+            ),
+            "errors": result.errors,
+        }
 
 
 async def sync_emby_playback_reporting_data() -> None:

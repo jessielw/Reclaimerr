@@ -207,6 +207,46 @@ season is incomplete or its finale metadata has not been updated. Combine it
 with status, age, watch-history, or library conditions and inspect the preview
 before enabling the rule.
 
+### Durable Playback History
+
+Playback history fields are available to movie-version, series, season, and
+episode rules. Reclaimerr imports compact events from the Jellyfin/Emby
+Playback Reporting plugin and Tautulli, then evaluates provider-neutral fields:
+
+| Field                        | Meaning                                      |
+| ---------------------------- | -------------------------------------------- |
+| Playback activity exists     | At least one qualifying playback event       |
+| Playback plays               | Number of qualifying playback events         |
+| Playback duration            | Total qualifying playback minutes            |
+| Longest playback             | Longest qualifying playback in minutes       |
+| Playback users               | Distinct source users with qualifying events |
+| Last playback activity       | Most recent qualifying event timestamp       |
+| Days since playback activity | Whole days since the most recent event       |
+
+Movie events shorter than 15 seconds and episode events shorter than 7 seconds
+are ignored. These thresholds prevent brief scrubs from counting as activity.
+
+Events are retained locally until their source service configuration is
+deleted. They are mapped by exact media-server IDs and stable TMDB,
+season-number, and episode-number identities, so imported history can survive
+provider retention cleanup and media deletion/re-addition. Title-only matching
+is never used.
+
+The existing `watch.*` fields continue to describe the current library copy.
+The `playback.*` fields describe durable imported history and may therefore
+include activity from before the current copy was added.
+
+Playback data is loaded only when an enabled rule uses a `playback.*` field.
+Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting
+and Tautulli imports use an overlap window and event keys to avoid duplicate
+events during incremental refreshes.
+
+If no applicable provider is configured, a provider request fails, or an item
+cannot be observed through an available provider, playback values are unknown.
+Unknown values cannot create cleanup candidates. Existing automated
+protections are preserved until the affected playback rule can be evaluated
+again.
+
 ## Validation and Editing
 
 - Operator choices are limited to operators supported by the selected field.

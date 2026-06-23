@@ -1048,6 +1048,10 @@ async def preview_rule_matches(
             skipped_protected_count=preview_result.metadata.skipped_protected_count,
             sonarr_unavailable_count=preview_result.metadata.sonarr_unavailable_count,
             sonarr_error=preview_result.metadata.sonarr_error,
+            playback_unavailable_count=(
+                preview_result.metadata.playback_unavailable_count
+            ),
+            playback_error=preview_result.metadata.playback_error,
             matched_count=preview_result.metadata.matched_count,
         ),
     )

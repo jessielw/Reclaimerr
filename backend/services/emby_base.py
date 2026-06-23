@@ -1815,27 +1815,65 @@ class EmbyServiceBase:
     async def has_playback_reporting_plugin(self) -> bool:
         """Return True if the Jellyfin Playback Reporting plugin is installed and active."""
         try:
-            plugins = await self._make_request("Plugins")
-            STATUSES_TO_EXCLUDE = {
-                "Disabled",
-                "Deleted",
-                "NotSupported",
-                "Malfunctioned",
-            }
-            PLUGINS_TO_INCLUDE = {
-                "playback_reporting.xml",
-                "Jellyfin.Plugin.PlaybackReporting.xml",
-            }
+            return await self.get_playback_reporting_plugin_status()
         except Exception:
             return False
+
+    async def get_playback_reporting_plugin_status(self) -> bool:
+        """Return plugin availability while preserving connection/API failures."""
+        plugins = await self._make_request("Plugins")
+        statuses_to_exclude = {
+            "Disabled",
+            "Deleted",
+            "NotSupported",
+            "Malfunctioned",
+        }
+        plugins_to_include = {
+            "playback_reporting.xml",
+            "Jellyfin.Plugin.PlaybackReporting.xml",
+        }
         if not isinstance(plugins, list):
             return False
         for plugin in plugins:
+            if not isinstance(plugin, Mapping):
+                continue
             cfg = plugin.get("ConfigurationFileName", "")
             status = plugin.get("Status", "")
-            if cfg in PLUGINS_TO_INCLUDE and status not in STATUSES_TO_EXCLUDE:
+            if cfg in plugins_to_include and status not in statuses_to_exclude:
                 return True
         return False
+
+    async def get_playback_reporting_events(
+        self,
+        *,
+        since: datetime | None = None,
+        page_size: int = 5000,
+    ) -> list[dict[str, object]]:
+        """Fetch compact movie and episode playback events from the plugin."""
+        rows: list[dict[str, object]] = []
+        offset = 0
+        where_parts = [
+            "ItemType IN ('Movie', 'Episode')",
+            "PlayDuration > 0",
+        ]
+        if since is not None:
+            cutoff = since.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
+            where_parts.append(f"DateCreated >= '{cutoff}'")
+
+        while True:
+            query = (
+                "SELECT DateCreated, UserId, ItemId, ItemType, PlayDuration "
+                "FROM PlaybackActivity "
+                f"WHERE {' AND '.join(where_parts)} "
+                "ORDER BY DateCreated, UserId, ItemId "
+                f"LIMIT {max(1, page_size)} OFFSET {offset}"
+            )
+            page = await self._submit_playback_custom_query_rows(query)
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return rows
 
     async def get_playback_reporting_stats(
         self, min_play_duration: int, media_type: Literal["Movie", "Episode"]
@@ -1872,17 +1910,42 @@ class EmbyServiceBase:
             Mapping of ItemId to total_plays derived from the query result set.
         """
         try:
-            response = await self.session.post(
-                f"{self.service_url}/user_usage_stats/submit_custom_query",
-                json={"CustomQueryString": query, "ReplaceUserId": False},
-            )
-            response.raise_for_status()
-            data: dict[str, object] = response.json()
+            rows = await self._submit_playback_custom_query_rows(query)
         except Exception as e:
             LOG.error(f"Playback Reporting plugin query failed: {e}")
             return {}
 
-        # "colums" is an intentional typo in the plugin source
+        if rows and ("ItemId" not in rows[0] or "total_plays" not in rows[0]):
+            LOG.error(
+                "Unexpected column schema from Playback Reporting plugin: "
+                f"{list(rows[0])}"
+            )
+            return {}
+
+        parsed: dict[str, int] = {}
+        for row in rows:
+            item_id = row.get("ItemId")
+            if not item_id:
+                continue
+            try:
+                parsed[str(item_id)] = int(str(row.get("total_plays")))
+            except (TypeError, ValueError):
+                continue
+        return parsed
+
+    async def _submit_playback_custom_query_rows(
+        self, query: RawSQL
+    ) -> list[dict[str, object]]:
+        """Submit a plugin query and return column-keyed rows."""
+        response = await self.session.post(
+            f"{self.service_url}/user_usage_stats/submit_custom_query",
+            json={"CustomQueryString": query, "ReplaceUserId": False},
+        )
+        response.raise_for_status()
+        data: dict[str, object] = response.json()
+
+        # cSpell: disable
+        # "colums" is an intentional typo in the plugin source.
         raw_columns = data.get("colums")
         # in case some plugin builds use the correctly spelled key, we handle that too
         if raw_columns is None:
@@ -1907,28 +1970,19 @@ class EmbyServiceBase:
                 LOG.debug(
                     f"Playback Reporting plugin query returned no rows: {message}"
                 )
-            return {}
+            return []
+        if not columns:
+            raise ValueError("Playback Reporting returned rows without columns")
 
-        try:
-            item_id_idx = columns.index("ItemId")
-            play_count_idx = columns.index("total_plays")
-        except ValueError:
-            LOG.error(
-                f"Unexpected column schema from Playback Reporting plugin: {columns}"
-            )
-            return {}
-
-        parsed: dict[str, int] = {}
+        parsed: list[dict[str, object]] = []
         for row in results:
-            if len(row) <= max(item_id_idx, play_count_idx):
-                continue
-            item_id = row[item_id_idx]
-            if not item_id:
-                continue
-            try:
-                parsed[str(item_id)] = int(str(row[play_count_idx]))
-            except (TypeError, ValueError):
-                continue
+            parsed.append(
+                {
+                    column: row[index]
+                    for index, column in enumerate(columns)
+                    if index < len(row)
+                }
+            )
         return parsed
 
     async def get_series_ids_for_episode_ids(

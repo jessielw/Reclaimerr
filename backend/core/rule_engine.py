@@ -36,6 +36,15 @@ SONARR_RULE_FIELDS = {
     "sonarr.latest_season_has_unaired_episodes",
     "sonarr.latest_season_has_finale",
 }
+PLAYBACK_RULE_FIELDS = {
+    "playback.has_activity",
+    "playback.play_count",
+    "playback.total_duration_minutes",
+    "playback.longest_duration_minutes",
+    "playback.unique_user_count",
+    "playback.last_activity_at",
+    "playback.days_since_last_activity",
+}
 
 RuleDefinition = dict[str, Any]
 
@@ -96,6 +105,13 @@ FIELD_LABELS: dict[str, str] = {
     "episode.air_date": "Episode air date",
     "episode.days_since_air_date": "Days since episode aired",
     "watch.never_watched": "Never watched",
+    "playback.has_activity": "Playback activity exists",
+    "playback.play_count": "Playback plays",
+    "playback.total_duration_minutes": "Playback duration (minutes)",
+    "playback.longest_duration_minutes": "Longest playback (minutes)",
+    "playback.unique_user_count": "Playback users",
+    "playback.last_activity_at": "Last playback activity",
+    "playback.days_since_last_activity": "Days since playback activity",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "Rating",
     "tmdb.vote_count": "Vote count",
@@ -182,6 +198,11 @@ NUMERIC_FIELDS = {
     "media.days_since_added",
     "watch.view_count",
     "watch.days_since_last_watched",
+    "playback.play_count",
+    "playback.total_duration_minutes",
+    "playback.longest_duration_minutes",
+    "playback.unique_user_count",
+    "playback.days_since_last_activity",
     "tmdb.days_since_release",
     "tmdb.days_since_first_air_date",
     "tmdb.days_since_last_air_date",
@@ -262,6 +283,7 @@ BOOLEAN_FIELDS = {
     "season.fully_watched",
     "season.is_latest_season",
     "watch.never_watched",
+    "playback.has_activity",
     "arr.monitored",
     "sonarr.latest_season_has_unaired_episodes",
     "sonarr.latest_season_has_finale",
@@ -270,6 +292,7 @@ BOOLEAN_FIELDS = {
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
+    "playback.last_activity_at",
     "tmdb.release_date",
     "tmdb.first_air_date",
     "tmdb.last_air_date",
@@ -415,6 +438,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.last_viewed_at",
         "watch.never_watched",
         "watch.view_count",
+        *PLAYBACK_RULE_FIELDS,
         "movie.version_count",
     },
     TARGET_SERIES: {
@@ -464,6 +488,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.last_viewed_at",
         "watch.never_watched",
         "watch.view_count",
+        *PLAYBACK_RULE_FIELDS,
     },
     TARGET_SEASON: {
         "anilist.favourites",
@@ -519,6 +544,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.last_viewed_at",
         "watch.never_watched",
         "watch.view_count",
+        *PLAYBACK_RULE_FIELDS,
     },
     TARGET_EPISODE: {
         "anilist.favourites",
@@ -569,6 +595,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.last_viewed_at",
         "watch.never_watched",
         "watch.view_count",
+        *PLAYBACK_RULE_FIELDS,
     },
 }
 
@@ -767,6 +794,54 @@ class SonarrEpisodeStateResolver:
         return self._values_by_series_id.get(series_id, {}).get(
             field, RULE_VALUE_UNAVAILABLE
         )
+
+
+class PlaybackHistoryResolver:
+    """Holds provider-neutral playback aggregates for one rule evaluation run."""
+
+    _ctx: ContextVar[PlaybackHistoryResolver | None] = ContextVar(
+        "playback_history_resolver", default=None
+    )
+
+    __slots__ = ("_values_by_target",)
+
+    def __init__(
+        self,
+        values_by_target: Mapping[tuple[str, int], Mapping[str, object]] | None = None,
+    ) -> None:
+        self._values_by_target = {
+            (str(scope), int(target_id)): dict(values)
+            for (scope, target_id), values in (values_by_target or {}).items()
+        }
+
+    def activate(self) -> None:
+        PlaybackHistoryResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> PlaybackHistoryResolver | None:
+        return cls._ctx.get()
+
+    def resolve(self, target_scope: str, target_id: int | None, field: str) -> object:
+        if target_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        return self._values_by_target.get((target_scope, target_id), {}).get(
+            field, RULE_VALUE_UNAVAILABLE
+        )
+
+
+def _playback_context(
+    resolver: PlaybackHistoryResolver | None,
+    target_scope: str,
+    target_id: int | None,
+) -> dict[str, object]:
+    return {
+        field: (
+            resolver.resolve(target_scope, target_id, field)
+            if resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        for field in PLAYBACK_RULE_FIELDS
+    }
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -1120,6 +1195,7 @@ def _build_context(
     _resolver = DiskStatsResolver.current() if compute_disk else None
     _seerr_resolver = SeerrRequestResolver.current()
     _sonarr_resolver = SonarrEpisodeStateResolver.current()
+    _playback_resolver = PlaybackHistoryResolver.current()
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
@@ -1143,6 +1219,7 @@ def _build_context(
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
+            **_playback_context(_playback_resolver, TARGET_MOVIE_VERSION, version.id),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.in_collection": (
                 movie.tmdb_collection_id is not None
@@ -1232,6 +1309,7 @@ def _build_context(
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": series.view_count == 0 or _last_viewed is None,
+            **_playback_context(_playback_resolver, TARGET_SERIES, series.id),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -1329,6 +1407,7 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": (season.view_count or 0) == 0
             or _last_viewed is None,
+            **_playback_context(_playback_resolver, TARGET_SEASON, season.id),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
@@ -1430,6 +1509,7 @@ def _build_context(
             "watch.last_viewed_at": _last_viewed_ep,
             "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
             "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
+            **_playback_context(_playback_resolver, TARGET_EPISODE, episode.id),
             "episode.number": episode.episode_number,
             "episode.season_number": season.season_number,
             "episode.air_date": episode.air_date,

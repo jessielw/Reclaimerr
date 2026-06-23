@@ -80,6 +80,20 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             ),
             (TARGET_SEASON, "series.library_season_count", "greater_than", 2),
             (TARGET_EPISODE, "tmdb.original_language", "contains_any", ["jpn"]),
+            (TARGET_MOVIE_VERSION, "playback.has_activity", "is_true", None),
+            (TARGET_SERIES, "playback.play_count", "greater_than", 2),
+            (
+                TARGET_SEASON,
+                "playback.total_duration_minutes",
+                "greater_than",
+                60,
+            ),
+            (
+                TARGET_EPISODE,
+                "playback.last_activity_at",
+                "before",
+                "2026-01-01",
+            ),
         ]
         for scope, field, operator, value in cases:
             with self.subTest(scope=scope, field=field):

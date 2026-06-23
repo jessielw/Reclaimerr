@@ -562,6 +562,8 @@ class RulePreviewMetadata(BaseModel):
     skipped_protected_count: int = 0
     sonarr_unavailable_count: int = 0
     sonarr_error: str | None = None
+    playback_unavailable_count: int = 0
+    playback_error: str | None = None
     matched_count: int = 0
 
 

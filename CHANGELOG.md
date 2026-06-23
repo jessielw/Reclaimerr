@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency [python-iso639](https://github.com/jacksonllee/iso639)
 - Dependency [svelte-dnd-action](https://github.com/isaacHagoel/svelte-dnd-action)
 - Rule conditions and nested groups can be reordered or moved between groups with accessible drag handles
+- Manual task to refresh durable playback history without running a full media sync
 - Automated protection rule outcome:
   - Rules can create managed protections instead of deletion candidates
   - Managed protections reconcile during cleanup scans and take precedence over candidate rules
@@ -32,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - series.library_season_count
   - sonarr.latest_season_has_unaired_episodes
   - sonarr.latest_season_has_finale
+  - playback.has_activity
+  - playback.play_count
+  - playback.total_duration_minutes
+  - playback.longest_duration_minutes
+  - playback.unique_user_count
+  - playback.last_activity_at
+  - playback.days_since_last_activity
   - Rule Documentation:
     - Target scopes and condition groups
     - Operator and missing-metadata behavior
@@ -41,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Movie version-count warning
     - TMDB versus library season counts
     - Sonarr latest-season episode-state rules
+    - Durable Playback Reporting and Tautulli history rules
     - Recommended preview workflow
     - Complete rule API endpoint list
 
@@ -50,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sonarr episode-state rules inspect only the latest regular season, reuse
   per-scan results, and limit episode requests to eight concurrent calls per
   Sonarr instance
+- Playback Reporting and Tautulli now feed one durable provider-neutral event
+  ledger. Tautulli history is read in one paginated ungrouped pass, and
+  unavailable provider data fails closed during cleanup scans.
 - Membership queries paginate past 1000 items
 - Missing Jellyfin IDs are skipped and logged
 - HTTP failures now include status, method, endpoint, and response context
@@ -65,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Playback-history provider refreshes now decrypt stored service API keys, use
+  Tautulli's incremental history date filter, and redact API keys from provider
+  HTTP errors.
 - Dev
   - Ruff not targeting desktop/scripts
 

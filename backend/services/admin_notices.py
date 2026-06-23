@@ -12,6 +12,7 @@ from backend.database.models import AdminNotice, ReclaimRule, ServiceMediaLibrar
 NOTICE_KEY_UPDATE_AVAILABLE = "update_available"
 NOTICE_KEY_SEERR_RULE_SKIP = "seerr_rules_skipped"
 NOTICE_KEY_SONARR_RULE_DATA = "sonarr_rule_data_unavailable"
+NOTICE_KEY_PLAYBACK_RULE_DATA = "playback_rule_data_unavailable"
 NOTICE_KEY_STALE_LIBRARY_IDS = "stale_library_ids"
 
 
@@ -320,6 +321,37 @@ async def set_sonarr_rule_data_notice(
 async def clear_sonarr_rule_data_notice(db: AsyncSession) -> None:
     """Resolve the notice for unavailable Sonarr rule data."""
     await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_SONARR_RULE_DATA)
+
+
+async def set_playback_rule_data_notice(
+    db: AsyncSession,
+    *,
+    unavailable_targets: int,
+    reason: str,
+) -> None:
+    """Create or update a notice for unavailable durable playback rule data."""
+    await upsert_singleton_notice(
+        db,
+        dedupe_key=NOTICE_KEY_PLAYBACK_RULE_DATA,
+        kind="playback_rule_data_unavailable",
+        severity="warning",
+        title="Playback history rule data is unavailable",
+        message=(
+            f"The latest cleanup scan could not evaluate playback history rules "
+            f"for {unavailable_targets} media target(s): {reason}."
+        ),
+        action_label="Go to Settings",
+        action_href="#/settings",
+        context_json={
+            "unavailable_targets": unavailable_targets,
+            "reason": reason,
+        },
+    )
+
+
+async def clear_playback_rule_data_notice(db: AsyncSession) -> None:
+    """Resolve the notice for unavailable durable playback rule data."""
+    await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_PLAYBACK_RULE_DATA)
 
 
 async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:

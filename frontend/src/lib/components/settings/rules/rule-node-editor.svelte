@@ -329,6 +329,55 @@
       defaultOperator: "exists",
     },
     {
+      value: "playback.has_activity",
+      label: "Playback activity exists",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "playback.play_count",
+      label: "Playback plays",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.total_duration_minutes",
+      label: "Playback duration (minutes)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.longest_duration_minutes",
+      label: "Longest playback (minutes)",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.unique_user_count",
+      label: "Playback users",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.last_activity_at",
+      label: "Last playback activity",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "playback.days_since_last_activity",
+      label: "Days since playback activity",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
       value: "tmdb.release_date",
       label: "TMDB release date",
       kind: "temporal",
@@ -799,6 +848,16 @@
     },
   ];
 
+  const PLAYBACK_FIELD_VALUES = [
+    "playback.has_activity",
+    "playback.play_count",
+    "playback.total_duration_minutes",
+    "playback.longest_duration_minutes",
+    "playback.unique_user_count",
+    "playback.last_activity_at",
+    "playback.days_since_last_activity",
+  ];
+
   const SCOPE_FIELD_VALUES: Record<RuleTargetScope, Set<string>> = {
     movie_version: new Set<string>([
       "anilist.favourites",
@@ -856,6 +915,7 @@
       "watch.last_viewed_at",
       "watch.never_watched",
       "watch.view_count",
+      ...PLAYBACK_FIELD_VALUES,
       "movie.version_count",
     ]),
     series: new Set<string>([
@@ -905,6 +965,7 @@
       "watch.last_viewed_at",
       "watch.never_watched",
       "watch.view_count",
+      ...PLAYBACK_FIELD_VALUES,
     ]),
     season: new Set<string>([
       "anilist.favourites",
@@ -960,6 +1021,7 @@
       "watch.last_viewed_at",
       "watch.never_watched",
       "watch.view_count",
+      ...PLAYBACK_FIELD_VALUES,
     ]),
     episode: new Set<string>([
       "anilist.favourites",
@@ -1010,6 +1072,7 @@
       "watch.last_viewed_at",
       "watch.never_watched",
       "watch.view_count",
+      ...PLAYBACK_FIELD_VALUES,
     ]),
   };
 
@@ -1050,6 +1113,8 @@
         return "Media Server";
       case "watch":
         return "Watch";
+      case "playback":
+        return "Playback History";
       case "tmdb":
         return "TMDB";
       case "imdb":

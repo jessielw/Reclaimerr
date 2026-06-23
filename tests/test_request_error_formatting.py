@@ -34,7 +34,10 @@ def test_format_http_failure_redacts_body_and_keeps_context() -> None:
         method="DELETE",
         url="http://localhost/api/v1/media/42?token=super-secret",
     )
-    exc = _FakeHTTPError("401 Client Error", response=response)
+    exc = _FakeHTTPError(
+        "401 Client Error for url: http://localhost/api/v1/media/42?token=super-secret",
+        response=response,
+    )
 
     message = format_http_failure(action="Delete failed", exception=exc)
 

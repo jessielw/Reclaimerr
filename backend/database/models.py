@@ -831,6 +831,100 @@ class MediaWatchUser(Base):
     )
 
 
+class PlaybackHistoryEvent(Base):
+    """Compact provider playback event retained for durable rule evaluation."""
+
+    __tablename__ = "playback_history_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service_config_id",
+            "source_event_key",
+            name="uq_playback_history_event_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_event_key: Mapped[str] = mapped_column(String(255))
+    source_item_id: Mapped[str] = mapped_column(String(255), index=True)
+    provider_media_type: Mapped[str] = mapped_column(String(16))
+    played_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer)
+    source_user_id: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    season_number: Mapped[int | None] = mapped_column(
+        SmallInteger, default=None
+    )
+    episode_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    movie_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movies.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
+    )
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
+    )
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class PlaybackHistoryAggregate(Base):
+    """Provider-neutral playback totals for one rule target."""
+
+    __tablename__ = "playback_history_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_scope",
+            "target_id",
+            name="uq_playback_history_aggregate_target",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    target_scope: Mapped[str] = mapped_column(String(24), index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    play_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_duration_seconds: Mapped[int] = mapped_column(BigInteger, default=0)
+    longest_duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class Series(Base):
     """Series availability and metadata."""
 

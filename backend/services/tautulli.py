@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import niquests
@@ -45,7 +45,7 @@ def _optional_datetime(value: object) -> datetime | None:
     if key is None:
         return None
     try:
-        return datetime.fromtimestamp(key, tz=None).replace(tzinfo=None)
+        return datetime.fromtimestamp(key, tz=UTC).replace(tzinfo=None)
     except (ValueError, OSError):
         return None
 
@@ -147,9 +147,9 @@ class TautulliClient:
         params: dict[str, str | int] = {"media_type": media_type, "length": page_size}
 
         if since is not None:
-            # subtract 1 day buffer (tautulli start_date is date granularity only)
+            # subtract 1 day buffer; Tautulli's `after` is date granularity.
             cutoff = since - timedelta(days=1)
-            params["start_date"] = cutoff.strftime("%Y-%m-%d")
+            params["after"] = cutoff.strftime("%Y-%m-%d")
 
         aggregated: dict[int, tuple[int, datetime | None]] = {}
         offset = 0
@@ -195,6 +195,41 @@ class TautulliClient:
                 break
 
         return aggregated
+
+    async def get_history_records(
+        self,
+        *,
+        since: datetime | None = None,
+        page_size: int = 5000,
+    ) -> list[Mapping[str, object]]:
+        """Fetch ungrouped movie and episode history in one paginated pass."""
+        params: dict[str, str | int] = {
+            "grouping": 0,
+            "length": max(1, page_size),
+        }
+        if since is not None:
+            cutoff = since - timedelta(days=1)
+            params["after"] = cutoff.strftime("%Y-%m-%d")
+
+        records: list[Mapping[str, object]] = []
+        offset = 0
+        while True:
+            params["start"] = offset
+            data = await self._make_request("get_history", **params)
+            payload = _history_payload(data)
+            if payload is None:
+                break
+            page = _mapping_list(payload.get("data"))
+            records.extend(
+                record
+                for record in page
+                if str(record.get("media_type") or "").lower() in {"movie", "episode"}
+            )
+            total = as_int(payload.get("recordsFiltered")) or 0
+            offset += len(page)
+            if not page or offset >= total:
+                break
+        return records
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:

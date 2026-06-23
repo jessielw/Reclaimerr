@@ -1217,6 +1217,18 @@
           {/if}
         </Notice>
       {/if}
+      {#if previewData?.metadata && previewData.metadata.playback_unavailable_count > 0}
+        <Notice type="warning" title="Playback History Unavailable">
+          Durable playback conditions could not be evaluated for
+          {previewData.metadata.playback_unavailable_count}
+          media target{previewData.metadata.playback_unavailable_count === 1
+            ? ""
+            : "s"}. Those unknown values did not match.
+          {#if previewData.metadata.playback_error}
+            {previewData.metadata.playback_error}
+          {/if}
+        </Notice>
+      {/if}
       <div class="h-[55vh] overflow-y-auto overflow-x-hidden pr-2">
         {#if previewError}
           <Notice type="error" title="Preview Failed">

@@ -115,7 +115,11 @@ def format_http_failure(
     if details:
         message += f" ({', '.join(details)})"
 
-    exception_text = str(exception).strip() if exception else ""
+    exception_text = (
+        _truncate(_redact_sensitive(str(exception).strip()), max_chars=max_body_chars)
+        if exception
+        else ""
+    )
     if exception_text and exception_text not in message:
         message = f"{message}: {exception_text}"
     return message

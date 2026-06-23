@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.logger import LOG
 from backend.core.rule_engine import (
+    PLAYBACK_RULE_FIELDS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
@@ -22,6 +23,7 @@ from backend.core.rule_engine import (
     TARGET_SEASON,
     TARGET_SERIES,
     DiskStatsResolver,
+    PlaybackHistoryResolver,
     SeerrRequestResolver,
     SonarrEpisodeStateResolver,
     SonarrRuleValue,
@@ -80,8 +82,10 @@ from backend.models.cleanup import (
 )
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.admin_notices import (
+    clear_playback_rule_data_notice,
     clear_seerr_rule_skip_notice,
     clear_sonarr_rule_data_notice,
+    set_playback_rule_data_notice,
     set_seerr_rule_skip_notice,
     set_sonarr_rule_data_notice,
 )
@@ -90,6 +94,11 @@ from backend.services.notifications import (
     build_cleanup_notification_context,
     notify_admins,
     notify_all_users,
+)
+from backend.services.playback_history import (
+    PlaybackRuleSnapshot,
+    load_playback_rule_snapshot,
+    refresh_playback_history,
 )
 from backend.services.post_action_webhooks import (
     dispatch_configured_post_action_webhooks,
@@ -120,6 +129,13 @@ SONARR_EPISODE_FETCH_CONCURRENCY = 8
 class _SonarrRuleDataResult:
     unavailable_series_ids: set[int]
     preserve_protection_keys: set[SonarrProtectionPreserveKey]
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class _PlaybackRuleDataResult:
+    snapshot: PlaybackRuleSnapshot | None
+    unavailable_count: int = 0
     error: str | None = None
 
 
@@ -632,6 +648,9 @@ async def collect_rule_preview_matches_with_metadata(
     )
     metadata.sonarr_unavailable_count = len(sonarr_result.unavailable_series_ids)
     metadata.sonarr_error = sonarr_result.error
+    playback_result = await _activate_playback_history_for_rules(db, list(rules))
+    metadata.playback_unavailable_count = playback_result.unavailable_count
+    metadata.playback_error = playback_result.error
     is_protection_preview = bool(rules) and all(
         normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT for rule in rules
     )
@@ -1107,6 +1126,45 @@ def _rule_uses_sonarr_episode_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
         for field in SONARR_RULE_FIELDS
+    )
+
+
+def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
+    return any(
+        collect_rule_conditions(rule.definition, field=field)
+        for field in PLAYBACK_RULE_FIELDS
+    )
+
+
+async def _activate_playback_history_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    require_fresh: bool = False,
+) -> _PlaybackRuleDataResult:
+    playback_rules = [rule for rule in rules if _rule_uses_playback_fields(rule)]
+    if not playback_rules:
+        PlaybackHistoryResolver({}).activate()
+        return _PlaybackRuleDataResult(snapshot=None)
+
+    refresh_result = await refresh_playback_history(force=require_fresh)
+    snapshot = await load_playback_rule_snapshot(db, refresh_result)
+    PlaybackHistoryResolver(snapshot.values_by_target).activate()
+    scopes = {normalize_rule_target(rule) for rule in playback_rules}
+    unavailable_count = snapshot.unavailable_count(scopes)
+    if unavailable_count == 0:
+        return _PlaybackRuleDataResult(snapshot=snapshot)
+
+    if snapshot.errors:
+        error = "; ".join(snapshot.errors)
+    elif not snapshot.has_configured_provider:
+        error = "No Playback Reporting or Tautulli provider is configured"
+    else:
+        error = "No configured playback provider can observe these media targets"
+    return _PlaybackRuleDataResult(
+        snapshot=snapshot,
+        unavailable_count=unavailable_count,
+        error=error,
     )
 
 
@@ -2376,6 +2434,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             await _reconcile_rule_managed_protections(db, [])
             await db.execute(delete(ReclaimCandidate))
+            await clear_playback_rule_data_notice(db)
             await clear_sonarr_rule_data_notice(db)
             await db.commit()
             try:
@@ -2474,6 +2533,26 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
         else:
             await clear_sonarr_rule_data_notice(db)
+
+        playback_rule_result = await _activate_playback_history_for_rules(
+            db, list(rules), require_fresh=True
+        )
+        if playback_rule_result.unavailable_count:
+            playback_dependent_protection_rules = {
+                rule.id
+                for rule in rules
+                if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT
+                and _rule_uses_playback_fields(rule)
+            }
+            preserved_protection_rule_ids.update(playback_dependent_protection_rules)
+            await set_playback_rule_data_notice(
+                db,
+                unavailable_targets=playback_rule_result.unavailable_count,
+                reason=playback_rule_result.error
+                or "unknown playback history provider error",
+            )
+        else:
+            await clear_playback_rule_data_notice(db)
 
         protection_rules = [
             rule

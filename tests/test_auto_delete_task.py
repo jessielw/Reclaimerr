@@ -14,7 +14,11 @@ from backend.api.routes.settings.general import (
     update_general_settings,
 )
 from backend.api.routes.tasks import run_task_now
-from backend.core.task_runtime import DISABLE_ABLE_TASKS, MAIN_SERVER_REQUIRED_TASKS
+from backend.core.task_runtime import (
+    DISABLE_ABLE_TASKS,
+    MAIN_SERVER_REQUIRED_TASKS,
+    execute_task,
+)
 from backend.database import Base
 from backend.database.models import (
     DeleteRequest,
@@ -73,7 +77,38 @@ def test_auto_delete_defaults_and_metadata():
         assert default_schedule["schedule_value"] == "0 2 * * 0"
         assert default_schedule["enabled"] is False
 
+        playback_schedule = next(
+            item
+            for item in DEFAULT_SCHEDULES
+            if item["task"] is Task.REFRESH_PLAYBACK_HISTORY
+        )
+        assert Task.REFRESH_PLAYBACK_HISTORY in MAIN_SERVER_REQUIRED_TASKS
+        assert Task.REFRESH_PLAYBACK_HISTORY not in DISABLE_ABLE_TASKS
+        assert playback_schedule["schedule_type"] is ScheduleType.MANUAL
+        assert playback_schedule["schedule_value"] == ""
+        assert playback_schedule["enabled"] is True
+
         await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_execute_task_refreshes_playback_history(monkeypatch):
+    async def run() -> None:
+        monkeypatch.setattr(
+            "backend.core.task_runtime.is_task_enabled",
+            AsyncMock(return_value=True),
+        )
+        refresh_mock = AsyncMock(return_value={"providers": 1})
+        monkeypatch.setattr(
+            "backend.core.task_runtime.refresh_playback_history_task",
+            refresh_mock,
+        )
+
+        result = await execute_task(Task.REFRESH_PLAYBACK_HISTORY)
+
+        refresh_mock.assert_awaited_once()
+        assert result == {"providers": 1}
 
     asyncio.run(run())
 
