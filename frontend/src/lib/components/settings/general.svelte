@@ -12,10 +12,12 @@
   import PowerOff from "@lucide/svelte/icons/power-off";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
+  import { Checkbox } from "$lib/components/ui/checkbox/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import {
     MediaType,
+    PageAccess,
     type GeneralSettings,
     type PathMapping,
     type PostActionWebhookConfig,
@@ -24,6 +26,10 @@
   import TestButton from "$lib/components/test-button.svelte";
   import Notice from "$lib/components/notice.svelte";
   import { auth } from "$lib/stores/auth";
+  import {
+    DEFAULT_NEW_USER_ALLOWED_PAGES,
+    PAGE_ACCESS_OPTIONS,
+  } from "$lib/page-access";
 
   // props
   interface Props {
@@ -61,6 +67,9 @@
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
   let requesterWatchUserMappings = $state<RequesterWatchUserMapping[]>([]);
+  let defaultAllowedPages = $state<PageAccess[]>([
+    ...DEFAULT_NEW_USER_ALLOWED_PAGES,
+  ]);
   let leavingSoonEnabled = $state(false);
   let leavingSoonCollectionTitle = $state("Leaving Soon");
   let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
@@ -124,6 +133,14 @@
     autoDeleteEnabled = false;
   };
 
+  const toggleDefaultAllowedPage = (page: PageAccess, checked: boolean) => {
+    if (checked) {
+      defaultAllowedPages = [...new Set([...defaultAllowedPages, page])];
+      return;
+    }
+    defaultAllowedPages = defaultAllowedPages.filter((item) => item !== page);
+  };
+
   // save settings
   const saveSettings = async () => {
     savingSettings = true;
@@ -131,6 +148,9 @@
       // validate input before saving
       const validationError = validateWorkerPoll();
       if (validationError) throw new Error(validationError);
+      if (defaultAllowedPages.length === 0) {
+        throw new Error("Select at least one default page for new users");
+      }
 
       // save settings to backend
       await put_api("/api/settings/general", {
@@ -167,6 +187,7 @@
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
         requester_watch_user_mappings: requesterWatchUserMappings,
+        default_allowed_pages: defaultAllowedPages,
         leaving_soon_enabled: leavingSoonEnabled,
         leaving_soon_collection_title: leavingSoonCollectionTitle,
       });
@@ -387,6 +408,10 @@
         );
         requesterWatchUserMappings =
           settings.requester_watch_user_mappings ?? [];
+        defaultAllowedPages =
+          settings.default_allowed_pages?.length > 0
+            ? settings.default_allowed_pages
+            : [...DEFAULT_NEW_USER_ALLOWED_PAGES];
         leavingSoonEnabled = settings.leaving_soon_enabled ?? false;
         leavingSoonCollectionTitle =
           settings.leaving_soon_collection_title ?? "Leaving Soon";
@@ -1124,6 +1149,42 @@
         list exclusions to reduce automatic re-add/re-import behavior. Unmonitor
         only actions are not affected.
       </p>
+    </div>
+
+    <!-- default page access -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <h3 class="font-semibold text-foreground mb-1">
+        Default Page Access for New Users
+      </h3>
+      <p class="text-muted-foreground text-sm mb-3">
+        Applies to newly created and media-login provisioned non-admin users.
+        Existing users keep their current page access until edited.
+      </p>
+      <div class="grid gap-2 sm:grid-cols-2">
+        {#each PAGE_ACCESS_OPTIONS as option}
+          <Label
+            class="flex items-start gap-2 rounded-md border border-border bg-background/40 p-3 text-sm
+              text-foreground cursor-pointer"
+          >
+            <Checkbox
+              checked={defaultAllowedPages.includes(option.value)}
+              onCheckedChange={(checked) =>
+                toggleDefaultAllowedPage(option.value, checked === true)}
+            />
+            <span>
+              <span class="font-medium">{option.label}</span>
+              <span class="block text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
+          </Label>
+        {/each}
+      </div>
+      {#if defaultAllowedPages.length === 0}
+        <p class="mt-2 text-xs text-destructive">
+          Select at least one default page.
+        </p>
+      {/if}
     </div>
 
     <!-- automatic deletion opt-in -->

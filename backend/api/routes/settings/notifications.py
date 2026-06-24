@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
-from backend.core.auth import get_current_user
+from backend.core.auth import require_page_access
 from backend.core.logger import LOG
 from backend.database import get_db
 from backend.database.models import NotificationSetting, User
-from backend.enums import UserRole
+from backend.enums import PageAccess, UserRole
 from backend.models.settings import (
     NotificationSettingItem,
     NotificationTestRequest,
@@ -23,7 +23,7 @@ router = APIRouter(tags=["settings", "notifications"])
 
 @router.get("/notifications")
 async def get_notification_settings(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
     db: AsyncSession = Depends(get_db),
 ) -> list[NotificationSettingItem]:
     """Get all notification settings for the current user."""
@@ -54,7 +54,7 @@ async def get_notification_settings(
 @router.post("/notifications/test")
 async def test_notification(
     data: NotificationTestRequest,
-    _current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
 ) -> dict[str, str]:
     """Test a notification by sending a test payload to the provided URL."""
     if not data.url:
@@ -70,7 +70,7 @@ async def test_notification(
 @router.post("/notifications")
 async def create_or_update_notification(
     data: NotificationSettingItem,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Create or update a notification setting."""
@@ -166,7 +166,7 @@ async def create_or_update_notification(
 @router.delete("/notifications/{notification_id}")
 async def delete_notification(
     notification_id: int,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Remove a notification setting."""

@@ -32,7 +32,11 @@ from backend.enums import (
     TaskStatus,
     UserRole,
 )
-from backend.user_types import AudioCodecFamily, VideoCodecFamily
+from backend.user_types import (
+    DEFAULT_NEW_USER_ALLOWED_PAGES,
+    AudioCodecFamily,
+    VideoCodecFamily,
+)
 
 
 class User(Base):
@@ -64,6 +68,7 @@ class User(Base):
     # permissions
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
     permissions: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    allowed_pages: Mapped[list[str] | None] = mapped_column(JSON, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     require_password_change: Mapped[bool] = mapped_column(Boolean, default=False)
     token_version: Mapped[int] = mapped_column(Integer, default=0)
@@ -310,6 +315,9 @@ class GeneralSettings(Base):
     favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
     requester_watch_user_mappings: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default_factory=list
+    )
+    default_allowed_pages: Mapped[list[str]] = mapped_column(
+        JSON, default_factory=lambda: list(DEFAULT_NEW_USER_ALLOWED_PAGES)
     )
 
     # leaving soon collection sync
@@ -860,9 +868,7 @@ class PlaybackHistoryEvent(Base):
         String(255), default=None, index=True
     )
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
-    season_number: Mapped[int | None] = mapped_column(
-        SmallInteger, default=None
-    )
+    season_number: Mapped[int | None] = mapped_column(SmallInteger, default=None)
     episode_number: Mapped[int | None] = mapped_column(Integer, default=None)
     movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="SET NULL"),
@@ -914,9 +920,7 @@ class PlaybackHistoryAggregate(Base):
     total_duration_seconds: Mapped[int] = mapped_column(BigInteger, default=0)
     longest_duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
     unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
-    first_activity_at: Mapped[datetime | None] = mapped_column(
-        DateTime, default=None
-    )
+    first_activity_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     last_activity_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, index=True
     )

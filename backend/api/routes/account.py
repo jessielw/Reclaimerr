@@ -30,8 +30,14 @@ from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.utils.image_handling import save_picture_from_bytes
 from backend.database import get_db
-from backend.database.models import MediaUserIdentity, ServiceConfig, User, UserSession
-from backend.enums import Permission, UserRole
+from backend.database.models import (
+    GeneralSettings,
+    MediaUserIdentity,
+    ServiceConfig,
+    User,
+    UserSession,
+)
+from backend.enums import PageAccess, Permission, UserRole
 from backend.models.auth import (
     ChangePasswordRequest,
     ChangeProfileInfoRequest,
@@ -47,8 +53,24 @@ from backend.models.auth import (
 )
 from backend.services.admin_notices import resolve_singleton_notice
 from backend.services.media_auth import media_auth_conflict_notice_key_for_source
+from backend.user_types import DEFAULT_NEW_USER_ALLOWED_PAGES
 
 router = APIRouter(prefix="/api/account", tags=["account"])
+
+
+async def _default_allowed_pages_for_new_user(db: AsyncSession) -> list[str]:
+    result = await db.execute(select(GeneralSettings.default_allowed_pages))
+    allowed_pages = result.scalar_one_or_none()
+    if not allowed_pages:
+        return list(DEFAULT_NEW_USER_ALLOWED_PAGES)
+
+    valid_pages: list[str] = []
+    for page in allowed_pages:
+        try:
+            valid_pages.append(PageAccess(page).value)
+        except ValueError:
+            continue
+    return valid_pages or list(DEFAULT_NEW_USER_ALLOWED_PAGES)
 
 
 async def _revoke_user_sessions(
@@ -320,6 +342,14 @@ async def create_user(
         )
 
     permissions = [p.value for p in request.permissions]
+    if request.role is UserRole.ADMIN:
+        allowed_pages = None
+    elif request.use_default_page_access:
+        allowed_pages = await _default_allowed_pages_for_new_user(db)
+    elif request.allowed_pages is None:
+        allowed_pages = None
+    else:
+        allowed_pages = [page.value for page in request.allowed_pages]
 
     # ensure we don't create a user that already exists
     if request.email:  # if user provided an email, check both username and email
@@ -344,6 +374,7 @@ async def create_user(
         display_name=request.display_name or request.username,
         role=request.role,
         permissions=permissions,
+        allowed_pages=allowed_pages,
         require_password_change=request.require_password_change,
     )
     db.add(new_user)
@@ -445,6 +476,11 @@ async def update_user(
     user.email = request.email
     user.role = request.role
     user.permissions = requested_permissions
+    user.allowed_pages = (
+        None
+        if request.role is UserRole.ADMIN or request.allowed_pages is None
+        else [page.value for page in request.allowed_pages]
+    )
 
     if request.password:
         user.password_hash = get_password_hash(request.password)

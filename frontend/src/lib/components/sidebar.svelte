@@ -27,9 +27,10 @@
   import * as Avatar from "$lib/components/ui/avatar/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
-  import { Permission } from "$lib/types/shared";
+  import { PageAccess, Permission } from "$lib/types/shared";
   import { createFilterState } from "$lib/utils/pagination";
   import { uiIndicators } from "$lib/stores/ui-indicators";
+  import { hasPageAccess } from "$lib/page-access";
 
   // optional callback to close sidebar on mobile after navigation
   let { onNavigate = () => {} }: { onNavigate?: () => void } = $props();
@@ -40,6 +41,7 @@
     icon: any;
     adminOnly: boolean;
     tooltip: string | null;
+    page?: PageAccess;
     requiredPermission?: Permission;
   };
 
@@ -51,6 +53,7 @@
       label: "Dashboard",
       icon: House,
       adminOnly: false,
+      page: PageAccess.Dashboard,
       tooltip: null,
     },
     {
@@ -58,6 +61,7 @@
       label: "Movies",
       icon: ClapperBoard,
       adminOnly: false,
+      page: PageAccess.Movies,
       tooltip: null,
     },
     {
@@ -65,6 +69,7 @@
       label: "Series",
       icon: Tv,
       adminOnly: false,
+      page: PageAccess.Series,
       tooltip: null,
     },
     {
@@ -72,6 +77,7 @@
       label: "Requests",
       icon: Ticket,
       adminOnly: false,
+      page: PageAccess.Requests,
       tooltip: "View and manage delete and protection requests",
     },
     {
@@ -79,6 +85,7 @@
       label: "Protected",
       icon: Shield,
       adminOnly: false,
+      page: PageAccess.Protected,
       tooltip:
         "View and manage protected media that won't be automatically deleted",
     },
@@ -87,6 +94,7 @@
       label: "Candidates",
       icon: TriangleAlert,
       adminOnly: false,
+      page: PageAccess.Candidates,
       tooltip:
         "Review media that are candidates for deletion based on your retention settings",
     },
@@ -95,6 +103,7 @@
       label: "History",
       icon: History,
       adminOnly: false,
+      page: PageAccess.History,
       tooltip: "Browse reclaim activity and recent file history",
     },
     {
@@ -109,6 +118,7 @@
       label: "Settings",
       icon: Settings,
       adminOnly: false,
+      page: PageAccess.Settings,
       tooltip: null,
     },
   ];
@@ -119,7 +129,7 @@
   let hiddenPaths = $state<string[]>([]);
   let hydratedStorageKey = $state<string | null>(null);
   const SIDEBAR_HIDDEN_PATHS_KEY = "sidebar_hidden_paths";
-  const lockedNavPaths = new Set(["/settings"]);
+  const lockedNavPaths = new Set<string>();
   const allNavPaths = new Set(navItems.map((item) => item.path));
 
   const visibleNavItems = $derived(
@@ -156,6 +166,7 @@
 
   const canAccessNavItem = (item: NavItem): boolean => {
     if (item.adminOnly && $auth.user?.role !== "admin") return false;
+    if (item.page && !hasPageAccess($auth.user, item.page)) return false;
     if (!item.requiredPermission) return true;
     return (
       $auth.user?.role === "admin" ||

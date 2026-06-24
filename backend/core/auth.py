@@ -13,7 +13,7 @@ from backend.core.settings import settings
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.database import get_db
 from backend.database.models import User, UserSession
-from backend.enums import Permission, UserRole
+from backend.enums import PageAccess, Permission, UserRole
 
 # password hashing with Argon2
 argon_ph = PasswordHasher()
@@ -254,3 +254,31 @@ def require_permission(permission: Permission) -> Any:
         return current_user
 
     return _require_permission
+
+
+def has_page_access(user: User, page: PageAccess) -> bool:
+    """Check whether user may view a page, with admin and legacy bypasses."""
+    if user.role is UserRole.ADMIN:
+        return True
+
+    allowed_pages = user.allowed_pages
+    if allowed_pages is None:
+        return True
+
+    return page.value in allowed_pages
+
+
+def require_page_access(page: PageAccess) -> Any:
+    """Dependency factory requiring access to an app page."""
+
+    async def _require_page_access(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if not has_page_access(current_user, page):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"{page.value.replace('_', ' ').title()} page access required",
+            )
+        return current_user
+
+    return _require_page_access

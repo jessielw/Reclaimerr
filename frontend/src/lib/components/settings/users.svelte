@@ -7,10 +7,15 @@
   import {
     type MediaIdentityItem,
     type MediaIdentityListResponse,
+    PageAccess,
     Permission,
     type UserProfile as User,
     UserRole,
   } from "$lib/types/shared";
+  import {
+    DEFAULT_NEW_USER_ALLOWED_PAGES,
+    PAGE_ACCESS_OPTIONS,
+  } from "$lib/page-access";
   import { Button } from "$lib/components/ui/button/index.js";
   import { toast } from "svelte-sonner";
   import { formatDate } from "$lib/utils/date";
@@ -68,6 +73,7 @@
 
   let userToDelete: User | null = $state(null);
   let showDeleteDialog: boolean = $state(false);
+  const defaultCreateAllowedPages = DEFAULT_NEW_USER_ALLOWED_PAGES;
 
   // create user form
   let newUser = $state({
@@ -77,6 +83,8 @@
     display_name: "",
     role: "user",
     permissions: [Permission.Request],
+    use_default_page_access: true,
+    allowed_pages: [...defaultCreateAllowedPages] as PageAccess[] | null,
   });
 
   // edit user form
@@ -85,6 +93,7 @@
     email: "",
     role: "user",
     permissions: [] as Permission[],
+    allowed_pages: null as PageAccess[] | null,
     password: "", // optional - only if changing password
   });
 
@@ -119,6 +128,15 @@
 
   // helper to check if a permission can be edited based on current user's role
   const canEditPermission = (_permission: Permission): boolean => true;
+
+  const selectedPageLabels = (pages: PageAccess[] | null): string => {
+    if (pages === null) return "Unrestricted";
+    if (pages.length === 0) return "No pages";
+    const labels = PAGE_ACCESS_OPTIONS.filter((option) =>
+      pages.includes(option.value),
+    ).map((option) => option.label);
+    return labels.join(", ");
+  };
 
   const isIdentityBusy = (identityId: number) =>
     identityBusyIds.includes(identityId);
@@ -174,6 +192,36 @@
         (p) => p !== permission,
       );
     }
+  };
+
+  const toggleCreatePageAccess = (page: PageAccess, checked: boolean) => {
+    if (newUser.allowed_pages === null) return;
+    if (checked) {
+      newUser.allowed_pages = [...new Set([...newUser.allowed_pages, page])];
+      return;
+    }
+    newUser.allowed_pages = newUser.allowed_pages.filter(
+      (item) => item !== page,
+    );
+  };
+
+  const toggleEditPageAccess = (page: PageAccess, checked: boolean) => {
+    if (editUser.allowed_pages === null) return;
+    if (checked) {
+      editUser.allowed_pages = [...new Set([...editUser.allowed_pages, page])];
+      return;
+    }
+    editUser.allowed_pages = editUser.allowed_pages.filter(
+      (item) => item !== page,
+    );
+  };
+
+  const setCreateUnrestrictedPageAccess = (checked: boolean) => {
+    newUser.allowed_pages = checked ? null : [...defaultCreateAllowedPages];
+  };
+
+  const setEditUnrestrictedPageAccess = (checked: boolean) => {
+    editUser.allowed_pages = checked ? null : [...defaultCreateAllowedPages];
   };
 
   // load users from API
@@ -300,6 +348,8 @@
       email: user.email || "",
       role: user.role,
       permissions: [...(user.permissions || [])],
+      allowed_pages:
+        user.allowed_pages === null ? null : [...user.allowed_pages],
       password: "",
     };
     showEditModal = true;
@@ -314,6 +364,7 @@
       email: "",
       role: "user",
       permissions: [],
+      allowed_pages: null,
       password: "",
     };
   };
@@ -328,6 +379,8 @@
         email: editUser.email.trim(),
         role: editUser.role,
         permissions: editUser.permissions,
+        allowed_pages:
+          editUser.role === UserRole.Admin ? null : editUser.allowed_pages,
       };
 
       // only include password if it's provided
@@ -362,6 +415,8 @@
       display_name: "",
       role: "user",
       permissions: [Permission.Request],
+      use_default_page_access: true,
+      allowed_pages: [...defaultCreateAllowedPages],
     };
   };
 
@@ -423,6 +478,10 @@
           >
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >Page Access</th
+          >
+          <th
+            class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
             >Joined</th
           >
           <th
@@ -477,6 +536,13 @@
             <td class="px-6 py-4 whitespace-nowrap">
               <span class="text-sm text-foreground capitalize">{user.role}</span
               >
+            </td>
+            <td class="px-6 py-4 max-w-80">
+              <span class="text-sm text-muted-foreground">
+                {user.role === UserRole.Admin
+                  ? "Admin override"
+                  : selectedPageLabels(user.allowed_pages)}
+              </span>
             </td>
             <td
               class="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground"
@@ -805,6 +871,82 @@
             {/each}
           </div>
         </div>
+        <div class="space-y-2">
+          <Label for="new_page_access_container">Page Access</Label>
+          {#if newUser.role === UserRole.Admin}
+            <span class="mt-0 text-xs text-muted-foreground">
+              Admins can access all pages.
+            </span>
+          {:else}
+            <div
+              id="new_page_access_container"
+              class="space-y-3 rounded-lg border border-border p-3"
+            >
+              <Label
+                class="flex items-start gap-2 text-sm text-foreground cursor-pointer"
+              >
+                <Checkbox
+                  checked={newUser.use_default_page_access}
+                  onCheckedChange={(checked) =>
+                    (newUser.use_default_page_access = checked === true)}
+                />
+                <span>
+                  <span class="font-medium">Use configured default</span>
+                  <span class="block text-xs text-muted-foreground">
+                    Applies the General settings default when this user is
+                    created.
+                  </span>
+                </span>
+              </Label>
+              {#if !newUser.use_default_page_access}
+                <Label
+                  class="flex items-start gap-2 text-sm text-foreground cursor-pointer"
+                >
+                  <Checkbox
+                    checked={newUser.allowed_pages === null}
+                    onCheckedChange={(checked) =>
+                      setCreateUnrestrictedPageAccess(checked === true)}
+                  />
+                  <span>
+                    <span class="font-medium">Unrestricted page access</span>
+                    <span class="block text-xs text-muted-foreground">
+                      Allow all current and future user-visible pages.
+                    </span>
+                  </span>
+                </Label>
+                {#if newUser.allowed_pages !== null}
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    {#each PAGE_ACCESS_OPTIONS as option}
+                      <Label
+                        class="flex items-start gap-2 rounded-md border border-border p-2 text-sm text-foreground cursor-pointer"
+                      >
+                        <Checkbox
+                          checked={newUser.allowed_pages.includes(option.value)}
+                          onCheckedChange={(checked) =>
+                            toggleCreatePageAccess(
+                              option.value,
+                              checked === true,
+                            )}
+                        />
+                        <span>
+                          <span class="font-medium">{option.label}</span>
+                          <span class="block text-xs text-muted-foreground">
+                            {option.description}
+                          </span>
+                        </span>
+                      </Label>
+                    {/each}
+                  </div>
+                  {#if newUser.allowed_pages.length === 0}
+                    <p class="text-xs text-destructive">
+                      Select at least one page.
+                    </p>
+                  {/if}
+                {/if}
+              {/if}
+            </div>
+          {/if}
+        </div>
         <div class="flex justify-between gap-3 pt-4">
           <Button
             type="button"
@@ -911,6 +1053,61 @@
               </Label>
             {/each}
           </div>
+        </div>
+        <div class="space-y-2">
+          <Label for="edit_page_access_container">Page Access</Label>
+          {#if editUser.role === UserRole.Admin}
+            <span class="mt-0 text-xs text-muted-foreground">
+              Admins can access all pages.
+            </span>
+          {:else}
+            <div
+              id="edit_page_access_container"
+              class="space-y-3 rounded-lg border border-border p-3"
+            >
+              <Label
+                class="flex items-start gap-2 text-sm text-foreground cursor-pointer"
+              >
+                <Checkbox
+                  checked={editUser.allowed_pages === null}
+                  onCheckedChange={(checked) =>
+                    setEditUnrestrictedPageAccess(checked === true)}
+                />
+                <span>
+                  <span class="font-medium">Unrestricted page access</span>
+                  <span class="block text-xs text-muted-foreground">
+                    Allow all current and future user-visible pages.
+                  </span>
+                </span>
+              </Label>
+              {#if editUser.allowed_pages !== null}
+                <div class="grid gap-2 sm:grid-cols-2">
+                  {#each PAGE_ACCESS_OPTIONS as option}
+                    <Label
+                      class="flex items-start gap-2 rounded-md border border-border p-2 text-sm text-foreground cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={editUser.allowed_pages.includes(option.value)}
+                        onCheckedChange={(checked) =>
+                          toggleEditPageAccess(option.value, checked === true)}
+                      />
+                      <span>
+                        <span class="font-medium">{option.label}</span>
+                        <span class="block text-xs text-muted-foreground">
+                          {option.description}
+                        </span>
+                      </span>
+                    </Label>
+                  {/each}
+                </div>
+                {#if editUser.allowed_pages.length === 0}
+                  <p class="text-xs text-destructive">
+                    Select at least one page.
+                  </p>
+                {/if}
+              {/if}
+            </div>
+          {/if}
         </div>
         <div class="space-y-2">
           <Label for="edit_password">New Password (Optional)</Label>

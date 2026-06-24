@@ -10,6 +10,7 @@ export interface User {
   email: string | null;
   role: UserRole;
   permissions: Permission[];
+  allowed_pages: PageAccess[] | null;
   has_local_password: boolean;
   require_password_change: boolean;
 }
@@ -27,6 +28,17 @@ export enum Permission {
   AutoApprove = "auto_approve",
   ManageProtection = "manage_protection",
   ManageReclaim = "manage_reclaim",
+}
+
+export enum PageAccess {
+  Dashboard = "dashboard",
+  Movies = "movies",
+  Series = "series",
+  Requests = "requests",
+  Protected = "protected",
+  Candidates = "candidates",
+  History = "history",
+  Settings = "settings",
 }
 
 export interface UserProfile extends User {
@@ -265,6 +277,7 @@ export interface GeneralSettings {
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
   requester_watch_user_mappings: RequesterWatchUserMapping[];
+  default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
 }

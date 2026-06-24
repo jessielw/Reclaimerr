@@ -15,13 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
-from backend.database.models import MediaUserIdentity, ServiceConfig, User
-from backend.enums import Permission, Service, UserRole
+from backend.database.models import (
+    GeneralSettings,
+    MediaUserIdentity,
+    ServiceConfig,
+    User,
+)
+from backend.enums import PageAccess, Permission, Service, UserRole
 from backend.services.admin_notices import (
     resolve_singleton_notice,
     upsert_singleton_notice,
 )
-from backend.user_types import MEDIA_SERVERS
+from backend.user_types import DEFAULT_NEW_USER_ALLOWED_PAGES, MEDIA_SERVERS
 
 MediaAuthMode = Literal["credentials", "redirect"]
 
@@ -152,6 +157,21 @@ def media_auth_conflict_notice_key(identity: DiscoveredMediaUser) -> str:
         identity.source_service_config_id,
         identity.source_user_id,
     )
+
+
+async def default_allowed_pages_for_media_user(db: AsyncSession) -> list[str]:
+    result = await db.execute(select(GeneralSettings.default_allowed_pages))
+    allowed_pages = result.scalar_one_or_none()
+    if not allowed_pages:
+        return list(DEFAULT_NEW_USER_ALLOWED_PAGES)
+
+    valid_pages: list[str] = []
+    for page in allowed_pages:
+        try:
+            valid_pages.append(PageAccess(page).value)
+        except ValueError:
+            continue
+    return valid_pages or list(DEFAULT_NEW_USER_ALLOWED_PAGES)
 
 
 def _decrypt_api_key(value: str) -> str:
@@ -914,6 +934,11 @@ async def resolve_or_create_user_for_identity(
         identity.email.split("@", 1)[0] if identity.email else identity.username
     )
     local_username = _safe_unique_username(desired_username, used_usernames)
+    allowed_pages = (
+        None
+        if identity.local_role is UserRole.ADMIN
+        else await default_allowed_pages_for_media_user(db)
+    )
     new_user = User(
         username=local_username,
         password_hash="",
@@ -921,6 +946,7 @@ async def resolve_or_create_user_for_identity(
         display_name=_display_name(identity.display_name, local_username),
         role=identity.local_role,
         permissions=[Permission.REQUEST.value],
+        allowed_pages=allowed_pages,
         is_active=True,
         require_password_change=False,
     )

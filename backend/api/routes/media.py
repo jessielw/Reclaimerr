@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
-from backend.core.auth import get_current_user, has_permission
+from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
@@ -32,6 +32,7 @@ from backend.database.models import (
 from backend.enums import (
     CandidateFileOpOperation,
     MediaType,
+    PageAccess,
     Permission,
     ProtectionRequestStatus,
     UserRole,
@@ -399,7 +400,7 @@ async def _get_candidate_page_groups(
 
 @router.get("/movies", response_model=PaginatedMediaResponse)
 async def get_movies(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.MOVIES))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -647,7 +648,7 @@ async def get_movies(
 
 @router.get("/series", response_model=PaginatedMediaResponse)
 async def get_series(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.SERIES))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -902,7 +903,7 @@ async def get_series(
 @router.get("/series/{series_id}/seasons", response_model=list[SeasonWithStatus])
 async def get_series_seasons(
     series_id: int,
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.SERIES))],
     db: AsyncSession = Depends(get_db),
 ) -> list[SeasonWithStatus]:
     """Get per-season status for a series."""
@@ -1047,7 +1048,7 @@ async def get_series_seasons(
 @router.get("/series/{series_id}/episodes", response_model=list[EpisodeWithStatus])
 async def get_series_episodes(
     series_id: int,
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.SERIES))],
     db: AsyncSession = Depends(get_db),
 ) -> list[EpisodeWithStatus]:
     """Get per episode status for a series."""
@@ -1201,7 +1202,7 @@ async def get_series_episodes(
 
 @router.get("/candidates", response_model=PaginatedCandidatesResponse)
 async def get_candidates(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=200),
@@ -1670,7 +1671,7 @@ async def get_candidates(
 
 @router.get("/candidates/presence", response_model=CandidatesPresenceResponse)
 async def get_candidates_presence(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
     db: AsyncSession = Depends(get_db),
 ) -> CandidatesPresenceResponse:
     """Return whether any reclaim candidates currently exist."""
@@ -1784,7 +1785,7 @@ async def move_candidates(
 
 @router.get("/reclaim-history", response_model=PaginatedReclaimHistoryResponse)
 async def get_reclaim_history(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.HISTORY))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),

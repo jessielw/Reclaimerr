@@ -13,3 +13,14 @@ class Permission(StrEnum):
     AUTO_APPROVE = auto()
     MANAGE_PROTECTION = auto()
     MANAGE_RECLAIM = auto()
+
+
+class PageAccess(StrEnum):
+    DASHBOARD = auto()
+    MOVIES = auto()
+    SERIES = auto()
+    REQUESTS = auto()
+    PROTECTED = auto()
+    CANDIDATES = auto()
+    HISTORY = auto()
+    SETTINGS = auto()

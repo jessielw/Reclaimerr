@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from backend.core.auth import get_current_user, has_permission
+from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
@@ -21,7 +21,7 @@ from backend.database.models import (
     Series,
     User,
 )
-from backend.enums import MediaType, Permission, UserRole
+from backend.enums import MediaType, PageAccess, Permission, UserRole
 from backend.models.protect import (
     CreateProtectedEntryRequest,
     PaginatedProtectedResponse,
@@ -116,7 +116,7 @@ def can_manage_protection(user: User) -> bool:
 
 @router.get("", response_model=PaginatedProtectedResponse)
 async def get_protected_entries(
-    _user: Annotated[User, Depends(get_current_user)],
+    _user: Annotated[User, Depends(require_page_access(PageAccess.PROTECTED))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=200),

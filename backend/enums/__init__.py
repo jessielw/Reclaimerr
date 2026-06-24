@@ -11,12 +11,13 @@ from .tasks import (
     Task,
     TaskStatus,
 )
-from .users import Permission, UserRole
+from .users import PageAccess, Permission, UserRole
 
 __all__ = [
     # alerts
     "AlertLevel",
     # users
+    "PageAccess",
     "Permission",
     "UserRole",
     # media

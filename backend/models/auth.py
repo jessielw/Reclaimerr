@@ -12,7 +12,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from backend.enums import Permission, UserRole
+from backend.enums import PageAccess, Permission, UserRole
 
 PASSWORD_REGEX = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,64}$")
 NAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -119,6 +119,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
     avatar_path: str | None
     role: UserRole
     permissions: list[Permission] = []
+    allowed_pages: list[PageAccess] | None = None
     created_at: datetime
     has_local_password: bool
     require_password_change: bool
@@ -160,6 +161,26 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
                 continue
         return parsed
 
+    @field_validator("allowed_pages", mode="before")
+    @classmethod
+    def coerce_allowed_pages(
+        cls, value: list[PageAccess] | list[str] | tuple[str, ...] | None
+    ) -> list[PageAccess] | None:
+        """Coerce raw DB page-access strings to PageAccess enums."""
+        if value is None:
+            return None
+
+        parsed: list[PageAccess] = []
+        for page in value:
+            if isinstance(page, PageAccess):
+                parsed.append(page)
+                continue
+            try:
+                parsed.append(PageAccess(page))
+            except ValueError:
+                continue
+        return list(dict.fromkeys(parsed))
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def avatar_url(self) -> str | None:
@@ -179,6 +200,9 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
             avatar_path=user.avatar_path,
             role=user.role,
             permissions=cls.coerce_permissions(user.permissions),
+            allowed_pages=cls.coerce_allowed_pages(
+                getattr(user, "allowed_pages", None)
+            ),
             created_at=user.created_at,
             has_local_password=bool(user.password_hash),
             require_password_change=user.require_password_change or False,
@@ -277,6 +301,8 @@ class CreateUserRequest(
     email: EmailStr | None = None
     role: UserRole
     permissions: list[Permission] = []
+    allowed_pages: list[PageAccess] | None = None
+    use_default_page_access: bool = True
     require_password_change: bool = True
 
     @field_validator("username")
@@ -304,6 +330,13 @@ class CreateUserRequest(
     @model_validator(mode="after")
     def sanitize_fields(self) -> "CreateUserRequest":
         self.permissions = list(dict.fromkeys(self.permissions))
+        if self.allowed_pages is not None:
+            self.allowed_pages = list(dict.fromkeys(self.allowed_pages))
+            if not self.allowed_pages:
+                raise PydanticCustomError(
+                    "allowed_pages",
+                    "At least one page must be selected",
+                )
         return self
 
 
@@ -312,6 +345,7 @@ class UpdateUserRequest(BaseModel, DisplayNameMixin, PasswordValidationMixin):
     email: EmailStr | None = None
     role: UserRole
     permissions: list[Permission] = []
+    allowed_pages: list[PageAccess] | None = None
     password: str | None = None
 
     @field_validator("display_name")
@@ -336,6 +370,13 @@ class UpdateUserRequest(BaseModel, DisplayNameMixin, PasswordValidationMixin):
     @model_validator(mode="after")
     def sanitize_fields(self) -> "UpdateUserRequest":
         self.permissions = list(dict.fromkeys(self.permissions))
+        if self.allowed_pages is not None:
+            self.allowed_pages = list(dict.fromkeys(self.allowed_pages))
+            if not self.allowed_pages:
+                raise PydanticCustomError(
+                    "allowed_pages",
+                    "At least one page must be selected",
+                )
         return self
 
 

@@ -1,5 +1,6 @@
 ﻿<script lang="ts">
   import Router from "svelte-spa-router";
+  import { location } from "svelte-spa-router";
   import wrap from "svelte-spa-router/wrap";
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
@@ -25,6 +26,11 @@
   import X from "@lucide/svelte/icons/x";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import logoImage from "$lib/assets/logo.png";
+  import {
+    firstAccessiblePath,
+    hasPageAccess,
+    pageForPath,
+  } from "$lib/page-access";
 
   const route = (component: Component) =>
     wrap({
@@ -102,6 +108,15 @@
         document.documentElement.dataset.theme = theme;
       }
     }
+  });
+
+  $effect(() => {
+    if ($auth.loading || needsSetup || !$auth.isAuthenticated) return;
+    const page = pageForPath($location);
+    if (!page || hasPageAccess($auth.user, page)) return;
+    const target = firstAccessiblePath($auth.user);
+    if (target === $location || typeof window === "undefined") return;
+    window.location.hash = `#${target}`;
   });
 </script>
 

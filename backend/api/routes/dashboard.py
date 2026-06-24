@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
-from backend.core.auth import get_current_user
+from backend.core.auth import require_page_access
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
@@ -23,8 +23,8 @@ from backend.database.models import (
 )
 from backend.enums import (
     MediaType,
+    PageAccess,
     ProtectionRequestStatus,
-    Service,
     Task,
     TaskStatus,
     UserRole,
@@ -44,7 +44,7 @@ router = APIRouter(prefix="/api", tags=["dashboard"])
 
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.DASHBOARD))],
     db: AsyncSession = Depends(get_db),
 ) -> DashboardResponse:
     """Role aware dashboard summary."""

@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from backend.core.auth import get_current_user, has_permission, require_permission
+from backend.core.auth import (
+    get_current_user,
+    has_permission,
+    require_page_access,
+    require_permission,
+)
 from backend.core.logger import LOG
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
@@ -26,6 +31,7 @@ from backend.database.models import (
 from backend.enums import (
     MediaType,
     NotificationType,
+    PageAccess,
     Permission,
     ProtectionRequestStatus,
 )
@@ -574,7 +580,7 @@ async def create_protection_request(
 
 @router.get("/protection-requests/my", response_model=list[ProtectionRequestResponse])
 async def get_my_requests(
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(require_page_access(PageAccess.REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[ProtectionRequestResponse]:
@@ -648,6 +654,7 @@ async def get_my_requests(
 @router.get("/protection-requests", response_model=list[ProtectionRequestResponse])
 async def get_all_requests(
     _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
+    _page_user: Annotated[User, Depends(require_page_access(PageAccess.REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[ProtectionRequestResponse]:

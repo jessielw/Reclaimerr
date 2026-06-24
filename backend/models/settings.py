@@ -8,8 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import MediaType, NotificationType, Service
-from backend.user_types import MEDIA_SERVERS, MediaServerType
+from backend.enums import MediaType, NotificationType, PageAccess, Service
+from backend.user_types import (
+    DEFAULT_NEW_USER_ALLOWED_PAGES,
+    MEDIA_SERVERS,
+    MediaServerType,
+)
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
@@ -320,6 +324,11 @@ class GeneralSettingsResponse(BaseModel):
     requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
         default_factory=list
     )
+    default_allowed_pages: list[PageAccess] = Field(
+        default_factory=lambda: [
+            PageAccess(page) for page in DEFAULT_NEW_USER_ALLOWED_PAGES
+        ]
+    )
     leaving_soon_enabled: bool = False
     leaving_soon_collection_title: str = "Leaving Soon"
 
@@ -396,6 +405,16 @@ class GeneralSettingsResponse(BaseModel):
             seen.add(key)
             deduped.append(mapping)
         self.requester_watch_user_mappings = deduped
+        return self
+
+    @model_validator(mode="after")
+    def normalize_default_allowed_pages(self) -> GeneralSettingsResponse:
+        self.default_allowed_pages = list(dict.fromkeys(self.default_allowed_pages))
+        if not self.default_allowed_pages:
+            raise PydanticCustomError(
+                "default_allowed_pages",
+                "At least one default page must be selected",
+            )
         return self
 
     @model_validator(mode="after")

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency [svelte-dnd-action](https://github.com/isaacHagoel/svelte-dnd-action)
 - Rule conditions and nested groups can be reordered or moved between groups with accessible drag handles
 - Manual task to refresh durable playback history without running a full media sync
+- Per-user page access controls with a configurable default for newly created non-admin users
+  - _Note: existing users will not be affected by this change - you will need to re-assign them to the new default if desired_
 - Automated protection rule outcome:
   - Rules can create managed protections instead of deletion candidates
   - Managed protections reconcile during cleanup scans and take precedence over candidate rules

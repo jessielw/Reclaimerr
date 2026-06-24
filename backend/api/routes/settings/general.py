@@ -209,6 +209,9 @@ async def update_general_settings(
         mapping.model_dump(mode="json")
         for mapping in request.requester_watch_user_mappings
     ]
+    settings.default_allowed_pages = [
+        page.value for page in request.default_allowed_pages
+    ]
     settings.leaving_soon_enabled = request.leaving_soon_enabled
     settings.leaving_soon_collection_title = current_leaving_soon_title
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:

@@ -16,12 +16,13 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import FavoritesSettings from "$lib/components/settings/general/favorites-settings.svelte";
-  import type {
-    GeneralSettings,
-    RequesterWatchUserMapping,
-    SeerrUserLookup,
-    WatchUserLookup,
+  import {
+    type GeneralSettings,
+    type RequesterWatchUserMapping,
+    type SeerrUserLookup,
+    type WatchUserLookup,
   } from "$lib/types/shared";
+  import { DEFAULT_NEW_USER_ALLOWED_PAGES } from "$lib/page-access";
 
   interface Props {
     svgIcon: Component | null;
@@ -46,6 +47,7 @@
     favorites_protect_all_users: false,
     favorites_usernames: [],
     requester_watch_user_mappings: [],
+    default_allowed_pages: [...DEFAULT_NEW_USER_ALLOWED_PAGES],
     leaving_soon_enabled: false,
     leaving_soon_collection_title: "Leaving Soon",
   };

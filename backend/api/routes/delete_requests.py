@@ -6,7 +6,12 @@ from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.core.auth import get_current_user, has_permission, require_permission
+from backend.core.auth import (
+    get_current_user,
+    has_permission,
+    require_page_access,
+    require_permission,
+)
 from backend.core.logger import LOG
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
@@ -26,6 +31,7 @@ from backend.enums import (
     CandidateFileOpOperation,
     MediaType,
     NotificationType,
+    PageAccess,
     Permission,
     ProtectionRequestStatus,
 )
@@ -719,7 +725,7 @@ async def create_delete_request(
 
 @router.get("/delete-requests/my", response_model=list[DeleteRequestResponse])
 async def get_my_delete_requests(
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(require_page_access(PageAccess.REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[DeleteRequestResponse]:
@@ -766,6 +772,7 @@ async def get_my_delete_requests(
 @router.get("/delete-requests", response_model=list[DeleteRequestResponse])
 async def get_all_delete_requests(
     _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
+    _page_user: Annotated[User, Depends(require_page_access(PageAccess.REQUESTS))],
     db: AsyncSession = Depends(get_db),
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[DeleteRequestResponse]:
