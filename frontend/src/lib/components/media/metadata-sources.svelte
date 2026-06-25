@@ -574,6 +574,7 @@
                     target="_blank"
                     rel="noopener noreferrer"
                     aria-label={card.linkLabel}
+                    tabindex="-1"
                     class={`${summaryPillClass} ${metricToneClass(metric.tone)} hover:border-primary/50 hover:bg-primary/10 hover:text-primary`}
                   >
                     {#if card.icon === "tomatometer"}
@@ -642,11 +643,6 @@
             </Tooltip.Trigger>
             <Tooltip.Content>
               <div class="space-y-1">
-                <p class="font-medium">
-                  {card.label}{card.sourceLabel
-                    ? ` via ${card.sourceLabel}`
-                    : ""}
-                </p>
                 {#each card.metrics as detail (detail.key)}
                   <p>{detail.tooltip}: {detail.value}</p>
                 {/each}
