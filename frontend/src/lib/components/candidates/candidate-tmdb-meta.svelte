@@ -26,6 +26,18 @@
       entry.anilist_score != null ||
       entry.anilist_popularity != null ||
       entry.anilist_favourites != null ||
+      entry.rottentomatoes_tomato_meter != null ||
+      entry.rottentomatoes_tomato_vote_count != null ||
+      entry.rottentomatoes_popcorn_meter != null ||
+      entry.rottentomatoes_popcorn_vote_count != null ||
+      entry.metacritic_metascore != null ||
+      entry.metacritic_vote_count != null ||
+      entry.metacritic_user_score != null ||
+      entry.metacritic_user_vote_count != null ||
+      entry.trakt_rating != null ||
+      entry.trakt_vote_count != null ||
+      entry.letterboxd_score != null ||
+      entry.letterboxd_vote_count != null ||
       genres.length > 0 ||
       !!collectionName,
   );
@@ -54,8 +66,22 @@
       anilistScore={entry.anilist_score}
       anilistPopularity={entry.anilist_popularity}
       anilistFavourites={entry.anilist_favourites}
+      rottenTomatoesTomatoMeter={entry.rottentomatoes_tomato_meter}
+      rottenTomatoesTomatoVoteCount={entry.rottentomatoes_tomato_vote_count}
+      rottenTomatoesPopcornMeter={entry.rottentomatoes_popcorn_meter}
+      rottenTomatoesPopcornVoteCount={entry.rottentomatoes_popcorn_vote_count}
+      metacriticMetascore={entry.metacritic_metascore}
+      metacriticVoteCount={entry.metacritic_vote_count}
+      metacriticUserScore={entry.metacritic_user_score}
+      metacriticUserVoteCount={entry.metacritic_user_vote_count}
+      traktRating={entry.trakt_rating}
+      traktVoteCount={entry.trakt_vote_count}
+      letterboxdScore={entry.letterboxd_score}
+      letterboxdVoteCount={entry.letterboxd_vote_count}
+      externalRatingsSource={entry.external_ratings_source}
+      variant="summary"
       compact={true}
-      class="w-40 md:w-64"
+      class="w-full"
     />
 
     <!-- genres -->

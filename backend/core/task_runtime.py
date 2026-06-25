@@ -22,6 +22,7 @@ from backend.tasks.cleanup import (
     scan_cleanup_candidates,
     tag_cleanup_candidates,
 )
+from backend.tasks.external_ratings import refresh_external_ratings
 from backend.tasks.house_keeping import weekly_house_keeping
 from backend.tasks.imdb import refresh_imdb_ratings
 from backend.tasks.sync import (
@@ -53,6 +54,7 @@ DISABLE_ABLE_TASKS: frozenset[Task] = frozenset(
         Task.CHECK_APP_UPDATES,
         Task.IMDB_RATINGS_REFRESH,
         Task.ANILIST_RATINGS_REFRESH,
+        Task.REFRESH_EXTERNAL_RATINGS,
         Task.DELETE_CLEANUP_CANDIDATES,
     }
 )
@@ -194,6 +196,9 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
         return None
     if task is Task.ANILIST_RATINGS_REFRESH:
         await refresh_anilist_ratings()
+        return None
+    if task is Task.REFRESH_EXTERNAL_RATINGS:
+        await refresh_external_ratings()
         return None
 
     raise ValueError(f"Unsupported task for background execution: {task}")

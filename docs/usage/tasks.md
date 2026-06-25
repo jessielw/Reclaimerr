@@ -8,6 +8,8 @@ Tasks are scheduled jobs that keep Reclaimerr running on its own.
 - **Tag cleanup candidates** - marks candidates in the media server
 - **Delete cleanup candidates** - deletes eligible candidates when you opt in
 - **Sync media** - refreshes connected services and libraries
+- **Refresh External Ratings** - refreshes cached Rotten Tomatoes, Metacritic,
+  Trakt, and Letterboxd values from configured MDBList/OMDb providers
 
 ## Automatic Cleanup Deletion
 
@@ -40,4 +42,3 @@ modes.
 - Manual runs are available for most tasks, but they still respect task-level
   guards.
 - Tasks that require a main media server stay disabled until one is configured.
-

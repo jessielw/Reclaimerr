@@ -155,6 +155,17 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "default_schedule_value": "0 5 * * *",
         "enabled": True,
     },
+    {
+        "task": Task.REFRESH_EXTERNAL_RATINGS,
+        "description": (
+            "Refreshes external ratings from configured MDBList and OMDb providers"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 6 * * *",  # daily at 6 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 6 * * *",
+        "enabled": True,
+    },
 )
 
 

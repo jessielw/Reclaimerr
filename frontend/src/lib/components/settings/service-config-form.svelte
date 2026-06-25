@@ -14,8 +14,10 @@
     apiKeyIsSet?: boolean;
     apiKeyLabel?: string;
     baseUrlPlaceholder?: string;
+    hideBaseUrl?: boolean;
+    fixedBaseUrl?: string;
     disableToggle?: boolean;
-    extraSettings?: Record<string, string>;
+    extraSettings?: Record<string, any>;
     onchange?: (event: CustomEvent) => void;
   }
 
@@ -30,6 +32,8 @@
     apiKeyIsSet = false,
     apiKeyLabel = "API Key",
     baseUrlPlaceholder,
+    hideBaseUrl = false,
+    fixedBaseUrl,
     disableToggle = false,
     extraSettings = {},
     onchange,
@@ -77,22 +81,36 @@
     />
   </div>
 
-  <div>
-    <label for="baseUrl" class="block text-sm font-medium text-foreground mb-2"
-      >Base URL</label
-    >
-    <Input
-      type="url"
-      name="baseUrl"
-      value={baseUrl}
-      oninput={(e) => dispatchChange("baseUrl", e.currentTarget.value)}
-      placeholder={baseUrlPlaceholder || "http://localhost:8096"}
-      class="input-hover-el text-foreground placeholder:text-muted-foreground"
-    />
-    <p class="mt-1 text-xs text-muted-foreground">
-      The URL where your {tabLabel} instance is running
-    </p>
-  </div>
+  {#if hideBaseUrl}
+    {#if fixedBaseUrl}
+      <div class="rounded-md border border-border bg-muted/30 px-3 py-2">
+        <p
+          class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        >
+          API Endpoint
+        </p>
+        <p class="mt-1 text-sm text-foreground">{fixedBaseUrl}</p>
+      </div>
+    {/if}
+  {:else}
+    <div>
+      <label
+        for="baseUrl"
+        class="block text-sm font-medium text-foreground mb-2">Base URL</label
+      >
+      <Input
+        type="url"
+        name="baseUrl"
+        value={baseUrl}
+        oninput={(e) => dispatchChange("baseUrl", e.currentTarget.value)}
+        placeholder={baseUrlPlaceholder || "http://localhost:8096"}
+        class="input-hover-el text-foreground placeholder:text-muted-foreground"
+      />
+      <p class="mt-1 text-xs text-muted-foreground">
+        The URL where your {tabLabel} instance is running
+      </p>
+    </div>
+  {/if}
 
   <div>
     <label for="apiKey" class="block text-sm font-medium text-foreground mb-2"
@@ -114,7 +132,7 @@
     </p>
   </div>
 
-  <!-- extra settings (these can be customized per service but for now there is only timeout) -->
+  <!-- extra settings -->
   {#if Object.keys(extraSettings).length > 0}
     <!-- timeout -->
     {#if "timeout" in extraSettings}
@@ -151,6 +169,103 @@
             this timeout value (in seconds). Default is 300 seconds.
           </p>
         </div>
+      </div>
+    {/if}
+
+    <!-- request limit -->
+    {#if "request_limit" in extraSettings}
+      <div>
+        <div>
+          <label
+            for="request_limit"
+            class="block text-sm font-medium text-foreground mb-2"
+            >Refresh request limit</label
+          >
+          <Input
+            type="number"
+            name="request_limit"
+            step={10}
+            min={100}
+            max={999_999}
+            value={extraSettings.request_limit}
+            oninput={(e) => {
+              let val =
+                e.currentTarget.value === ""
+                  ? Number(extraSettings.request_limit ?? 100)
+                  : Number(e.currentTarget.value);
+              // clamp value between 100 and 999_999
+              if (val < 100) val = 100;
+              if (val > 999_999) val = 999_999;
+              dispatchChange("extraSettings.request_limit", Math.round(val));
+            }}
+            class="input-hover-el text-foreground placeholder:text-muted-foreground"
+          />
+          <p class="mt-1 text-xs text-muted-foreground">
+            Maximum items this provider refreshes per task run. Lower this if
+            your API quota is tight.
+          </p>
+        </div>
+      </div>
+    {/if}
+
+    <!-- MDBList supporter mode -->
+    {#if "supporter_mode" in extraSettings}
+      <div>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <Switch
+            class="cursor-pointer"
+            checked={Boolean(extraSettings.supporter_mode)}
+            onCheckedChange={(checked) => {
+              dispatchChange("extraSettings.supporter_mode", checked);
+              dispatchChange(
+                "extraSettings.request_delay_seconds",
+                checked ? 0.2 : 1.0,
+              );
+            }}
+          />
+          <span class="text-sm font-medium text-foreground"
+            >MDBList supporter mode</span
+          >
+        </label>
+        <p class="mt-1 text-xs text-muted-foreground">
+          Uses a faster default request delay of 0.2 seconds. Leave disabled for
+          the standard 1 second delay.
+        </p>
+      </div>
+    {/if}
+
+    <!-- request delay -->
+    {#if "request_delay_seconds" in extraSettings}
+      <div>
+        <label
+          for="request_delay_seconds"
+          class="block text-sm font-medium text-foreground mb-2"
+          >Request delay</label
+        >
+        <Input
+          type="number"
+          name="request_delay_seconds"
+          step={0.1}
+          min={0}
+          max={10}
+          value={extraSettings.request_delay_seconds}
+          oninput={(e) => {
+            let val =
+              e.currentTarget.value === ""
+                ? Number(extraSettings.supporter_mode ? 0.2 : 1.0)
+                : Number(e.currentTarget.value);
+            if (val < 0) val = 0;
+            if (val > 10) val = 10;
+            dispatchChange(
+              "extraSettings.request_delay_seconds",
+              Math.round(val * 10) / 10,
+            );
+          }}
+          class="input-hover-el text-foreground placeholder:text-muted-foreground"
+        />
+        <p class="mt-1 text-xs text-muted-foreground">
+          Minimum seconds to wait between provider requests during a refresh.
+        </p>
       </div>
     {/if}
   {/if}

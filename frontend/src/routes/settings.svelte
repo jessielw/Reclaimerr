@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { delete_api, get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
+  import MetadataProviderStatusPanel from "$lib/components/settings/metadata-provider-status-panel.svelte";
   import InstanceManagerBar from "$lib/components/settings/instance-manager-bar.svelte";
   import MediaServers from "$lib/components/settings/media-servers.svelte";
   import Notifications from "$lib/components/settings/notifications.svelte";
@@ -34,7 +35,12 @@
   import KeyRound from "@lucide/svelte/icons/key-round";
   import { toast } from "svelte-sonner";
   import { toTitleCase } from "$lib/utils/strings";
-  import { SettingsTab, Permission, MEDIA_SERVERS } from "$lib/types/shared";
+  import {
+    SettingsTab,
+    Permission,
+    MEDIA_SERVERS,
+    type MetadataProviderStatusResponse,
+  } from "$lib/types/shared";
   import { auth } from "$lib/stores/auth";
 
   type Tab = {
@@ -44,6 +50,7 @@
     baseUrlPlaceholder?: string;
     adminOnly?: boolean;
     lockName?: boolean;
+    hideBaseUrl?: boolean;
   };
 
   type TabGroup = {
@@ -58,7 +65,7 @@
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
-    extraSettings?: Record<string, string>;
+    extraSettings?: Record<string, any>;
   }
 
   type ServiceState = {
@@ -71,20 +78,48 @@
     | { kind: "new-instance"; serviceId: string }
     | { kind: "delete-instance"; serviceId: string };
 
-  // non-media-server service tabs (jellyfin/plex managed by MediaServers component)
+  // Non-media-server configuration tabs. Media servers are managed by MediaServers.
   const serviceTabs = [
     SettingsTab.Radarr,
     SettingsTab.Sonarr,
     SettingsTab.Seerr,
     SettingsTab.Tautulli,
+    SettingsTab.MDBList,
+    SettingsTab.OMDb,
   ];
+  const metadataProviderTabs = [SettingsTab.MDBList, SettingsTab.OMDb];
 
-  // default extra settings for services (e.g. radarr/sonarr timeout) - these will be sent
-  // to backend if the user changes them in the UI, but we need some defaults here to show
-  // something in the form fields on initial load before the user changes them
+  const DEFAULT_SERVICE_NAMES: Partial<Record<string, string>> = {
+    [SettingsTab.MDBList]: "MDBList",
+    [SettingsTab.OMDb]: "OMDb",
+  };
+
+  const DEFAULT_SERVICE_BASE_URLS: Partial<Record<string, string>> = {
+    [SettingsTab.MDBList]: "https://api.mdblist.com",
+    [SettingsTab.OMDb]: "https://www.omdbapi.com",
+  };
+
+  const serviceDisplayName = (serviceId: string) =>
+    DEFAULT_SERVICE_NAMES[serviceId] ?? toTitleCase(serviceId);
+
+  const serviceBaseUrl = (serviceId: string, value?: string | null) => {
+    const baseUrl = (value ?? "").trim();
+    return baseUrl || DEFAULT_SERVICE_BASE_URLS[serviceId] || "";
+  };
+
+  const isMetadataProviderTab = (serviceId: string) =>
+    metadataProviderTabs.includes(serviceId as SettingsTab);
+
+  // Default extra settings are sent when saved and keep initial form fields populated.
   const DEFAULT_EXTRA_SETTINGS: Partial<Record<string, Record<string, any>>> = {
     [SettingsTab.Radarr]: { timeout: 300 },
     [SettingsTab.Sonarr]: { timeout: 300 },
+    [SettingsTab.MDBList]: {
+      request_limit: 950,
+      supporter_mode: false,
+      request_delay_seconds: 1.0,
+    },
+    [SettingsTab.OMDb]: { request_limit: 950 },
   };
 
   // organize tabs into groups
@@ -128,6 +163,30 @@
           baseUrlPlaceholder: "e.g. http://localhost:8181",
           adminOnly: true,
           lockName: true,
+        },
+      ],
+    },
+    {
+      label: "Metadata Providers",
+      adminOnly: true,
+      tabs: [
+        {
+          id: SettingsTab.MDBList,
+          label: "MDBList",
+          icon: KeyRound,
+          baseUrlPlaceholder: "https://api.mdblist.com",
+          adminOnly: true,
+          lockName: true,
+          hideBaseUrl: true,
+        },
+        {
+          id: SettingsTab.OMDb,
+          label: "OMDb",
+          icon: KeyRound,
+          baseUrlPlaceholder: "https://www.omdbapi.com",
+          adminOnly: true,
+          lockName: true,
+          hideBaseUrl: true,
         },
       ],
     },
@@ -203,12 +262,19 @@
   let loading = $state(false);
   let testingService = $state(false);
   let savingService = $state(false);
+  let metadataProviderStatus = $state<MetadataProviderStatusResponse | null>(
+    null,
+  );
+  let metadataProviderStatusLoading = $state(false);
+  let metadataProviderStatusError = $state<string | null>(null);
   type TestStatus = "idle" | "loading" | "success" | "error";
   let serviceTestStatus = $state<Record<SettingsTab, TestStatus>>({
     [SettingsTab.Radarr]: "idle",
     [SettingsTab.Sonarr]: "idle",
     [SettingsTab.Seerr]: "idle",
     [SettingsTab.Tautulli]: "idle",
+    [SettingsTab.MDBList]: "idle",
+    [SettingsTab.OMDb]: "idle",
     [SettingsTab.MediaServers]: "idle",
     [SettingsTab.Jellyfin]: "idle",
     [SettingsTab.Emby]: "idle",
@@ -235,8 +301,8 @@
   const emptyServiceState = (serviceId?: string): ServiceState => ({
     config: {
       enabled: true,
-      name: serviceId ? toTitleCase(serviceId) : "",
-      baseUrl: "",
+      name: serviceId ? serviceDisplayName(serviceId) : "",
+      baseUrl: serviceId ? (DEFAULT_SERVICE_BASE_URLS[serviceId] ?? "") : "",
       apiKey: "",
       extraSettings: serviceId ? (DEFAULT_EXTRA_SETTINGS[serviceId] ?? {}) : {},
     },
@@ -248,6 +314,8 @@
     [SettingsTab.Sonarr]: emptyServiceState(SettingsTab.Sonarr),
     [SettingsTab.Seerr]: emptyServiceState(SettingsTab.Seerr),
     [SettingsTab.Tautulli]: emptyServiceState(SettingsTab.Tautulli),
+    [SettingsTab.MDBList]: emptyServiceState(SettingsTab.MDBList),
+    [SettingsTab.OMDb]: emptyServiceState(SettingsTab.OMDb),
   });
   let arrInstances = $state<Record<string, ServiceConfig[]>>({
     [SettingsTab.Radarr]: [],
@@ -280,7 +348,7 @@
       return !!(
         current.baseUrl.trim() ||
         current.apiKey.trim() ||
-        (current.name ?? "").trim() !== toTitleCase(serviceId) ||
+        (current.name ?? "").trim() !== serviceDisplayName(serviceId) ||
         current.enabled
       );
     }
@@ -413,7 +481,7 @@
       }
     } catch (err: any) {
       toast.error(
-        `Error deleting ${toTitleCase(serviceId)} instance: ${err.message}`,
+        `Error deleting ${serviceDisplayName(serviceId)} instance: ${err.message}`,
       );
     }
   };
@@ -426,7 +494,7 @@
       { kind: "delete-instance", serviceId },
       {
         title: "Delete Instance",
-        description: `Permanently delete ${current.name ?? toTitleCase(serviceId)}? This cannot be undone.`,
+        description: `Permanently delete ${current.name ?? serviceDisplayName(serviceId)}? This cannot be undone.`,
         actionLabel: "Delete",
         destructive: true,
       },
@@ -482,19 +550,43 @@
       : (DEFAULT_EXTRA_SETTINGS[serviceId] ?? {});
   };
 
+  const loadMetadataProviderStatus = async () => {
+    try {
+      metadataProviderStatusLoading = true;
+      metadataProviderStatusError = null;
+      metadataProviderStatus = await get_api<MetadataProviderStatusResponse>(
+        "/api/settings/metadata-providers/status",
+      );
+    } catch (err: any) {
+      metadataProviderStatusError =
+        err?.message ?? "Failed to load metadata provider status";
+    } finally {
+      metadataProviderStatusLoading = false;
+    }
+  };
+
+  const getMetadataProviderStatus = (serviceId: string) =>
+    metadataProviderStatus?.providers.find(
+      (provider) => provider.service_type === serviceId,
+    ) ?? null;
+
   // test service connection
   const testServiceConnection = async (serviceId: string) => {
     testingService = true;
     serviceTestStatus[serviceId as SettingsTab] = "loading";
     const config = serviceState[serviceId as SettingsTab].config;
+    const baseUrl = serviceBaseUrl(serviceId, config.baseUrl).replace(
+      /\/+$/,
+      "",
+    );
     try {
       // only send api_key if the user typed a new one (backend resolves existing key otherwise)
       const payload: Record<string, unknown> = {
         service_type: serviceId,
         id: config.id,
-        name: config.name || toTitleCase(serviceId),
+        name: config.name || serviceDisplayName(serviceId),
         enabled: config.enabled,
-        base_url: config.baseUrl.replace(/\/+$/, ""),
+        base_url: baseUrl,
       };
       if (config.apiKey) payload.api_key = config.apiKey;
       const response: boolean = await post_api(
@@ -505,20 +597,27 @@
         throw new Error("Connection test failed");
       }
       serviceTestStatus[serviceId as SettingsTab] = "success";
+      if (isMetadataProviderTab(serviceId)) {
+        await loadMetadataProviderStatus();
+      }
     } catch (err: any) {
       serviceTestStatus[serviceId as SettingsTab] = "error";
       toast.error(
-        `Connection test for ${toTitleCase(serviceId)} failed: ${err.message}`,
+        `Connection test for ${serviceDisplayName(serviceId)} failed: ${err.message}`,
       );
     } finally {
       testingService = false;
     }
   };
 
-  // save service settings (radarr/sonarr/seerr only)
+  // save service settings
   const saveServiceSettings = async (serviceId: string) => {
     savingService = true;
     const config = serviceState[serviceId as SettingsTab].config;
+    const baseUrl = serviceBaseUrl(serviceId, config.baseUrl).replace(
+      /\/+$/,
+      "",
+    );
     try {
       const response: {
         message: string;
@@ -533,8 +632,8 @@
       } = await post_api("/api/settings/save/service", {
         service_type: serviceId,
         id: config.id,
-        name: config.name || toTitleCase(serviceId),
-        base_url: config.baseUrl.replace(/\/+$/, ""),
+        name: config.name || serviceDisplayName(serviceId),
+        base_url: baseUrl,
         enabled: config.enabled,
         extra_settings: config.extraSettings,
         // only send api_key if the user typed a new one (backend resolves existing key otherwise)
@@ -545,7 +644,7 @@
         id: response.data.id,
         name: response.data.name,
         enabled: response.data.enabled,
-        baseUrl: response.data.base_url,
+        baseUrl: serviceBaseUrl(serviceId, response.data.base_url),
         extraSettings: resolveExtraSettings(
           response.data.extra_settings,
           serviceId,
@@ -565,16 +664,19 @@
         ].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
       }
       toast.success(response.message);
+      if (isMetadataProviderTab(serviceId)) {
+        await loadMetadataProviderStatus();
+      }
     } catch (err: any) {
       toast.error(
-        `Error saving settings for ${toTitleCase(serviceId)}: ${err.message}`,
+        `Error saving settings for ${serviceDisplayName(serviceId)}: ${err.message}`,
       );
     } finally {
       savingService = false;
     }
   };
 
-  // load service settings (radarr/sonarr/seerr only - media servers handled by MediaServers component)
+  // load non-media-server service settings; media servers are handled by MediaServers component
   const loadServiceSettings = async () => {
     try {
       loading = true;
@@ -617,7 +719,7 @@
               id: item.id,
               name: item.name,
               enabled: item.enabled,
-              baseUrl: item.base_url,
+              baseUrl: serviceBaseUrl(serviceId, item.base_url),
               apiKey: "",
               extraSettings: resolveExtraSettings(
                 item.extra_settings,
@@ -627,9 +729,9 @@
         }
         serviceState[serviceId as SettingsTab].config = {
           id: instance.id ?? null,
-          name: instance.name ?? toTitleCase(serviceId),
+          name: instance.name ?? serviceDisplayName(serviceId),
           enabled: instance.enabled,
-          baseUrl: instance.base_url,
+          baseUrl: serviceBaseUrl(serviceId, instance.base_url),
           apiKey: "",
           extraSettings: resolveExtraSettings(
             instance.extra_settings,
@@ -654,7 +756,10 @@
   // load settings on mount
   onMount(() => {
     // only admins right now can adjust these settings
-    if (isAdmin) loadServiceSettings();
+    if (isAdmin) {
+      loadServiceSettings();
+      loadMetadataProviderStatus();
+    }
   });
 </script>
 
@@ -835,11 +940,26 @@
               apiKeyIsSet={serviceState[activeTab].apiKeyIsSet}
               baseUrlPlaceholder={tabs.find((t) => t.id === activeTab)
                 ?.baseUrlPlaceholder || "http://localhost:8096"}
+              hideBaseUrl={tabs.find((t) => t.id === activeTab)?.hideBaseUrl ??
+                false}
+              fixedBaseUrl={DEFAULT_SERVICE_BASE_URLS[activeTab]}
               extraSettings={serviceState[activeTab].config.extraSettings ?? {}}
               onchange={handleServiceChange}
             />
+            {#if isMetadataProviderTab(activeTab)}
+              <div class="mt-4">
+                <MetadataProviderStatusPanel
+                  provider={getMetadataProviderStatus(activeTab)}
+                  loading={metadataProviderStatusLoading}
+                  error={metadataProviderStatusError}
+                  lastCheckedAt={metadataProviderStatus?.last_checked_at}
+                  lastSuccessfulRefreshAt={metadataProviderStatus?.last_successful_refresh_at}
+                  lastError={metadataProviderStatus?.last_error}
+                />
+              </div>
+            {/if}
 
-            <!-- action buttons for service tabs (radarr/sonarr/seerr) -->
+            <!-- action buttons for service tabs -->
             <div class="flex gap-3 justify-end mt-3">
               {#if activeTab !== SettingsTab.Radarr && activeTab !== SettingsTab.Sonarr && serviceState[activeTab].config.id}
                 <Button

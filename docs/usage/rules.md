@@ -123,6 +123,47 @@ in the local database, but manual entry remains available.
 Origin-country comparisons are case-insensitive. The country picker displays
 codes currently found in local TMDB metadata.
 
+### External Ratings
+
+External rating fields are available to all scopes. Movie-version rules use the
+parent movie's cached values. Series, season, and episode rules use the parent
+series values.
+
+| Field                              | Source                 | Value            |
+| ---------------------------------- | ---------------------- | ---------------- |
+| Rotten Tomatoes Tomatometer        | MDBList, fallback OMDb | Percent, `0-100` |
+| Rotten Tomatoes Tomatometer votes  | MDBList                | Count            |
+| Rotten Tomatoes Popcornmeter       | MDBList                | Percent, `0-100` |
+| Rotten Tomatoes Popcornmeter votes | MDBList                | Count            |
+| Metacritic metascore               | MDBList, fallback OMDb | Score, `0-100`   |
+| Metacritic critic count            | MDBList                | Count            |
+| Metacritic user score              | MDBList                | Score, `0-100`   |
+| Metacritic user votes              | MDBList                | Count            |
+| Trakt rating                       | MDBList                | Percent, `0-100` |
+| Trakt votes                        | MDBList                | Count            |
+| Letterboxd score                   | MDBList                | Percent, `0-100` |
+| Letterboxd votes                   | MDBList                | Count            |
+
+MDBList is preferred because it provides structured `ratings[]` entries for
+Rotten Tomatoes, Metacritic, Trakt, and Letterboxd plus vote counts. OMDb is
+used as a fallback for Tomatometer and Metacritic when an IMDb ID is available.
+Direct Rotten Tomatoes and Metacritic scraping is intentionally not used.
+
+Ratings are refreshed by the `Refresh External Ratings` task. If a provider has
+not been configured, the media has no matching provider ID, or the provider does
+not return a rating, that field is missing. Numeric comparisons do not match
+missing ratings; use `does not exist` when you specifically want to find media
+without a cached rating.
+
+The Metadata Providers settings page shows per-refresh request usage and cached
+movie/series coverage for MDBList and OMDb. Provider rate-limit headers are
+tracked internally only to stop refresh work when a provider reports that its
+quota is exhausted.
+
+MDBList requests are paced during external-rating refreshes. Standard mode uses
+a 1 second minimum delay between MDBList requests; MDBList supporter mode uses a
+0.2 second delay.
+
 ### Movie-Version Metadata
 
 | Field                | Unit or value                                    |

@@ -6,6 +6,7 @@ import urllib3.exceptions as url3_exceptions
 from backend.core.logger import LOG
 from backend.enums import Service
 from backend.services.emby import EmbyService
+from backend.services.external_ratings import MDBListClient, OMDbClient
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
 from backend.services.radarr import RadarrClient
@@ -138,6 +139,10 @@ class ServiceManager:
                 return await SeerrClient.test_service(url, api_key), ""
             elif service_type is Service.TAUTULLI:
                 return await TautulliClient.test_service(url, api_key), ""
+            elif service_type is Service.MDBLIST:
+                return await MDBListClient.test_service(url, api_key), ""
+            elif service_type is Service.OMDB:
+                return await OMDbClient.test_service(url, api_key), ""
         except niq_exceptions.ConnectionError:
             return (
                 False,
@@ -184,6 +189,7 @@ class ServiceManager:
             return self._seerr
         elif service_type is Service.TAUTULLI:
             return self._tautulli
+        return None
 
     async def initialize_jellyfin(
         self, base_url: str, api_key: str, is_main: bool

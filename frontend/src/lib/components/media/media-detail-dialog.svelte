@@ -362,7 +362,7 @@
                   {/if}
                 </div>
 
-                {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null || media.anilist_score != null || media.anilist_popularity != null || media.anilist_favourites != null}
+                {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null || media.anilist_score != null || media.anilist_popularity != null || media.anilist_favourites != null || media.rottentomatoes_tomato_meter != null || media.rottentomatoes_tomato_vote_count != null || media.rottentomatoes_popcorn_meter != null || media.rottentomatoes_popcorn_vote_count != null || media.metacritic_metascore != null || media.metacritic_vote_count != null || media.metacritic_user_score != null || media.metacritic_user_vote_count != null || media.trakt_rating != null || media.trakt_vote_count != null || media.letterboxd_score != null || media.letterboxd_vote_count != null}
                   <MetadataSources
                     tmdbId={media.tmdb_id}
                     {tmdbMediaType}
@@ -375,6 +375,20 @@
                     anilistScore={media.anilist_score}
                     anilistPopularity={media.anilist_popularity}
                     anilistFavourites={media.anilist_favourites}
+                    rottenTomatoesTomatoMeter={media.rottentomatoes_tomato_meter}
+                    rottenTomatoesTomatoVoteCount={media.rottentomatoes_tomato_vote_count}
+                    rottenTomatoesPopcornMeter={media.rottentomatoes_popcorn_meter}
+                    rottenTomatoesPopcornVoteCount={media.rottentomatoes_popcorn_vote_count}
+                    metacriticMetascore={media.metacritic_metascore}
+                    metacriticVoteCount={media.metacritic_vote_count}
+                    metacriticUserScore={media.metacritic_user_score}
+                    metacriticUserVoteCount={media.metacritic_user_vote_count}
+                    traktRating={media.trakt_rating}
+                    traktVoteCount={media.trakt_vote_count}
+                    letterboxdScore={media.letterboxd_score}
+                    letterboxdVoteCount={media.letterboxd_vote_count}
+                    externalRatingsSource={media.external_ratings_source}
+                    variant="summary"
                     class="mt-1 sm:mt-2"
                   />
                 {/if}
@@ -408,7 +422,7 @@
           </div>
 
           <div class="sm:hidden mb-2">
-            {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null || media.anilist_score != null || media.anilist_popularity != null || media.anilist_favourites != null}
+            {#if media.vote_average != null || media.vote_count != null || media.imdb_rating != null || media.imdb_vote_count != null || media.anilist_score != null || media.anilist_popularity != null || media.anilist_favourites != null || media.rottentomatoes_tomato_meter != null || media.rottentomatoes_tomato_vote_count != null || media.rottentomatoes_popcorn_meter != null || media.rottentomatoes_popcorn_vote_count != null || media.metacritic_metascore != null || media.metacritic_vote_count != null || media.metacritic_user_score != null || media.metacritic_user_vote_count != null || media.trakt_rating != null || media.trakt_vote_count != null || media.letterboxd_score != null || media.letterboxd_vote_count != null}
               <MetadataSources
                 tmdbId={media.tmdb_id}
                 {tmdbMediaType}
@@ -421,6 +435,20 @@
                 anilistScore={media.anilist_score}
                 anilistPopularity={media.anilist_popularity}
                 anilistFavourites={media.anilist_favourites}
+                rottenTomatoesTomatoMeter={media.rottentomatoes_tomato_meter}
+                rottenTomatoesTomatoVoteCount={media.rottentomatoes_tomato_vote_count}
+                rottenTomatoesPopcornMeter={media.rottentomatoes_popcorn_meter}
+                rottenTomatoesPopcornVoteCount={media.rottentomatoes_popcorn_vote_count}
+                metacriticMetascore={media.metacritic_metascore}
+                metacriticVoteCount={media.metacritic_vote_count}
+                metacriticUserScore={media.metacritic_user_score}
+                metacriticUserVoteCount={media.metacritic_user_vote_count}
+                traktRating={media.trakt_rating}
+                traktVoteCount={media.trakt_vote_count}
+                letterboxdScore={media.letterboxd_score}
+                letterboxdVoteCount={media.letterboxd_vote_count}
+                externalRatingsSource={media.external_ratings_source}
+                variant="summary"
                 class="mt-1"
               />
             {/if}

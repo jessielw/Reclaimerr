@@ -369,6 +369,35 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             _definition("anilist.score", "greater_than_or_equal", 80),
         )
 
+    def test_accepts_external_rating_numeric_operators(self) -> None:
+        for field in (
+            "rottentomatoes.tomato_meter",
+            "rottentomatoes.tomato_vote_count",
+            "rottentomatoes.popcorn_meter",
+            "rottentomatoes.popcorn_vote_count",
+            "metacritic.metascore",
+            "metacritic.vote_count",
+            "metacritic.user_score",
+            "metacritic.user_vote_count",
+            "trakt.rating",
+            "trakt.vote_count",
+            "letterboxd.score",
+            "letterboxd.vote_count",
+        ):
+            with self.subTest(field=field):
+                validate_rule_definition(
+                    _definition(field, "greater_than_or_equal", 80),
+                )
+
+    def test_rejects_external_rating_temporal_operator(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'before' for field 'rottentomatoes.tomato_meter'",
+        ):
+            validate_rule_definition(
+                _definition("rottentomatoes.tomato_meter", "before", "2026-01-01"),
+            )
+
     def test_rejects_anilist_score_temporal_operator(self) -> None:
         with self.assertRaisesRegex(
             ValueError,

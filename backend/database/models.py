@@ -466,6 +466,32 @@ class AniListRatingsIngestState(Base):
     )
 
 
+class ExternalRatingsIngestState(Base):
+    """Track metadata for external ratings provider refreshes."""
+
+    __tablename__ = "external_ratings_ingest_state"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    provider_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    movie_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    series_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    request_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    updated_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_successful_refresh_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class AdminNotice(Base):
     """Persisted admin facing in app notices with global read state."""
 
@@ -535,6 +561,34 @@ class Movie(Base):
     anilist_popularity: Mapped[int | None] = mapped_column(Integer, default=None)
     anilist_favourites: Mapped[int | None] = mapped_column(Integer, default=None)
     anilist_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    rottentomatoes_tomato_meter: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_tomato_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_popcorn_meter: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_popcorn_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    metacritic_metascore: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_user_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_user_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    trakt_rating: Mapped[int | None] = mapped_column(Integer, default=None)
+    trakt_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    letterboxd_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    letterboxd_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    external_ratings_source: Mapped[str | None] = mapped_column(
+        String(64), default=None
+    )
+    external_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
 
@@ -960,6 +1014,34 @@ class Series(Base):
     anilist_popularity: Mapped[int | None] = mapped_column(Integer, default=None)
     anilist_favourites: Mapped[int | None] = mapped_column(Integer, default=None)
     anilist_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    rottentomatoes_tomato_meter: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_tomato_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_popcorn_meter: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    rottentomatoes_popcorn_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    metacritic_metascore: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_user_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    metacritic_user_vote_count: Mapped[int | None] = mapped_column(
+        Integer, default=None
+    )
+    trakt_rating: Mapped[int | None] = mapped_column(Integer, default=None)
+    trakt_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    letterboxd_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    letterboxd_vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    external_ratings_source: Mapped[str | None] = mapped_column(
+        String(64), default=None
+    )
+    external_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
     tvdb_id: Mapped[str | None] = mapped_column(

@@ -608,6 +608,26 @@ async def get_movies(
             "anilist_popularity": movie.anilist_popularity,
             "anilist_favourites": movie.anilist_favourites,
             "anilist_refreshed_at": to_utc_isoformat(movie.anilist_refreshed_at),
+            "rottentomatoes_tomato_meter": movie.rottentomatoes_tomato_meter,
+            "rottentomatoes_tomato_vote_count": (
+                movie.rottentomatoes_tomato_vote_count
+            ),
+            "rottentomatoes_popcorn_meter": movie.rottentomatoes_popcorn_meter,
+            "rottentomatoes_popcorn_vote_count": (
+                movie.rottentomatoes_popcorn_vote_count
+            ),
+            "metacritic_metascore": movie.metacritic_metascore,
+            "metacritic_vote_count": movie.metacritic_vote_count,
+            "metacritic_user_score": movie.metacritic_user_score,
+            "metacritic_user_vote_count": movie.metacritic_user_vote_count,
+            "trakt_rating": movie.trakt_rating,
+            "trakt_vote_count": movie.trakt_vote_count,
+            "letterboxd_score": movie.letterboxd_score,
+            "letterboxd_vote_count": movie.letterboxd_vote_count,
+            "external_ratings_source": movie.external_ratings_source,
+            "external_ratings_refreshed_at": to_utc_isoformat(
+                movie.external_ratings_refreshed_at
+            ),
             "tmdb_title": movie.tmdb_title,
             "original_title": movie.original_title,
             "tmdb_release_date": to_utc_isoformat(movie.tmdb_release_date),
@@ -855,6 +875,26 @@ async def get_series(
             "anilist_popularity": series.anilist_popularity,
             "anilist_favourites": series.anilist_favourites,
             "anilist_refreshed_at": to_utc_isoformat(series.anilist_refreshed_at),
+            "rottentomatoes_tomato_meter": series.rottentomatoes_tomato_meter,
+            "rottentomatoes_tomato_vote_count": (
+                series.rottentomatoes_tomato_vote_count
+            ),
+            "rottentomatoes_popcorn_meter": series.rottentomatoes_popcorn_meter,
+            "rottentomatoes_popcorn_vote_count": (
+                series.rottentomatoes_popcorn_vote_count
+            ),
+            "metacritic_metascore": series.metacritic_metascore,
+            "metacritic_vote_count": series.metacritic_vote_count,
+            "metacritic_user_score": series.metacritic_user_score,
+            "metacritic_user_vote_count": series.metacritic_user_vote_count,
+            "trakt_rating": series.trakt_rating,
+            "trakt_vote_count": series.trakt_vote_count,
+            "letterboxd_score": series.letterboxd_score,
+            "letterboxd_vote_count": series.letterboxd_vote_count,
+            "external_ratings_source": series.external_ratings_source,
+            "external_ratings_refreshed_at": to_utc_isoformat(
+                series.external_ratings_refreshed_at
+            ),
             "tvdb_id": series.tvdb_id,
             "tmdb_title": series.tmdb_title,
             "original_title": series.original_title,
@@ -1234,6 +1274,30 @@ async def get_candidates(
             Movie.anilist_score.label("movie_anilist_score"),
             Movie.anilist_popularity.label("movie_anilist_popularity"),
             Movie.anilist_favourites.label("movie_anilist_favourites"),
+            Movie.rottentomatoes_tomato_meter.label(
+                "movie_rottentomatoes_tomato_meter"
+            ),
+            Movie.rottentomatoes_tomato_vote_count.label(
+                "movie_rottentomatoes_tomato_vote_count"
+            ),
+            Movie.rottentomatoes_popcorn_meter.label(
+                "movie_rottentomatoes_popcorn_meter"
+            ),
+            Movie.rottentomatoes_popcorn_vote_count.label(
+                "movie_rottentomatoes_popcorn_vote_count"
+            ),
+            Movie.metacritic_metascore.label("movie_metacritic_metascore"),
+            Movie.metacritic_vote_count.label("movie_metacritic_vote_count"),
+            Movie.metacritic_user_score.label("movie_metacritic_user_score"),
+            Movie.metacritic_user_vote_count.label("movie_metacritic_user_vote_count"),
+            Movie.trakt_rating.label("movie_trakt_rating"),
+            Movie.trakt_vote_count.label("movie_trakt_vote_count"),
+            Movie.letterboxd_score.label("movie_letterboxd_score"),
+            Movie.letterboxd_vote_count.label("movie_letterboxd_vote_count"),
+            Movie.external_ratings_source.label("movie_external_ratings_source"),
+            Movie.external_ratings_refreshed_at.label(
+                "movie_external_ratings_refreshed_at"
+            ),
             Movie.poster_url.label("movie_poster_url"),
             Movie.genres.label("movie_genres"),
             Movie.popularity.label("movie_popularity"),
@@ -1285,6 +1349,32 @@ async def get_candidates(
             Series.anilist_score.label("series_anilist_score"),
             Series.anilist_popularity.label("series_anilist_popularity"),
             Series.anilist_favourites.label("series_anilist_favourites"),
+            Series.rottentomatoes_tomato_meter.label(
+                "series_rottentomatoes_tomato_meter"
+            ),
+            Series.rottentomatoes_tomato_vote_count.label(
+                "series_rottentomatoes_tomato_vote_count"
+            ),
+            Series.rottentomatoes_popcorn_meter.label(
+                "series_rottentomatoes_popcorn_meter"
+            ),
+            Series.rottentomatoes_popcorn_vote_count.label(
+                "series_rottentomatoes_popcorn_vote_count"
+            ),
+            Series.metacritic_metascore.label("series_metacritic_metascore"),
+            Series.metacritic_vote_count.label("series_metacritic_vote_count"),
+            Series.metacritic_user_score.label("series_metacritic_user_score"),
+            Series.metacritic_user_vote_count.label(
+                "series_metacritic_user_vote_count"
+            ),
+            Series.trakt_rating.label("series_trakt_rating"),
+            Series.trakt_vote_count.label("series_trakt_vote_count"),
+            Series.letterboxd_score.label("series_letterboxd_score"),
+            Series.letterboxd_vote_count.label("series_letterboxd_vote_count"),
+            Series.external_ratings_source.label("series_external_ratings_source"),
+            Series.external_ratings_refreshed_at.label(
+                "series_external_ratings_refreshed_at"
+            ),
             Series.genres.label("series_genres"),
             Series.popularity.label("series_popularity"),
             Series.vote_average.label("series_vote_average"),
@@ -1481,6 +1571,68 @@ async def get_candidates(
         anilist_favourites = (
             row.movie_anilist_favourites if is_movie else row.series_anilist_favourites
         )
+        rottentomatoes_tomato_meter = (
+            row.movie_rottentomatoes_tomato_meter
+            if is_movie
+            else row.series_rottentomatoes_tomato_meter
+        )
+        rottentomatoes_tomato_vote_count = (
+            row.movie_rottentomatoes_tomato_vote_count
+            if is_movie
+            else row.series_rottentomatoes_tomato_vote_count
+        )
+        rottentomatoes_popcorn_meter = (
+            row.movie_rottentomatoes_popcorn_meter
+            if is_movie
+            else row.series_rottentomatoes_popcorn_meter
+        )
+        rottentomatoes_popcorn_vote_count = (
+            row.movie_rottentomatoes_popcorn_vote_count
+            if is_movie
+            else row.series_rottentomatoes_popcorn_vote_count
+        )
+        metacritic_metascore = (
+            row.movie_metacritic_metascore
+            if is_movie
+            else row.series_metacritic_metascore
+        )
+        metacritic_vote_count = (
+            row.movie_metacritic_vote_count
+            if is_movie
+            else row.series_metacritic_vote_count
+        )
+        metacritic_user_score = (
+            row.movie_metacritic_user_score
+            if is_movie
+            else row.series_metacritic_user_score
+        )
+        metacritic_user_vote_count = (
+            row.movie_metacritic_user_vote_count
+            if is_movie
+            else row.series_metacritic_user_vote_count
+        )
+        trakt_rating = row.movie_trakt_rating if is_movie else row.series_trakt_rating
+        trakt_vote_count = (
+            row.movie_trakt_vote_count if is_movie else row.series_trakt_vote_count
+        )
+        letterboxd_score = (
+            row.movie_letterboxd_score if is_movie else row.series_letterboxd_score
+        )
+        letterboxd_vote_count = (
+            row.movie_letterboxd_vote_count
+            if is_movie
+            else row.series_letterboxd_vote_count
+        )
+        external_ratings_source = (
+            row.movie_external_ratings_source
+            if is_movie
+            else row.series_external_ratings_source
+        )
+        external_ratings_refreshed_at = (
+            row.movie_external_ratings_refreshed_at
+            if is_movie
+            else row.series_external_ratings_refreshed_at
+        )
         genres = extract_genre_names(
             row.movie_genres if is_movie else row.series_genres
         )
@@ -1591,6 +1743,22 @@ async def get_candidates(
                 anilist_score=anilist_score,
                 anilist_popularity=anilist_popularity,
                 anilist_favourites=anilist_favourites,
+                rottentomatoes_tomato_meter=rottentomatoes_tomato_meter,
+                rottentomatoes_tomato_vote_count=(rottentomatoes_tomato_vote_count),
+                rottentomatoes_popcorn_meter=rottentomatoes_popcorn_meter,
+                rottentomatoes_popcorn_vote_count=(rottentomatoes_popcorn_vote_count),
+                metacritic_metascore=metacritic_metascore,
+                metacritic_vote_count=metacritic_vote_count,
+                metacritic_user_score=metacritic_user_score,
+                metacritic_user_vote_count=metacritic_user_vote_count,
+                trakt_rating=trakt_rating,
+                trakt_vote_count=trakt_vote_count,
+                letterboxd_score=letterboxd_score,
+                letterboxd_vote_count=letterboxd_vote_count,
+                external_ratings_source=external_ratings_source,
+                external_ratings_refreshed_at=to_utc_isoformat(
+                    external_ratings_refreshed_at
+                ),
                 poster_url=poster_url,
                 genres=genres,
                 popularity=popularity,

@@ -592,8 +592,22 @@
                         anilistScore={entry.anilist_score}
                         anilistPopularity={entry.anilist_popularity}
                         anilistFavourites={entry.anilist_favourites}
+                        rottenTomatoesTomatoMeter={entry.rottentomatoes_tomato_meter}
+                        rottenTomatoesTomatoVoteCount={entry.rottentomatoes_tomato_vote_count}
+                        rottenTomatoesPopcornMeter={entry.rottentomatoes_popcorn_meter}
+                        rottenTomatoesPopcornVoteCount={entry.rottentomatoes_popcorn_vote_count}
+                        metacriticMetascore={entry.metacritic_metascore}
+                        metacriticVoteCount={entry.metacritic_vote_count}
+                        metacriticUserScore={entry.metacritic_user_score}
+                        metacriticUserVoteCount={entry.metacritic_user_vote_count}
+                        traktRating={entry.trakt_rating}
+                        traktVoteCount={entry.trakt_vote_count}
+                        letterboxdScore={entry.letterboxd_score}
+                        letterboxdVoteCount={entry.letterboxd_vote_count}
+                        externalRatingsSource={entry.external_ratings_source}
+                        variant="summary"
                         compact={true}
-                        class="mt-2 w-40 md:w-64"
+                        class="mt-2 w-full max-w-lg"
                       />
                     </div>
                   </div>

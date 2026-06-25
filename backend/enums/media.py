@@ -9,6 +9,8 @@ class Service(StrEnum):
     PLEX = auto()
     SEERR = auto()
     TAUTULLI = auto()
+    MDBLIST = auto()
+    OMDB = auto()
 
 
 class MediaType(StrEnum):

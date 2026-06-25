@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio.session import AsyncSession
@@ -14,12 +14,16 @@ from backend.core.auth import require_admin
 from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
+from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
     BackgroundJob,
+    ExternalRatingsIngestState,
     GeneralSettings,
+    Movie,
     MovieArrRef,
     ReclaimRule,
+    Series,
     SeriesArrRef,
     ServiceConfig,
     ServiceMediaLibrary,
@@ -33,15 +37,32 @@ from backend.models.settings import (
     ServiceConfigUpdate,
     UpdateMediaLibrariesRequest,
 )
+from backend.tasks.external_ratings import (
+    DEFAULT_MDBLIST_REQUEST_LIMIT,
+    DEFAULT_OMDB_REQUEST_LIMIT,
+)
 from backend.tasks.sync import sync_media_libraries
 from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(tags=["settings", "services"])
 
 ARR_SERVICES = {Service.RADARR, Service.SONARR}
+METADATA_PROVIDER_SERVICES = (Service.MDBLIST, Service.OMDB)
+METADATA_PROVIDER_DEFAULT_REQUEST_LIMITS = {
+    Service.MDBLIST: DEFAULT_MDBLIST_REQUEST_LIMIT,
+    Service.OMDB: DEFAULT_OMDB_REQUEST_LIMIT,
+}
+METADATA_PROVIDER_DEFAULT_REQUEST_DELAYS = {
+    Service.MDBLIST: 1.0,
+    Service.OMDB: 0.25,
+}
 
 
 def _default_service_name(service_type: Service) -> str:
+    if service_type is Service.MDBLIST:
+        return "MDBList"
+    if service_type is Service.OMDB:
+        return "OMDb"
     return service_type.title()
 
 
@@ -50,6 +71,151 @@ def _mask_api_key(key: str) -> str:
     if not key or len(key) <= 4:
         return "****"
     return f"{'*' * (len(key) - 4)}{key[-4:]}"
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coverage_payload(covered: int, total: int) -> dict[str, int | float]:
+    return {
+        "covered": covered,
+        "total": total,
+        "percent": round((covered / total) * 100, 1) if total else 0,
+    }
+
+
+async def _count_active_media(db: AsyncSession) -> tuple[int, int]:
+    movie_count = await db.scalar(
+        select(func.count()).select_from(Movie).where(Movie.removed_at.is_(None))
+    )
+    series_count = await db.scalar(
+        select(func.count()).select_from(Series).where(Series.removed_at.is_(None))
+    )
+    return int(movie_count or 0), int(series_count or 0)
+
+
+async def _count_provider_coverage(
+    db: AsyncSession, provider: Service
+) -> tuple[int, int]:
+    token = f"%{provider.value}%"
+    movie_count = await db.scalar(
+        select(func.count())
+        .select_from(Movie)
+        .where(
+            Movie.removed_at.is_(None),
+            func.lower(Movie.external_ratings_source).like(token),
+        )
+    )
+    series_count = await db.scalar(
+        select(func.count())
+        .select_from(Series)
+        .where(
+            Series.removed_at.is_(None),
+            func.lower(Series.external_ratings_source).like(token),
+        )
+    )
+    return int(movie_count or 0), int(series_count or 0)
+
+
+def _provider_request_limit(config: ServiceConfig | None, provider: Service) -> int:
+    default = METADATA_PROVIDER_DEFAULT_REQUEST_LIMITS[provider]
+    if config is None:
+        return default
+    raw = (config.extra_settings or {}).get("request_limit", default)
+    value = _parse_optional_int(raw)
+    if value is None:
+        return default
+    return max(1, min(value, 5000))
+
+
+def _provider_request_delay(config: ServiceConfig | None, provider: Service) -> float:
+    default = METADATA_PROVIDER_DEFAULT_REQUEST_DELAYS[provider]
+    if config is None:
+        return default
+    raw = (config.extra_settings or {}).get("request_delay_seconds", default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(value, 10.0))
+
+
+async def _metadata_provider_status_payload(db: AsyncSession) -> dict[str, Any]:
+    configs = (
+        await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(METADATA_PROVIDER_SERVICES)
+            )
+        )
+    ).scalars()
+    configs_by_service = {config.service_type: config for config in configs}
+
+    state = (
+        (
+            await db.execute(
+                select(ExternalRatingsIngestState).order_by(
+                    ExternalRatingsIngestState.id.asc()
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    provider_summary = state.provider_summary if state else None
+    if not isinstance(provider_summary, dict):
+        provider_summary = {}
+
+    total_movies, total_series = await _count_active_media(db)
+    total_media = total_movies + total_series
+    providers: list[dict[str, Any]] = []
+    for provider in METADATA_PROVIDER_SERVICES:
+        config = configs_by_service.get(provider)
+        provider_run_summary = provider_summary.get(provider.value)
+        if not isinstance(provider_run_summary, dict):
+            provider_run_summary = {}
+        covered_movies, covered_series = await _count_provider_coverage(db, provider)
+        covered_total = covered_movies + covered_series
+        providers.append(
+            {
+                "service_type": provider.value,
+                "name": _default_service_name(provider),
+                "configured": config is not None and bool(config.api_key),
+                "enabled": bool(config.enabled) if config is not None else False,
+                "request_limit": _provider_request_limit(config, provider),
+                "request_delay_seconds": _provider_request_delay(config, provider),
+                "last_run_requests": _parse_optional_int(
+                    provider_run_summary.get("requests_used")
+                ),
+                "last_run_request_limit": _parse_optional_int(
+                    provider_run_summary.get("request_limit")
+                ),
+                "disabled_reason": provider_run_summary.get("disabled_reason")
+                if isinstance(provider_run_summary.get("disabled_reason"), str)
+                else None,
+                "coverage": {
+                    "movies": _coverage_payload(covered_movies, total_movies),
+                    "series": _coverage_payload(covered_series, total_series),
+                    "total": _coverage_payload(covered_total, total_media),
+                },
+            }
+        )
+
+    return {
+        "providers": providers,
+        "last_checked_at": to_utc_isoformat(state.last_checked_at)
+        if state and state.last_checked_at
+        else None,
+        "last_successful_refresh_at": to_utc_isoformat(state.last_successful_refresh_at)
+        if state and state.last_successful_refresh_at
+        else None,
+        "last_error": state.last_error if state else None,
+    }
 
 
 @router.get("/services")
@@ -107,6 +273,15 @@ async def get_service_settings(
         else:
             response[key] = payload
     return response
+
+
+@router.get("/metadata-providers/status")
+async def get_metadata_provider_status(
+    _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get usage and media coverage status for metadata providers."""
+    return await _metadata_provider_status_payload(db)
 
 
 def _service_config_payload(config: ServiceConfig) -> dict[str, Any]:

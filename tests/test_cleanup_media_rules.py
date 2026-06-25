@@ -487,6 +487,51 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_version_rule(movie, version, rule, {}, []))
 
+    def test_external_rating_fields_match_movie_version_scope(self) -> None:
+        movie = Movie(
+            title="Movie",
+            tmdb_id=1,
+            rottentomatoes_tomato_meter=91,
+            rottentomatoes_tomato_vote_count=147,
+            rottentomatoes_popcorn_meter=84,
+            rottentomatoes_popcorn_vote_count=53440,
+            metacritic_metascore=73,
+            metacritic_vote_count=22,
+            metacritic_user_score=88,
+            metacritic_user_vote_count=2188,
+            trakt_rating=90,
+            trakt_vote_count=36405,
+            letterboxd_score=92,
+            letterboxd_vote_count=2859264,
+        )
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=1,
+        )
+        movie.versions = [version]
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                _condition("rottentomatoes.tomato_meter", "greater_than", 90),
+                _condition("rottentomatoes.tomato_vote_count", "greater_than", 100),
+                _condition("rottentomatoes.popcorn_meter", "greater_than", 80),
+                _condition("rottentomatoes.popcorn_vote_count", "greater_than", 50000),
+                _condition("metacritic.metascore", "greater_than", 70),
+                _condition("metacritic.vote_count", "greater_than", 20),
+                _condition("metacritic.user_score", "greater_than", 80),
+                _condition("metacritic.user_vote_count", "greater_than", 2000),
+                _condition("trakt.rating", "greater_than", 85),
+                _condition("trakt.vote_count", "greater_than", 30000),
+                _condition("letterboxd.score", "greater_than", 90),
+                _condition("letterboxd.vote_count", "greater_than", 2_000_000),
+            ),
+        )
+
+        self.assertTrue(_evaluate_movie_version_rule(movie, version, rule, {}, []))
+
     def test_plex_bitrate_values_are_already_kbps(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1)
         version = _make_movie_version(
@@ -542,6 +587,18 @@ class CleanupMediaRuleTests(unittest.TestCase):
             year=2024,
             original_language="ja",
             origin_country=["JP"],
+            rottentomatoes_tomato_meter=88,
+            rottentomatoes_tomato_vote_count=42,
+            rottentomatoes_popcorn_meter=92,
+            rottentomatoes_popcorn_vote_count=500,
+            metacritic_metascore=79,
+            metacritic_vote_count=24,
+            metacritic_user_score=87,
+            metacritic_user_vote_count=101,
+            trakt_rating=86,
+            trakt_vote_count=202,
+            letterboxd_score=90,
+            letterboxd_vote_count=303,
         )
         series.season_count = 4
         special = Season(series_id=1, season_number=0)
@@ -556,6 +613,18 @@ class CleanupMediaRuleTests(unittest.TestCase):
             _condition("tmdb.origin_country", "contains_any", ["jp"]),
             _condition("series.tmdb_season_count", "equals", 4),
             _condition("series.library_season_count", "equals", 2),
+            _condition("rottentomatoes.tomato_meter", "greater_than", 80),
+            _condition("rottentomatoes.tomato_vote_count", "greater_than", 40),
+            _condition("rottentomatoes.popcorn_meter", "greater_than", 90),
+            _condition("rottentomatoes.popcorn_vote_count", "greater_than", 400),
+            _condition("metacritic.metascore", "greater_than", 75),
+            _condition("metacritic.vote_count", "greater_than", 20),
+            _condition("metacritic.user_score", "greater_than", 80),
+            _condition("metacritic.user_vote_count", "greater_than", 100),
+            _condition("trakt.rating", "greater_than", 80),
+            _condition("trakt.vote_count", "greater_than", 200),
+            _condition("letterboxd.score", "greater_than", 85),
+            _condition("letterboxd.vote_count", "greater_than", 300),
         )
 
         series_rule = _rule_with_root(MediaType.SERIES, TARGET_SERIES, conditions)
@@ -2505,8 +2574,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         previous_clients = cleanup_tasks.service_manager._sonarr_clients
         previous_sonarr = cleanup_tasks.service_manager._sonarr
-        cleanup_tasks.service_manager._sonarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
-            config_id: fake_client
+        cleanup_tasks.service_manager._sonarr_clients = {
+            config_id: fake_client  # pyright: ignore[reportAttributeAccessIssue]
         }
         cleanup_tasks.service_manager._sonarr = None
         try:
@@ -2572,8 +2641,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         previous_clients = cleanup_tasks.service_manager._sonarr_clients
         previous_sonarr = cleanup_tasks.service_manager._sonarr
-        cleanup_tasks.service_manager._sonarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
-            config_id: fake_client
+        cleanup_tasks.service_manager._sonarr_clients = {
+            config_id: fake_client  # pyright: ignore[reportAttributeAccessIssue]
         }
         cleanup_tasks.service_manager._sonarr = None
         try:
@@ -2665,8 +2734,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         previous_clients = cleanup_tasks.service_manager._sonarr_clients
         previous_sonarr = cleanup_tasks.service_manager._sonarr
-        cleanup_tasks.service_manager._sonarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
-            config_id: fake_client
+        cleanup_tasks.service_manager._sonarr_clients = {
+            config_id: fake_client  # pyright: ignore[reportAttributeAccessIssue]
         }
         cleanup_tasks.service_manager._sonarr = None
         try:
@@ -2713,7 +2782,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     },
                 ],
             )
-            rule.definition["root"]["op"] = "or"
+            rule.definition["root"]["op"] = "or"  # pyright: ignore[reportOptionalSubscript]
             series = Series(title="Local Match", tmdb_id=11003, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
@@ -2738,8 +2807,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         previous_clients = cleanup_tasks.service_manager._sonarr_clients
         previous_sonarr = cleanup_tasks.service_manager._sonarr
-        cleanup_tasks.service_manager._sonarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
-            config_id: fake_client
+        cleanup_tasks.service_manager._sonarr_clients = {
+            config_id: fake_client  # pyright: ignore[reportAttributeAccessIssue]
         }
         cleanup_tasks.service_manager._sonarr = None
         try:
@@ -2801,8 +2870,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         fake_client = _SonarrEpisodeStateClientFake(fail_series=True)
         previous_clients = cleanup_tasks.service_manager._sonarr_clients
         previous_sonarr = cleanup_tasks.service_manager._sonarr
-        cleanup_tasks.service_manager._sonarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
-            config_id: fake_client
+        cleanup_tasks.service_manager._sonarr_clients = {
+            config_id: fake_client  # pyright: ignore[reportAttributeAccessIssue]
         }
         cleanup_tasks.service_manager._sonarr = None
         try:

@@ -104,6 +104,8 @@ export enum SettingsTab {
   Sonarr = "sonarr",
   Seerr = "seerr",
   Tautulli = "tautulli",
+  MDBList = "mdblist",
+  OMDb = "omdb",
   General = "general",
   Authentication = "authentication",
   UserSignals = "user_signals",
@@ -280,6 +282,38 @@ export interface GeneralSettings {
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
+}
+
+export interface MetadataProviderCoverageBucket {
+  covered: number;
+  total: number;
+  percent: number;
+}
+
+export interface MetadataProviderCoverage {
+  movies: MetadataProviderCoverageBucket;
+  series: MetadataProviderCoverageBucket;
+  total: MetadataProviderCoverageBucket;
+}
+
+export interface MetadataProviderStatus {
+  service_type: string;
+  name: string;
+  configured: boolean;
+  enabled: boolean;
+  request_limit: number;
+  request_delay_seconds: number;
+  last_run_requests: number | null;
+  last_run_request_limit: number | null;
+  disabled_reason: string | null;
+  coverage: MetadataProviderCoverage;
+}
+
+export interface MetadataProviderStatusResponse {
+  providers: MetadataProviderStatus[];
+  last_checked_at: string | null;
+  last_successful_refresh_at: string | null;
+  last_error: string | null;
 }
 
 export interface OIDCSettings {
@@ -534,6 +568,20 @@ export interface MovieWithStatus {
   anilist_popularity: number | null;
   anilist_favourites: number | null;
   anilist_refreshed_at: string | null;
+  rottentomatoes_tomato_meter: number | null;
+  rottentomatoes_tomato_vote_count: number | null;
+  rottentomatoes_popcorn_meter: number | null;
+  rottentomatoes_popcorn_vote_count: number | null;
+  metacritic_metascore: number | null;
+  metacritic_vote_count: number | null;
+  metacritic_user_score: number | null;
+  metacritic_user_vote_count: number | null;
+  trakt_rating: number | null;
+  trakt_vote_count: number | null;
+  letterboxd_score: number | null;
+  letterboxd_vote_count: number | null;
+  external_ratings_source: string | null;
+  external_ratings_refreshed_at: string | null;
   tmdb_title: string | null;
   original_title: string | null;
   tmdb_release_date: string | null;
@@ -581,6 +629,20 @@ export interface SeriesWithStatus {
   anilist_popularity: number | null;
   anilist_favourites: number | null;
   anilist_refreshed_at: string | null;
+  rottentomatoes_tomato_meter: number | null;
+  rottentomatoes_tomato_vote_count: number | null;
+  rottentomatoes_popcorn_meter: number | null;
+  rottentomatoes_popcorn_vote_count: number | null;
+  metacritic_metascore: number | null;
+  metacritic_vote_count: number | null;
+  metacritic_user_score: number | null;
+  metacritic_user_vote_count: number | null;
+  trakt_rating: number | null;
+  trakt_vote_count: number | null;
+  letterboxd_score: number | null;
+  letterboxd_vote_count: number | null;
+  external_ratings_source: string | null;
+  external_ratings_refreshed_at: string | null;
   tvdb_id: string | null;
   tmdb_title: string | null;
   original_title: string | null;
@@ -805,6 +867,20 @@ export interface ProtectedEntry {
   anilist_score: number | null;
   anilist_popularity: number | null;
   anilist_favourites: number | null;
+  rottentomatoes_tomato_meter: number | null;
+  rottentomatoes_tomato_vote_count: number | null;
+  rottentomatoes_popcorn_meter: number | null;
+  rottentomatoes_popcorn_vote_count: number | null;
+  metacritic_metascore: number | null;
+  metacritic_vote_count: number | null;
+  metacritic_user_score: number | null;
+  metacritic_user_vote_count: number | null;
+  trakt_rating: number | null;
+  trakt_vote_count: number | null;
+  letterboxd_score: number | null;
+  letterboxd_vote_count: number | null;
+  external_ratings_source: string | null;
+  external_ratings_refreshed_at: string | null;
   reason: string | null;
   protected_by_user_id: number | null;
   protected_by_username: string;
@@ -836,6 +912,20 @@ export interface ReclaimCandidateEntry {
   anilist_score: number | null;
   anilist_popularity: number | null;
   anilist_favourites: number | null;
+  rottentomatoes_tomato_meter: number | null;
+  rottentomatoes_tomato_vote_count: number | null;
+  rottentomatoes_popcorn_meter: number | null;
+  rottentomatoes_popcorn_vote_count: number | null;
+  metacritic_metascore: number | null;
+  metacritic_vote_count: number | null;
+  metacritic_user_score: number | null;
+  metacritic_user_vote_count: number | null;
+  trakt_rating: number | null;
+  trakt_vote_count: number | null;
+  letterboxd_score: number | null;
+  letterboxd_vote_count: number | null;
+  external_ratings_source: string | null;
+  external_ratings_refreshed_at: string | null;
   genres: string[] | null;
   popularity: number | null;
   vote_average: number | null;
