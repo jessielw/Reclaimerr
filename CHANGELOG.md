@@ -93,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plex, Jellyfin, Emby, movie, season, audio, and subtitle ingestion now share normalization
   - Plex requests detailed metadata when lightweight stream metadata lacks languages
 - Updated Granian to 2.7.7
+- Metadata for media is now small pills instead of the large card. There was just too many to many to fit in a card cleanly throughout the UI.
 
 ### Fixed
 
