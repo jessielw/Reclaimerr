@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from asyncio import Lock
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -37,6 +38,8 @@ PLAYBACK_MOVIE_MIN_SECONDS = 15
 PLAYBACK_EPISODE_MIN_SECONDS = 7
 PLAYBACK_TARGET_SCOPES = ("movie_version", "series", "season", "episode")
 PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
+
+_playback_refresh_lock = Lock()
 
 PlaybackTargetKey = tuple[str, int]
 
@@ -549,6 +552,36 @@ async def _upsert_events(
     return inserted
 
 
+async def _persist_unavailable_status(
+    config: ServiceConfig,
+    *,
+    provider: Service,
+    observed_service: Service,
+    error: str | None,
+) -> PlaybackProviderStatus:
+    """Persist a provider outcome without swallowing database failures."""
+
+    async with async_db() as session:
+        db_config = await session.get(ServiceConfig, config.id)
+        if db_config:
+            _set_state(
+                db_config,
+                provider=provider,
+                observed_service=observed_service,
+                available=False,
+                error=error,
+                imported_events=0,
+            )
+            await session.commit()
+    return PlaybackProviderStatus(
+        config_id=config.id,
+        provider=provider,
+        observed_service=observed_service,
+        available=False,
+        error=error,
+    )
+
+
 async def _refresh_reporting_config(
     config: ServiceConfig,
 ) -> PlaybackProviderStatus:
@@ -557,33 +590,41 @@ async def _refresh_reporting_config(
     service_cls = (
         JellyfinService if config.service_type == Service.JELLYFIN else EmbyService
     )
-    client = service_cls(api_key=_config_api_key(config), base_url=config.base_url)
+    client = None
     try:
-        if not await client.get_playback_reporting_plugin_status():
-            async with async_db() as session:
-                db_config = await session.get(ServiceConfig, config.id)
-                if db_config:
-                    _set_state(
-                        db_config,
-                        provider=config.service_type,
-                        observed_service=config.service_type,
-                        available=False,
-                        error=None,
-                        imported_events=0,
-                    )
-                    await session.commit()
-            return PlaybackProviderStatus(
-                config_id=config.id,
+        try:
+            client = service_cls(
+                api_key=_config_api_key(config), base_url=config.base_url
+            )
+            plugin_available = await client.get_playback_reporting_plugin_status()
+            events: list[_NormalizedEvent] = []
+            if plugin_available:
+                since = _last_success_from(config)
+                if since is not None:
+                    since -= timedelta(days=1)
+                rows = await client.get_playback_reporting_events(since=since)
+                events = _normalize_reporting_events(rows)
+        except Exception as exc:
+            error = _provider_error_message(exc)
+            LOG.warning(
+                "Playback Reporting history refresh failed for "
+                f"{config.service_type} config {config.id}: {error}"
+            )
+            return await _persist_unavailable_status(
+                config,
                 provider=config.service_type,
                 observed_service=config.service_type,
-                available=False,
+                error=error,
             )
 
-        since = _last_success_from(config)
-        if since is not None:
-            since -= timedelta(days=1)
-        rows = await client.get_playback_reporting_events(since=since)
-        events = _normalize_reporting_events(rows)
+        if not plugin_available:
+            return await _persist_unavailable_status(
+                config,
+                provider=config.service_type,
+                observed_service=config.service_type,
+                error=None,
+            )
+
         async with async_db() as session:
             db_config = await session.get(ServiceConfig, config.id)
             if db_config is None:
@@ -612,33 +653,9 @@ async def _refresh_reporting_config(
             available=True,
             imported_events=imported,
         )
-    except Exception as exc:
-        error = _provider_error_message(exc)
-        LOG.warning(
-            "Playback Reporting history refresh failed for "
-            f"{config.service_type} config {config.id}: {error}"
-        )
-        async with async_db() as session:
-            db_config = await session.get(ServiceConfig, config.id)
-            if db_config:
-                _set_state(
-                    db_config,
-                    provider=config.service_type,
-                    observed_service=config.service_type,
-                    available=False,
-                    error=error,
-                    imported_events=0,
-                )
-                await session.commit()
-        return PlaybackProviderStatus(
-            config_id=config.id,
-            provider=config.service_type,
-            observed_service=config.service_type,
-            available=False,
-            error=error,
-        )
     finally:
-        await client.session.close()
+        if client is not None:
+            await client.session.close()
 
 
 async def _refresh_tautulli_config(
@@ -646,10 +663,26 @@ async def _refresh_tautulli_config(
 ) -> PlaybackProviderStatus:
     """Refresh one Tautulli playback source."""
 
-    client = TautulliClient(api_key=_config_api_key(config), base_url=config.base_url)
+    client = None
     try:
-        rows = await client.get_history_records(since=_last_success_from(config))
-        events = _normalize_tautulli_events(rows)
+        try:
+            client = TautulliClient(
+                api_key=_config_api_key(config), base_url=config.base_url
+            )
+            rows = await client.get_history_records(since=_last_success_from(config))
+            events = _normalize_tautulli_events(rows)
+        except Exception as exc:
+            error = _provider_error_message(exc)
+            LOG.warning(
+                f"Tautulli history refresh failed for config {config.id}: {error}"
+            )
+            return await _persist_unavailable_status(
+                config,
+                provider=Service.TAUTULLI,
+                observed_service=Service.PLEX,
+                error=error,
+            )
+
         async with async_db() as session:
             db_config = await session.get(ServiceConfig, config.id)
             if db_config is None:
@@ -678,33 +711,20 @@ async def _refresh_tautulli_config(
             available=True,
             imported_events=imported,
         )
-    except Exception as exc:
-        error = _provider_error_message(exc)
-        LOG.warning(f"Tautulli history refresh failed for config {config.id}: {error}")
-        async with async_db() as session:
-            db_config = await session.get(ServiceConfig, config.id)
-            if db_config:
-                _set_state(
-                    db_config,
-                    provider=Service.TAUTULLI,
-                    observed_service=Service.PLEX,
-                    available=False,
-                    error=error,
-                    imported_events=0,
-                )
-                await session.commit()
-        return PlaybackProviderStatus(
-            config_id=config.id,
-            provider=Service.TAUTULLI,
-            observed_service=Service.PLEX,
-            available=False,
-            error=error,
-        )
     finally:
-        await client.session.close()
+        if client is not None:
+            await client.session.close()
 
 
 async def refresh_playback_history(*, force: bool = False) -> PlaybackRefreshResult:
+    """Serialize playback refreshes so providers and aggregates cannot race."""
+    async with _playback_refresh_lock:
+        return await _refresh_playback_history_once(force=force)
+
+
+async def _refresh_playback_history_once(
+    *, force: bool = False
+) -> PlaybackRefreshResult:
     """Refresh configured durable playback providers and rebuild aggregates."""
     async with async_db() as session:
         configs = list(

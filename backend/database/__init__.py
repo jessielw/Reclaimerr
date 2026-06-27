@@ -21,6 +21,7 @@ engine = create_async_engine(
     f"sqlite+aiosqlite:///{settings.db_path}",
     echo=False,
     future=True,
+    connect_args={"timeout": 30.0},
 )
 
 
@@ -28,10 +29,10 @@ engine = create_async_engine(
 def set_sqlite_pragma(dbapi_conn: Any, _connection_record: Any) -> None:
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.execute("PRAGMA journal_mode=WAL")
     # cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 

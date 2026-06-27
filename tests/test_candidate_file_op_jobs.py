@@ -30,10 +30,12 @@ from backend.enums import (
     ProtectionRequestStatus,
     UserRole,
 )
+from backend.jobs import candidate_file_ops
 from backend.jobs.candidate_file_ops import run_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem, CandidateFileOpJobPayload
 from backend.models.media import DeleteCandidatesRequest
 from backend.models.requests import ReviewDeleteRequest
+from backend.tasks import cleanup as cleanup_tasks
 
 
 def _user(
@@ -53,6 +55,53 @@ def _user(
 def _patch_job_sessions(monkeypatch, session_maker) -> None:
     monkeypatch.setattr("backend.jobs.queue.async_db", session_maker)
     monkeypatch.setattr("backend.jobs.candidate_file_ops.async_db", session_maker)
+
+
+def test_candidate_workflows_share_one_serialization_lock(monkeypatch) -> None:
+    async def run() -> None:
+        lock = asyncio.Lock()
+        file_op_entered = asyncio.Event()
+        release_file_op = asyncio.Event()
+        tag_entered = asyncio.Event()
+
+        async def fake_file_op(*_args, **_kwargs):
+            file_op_entered.set()
+            await release_file_op.wait()
+            return {"succeeded": 1}
+
+        async def fake_tag() -> None:
+            tag_entered.set()
+
+        monkeypatch.setattr(candidate_file_ops, "candidate_workflow_lock", lock)
+        monkeypatch.setattr(cleanup_tasks, "candidate_workflow_lock", lock)
+        monkeypatch.setattr(
+            candidate_file_ops,
+            "_run_candidate_file_op_job_unlocked",
+            fake_file_op,
+        )
+        monkeypatch.setattr(
+            cleanup_tasks,
+            "_tag_cleanup_candidates_unlocked",
+            fake_tag,
+        )
+
+        payload = CandidateFileOpJobPayload(
+            operation=CandidateFileOpOperation.DELETE,
+            candidate_ids=[],
+            requested_by_user_id=1,
+            requested_by_username="tester",
+        )
+        file_task = asyncio.create_task(run_candidate_file_op_job(1, payload))
+        await file_op_entered.wait()
+        tag_task = asyncio.create_task(cleanup_tasks.tag_cleanup_candidates())
+        await asyncio.sleep(0)
+        assert not tag_entered.is_set()
+
+        release_file_op.set()
+        await asyncio.gather(file_task, tag_task)
+        assert tag_entered.is_set()
+
+    asyncio.run(run())
 
 
 def test_delete_candidates_queues_background_job(monkeypatch) -> None:

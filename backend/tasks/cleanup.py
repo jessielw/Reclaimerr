@@ -47,6 +47,7 @@ from backend.core.utils.filesystem import (
 )
 from backend.core.utils.request import summarize_error_message
 from backend.core.utils.resolution import guesstimate_resolution
+from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
@@ -825,27 +826,28 @@ async def scan_cleanup_candidates() -> None:
     LOG.info("Starting cleanup candidates scan")
 
     async with track_task_execution(Task.SCAN_CLEANUP_CANDIDATES):
-        try:
-            scan_started_at = datetime.now(UTC)
-            async with async_db() as session:
-                response = await _scan_with_db(session)
-                if response and response[0] > 0:
-                    try:
-                        context = await build_cleanup_notification_context(
-                            created_count=response[0],
-                            created_since=scan_started_at,
-                        )
-                        await notify_all_users(
-                            notification_type=NotificationType.NEW_CLEANUP_CANDIDATES,
-                            title="New Cleanup Candidates Found",
-                            message=f"There are {response[0]} new cleanup candidates",
-                            context=context,
-                        )
-                    except Exception as e:
-                        LOG.error(f"Error sending cleanup scan notification: {e}")
-        except Exception as e:
-            LOG.error(f"Error scanning cleanup candidates: {e}", exc_info=True)
-            raise
+        async with candidate_workflow_lock:
+            try:
+                scan_started_at = datetime.now(UTC)
+                async with async_db() as session:
+                    response = await _scan_with_db(session)
+                    if response and response[0] > 0:
+                        try:
+                            context = await build_cleanup_notification_context(
+                                created_count=response[0],
+                                created_since=scan_started_at,
+                            )
+                            await notify_all_users(
+                                notification_type=NotificationType.NEW_CLEANUP_CANDIDATES,
+                                title="New Cleanup Candidates Found",
+                                message=f"There are {response[0]} new cleanup candidates",
+                                context=context,
+                            )
+                        except Exception as e:
+                            LOG.error(f"Error sending cleanup scan notification: {e}")
+            except Exception as e:
+                LOG.error(f"Error scanning cleanup candidates: {e}", exc_info=True)
+                raise
 
 
 def _collect_arr_tag_labels(rules: list[ReclaimRule]) -> set[str]:
@@ -2476,15 +2478,15 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         )
 
         preserved_protection_rule_ids: set[int] = set()
+        seerr_skipped_rules = 0
+        seerr_skip_reason: str | None = None
         seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
             db,
             list(rules),
             require_fresh=True,
             allow_stale_on_failure=False,
         )
-        if seerr_ready:
-            await clear_seerr_rule_skip_notice(db)
-        else:
+        if not seerr_ready:
             seerr_dependent_rules = [r for r in rules if _rule_uses_seerr_fields(r)]
             if seerr_dependent_rules:
                 preserved_protection_rule_ids = {
@@ -2493,38 +2495,39 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
                     if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT
                 }
                 rules = [r for r in rules if not _rule_uses_seerr_fields(r)]
-                skipped = len(seerr_dependent_rules)
-                reason = seerr_error or "Failed to refresh Seerr request snapshot"
-                await set_seerr_rule_skip_notice(
-                    db,
-                    skipped_rules=skipped,
-                    reason=reason,
+                seerr_skipped_rules = len(seerr_dependent_rules)
+                seerr_skip_reason = (
+                    seerr_error or "Failed to refresh Seerr request snapshot"
                 )
                 LOG.warning(
-                    f"Skipping {skipped} Seerr dependent cleanup rule(s) this run: {reason}"
+                    f"Skipping {seerr_skipped_rules} Seerr dependent cleanup rule(s) "
+                    f"this run: {seerr_skip_reason}"
                 )
-                try:
-                    await notify_admins(
-                        notification_type=NotificationType.ADMIN_MESSAGE,
-                        title="Seerr rules skipped during cleanup scan",
-                        message=(
-                            f"Skipped {skipped} Seerr dependent rule(s) for this cleanup run "
-                            "because Seerr request data could not be refreshed."
-                        ),
-                        context={"reason": reason},
-                    )
-                except Exception as notify_error:
-                    LOG.error(
-                        f"Failed to notify admins about skipped Seerr rules: {notify_error}"
-                    )
-            else:
-                await clear_seerr_rule_skip_notice(db)
 
         sonarr_rule_result = await _activate_sonarr_episode_state_for_rules(
             db,
             list(rules),
             sonarr_series_snapshot=sonarr_series_snapshot,
         )
+
+        # Provider refreshes use their own sessions. End this session's read
+        # transaction before they write, and defer all notice/candidate writes
+        # until those refreshes are complete.
+        await db.commit()
+
+        playback_rule_result = await _activate_playback_history_for_rules(
+            db, list(rules), require_fresh=True
+        )
+
+        if seerr_skipped_rules:
+            await set_seerr_rule_skip_notice(
+                db,
+                skipped_rules=seerr_skipped_rules,
+                reason=seerr_skip_reason or "Failed to refresh Seerr request snapshot",
+            )
+        else:
+            await clear_seerr_rule_skip_notice(db)
+
         if sonarr_rule_result.unavailable_series_ids:
             await set_sonarr_rule_data_notice(
                 db,
@@ -2534,9 +2537,6 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         else:
             await clear_sonarr_rule_data_notice(db)
 
-        playback_rule_result = await _activate_playback_history_for_rules(
-            db, list(rules), require_fresh=True
-        )
         if playback_rule_result.unavailable_count:
             playback_dependent_protection_rules = {
                 rule.id
@@ -2680,6 +2680,23 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             candidates_removed += del_result.rowcount or 0
 
         await db.commit()
+
+        if seerr_skipped_rules:
+            try:
+                await notify_admins(
+                    notification_type=NotificationType.ADMIN_MESSAGE,
+                    title="Seerr rules skipped during cleanup scan",
+                    message=(
+                        f"Skipped {seerr_skipped_rules} Seerr dependent rule(s) for "
+                        "this cleanup run because Seerr request data could not be "
+                        "refreshed."
+                    ),
+                    context={"reason": seerr_skip_reason},
+                )
+            except Exception as notify_error:
+                LOG.error(
+                    f"Failed to notify admins about skipped Seerr rules: {notify_error}"
+                )
 
         try:
             await _sync_leaving_soon_collections(db)
@@ -3712,6 +3729,12 @@ def _evaluate_rule_for_episode(
 
 
 async def tag_cleanup_candidates() -> None:
+    """Serialize tag reconciliation with other candidate workflows."""
+    async with candidate_workflow_lock:
+        await _tag_cleanup_candidates_unlocked()
+
+
+async def _tag_cleanup_candidates_unlocked() -> None:
     """Sync rule scoped rec-* tags for cleanup candidates in Radarr/Sonarr."""
     # check if services are configured before doing any work
     if not service_manager.radarr and not service_manager.sonarr:
@@ -4074,6 +4097,12 @@ async def _sync_expected_arr_tags(
 
 
 async def delete_cleanup_candidates() -> dict[str, int]:
+    """Serialize automatic deletion with other candidate workflows."""
+    async with candidate_workflow_lock:
+        return await _delete_cleanup_candidates_unlocked()
+
+
+async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
     """Automatically delete eligible cleanup candidates when globally enabled."""
     LOG.info("Starting automatic cleanup candidate deletion")
 

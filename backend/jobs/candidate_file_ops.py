@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.core.utils.request import summarize_error_message
+from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import BackgroundJob, DeleteRequest, ReclaimCandidate
 from backend.enums import BackgroundJobType, CandidateFileOpOperation
@@ -95,6 +96,15 @@ async def _finalize_delete_request_job(
 
 
 async def run_candidate_file_op_job(
+    job_id: int,
+    payload: CandidateFileOpJobPayload,
+) -> dict[str, Any]:
+    """Serialize candidate file operations with candidate reconciliation tasks."""
+    async with candidate_workflow_lock:
+        return await _run_candidate_file_op_job_unlocked(job_id, payload)
+
+
+async def _run_candidate_file_op_job_unlocked(
     job_id: int,
     payload: CandidateFileOpJobPayload,
 ) -> dict[str, Any]:

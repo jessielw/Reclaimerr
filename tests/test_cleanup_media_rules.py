@@ -22,6 +22,7 @@ from backend.core.rule_engine import (
 )
 from backend.database import Base
 from backend.database.models import (
+    AdminNotice,
     Episode,
     GeneralSettings,
     MediaFavorite,
@@ -2264,6 +2265,98 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._engine.dispose()
         if self._db_path.exists():
             self._db_path.unlink()
+
+    async def test_scan_ends_notice_transaction_before_nested_provider_write(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(MediaType.MOVIE, min_size=1)
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            notice = AdminNotice(
+                kind="seerr_rule_skip",
+                title="Old notice",
+                message="Old notice",
+                dedupe_key="seerr_rules_skipped",
+            )
+            db.add_all([rule, config, notice])
+            await db.commit()
+            config_id = config.id
+
+        async def nested_provider_write(*_args, **_kwargs):
+            async with self._sessionmaker() as provider_db:
+                stored = await provider_db.get(ServiceConfig, config_id)
+                assert stored is not None
+                stored.extra_settings = {"provider_write_completed": True}
+                await provider_db.commit()
+            return cleanup_tasks._PlaybackRuleDataResult(snapshot=None)
+
+        with (
+            patch.object(
+                cleanup_tasks,
+                "_ensure_favorites_snapshot_if_enabled",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+            patch.object(
+                cleanup_tasks, "_load_arr_disk_space", new=AsyncMock(return_value=[])
+            ),
+            patch.object(
+                cleanup_tasks, "_load_path_mappings", new=AsyncMock(return_value=[])
+            ),
+            patch.object(cleanup_tasks, "_refresh_arr_tags_for_rules", new=AsyncMock()),
+            patch.object(
+                cleanup_tasks, "_refresh_arr_monitoring_for_rules", new=AsyncMock()
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_seerr_request_resolver_for_rules",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_sonarr_episode_state_for_rules",
+                new=AsyncMock(
+                    return_value=cleanup_tasks._SonarrRuleDataResult(set(), set())
+                ),
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_playback_history_for_rules",
+                new=nested_provider_write,
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_reconcile_rule_managed_protections",
+                new=AsyncMock(return_value=(0, 0, 0)),
+            ),
+            patch.object(
+                cleanup_tasks, "_process_media", new=AsyncMock(return_value=(0, 0, 0))
+            ),
+            patch.object(
+                cleanup_tasks, "_sync_leaving_soon_collections", new=AsyncMock()
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+
+        self.assertEqual(result, (0, 0, 0))
+        async with self._sessionmaker() as db:
+            stored = await db.get(ServiceConfig, config_id)
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored.extra_settings, {"provider_write_completed": True})
+            stored_notice = (
+                await db.execute(
+                    select(AdminNotice).where(
+                        AdminNotice.dedupe_key == "seerr_rules_skipped"
+                    )
+                )
+            ).scalar_one()
+            self.assertFalse(stored_notice.is_active)
 
     async def test_automated_protection_wins_over_matching_candidate(self) -> None:
         async with self._sessionmaker() as db:

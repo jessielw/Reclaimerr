@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.core.encryption import fer_encrypt
@@ -30,6 +32,7 @@ from backend.services.playback_history import (
     _config_api_key,
     _normalize_reporting_events,
     _normalize_tautulli_events,
+    _refresh_reporting_config,
     rebuild_playback_history_aggregates,
 )
 from backend.services.tautulli import TautulliClient
@@ -307,6 +310,136 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             assert movie is not None
             self.assertEqual(movie.view_count, 1)
             self.assertEqual(movie.last_viewed_at, datetime(2026, 2, 1))
+
+    async def test_database_write_failure_is_not_reported_as_provider_failure(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add(config)
+            await db.commit()
+            config_id = config.id
+
+        reporting_rows = [
+            {
+                "DateCreated": "2026-06-20 12:00:00",
+                "UserId": "user-1",
+                "ItemId": "movie-1",
+                "ItemType": "Movie",
+                "PlayDuration": 30,
+            }
+        ]
+        write_error = OperationalError(
+            "INSERT INTO playback_history_events ...",
+            {},
+            RuntimeError("database is locked"),
+        )
+        with (
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_plugin_status",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_events",
+                new=AsyncMock(return_value=reporting_rows),
+            ),
+            patch.object(
+                playback_history,
+                "_upsert_events",
+                new=AsyncMock(side_effect=write_error),
+            ),
+        ):
+            with self.assertRaises(OperationalError):
+                await _refresh_reporting_config(config)
+
+        async with self.sessionmaker() as db:
+            stored = await db.get(ServiceConfig, config_id)
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertNotIn(
+                playback_history.PLAYBACK_HISTORY_STATE_KEY,
+                stored.extra_settings or {},
+            )
+
+    async def test_provider_failure_is_persisted_as_unavailable(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add(config)
+            await db.commit()
+            config_id = config.id
+
+        with patch.object(
+            JellyfinService,
+            "get_playback_reporting_plugin_status",
+            new=AsyncMock(side_effect=RuntimeError("provider offline")),
+        ):
+            result = await _refresh_reporting_config(config)
+
+        self.assertFalse(result.available)
+        self.assertIn("provider offline", result.error or "")
+        async with self.sessionmaker() as db:
+            stored = await db.get(ServiceConfig, config_id)
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            state = (stored.extra_settings or {})[
+                playback_history.PLAYBACK_HISTORY_STATE_KEY
+            ]
+            self.assertFalse(state["available"])
+            self.assertIn("provider offline", state["last_error"])
+
+
+class PlaybackRefreshSerializationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refreshes_are_serialized_and_force_is_preserved(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        forces: list[bool] = []
+        active = 0
+        max_active = 0
+
+        async def fake_refresh(*, force: bool = False):
+            nonlocal active, max_active
+            forces.append(force)
+            active += 1
+            max_active = max(max_active, active)
+            entered.set()
+            await release.wait()
+            active -= 1
+            return playback_history.PlaybackRefreshResult()
+
+        with (
+            patch.object(playback_history, "_playback_refresh_lock", asyncio.Lock()),
+            patch.object(
+                playback_history,
+                "_refresh_playback_history_once",
+                new=fake_refresh,
+            ),
+        ):
+            first = asyncio.create_task(
+                playback_history.refresh_playback_history(force=False)
+            )
+            await entered.wait()
+            second = asyncio.create_task(
+                playback_history.refresh_playback_history(force=True)
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(forces, [False])
+            release.set()
+            await asyncio.gather(first, second)
+
+        self.assertEqual(forces, [False, True])
+        self.assertEqual(max_active, 1)
 
 
 if __name__ == "__main__":
