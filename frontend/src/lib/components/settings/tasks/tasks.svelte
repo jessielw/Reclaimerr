@@ -16,6 +16,7 @@
   import EditTaskScheduleDialog from "./edit-task-schedule-dialog.svelte";
   import { ScheduleType, TaskStatus } from "$lib/types/shared";
   import { getStatusColor, getTaskStatusText } from "$lib/utils/tasks";
+  import Notice from "$lib/components/notice.svelte";
 
   interface Props {
     svgIcon: Component | null;
@@ -214,11 +215,31 @@
             <h3 class="text-base font-semibold text-foreground">
               External Ratings
             </h3>
-            <p class="mt-1 text-sm text-muted-foreground">
-              TMDb is the <strong>main source</strong> for media metadata. The tasks
-              below supplements data with additional detailed information that allows
-              additional rules when utilized.
-            </p>
+            <Notice class="mt-2 text-sm">
+              <p>
+                TMDb is the <strong>main source</strong> for media metadata. The tasks
+                below supplements data with additional detailed information that allows
+                additional rules when utilized.
+              </p>
+              <br />
+              <p>
+                Note: <a
+                  href="https://mdblist.com/"
+                  target="_blank"
+                  referrerpolicy="no-referrer"
+                  class="hyper-link">MDBList</a
+                >
+                and
+                <a
+                  href="https://www.omdbapi.com/apikey.aspx"
+                  target="_blank"
+                  referrerpolicy="no-referrer"
+                  class="hyper-link">OMDb</a
+                >
+                requires an API key to to be configured. All other metadata providers
+                do not require anything to function.
+              </p>
+            </Notice>
           </div>
         {/if}
         {@const displayStatus = getDisplayStatus(task)}

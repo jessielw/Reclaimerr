@@ -392,3 +392,11 @@
 .input-hover-el:hover {
   @apply border-primary-hover duration-300 transition-colors;
 }
+
+.hyper-link {
+  @apply text-primary
+         hover:text-primary-hover
+         focus:text-primary-hover
+         hover:underline
+         transition-colors duration-150;
+}
