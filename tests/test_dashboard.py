@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.api.routes.dashboard import get_dashboard
 from backend.database import Base
-from backend.database.models import Movie, Series, User
-from backend.enums import UserRole
+from backend.database.models import Movie, Series, TaskRun, User
+from backend.enums import Task, TaskStatus, UserRole
 
 
 def _admin_user() -> User:
@@ -49,3 +49,35 @@ async def test_dashboard_totals_exclude_soft_deleted_media() -> None:
     assert response.kpis.total_series == 1
     assert response.kpis.total_movies_size_bytes == 100
     assert response.kpis.total_series_size_bytes == 300
+
+
+@pytest.mark.anyio
+async def test_dashboard_materializes_provider_rating_task_history() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    session_maker = async_sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_maker() as db:
+        user = _admin_user()
+        db.add_all(
+            [
+                user,
+                TaskRun(
+                    task=Task.MDBLIST_RATINGS_REFRESH,
+                    status=TaskStatus.COMPLETED,
+                ),
+            ]
+        )
+        await db.flush()
+
+        response = await get_dashboard(current_user=user, db=db)
+
+    await engine.dispose()
+
+    assert any(
+        item.title == "Refresh MDBList Ratings completed"
+        for item in response.activity
+    )
