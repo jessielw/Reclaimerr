@@ -88,6 +88,25 @@ def test_auto_delete_defaults_and_metadata():
         assert playback_schedule["schedule_value"] == ""
         assert playback_schedule["enabled"] is True
 
+        mdblist_schedule = next(
+            item
+            for item in DEFAULT_SCHEDULES
+            if item["task"] is Task.MDBLIST_RATINGS_REFRESH
+        )
+        omdb_schedule = next(
+            item
+            for item in DEFAULT_SCHEDULES
+            if item["task"] is Task.OMDB_RATINGS_REFRESH
+        )
+        assert mdblist_schedule["schedule_value"] == "0 6 * * *"
+        assert omdb_schedule["schedule_value"] == "0 7 * * *"
+        assert Task.MDBLIST_RATINGS_REFRESH in DISABLE_ABLE_TASKS
+        assert Task.OMDB_RATINGS_REFRESH in DISABLE_ABLE_TASKS
+        assert Task.IMDB_RATINGS_REFRESH.friendly_name() == "Refresh IMDb Ratings"
+        assert Task.ANILIST_RATINGS_REFRESH.friendly_name() == "Refresh AniList Ratings"
+        assert Task.MDBLIST_RATINGS_REFRESH.friendly_name() == "Refresh MDBList Ratings"
+        assert Task.OMDB_RATINGS_REFRESH.friendly_name() == "Refresh OMDb Ratings"
+
         await engine.dispose()
 
     asyncio.run(run())
@@ -109,6 +128,30 @@ def test_execute_task_refreshes_playback_history(monkeypatch):
 
         refresh_mock.assert_awaited_once()
         assert result == {"providers": 1}
+
+    asyncio.run(run())
+
+
+def test_execute_task_routes_external_rating_providers(monkeypatch):
+    async def run() -> None:
+        monkeypatch.setattr(
+            "backend.core.task_runtime.is_task_enabled",
+            AsyncMock(return_value=True),
+        )
+        mdblist_refresh = AsyncMock()
+        omdb_refresh = AsyncMock()
+        monkeypatch.setattr(
+            "backend.core.task_runtime.refresh_mdblist_ratings", mdblist_refresh
+        )
+        monkeypatch.setattr(
+            "backend.core.task_runtime.refresh_omdb_ratings", omdb_refresh
+        )
+
+        await execute_task(Task.MDBLIST_RATINGS_REFRESH)
+        await execute_task(Task.OMDB_RATINGS_REFRESH)
+
+        mdblist_refresh.assert_awaited_once()
+        omdb_refresh.assert_awaited_once()
 
     asyncio.run(run())
 

@@ -198,6 +198,19 @@ async def _metadata_provider_status_payload(db: AsyncSession) -> dict[str, Any]:
                 "disabled_reason": provider_run_summary.get("disabled_reason")
                 if isinstance(provider_run_summary.get("disabled_reason"), str)
                 else None,
+                "last_checked_at": provider_run_summary.get("last_checked_at")
+                if isinstance(provider_run_summary.get("last_checked_at"), str)
+                else None,
+                "last_successful_refresh_at": provider_run_summary.get(
+                    "last_successful_refresh_at"
+                )
+                if isinstance(
+                    provider_run_summary.get("last_successful_refresh_at"), str
+                )
+                else None,
+                "last_error": provider_run_summary.get("last_error")
+                if isinstance(provider_run_summary.get("last_error"), str)
+                else None,
                 "coverage": {
                     "movies": _coverage_payload(covered_movies, total_movies),
                     "series": _coverage_payload(covered_series, total_series),

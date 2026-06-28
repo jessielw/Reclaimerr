@@ -306,6 +306,9 @@ export interface MetadataProviderStatus {
   last_run_requests: number | null;
   last_run_request_limit: number | null;
   disabled_reason: string | null;
+  last_checked_at: string | null;
+  last_successful_refresh_at: string | null;
+  last_error: string | null;
   coverage: MetadataProviderCoverage;
 }
 

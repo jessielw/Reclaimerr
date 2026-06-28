@@ -57,11 +57,17 @@ async def test_metadata_provider_status_reports_refresh_usage_and_coverage() -> 
                             "requests_used": 12,
                             "request_limit": 333,
                             "disabled_reason": None,
+                            "last_checked_at": "2026-06-24T12:00:00+00:00",
+                            "last_successful_refresh_at": "2026-06-24T12:00:00+00:00",
+                            "last_error": None,
                         },
                         "omdb": {
                             "requests_used": 2,
                             "request_limit": 500,
                             "disabled_reason": "OMDb disabled for test",
+                            "last_checked_at": "2026-06-24T13:00:00+00:00",
+                            "last_successful_refresh_at": "2026-06-24T12:30:00+00:00",
+                            "last_error": "OMDb test error",
                         },
                     },
                     last_checked_at=datetime(2026, 6, 24, 12, tzinfo=UTC),
@@ -134,9 +140,15 @@ async def test_metadata_provider_status_reports_refresh_usage_and_coverage() -> 
         "percent": 50.0,
     }
 
-    assert omdb["request_limit"] == 500
-    assert omdb["request_delay_seconds"] == 0.0
+    assert mdblist["last_checked_at"] == "2026-06-24T12:00:00+00:00"
+    assert mdblist["last_error"] is None
+
+    assert omdb["request_limit"] == 950
+    assert omdb["request_delay_seconds"] == 0.25
     assert omdb["disabled_reason"] == "OMDb disabled for test"
+    assert omdb["last_checked_at"] == "2026-06-24T13:00:00+00:00"
+    assert omdb["last_successful_refresh_at"] == "2026-06-24T12:30:00+00:00"
+    assert omdb["last_error"] == "OMDb test error"
     assert omdb["coverage"]["total"] == {
         "covered": 4,
         "total": 6,
@@ -163,15 +175,15 @@ async def test_metadata_provider_status_returns_defaults_without_configuration()
     providers = {item["service_type"]: item for item in response["providers"]}
     assert providers["mdblist"]["configured"] is False
     assert providers["mdblist"]["enabled"] is False
-    assert providers["mdblist"]["request_limit"] == 250
+    assert providers["mdblist"]["request_limit"] == 950
     assert providers["mdblist"]["request_delay_seconds"] == 1.0
     assert providers["mdblist"]["coverage"]["total"] == {
         "covered": 0,
         "total": 0,
         "percent": 0,
     }
-    assert providers["omdb"]["request_limit"] == 500
-    assert providers["omdb"]["request_delay_seconds"] == 0.0
+    assert providers["omdb"]["request_limit"] == 950
+    assert providers["omdb"]["request_delay_seconds"] == 0.25
 
 
 def test_mdblist_request_delay_defaults_and_supporter_mode() -> None:

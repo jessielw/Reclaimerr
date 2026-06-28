@@ -8,19 +8,9 @@
     provider: MetadataProviderStatus | null;
     loading?: boolean;
     error?: string | null;
-    lastCheckedAt?: string | null;
-    lastSuccessfulRefreshAt?: string | null;
-    lastError?: string | null;
   }
 
-  let {
-    provider,
-    loading = false,
-    error = null,
-    lastCheckedAt = null,
-    lastSuccessfulRefreshAt = null,
-    lastError = null,
-  }: Props = $props();
+  let { provider, loading = false, error = null }: Props = $props();
 
   const formatCount = (value: number | null | undefined) =>
     value == null ? "Unknown" : value.toLocaleString();
@@ -128,15 +118,21 @@
     </div>
 
     <div class="mt-3 space-y-1 text-xs text-muted-foreground">
-      <p>Last checked: {formatRelative(lastCheckedAt)}</p>
-      <p>Last successful refresh: {formatRelative(lastSuccessfulRefreshAt)}</p>
+      <p>Last checked: {formatRelative(provider.last_checked_at)}</p>
+      <p>
+        Last successful refresh: {formatRelative(
+          provider.last_successful_refresh_at,
+        )}
+      </p>
       {#if provider.disabled_reason}
         <p class="text-yellow-500">
           Provider stopped last run: {provider.disabled_reason}
         </p>
       {/if}
-      {#if lastError}
-        <p class="text-destructive">Last refresh error: {lastError}</p>
+      {#if provider.last_error}
+        <p class="text-destructive">
+          Last refresh error: {provider.last_error}
+        </p>
       {/if}
       {#if !provider.configured}
         <p class="text-yellow-500">

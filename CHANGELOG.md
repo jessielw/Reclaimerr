@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Add tests for file op jobs to mitigate sqlite lock/race issues
+- Organized tasks for metadata
+  - Split up MDBlist and OMDb into their own tasks
+    - If you was using these before MDBlist will run on your existing schedule and OMDb will be set to a new default
+  - Improved the verbiage around what each task is for
 
 ### Fixed
 

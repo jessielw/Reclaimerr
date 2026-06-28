@@ -952,9 +952,6 @@
                   provider={getMetadataProviderStatus(activeTab)}
                   loading={metadataProviderStatusLoading}
                   error={metadataProviderStatusError}
-                  lastCheckedAt={metadataProviderStatus?.last_checked_at}
-                  lastSuccessfulRefreshAt={metadataProviderStatus?.last_successful_refresh_at}
-                  lastError={metadataProviderStatus?.last_error}
                 />
               </div>
             {/if}

@@ -591,6 +591,18 @@ class Movie(Base):
     external_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
+    mdblist_ratings_cache: Mapped[dict[str, int | None] | None] = mapped_column(
+        JSON, default=None
+    )
+    mdblist_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    omdb_ratings_cache: Mapped[dict[str, int | None] | None] = mapped_column(
+        JSON, default=None
+    )
+    omdb_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
 
     # metadata info
     tmdb_title: Mapped[str | None] = mapped_column(String(512), default=None)
@@ -1042,6 +1054,18 @@ class Series(Base):
         String(64), default=None
     )
     external_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    mdblist_ratings_cache: Mapped[dict[str, int | None] | None] = mapped_column(
+        JSON, default=None
+    )
+    mdblist_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    omdb_ratings_cache: Mapped[dict[str, int | None] | None] = mapped_column(
+        JSON, default=None
+    )
+    omdb_ratings_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
     tvdb_id: Mapped[str | None] = mapped_column(

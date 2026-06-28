@@ -149,11 +149,13 @@ Rotten Tomatoes, Metacritic, Trakt, and Letterboxd plus vote counts. OMDb is
 used as a fallback for Tomatometer and Metacritic when an IMDb ID is available.
 Direct Rotten Tomatoes and Metacritic scraping is intentionally not used.
 
-Ratings are refreshed by the `Refresh External Ratings` task. If a provider has
-not been configured, the media has no matching provider ID, or the provider does
-not return a rating, that field is missing. Numeric comparisons do not match
-missing ratings; use `does not exist` when you specifically want to find media
-without a cached rating.
+Ratings are refreshed by the provider-specific `Refresh MDBList Ratings` and
+`Refresh OMDb Ratings` tasks. They keep independent schedules and caches.
+MDBList values remain authoritative, while OMDb fills missing Tomatometer and
+Metacritic values. If a provider has not been configured, the media has no
+matching provider ID, or the provider does not return a rating, that field is
+missing. Numeric comparisons do not match missing ratings; use `does not exist`
+when you specifically want to find media without a cached rating.
 
 The Metadata Providers settings page shows per-refresh request usage and cached
 movie/series coverage for MDBList and OMDb. Provider rate-limit headers are

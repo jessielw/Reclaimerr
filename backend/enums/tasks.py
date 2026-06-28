@@ -71,8 +71,17 @@ class Task(StrEnum):
     CHECK_APP_UPDATES = auto()
     IMDB_RATINGS_REFRESH = auto()
     ANILIST_RATINGS_REFRESH = auto()
-    REFRESH_EXTERNAL_RATINGS = auto()
+    MDBLIST_RATINGS_REFRESH = auto()
+    OMDB_RATINGS_REFRESH = auto()
     REFRESH_PLAYBACK_HISTORY = auto()
 
     def friendly_name(self) -> str:
+        branded_names = {
+            Task.IMDB_RATINGS_REFRESH: "Refresh IMDb Ratings",
+            Task.ANILIST_RATINGS_REFRESH: "Refresh AniList Ratings",
+            Task.MDBLIST_RATINGS_REFRESH: "Refresh MDBList Ratings",
+            Task.OMDB_RATINGS_REFRESH: "Refresh OMDb Ratings",
+        }
+        if self in branded_names:
+            return branded_names[self]
         return self.name.replace("_", " ").title()

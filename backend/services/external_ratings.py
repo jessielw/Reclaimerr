@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from typing import Any
 
 import niquests
@@ -16,21 +17,6 @@ from backend.enums import MediaType
 
 DEFAULT_MDBLIST_BASE_URL = "https://api.mdblist.com"
 DEFAULT_OMDB_BASE_URL = "https://www.omdbapi.com"
-
-_RATING_FIELDS = (
-    "rottentomatoes_tomato_meter",
-    "rottentomatoes_tomato_vote_count",
-    "rottentomatoes_popcorn_meter",
-    "rottentomatoes_popcorn_vote_count",
-    "metacritic_metascore",
-    "metacritic_vote_count",
-    "metacritic_user_score",
-    "metacritic_user_vote_count",
-    "trakt_rating",
-    "trakt_vote_count",
-    "letterboxd_score",
-    "letterboxd_vote_count",
-)
 
 
 @dataclass(slots=True)
@@ -85,12 +71,32 @@ class ExternalRatingValues:
     letterboxd_vote_count: int | None = None
 
     def has_any(self) -> bool:
-        return any(getattr(self, field) is not None for field in _RATING_FIELDS)
+        return any(getattr(self, field) is not None for field in EXTERNAL_RATING_FIELDS)
 
     def merge_missing(self, other: ExternalRatingValues) -> None:
-        for field in _RATING_FIELDS:
+        for field in EXTERNAL_RATING_FIELDS:
             if getattr(self, field) is None:
                 setattr(self, field, getattr(other, field))
+
+    def to_dict(self) -> dict[str, int | None]:
+        return {field: getattr(self, field) for field in EXTERNAL_RATING_FIELDS}
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object] | None) -> ExternalRatingValues:
+        if values is None:
+            return cls()
+        return cls(
+            **{
+                field: value
+                if isinstance(value, int) and not isinstance(value, bool)
+                else None
+                for field in EXTERNAL_RATING_FIELDS
+                if (value := values.get(field)) is not None
+            }
+        )
+
+
+EXTERNAL_RATING_FIELDS = tuple(field.name for field in fields(ExternalRatingValues))
 
 
 class MDBListClient:

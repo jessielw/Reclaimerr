@@ -156,14 +156,27 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "enabled": True,
     },
     {
-        "task": Task.REFRESH_EXTERNAL_RATINGS,
+        "task": Task.MDBLIST_RATINGS_REFRESH,
         "description": (
-            "Refreshes external ratings from configured MDBList and OMDb providers"
+            "Refreshes ratings from the configured MDBList provider. (This allows "
+            + "metadata to be gathered for Tomatometer, Popcornmeter, Metacritic, Trakt, and Letterboxd)"
         ),
         "schedule_type": ScheduleType.CRON,
         "schedule_value": "0 6 * * *",  # daily at 6 AM
         "default_schedule_type": ScheduleType.CRON,
         "default_schedule_value": "0 6 * * *",
+        "enabled": True,
+    },
+    {
+        "task": Task.OMDB_RATINGS_REFRESH,
+        "description": (
+            "Refreshes OMDb fallback ratings for missing Tomatometer and "
+            "Metacritic values (MDBList is the priority source)"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 7 * * *",  # daily at 7 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 7 * * *",
         "enabled": True,
     },
 )
