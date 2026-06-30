@@ -189,6 +189,7 @@ class MovieVersionResponse(BaseModel):
     path: str | None
     size: int
     added_at: str | None
+    arr_added_at: str | None
     file_name: str | None
     container: str | None
     duration: float | None
@@ -326,6 +327,7 @@ class MovieWithStatus(BaseModel):
 
     # timestamps
     added_at: str | None
+    arr_added_at: str | None
 
 
 class SeriesServiceRefResponse(BaseModel):
@@ -418,6 +420,7 @@ class SeriesWithStatus(BaseModel):
 
     # timestamps
     added_at: str | None
+    arr_added_at: str | None
 
 
 class SeasonWithStatus(BaseModel):
@@ -429,6 +432,7 @@ class SeasonWithStatus(BaseModel):
     size: int | None
     view_count: int
     added_at: str | None
+    arr_added_at: str | None
     last_viewed_at: str | None
     air_date: str | None
     # aggregate media signals
@@ -455,6 +459,7 @@ class EpisodeWithStatus(BaseModel):
     size: int | None
     view_count: int
     air_date: str | None
+    arr_added_at: str | None
     last_viewed_at: str | None
     status: MediaStatusInfo
 
@@ -544,6 +549,7 @@ class CandidateEntryBase(BaseModel):
     tmdb_status: str | None = None
     media_library_names: list[str] | None = None
     media_added_at: str | None = None
+    media_arr_added_at: str | None = None
     media_last_viewed_at: str | None = None
     media_view_count: int | None = None
     movie_version_id: int | None = None

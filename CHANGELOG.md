@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Information section in media server settings for some additional details on initial setup
 - Descriptions for Radarr, Sonarr, Seerr, Tautulli, MDBlist, and OMDb service configurations
 - Additional information for metadata tasks
+- Rules
+  - arr.days_since_file_added
+    - Added nullable Radarr/Sonarr dates added on dates
+    - Syncs Radarr movie files and Sonarr episode files with season/series roll-ups
+    - Added API fields, sorting, UI labels, and arr.days_since_file_added rules
+    - Added focused regression tests and documentation
 
 ### Changed
 

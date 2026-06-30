@@ -551,6 +551,7 @@ export interface MovieVersion {
   path: string | null;
   size: number;
   added_at: string | null;
+  arr_added_at: string | null;
   container: string | null;
 }
 
@@ -605,6 +606,7 @@ export interface MovieWithStatus {
   view_count: number;
   status: MediaStatusInfo;
   added_at: string | null;
+  arr_added_at: string | null;
 }
 
 export interface SeriesServiceRef {
@@ -668,6 +670,7 @@ export interface SeriesWithStatus {
   library_season_count: number;
   library_episode_count: number;
   added_at: string | null;
+  arr_added_at: string | null;
 }
 
 export interface SeasonWithStatus {
@@ -676,6 +679,8 @@ export interface SeasonWithStatus {
   episode_count: number | null;
   size: number | null; // bytes
   view_count: number;
+  added_at: string | null;
+  arr_added_at: string | null;
   last_viewed_at: string | null;
   air_date: string | null;
   status: MediaStatusInfo;
@@ -690,6 +695,7 @@ export interface EpisodeWithStatus {
   size: number | null;
   view_count: number;
   air_date: string | null;
+  arr_added_at: string | null;
   last_viewed_at: string | null;
   status: MediaStatusInfo;
 }
@@ -936,6 +942,7 @@ export interface ReclaimCandidateEntry {
   tmdb_status: string | null;
   media_library_names: string[] | null;
   media_added_at: string | null;
+  media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
   version_service: string | null;

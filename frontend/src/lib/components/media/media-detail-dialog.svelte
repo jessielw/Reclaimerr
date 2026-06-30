@@ -544,9 +544,21 @@
                 {/if}
                 {#if media.added_at}
                   <div>
-                    <span class="text-muted-foreground">Added:</span>
+                    <span class="text-muted-foreground"
+                      >Media server added:</span
+                    >
                     <span class="text-foreground ml-2"
                       >{formatDateToLocaleString(media.added_at)}</span
+                    >
+                  </div>
+                {/if}
+                {#if media.arr_added_at}
+                  <div>
+                    <span class="text-muted-foreground"
+                      >Latest Arr file added:</span
+                    >
+                    <span class="text-foreground ml-2"
+                      >{formatDateToLocaleString(media.arr_added_at)}</span
                     >
                   </div>
                 {/if}

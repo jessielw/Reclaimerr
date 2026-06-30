@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, TypeGuard
@@ -11,11 +12,12 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.tmdb import AsyncTMDBClient
-from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.filesystem import normalize_fpath, paths_equivalent
 from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
     Episode,
+    GeneralSettings,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -62,6 +64,7 @@ __all__ = [
 
 # number of records to process before committing to the database during sync tasks
 COMMIT_BATCH_SIZE = 100
+SONARR_DATE_FETCH_CONCURRENCY = 5
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -1431,9 +1434,28 @@ async def sync_movies(
                 movie_id_by_tmdb = {
                     tmdb_id: movie_id for movie_id, tmdb_id in movie_rows
                 }
+                path_mapping_result = await session.execute(
+                    select(GeneralSettings.path_mappings)
+                )
+                path_mappings = path_mapping_result.scalars().first() or []
+                version_rows = (
+                    (
+                        await session.execute(
+                            select(MovieVersion).where(
+                                MovieVersion.movie_id.in_(movie_id_by_tmdb.values())
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                versions_by_movie: dict[int, list[MovieVersion]] = {}
+                for version in version_rows:
+                    versions_by_movie.setdefault(version.movie_id, []).append(version)
 
                 # accumulate resolved tag labels per movie across all Radarr instances
                 movie_tags: dict[int, set[str]] = {}
+                movie_arr_files: dict[int, list[tuple[int, str | None, datetime]]] = {}
                 for config_id, client in radarr_clients.items():
                     await session.execute(
                         sql_delete(MovieArrRef).where(
@@ -1463,6 +1485,14 @@ async def sync_movies(
                                 tmdb_id=arr_movie.tmdb_id,
                             )
                         )
+                        if arr_movie.has_file and arr_movie.file_added_at is not None:
+                            movie_arr_files.setdefault(movie_id, []).append(
+                                (
+                                    config_id,
+                                    arr_movie.file_path,
+                                    arr_movie.file_added_at,
+                                )
+                            )
                         for tag_id in arr_movie.tags:
                             label = id_to_label.get(tag_id)
                             if label:
@@ -1474,6 +1504,31 @@ async def sync_movies(
                     if result_row is not None:
                         tags = movie_tags.get(movie_id)
                         result_row.arr_tags = sorted(tags) if tags else []
+                        arr_files = movie_arr_files.get(movie_id, [])
+                        result_row.arr_added_at = max(
+                            (added_at for _, _, added_at in arr_files), default=None
+                        )
+
+                        versions = versions_by_movie.get(movie_id, [])
+                        for version in versions:
+                            matched_dates = [
+                                added_at
+                                for config_id, file_path, added_at in arr_files
+                                if paths_equivalent(
+                                    version.path,
+                                    file_path,
+                                    path_mappings,
+                                    left_service_type=version.service.value,
+                                    right_service_type=Service.RADARR.value,
+                                    right_service_config_id=config_id,
+                                )
+                            ]
+                            if matched_dates:
+                                version.arr_added_at = max(matched_dates)
+                            elif len(versions) == 1 and len(arr_files) == 1:
+                                version.arr_added_at = arr_files[0][2]
+                            else:
+                                version.arr_added_at = None
 
                 await session.commit()
 
@@ -1492,6 +1547,7 @@ async def sync_movies(
                     for db_movie_to_delete in movies_to_delete:
                         db_movie_to_delete.removed_at = datetime.now(UTC)
                         db_movie_to_delete.added_at = None
+                        db_movie_to_delete.arr_added_at = None
                         deleted_movie_ids.append(db_movie_to_delete.id)
                         LOG.debug(
                             f"Soft-deleted: {db_movie_to_delete.title} "
@@ -1834,6 +1890,8 @@ async def sync_series(
 
                 # accumulate resolved tag labels per series across all Sonarr instances
                 series_tags: dict[int, set[str]] = {}
+                series_episode_dates: dict[int, dict[tuple[int, int], datetime]] = {}
+                date_fetch_failed_series_ids: set[int] = set()
                 for config_id, client in sonarr_clients.items():
                     await session.execute(
                         sql_delete(SeriesArrRef).where(
@@ -1843,6 +1901,43 @@ async def sync_series(
                     all_series = await client.get_all_series()
                     tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
+                    matched_series = [
+                        (arr_series, series_id_by_tmdb[arr_series.tmdb_id])
+                        for arr_series in all_series
+                        if arr_series.tmdb_id in series_id_by_tmdb
+                    ]
+                    semaphore = asyncio.Semaphore(SONARR_DATE_FETCH_CONCURRENCY)
+
+                    async def _fetch_episode_dates(
+                        arr_series_id: int,
+                    ) -> dict[tuple[int, int], datetime]:
+                        async with semaphore:
+                            return await client.get_episode_file_dates(arr_series_id)
+
+                    date_results = await asyncio.gather(
+                        *(
+                            _fetch_episode_dates(arr_series.id)
+                            for arr_series, _series_id in matched_series
+                        ),
+                        return_exceptions=True,
+                    )
+                    for (arr_series, series_id), date_result in zip(
+                        matched_series, date_results, strict=True
+                    ):
+                        if isinstance(date_result, BaseException):
+                            date_fetch_failed_series_ids.add(series_id)
+                            LOG.warning(
+                                "Failed to fetch Sonarr episode file dates for "
+                                f"series {arr_series.id} on config {config_id}: "
+                                f"{date_result}"
+                            )
+                            continue
+                        bucket = series_episode_dates.setdefault(series_id, {})
+                        for key, added_at in date_result.items():
+                            current = bucket.get(key)
+                            if current is None or added_at > current:
+                                bucket[key] = added_at
+
                     for arr_series in all_series:
                         if not arr_series.tmdb_id:
                             continue
@@ -1875,6 +1970,50 @@ async def sync_series(
                         tags = series_tags.get(series_id)
                         result_row.arr_tags = sorted(tags) if tags else []
 
+                eligible_series_ids = set(series_id_by_tmdb.values()).difference(
+                    date_fetch_failed_series_ids
+                )
+                season_objects = {
+                    season.id: season
+                    for season in (
+                        await session.execute(
+                            select(Season).where(
+                                Season.series_id.in_(eligible_series_ids)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                }
+                episode_rows = (
+                    await session.execute(
+                        select(Episode, Season)
+                        .join(Season, Episode.season_id == Season.id)
+                        .where(Season.series_id.in_(eligible_series_ids))
+                    )
+                ).all()
+                season_dates: dict[int, list[datetime]] = {}
+                series_dates: dict[int, list[datetime]] = {}
+                for episode, season in episode_rows:
+                    added_at = series_episode_dates.get(season.series_id, {}).get(
+                        (season.season_number, episode.episode_number)
+                    )
+                    episode.arr_added_at = added_at
+                    if added_at is not None:
+                        season_dates.setdefault(season.id, []).append(added_at)
+                        series_dates.setdefault(season.series_id, []).append(added_at)
+
+                for season in season_objects.values():
+                    season.arr_added_at = max(
+                        season_dates.get(season.id, []), default=None
+                    )
+                for series_id in eligible_series_ids:
+                    result_row = await session.get(Series, series_id)
+                    if result_row is not None:
+                        result_row.arr_added_at = max(
+                            series_dates.get(series_id, []), default=None
+                        )
+
                 await session.commit()
 
             if allow_soft_delete:
@@ -1892,6 +2031,7 @@ async def sync_series(
                     for s in series_to_delete:
                         s.removed_at = datetime.now(UTC)
                         s.added_at = None
+                        s.arr_added_at = None
                         deleted_series_ids.append(s.id)
                         LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
 

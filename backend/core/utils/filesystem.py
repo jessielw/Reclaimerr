@@ -2,12 +2,107 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Mapping, Sequence
 from os import PathLike
 from os import rename as os_rename
 from pathlib import Path
 from typing import Any
 
 from backend.core.logger import LOG
+
+
+def _mapping_applies_to_scope(
+    mapping: Mapping[str, Any],
+    *,
+    service_type: str | None,
+    service_config_id: int | None,
+) -> bool:
+    mapping_service_type = str(mapping.get("service_type") or "").lower()
+    mapping_config_id = mapping.get("service_config_id")
+    if mapping_config_id is not None:
+        return service_config_id is not None and mapping_config_id == service_config_id
+    if mapping_service_type:
+        return service_type is not None and mapping_service_type == service_type.lower()
+    return True
+
+
+def mapped_path_variants(
+    path: str | None,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
+) -> set[str]:
+    """Return normalized raw and path-mapped variants without filesystem access."""
+
+    if not path:
+        return set()
+    normalized = normalize_fpath(path, strip_ending_slash=True)
+    if not normalized:
+        return set()
+
+    variants = {normalized}
+    sorted_mappings = sorted(
+        path_mappings or [],
+        key=lambda mapping: (
+            0
+            if service_config_id is not None
+            and mapping.get("service_config_id") == service_config_id
+            else 1
+            if service_type
+            and str(mapping.get("service_type") or "").lower() == service_type.lower()
+            and not mapping.get("service_config_id")
+            else 2
+            if not mapping.get("service_type") and not mapping.get("service_config_id")
+            else 3,
+            -len(str(mapping.get("source_prefix") or "")),
+        ),
+    )
+    for mapping in sorted_mappings:
+        if not _mapping_applies_to_scope(
+            mapping,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        ):
+            continue
+        source = normalize_fpath(
+            str(mapping.get("source_prefix") or ""), strip_ending_slash=True
+        )
+        local = normalize_fpath(
+            str(mapping.get("local_prefix") or ""), strip_ending_slash=True
+        )
+        if not source or not local:
+            continue
+        if normalized == source or normalized.startswith(source + "/"):
+            variants.add(
+                normalize_fpath(
+                    local + normalized[len(source) :], strip_ending_slash=True
+                )
+            )
+    return {variant for variant in variants if variant}
+
+
+def paths_equivalent(
+    left: str | None,
+    right: str | None,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    left_service_type: str | None = None,
+    right_service_type: str | None = None,
+    right_service_config_id: int | None = None,
+) -> bool:
+    """Return whether two source paths resolve to the same normalized path."""
+
+    left_variants = mapped_path_variants(
+        left, path_mappings, service_type=left_service_type
+    )
+    right_variants = mapped_path_variants(
+        right,
+        path_mappings,
+        service_type=right_service_type,
+        service_config_id=right_service_config_id,
+    )
+    return bool(left_variants & right_variants)
 
 
 def normalize_fpath(

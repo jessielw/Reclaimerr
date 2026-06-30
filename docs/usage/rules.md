@@ -96,13 +96,19 @@ rule.
 
 ### General Media Fields
 
-| Field           | Scope         | Value                                                    |
-| --------------- | ------------- | -------------------------------------------------------- |
-| Year            | All scopes    | Movie year or the parent series year                     |
-| Size            | All scopes    | Bytes for the evaluated file, series, season, or episode |
-| Duration        | Movie version | Media-server duration in milliseconds                    |
-| Container       | Movie version | File container such as `mkv` or `mp4`                    |
-| Path / Filename | All scopes    | Local media-server path information                      |
+| Field                            | Scope         | Value                                                    |
+| -------------------------------- | ------------- | -------------------------------------------------------- |
+| Year                             | All scopes    | Movie year or the parent series year                     |
+| Size                             | All scopes    | Bytes for the evaluated file, series, season, or episode |
+| Duration                         | Movie version | Media-server duration in milliseconds                    |
+| Container                        | Movie version | File container such as `mkv` or `mp4`                    |
+| Path / Filename                  | All scopes    | Local media-server path information                      |
+| Days since added                 | All scopes    | Age of the existing media-server added date              |
+| Days since latest Arr file added | All scopes    | Age of Radarr/Sonarr's latest file-import date           |
+
+Arr file-added dates are populated during Radarr and Sonarr syncs. They remain
+empty when an item cannot be matched or an Arr service is not configured; the
+existing media-server added date is not replaced or backfilled.
 
 ### TMDB Metadata
 

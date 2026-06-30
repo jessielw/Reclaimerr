@@ -639,6 +639,9 @@ class Movie(Base):
     added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )
+    arr_added_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
     # we're only soft deleting data to maintain TMDB metadata on re-add
     removed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
@@ -695,6 +698,7 @@ class MovieVersion(Base):
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     size: Mapped[int] = mapped_column(Integer, default=0)
     added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    arr_added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     file_name: Mapped[str | None] = mapped_column(String(255), default=None)
     container: Mapped[str | None] = mapped_column(String(20), default=None)
     duration: Mapped[float | None] = mapped_column(Float, default=None)
@@ -1115,6 +1119,9 @@ class Series(Base):
     added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )
+    arr_added_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
     # we're only soft deleting data to maintain TMDB metadata on re-add
     removed_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
@@ -1194,6 +1201,9 @@ class Season(Base):
     added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )
+    arr_added_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
@@ -1238,6 +1248,9 @@ class Episode(Base):
     # watch tracking
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    arr_added_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
 
     # service specific IDs
     plex_rating_key: Mapped[str | None] = mapped_column(String(100), default=None)

@@ -38,6 +38,7 @@ from backend.core.task_tracking import track_task_execution
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import (
     find_season_folder,
+    mapped_path_variants,
     move_directory,
     move_media,
     move_season_files,
@@ -4231,76 +4232,6 @@ def _episode_media_server_id(
     return None
 
 
-def _mapping_applies_to_scope(
-    mapping: Mapping[str, Any],
-    *,
-    service_type: str | None,
-    service_config_id: int | None,
-) -> bool:
-    mapping_service_type = str(mapping.get("service_type") or "").lower()
-    mapping_config_id = mapping.get("service_config_id")
-    if mapping_config_id is not None:
-        return service_config_id is not None and mapping_config_id == service_config_id
-    if mapping_service_type:
-        return service_type is not None and mapping_service_type == service_type.lower()
-    return True
-
-
-def _mapped_path_variants(
-    path: str | None,
-    path_mappings: Sequence[Mapping[str, Any]] | None,
-    *,
-    service_type: str | None = None,
-    service_config_id: int | None = None,
-) -> set[str]:
-    """Return normalized raw and path-mapped variants without touching the filesystem."""
-    if not path:
-        return set()
-
-    normalized = normalize_fpath(path, strip_ending_slash=True)
-    if not normalized:
-        return set()
-
-    variants = {normalized}
-    sorted_mappings = sorted(
-        path_mappings or [],
-        key=lambda m: (
-            0
-            if service_config_id is not None
-            and m.get("service_config_id") == service_config_id
-            else 1
-            if service_type
-            and str(m.get("service_type") or "").lower() == service_type.lower()
-            and not m.get("service_config_id")
-            else 2
-            if not m.get("service_type") and not m.get("service_config_id")
-            else 3,
-            -len(str(m.get("source_prefix") or "")),
-        ),
-    )
-
-    for mapping in sorted_mappings:
-        if not _mapping_applies_to_scope(
-            mapping,
-            service_type=service_type,
-            service_config_id=service_config_id,
-        ):
-            continue
-        source = normalize_fpath(
-            str(mapping.get("source_prefix") or ""), strip_ending_slash=True
-        )
-        local = normalize_fpath(
-            str(mapping.get("local_prefix") or ""), strip_ending_slash=True
-        )
-        if not source or not local:
-            continue
-        if normalized == source or normalized.startswith(source + "/"):
-            suffix = normalized[len(source) :]
-            variants.add(normalize_fpath(local + suffix, strip_ending_slash=True))
-
-    return {variant for variant in variants if variant}
-
-
 def _path_is_inside_folder(path: str, folder: str) -> bool:
     return path == folder or path.startswith(folder + "/")
 
@@ -4314,12 +4245,12 @@ def _path_matches_arr_folder(
     arr_service_type: str | None = None,
     arr_service_config_id: int | None = None,
 ) -> bool:
-    path_variants = _mapped_path_variants(
+    path_variants = mapped_path_variants(
         path,
         path_mappings,
         service_type=path_service_type,
     )
-    arr_variants = _mapped_path_variants(
+    arr_variants = mapped_path_variants(
         arr_folder,
         path_mappings,
         service_type=arr_service_type,

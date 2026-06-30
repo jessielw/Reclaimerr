@@ -30,7 +30,8 @@
   const sortByOptions = [
     { value: "title", label: "Title" },
     { value: "year", label: "Year" },
-    { value: "added_at", label: "Date Added" },
+    { value: "added_at", label: "Media Server Added" },
+    { value: "arr_added_at", label: "Latest Arr File Added" },
     { value: "size", label: "Size" },
     { value: "vote_average", label: "Rating" },
   ];

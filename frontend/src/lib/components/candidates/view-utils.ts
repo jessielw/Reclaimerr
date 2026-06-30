@@ -82,7 +82,16 @@ export const candidateMediaMetaFields = (
   }
   fields.push({ label: "Watch Count", value: candidateWatchCountLabel(entry) });
   if (entry.media_added_at) {
-    fields.push({ label: "Added", value: formatDate(entry.media_added_at) });
+    fields.push({
+      label: "Media server added",
+      value: formatDate(entry.media_added_at),
+    });
+  }
+  if (entry.media_arr_added_at) {
+    fields.push({
+      label: "Latest Arr file added",
+      value: formatDate(entry.media_arr_added_at),
+    });
   }
   if (entry.media_last_viewed_at) {
     fields.push({

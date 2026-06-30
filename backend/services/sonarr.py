@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import niquests
@@ -49,6 +50,19 @@ def _as_int_list(value: object) -> list[int]:
         if parsed is not None:
             values.append(parsed)
     return values
+
+
+def _as_datetime(value: object) -> datetime | None:
+    raw = _as_optional_str(value)
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
 
 
 def _mapping_list(value: object) -> list[Mapping[str, object]]:
@@ -580,6 +594,44 @@ class SonarrClient:
                 f"series {series_id}, season {season_number} (status: {status_code})"
             )
         return [dict(episode) for episode in data if isinstance(episode, Mapping)]
+
+    async def get_episode_file_dates(
+        self, series_id: int
+    ) -> dict[tuple[int, int], datetime]:
+        """Return Sonarr file-import dates keyed by season and episode number."""
+
+        status_code, data = await self._make_request(
+            "GET",
+            "episode",
+            params={"seriesId": series_id, "includeEpisodeFile": True},
+            timeout=60,
+        )
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid episode response for series {series_id} "
+                f"(status: {status_code})"
+            )
+
+        dates: dict[tuple[int, int], datetime] = {}
+        for episode in data:
+            if not isinstance(episode, Mapping) or not _as_bool(episode.get("hasFile")):
+                continue
+            season_number = as_int(episode.get("seasonNumber"))
+            episode_number = as_int(episode.get("episodeNumber"))
+            raw_file = episode.get("episodeFile")
+            episode_file = raw_file if isinstance(raw_file, Mapping) else None
+            added_at = (
+                _as_datetime(episode_file.get("dateAdded"))
+                if episode_file is not None
+                else None
+            )
+            if season_number is None or episode_number is None or added_at is None:
+                continue
+            key = (season_number, episode_number)
+            current = dates.get(key)
+            if current is None or added_at > current:
+                dates[key] = added_at
+        return dates
 
     async def delete_episode_file(self, episode_file_id: int) -> None:
         """Delete a single episode file by its episode file ID.

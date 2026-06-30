@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import niquests
@@ -51,6 +52,19 @@ def _as_int_list(value: object) -> list[int]:
     return values
 
 
+def _as_datetime(value: object) -> datetime | None:
+    raw = _as_optional_str(value)
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
 # def _mapping_list(value: object) -> list[Mapping[str, object]]:
 #     if not isinstance(value, list):
 #         return []
@@ -62,6 +76,8 @@ def _as_int_list(value: object) -> list[int]:
 
 
 def _movie_from_mapping(data: Mapping[str, object]) -> RadarrMovie:
+    raw_movie_file = data.get("movieFile")
+    movie_file = raw_movie_file if isinstance(raw_movie_file, Mapping) else {}
     return RadarrMovie(
         id=as_int(data.get("id")) or 0,
         title=_as_optional_str(data.get("title")) or "",
@@ -72,6 +88,8 @@ def _movie_from_mapping(data: Mapping[str, object]) -> RadarrMovie:
         has_file=_as_bool(data.get("hasFile")),
         monitored=_as_bool(data.get("monitored")),
         tags=_as_int_list(data.get("tags")),
+        file_path=_as_optional_str(movie_file.get("path")),
+        file_added_at=_as_datetime(movie_file.get("dateAdded")),
         raw=data,
     )
 
