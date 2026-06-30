@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Authlib to 1.7.2
   - Cryptography to 49.0.0
   - FastAPI to 0.138.2
-  - Granian to 2.7.7
+  - Granian to 2.7.8
   - Niquests to 3.20.0
   - PyJWT to 2.12.1
   - Slowapi to 0.1.10
