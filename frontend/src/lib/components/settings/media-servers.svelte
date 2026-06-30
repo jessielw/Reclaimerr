@@ -461,7 +461,7 @@
           <br />
           <i
             >Note: If you configure these later you will simply just have to
-            wait or run the
+            wait for or run the
             <strong>Sync Media</strong> task after
           </i>
         </p>
