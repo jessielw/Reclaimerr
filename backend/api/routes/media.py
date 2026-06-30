@@ -1494,7 +1494,7 @@ async def get_candidates(
     candidate_rule_actions_by_id: dict[int, dict[str, Any] | None] = {}
     if candidate_rule_ids:
         candidate_rule_actions_by_id = {
-            cast(int, rule.id): cast(dict[str, Any] | None, rule.action)
+            rule.id: rule.action
             for rule in (
                 await db.execute(
                     select(ReclaimRule).where(ReclaimRule.id.in_(candidate_rule_ids))

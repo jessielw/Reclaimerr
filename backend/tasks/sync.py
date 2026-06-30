@@ -1995,13 +1995,19 @@ async def sync_series(
                 season_dates: dict[int, list[datetime]] = {}
                 series_dates: dict[int, list[datetime]] = {}
                 for episode, season in episode_rows:
-                    added_at = series_episode_dates.get(season.series_id, {}).get(
+                    episode_arr_added_at = series_episode_dates.get(
+                        season.series_id, {}
+                    ).get(
                         (season.season_number, episode.episode_number)
                     )
-                    episode.arr_added_at = added_at
-                    if added_at is not None:
-                        season_dates.setdefault(season.id, []).append(added_at)
-                        series_dates.setdefault(season.series_id, []).append(added_at)
+                    episode.arr_added_at = episode_arr_added_at
+                    if episode_arr_added_at is not None:
+                        season_dates.setdefault(season.id, []).append(
+                            episode_arr_added_at
+                        )
+                        series_dates.setdefault(season.series_id, []).append(
+                            episode_arr_added_at
+                        )
 
                 for season in season_objects.values():
                     season.arr_added_at = max(

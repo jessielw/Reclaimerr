@@ -243,7 +243,7 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             for rule_id in (candidate.matched_rule_ids or [])
         }
         rule_actions_by_id = {
-            cast(int, rule.id): cast(dict[str, Any] | None, rule.action)
+            rule.id: rule.action
             for rule in (
                 (
                     await db.execute(
@@ -401,9 +401,9 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 continue
 
             policy = resolve_auto_delete_policy(
-                media_type=cast(MediaType, candidate.media_type),
-                matched_rule_ids=cast(list[int], candidate.matched_rule_ids),
-                created_at=cast(datetime, candidate.created_at),
+                media_type=candidate.media_type,
+                matched_rule_ids=candidate.matched_rule_ids,
+                created_at=candidate.created_at,
                 rule_actions_by_id=rule_actions_by_id,
                 movie_delay_days=movie_delay_days,
                 series_delay_days=series_delay_days,
