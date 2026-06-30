@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Syncs Radarr movie files and Sonarr episode files with season/series roll-ups
     - Added API fields, sorting, UI labels, and arr.days_since_file_added rules
     - Added focused regression tests and documentation
+  - seerr.last_requested_at
+  - seerr.days_since_last_requested
 
 ### Changed
 

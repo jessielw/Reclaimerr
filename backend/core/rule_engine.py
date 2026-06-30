@@ -167,6 +167,8 @@ FIELD_LABELS: dict[str, str] = {
     "seerr.requested": "Seerr requested",
     "seerr.requested_by_user_ids": "Seerr requested by user IDs",
     "seerr.requester_has_watched": "Seerr requester has watched",
+    "seerr.last_requested_at": "Seerr latest active request",
+    "seerr.days_since_last_requested": "Days since latest active Seerr request",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -210,6 +212,7 @@ NUMERIC_FIELDS = {
     "media.year",
     "media.days_since_added",
     "arr.days_since_file_added",
+    "seerr.days_since_last_requested",
     "watch.view_count",
     "watch.days_since_last_watched",
     "playback.play_count",
@@ -324,6 +327,7 @@ TEMPORAL_FIELDS = {
     "tmdb.last_air_date",
     "season.air_date",
     "episode.air_date",
+    "seerr.last_requested_at",
 }
 PATH_FIELDS = {"media.path", "media.file_name"}
 NUMERIC_OPERATORS = {
@@ -440,6 +444,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.year",
         "media_server.collections",
         "seerr.requested",
+        "seerr.last_requested_at",
+        "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
         "rottentomatoes.popcorn_meter",
@@ -507,6 +513,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.year",
         "media_server.collections",
         "seerr.requested",
+        "seerr.last_requested_at",
+        "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
         "rottentomatoes.popcorn_meter",
@@ -578,6 +586,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "season.seasons_from_latest",
         "season.watched_percent",
         "seerr.requested",
+        "seerr.last_requested_at",
+        "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
         "rottentomatoes.popcorn_meter",
@@ -648,6 +658,8 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "season.seasons_from_latest",
         "season.watched_percent",
         "seerr.requested",
+        "seerr.last_requested_at",
+        "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
         "rottentomatoes.popcorn_meter",
@@ -782,13 +794,19 @@ class SeerrRequestResolver:
         "seerr_request_resolver", default=None
     )
 
-    __slots__ = ("_requester_ids_by_key", "_requester_has_watched_by_key")
+    __slots__ = (
+        "_latest_active_request_at_by_key",
+        "_requester_ids_by_key",
+        "_requester_has_watched_by_key",
+    )
 
     def __init__(
         self,
         requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[int]]
         | None = None,
         requester_has_watched_by_key: Mapping[tuple[MediaType, int], bool]
+        | None = None,
+        latest_active_request_at_by_key: Mapping[tuple[MediaType, int], datetime]
         | None = None,
     ):
         self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
@@ -798,6 +816,9 @@ class SeerrRequestResolver:
             key: bool(value)
             for key, value in (requester_has_watched_by_key or {}).items()
         }
+        self._latest_active_request_at_by_key = dict(
+            latest_active_request_at_by_key or {}
+        )
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -836,6 +857,14 @@ class SeerrRequestResolver:
         if value is None:
             return None
         return bool(value)
+
+    def resolve_latest_active_request_at(
+        self, media_type: MediaType, tmdb_id: int | None
+    ) -> datetime | None:
+        """Return the newest pending or approved Seerr request timestamp."""
+        if tmdb_id is None:
+            return None
+        return self._latest_active_request_at_by_key.get((media_type, tmdb_id))
 
 
 class SonarrEpisodeStateResolver:
@@ -1363,6 +1392,23 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.last_requested_at": (
+                _seerr_resolver.resolve_latest_active_request_at(
+                    MediaType.MOVIE, movie.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.days_since_last_requested": (
+                _days_between(
+                    _seerr_resolver.resolve_latest_active_request_at(
+                        MediaType.MOVIE, movie.tmdb_id
+                    ),
+                    now,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.MOVIE, movie.tmdb_id)
                 if _seerr_resolver
@@ -1468,6 +1514,23 @@ def _build_context(
             ),
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.last_requested_at": (
+                _seerr_resolver.resolve_latest_active_request_at(
+                    MediaType.SERIES, series.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.days_since_last_requested": (
+                _days_between(
+                    _seerr_resolver.resolve_latest_active_request_at(
+                        MediaType.SERIES, series.tmdb_id
+                    ),
+                    now,
+                )
                 if _seerr_resolver
                 else None
             ),
@@ -1583,6 +1646,23 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.last_requested_at": (
+                _seerr_resolver.resolve_latest_active_request_at(
+                    MediaType.SERIES, series.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.days_since_last_requested": (
+                _days_between(
+                    _seerr_resolver.resolve_latest_active_request_at(
+                        MediaType.SERIES, series.tmdb_id
+                    ),
+                    now,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "seerr.requested_by_user_ids": (
                 _seerr_resolver.resolve_requester_ids(MediaType.SERIES, series.tmdb_id)
                 if _seerr_resolver
@@ -1694,6 +1774,23 @@ def _build_context(
             "arr.monitored": season.is_monitored,
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.SERIES, series.tmdb_id)
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.last_requested_at": (
+                _seerr_resolver.resolve_latest_active_request_at(
+                    MediaType.SERIES, series.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.days_since_last_requested": (
+                _days_between(
+                    _seerr_resolver.resolve_latest_active_request_at(
+                        MediaType.SERIES, series.tmdb_id
+                    ),
+                    now,
+                )
                 if _seerr_resolver
                 else None
             ),

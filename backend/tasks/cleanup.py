@@ -1624,6 +1624,9 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
         rule.definition, field="seerr.requester_has_watched"
     ):
         return True
+    for field in ("seerr.last_requested_at", "seerr.days_since_last_requested"):
+        for _ in collect_rule_conditions(rule.definition, field=field):
+            return True
     return False
 
 
@@ -1805,6 +1808,12 @@ async def _activate_seerr_request_resolver_for_rules(
             continue
         requester_ids_by_key[key].update(user_ids)
 
+    latest_active_request_at_by_key = {
+        key: requested_at
+        for key, requested_at in snapshot.latest_active_request_at_by_key.items()
+        if key in requester_ids_by_key
+    }
+
     relevant_keys = set(requester_ids_by_key.keys())
     watch_rows = (
         await db.execute(
@@ -1862,6 +1871,7 @@ async def _activate_seerr_request_resolver_for_rules(
     SeerrRequestResolver(
         requester_ids_by_key,
         requester_has_watched_by_key=requester_has_watched_by_key,
+        latest_active_request_at_by_key=latest_active_request_at_by_key,
     ).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "

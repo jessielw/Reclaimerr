@@ -208,6 +208,20 @@ episode rules and are inherited from the parent series.
 These values may differ when the local library contains only part of a series,
 TMDB metadata has changed, or specials are present.
 
+### Seerr Request Dates
+
+Seerr request dates are available to movie-version, series, season, and episode
+rules:
+
+| Field                                  | Meaning                                      |
+| -------------------------------------- | -------------------------------------------- |
+| Seerr latest active request            | Newest pending or approved request timestamp |
+| Days since latest active Seerr request | Whole days since that request                |
+
+Declined requests are excluded. TV scopes currently inherit the latest active
+request for the whole series, matching the existing Seerr request fields. If
+Seerr is unavailable, these values are unknown and cannot create candidates.
+
 ### Sonarr Episode State
 
 These fields are available only to whole-series rules:

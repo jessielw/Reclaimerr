@@ -8,7 +8,7 @@ from typing import Any
 
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
-from backend.enums import MediaType
+from backend.enums import MediaType, SeerrRequestStatus
 from backend.models.services.seerr import SeerrRequest, SeerrUser
 
 
@@ -17,6 +17,7 @@ class SeerrRequestSnapshot:
     requester_ids_by_key: dict[tuple[MediaType, int], set[int]]
     latest_request_at_by_key_user: dict[tuple[MediaType, int], dict[int, datetime]]
     requester_identity_keys_by_user_id: dict[int, set[str]]
+    latest_active_request_at_by_key: dict[tuple[MediaType, int], datetime]
 
 
 class SeerrSnapshotCache:
@@ -117,6 +118,9 @@ class SeerrSnapshotCache:
                 latest_request_at_by_key_user: dict[
                     tuple[MediaType, int], dict[int, datetime]
                 ] = {}
+                latest_active_request_at_by_key: dict[
+                    tuple[MediaType, int], datetime
+                ] = {}
                 requester_identity_keys_by_user_id: dict[int, set[str]] = {}
                 for req in requests:
                     key = (req.media_type, req.tmdb_id)
@@ -133,6 +137,14 @@ class SeerrSnapshotCache:
                     existing = request_by_user.get(req.requested_by_id)
                     if existing is None or req.created_at > existing:
                         request_by_user[req.requested_by_id] = req.created_at
+
+                    if req.status in {
+                        SeerrRequestStatus.PENDING,
+                        SeerrRequestStatus.APPROVED,
+                    }:
+                        latest_active = latest_active_request_at_by_key.get(key)
+                        if latest_active is None or req.created_at > latest_active:
+                            latest_active_request_at_by_key[key] = req.created_at
 
                     raw_requested_by = (
                         req.raw.get("requestedBy", {})
@@ -161,6 +173,7 @@ class SeerrSnapshotCache:
                     requester_ids_by_key=requester_ids_by_key,
                     latest_request_at_by_key_user=latest_request_at_by_key_user,
                     requester_identity_keys_by_user_id=requester_identity_keys_by_user_id,
+                    latest_active_request_at_by_key=(latest_active_request_at_by_key),
                 )
                 self._request_expires_at = (
                     now.replace(microsecond=0) + self._request_ttl

@@ -2208,6 +2208,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
                 media_key: {101: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
             },
             requester_identity_keys_by_user_id={101: {"alice"}},
+            latest_active_request_at_by_key={},
         )
         watch_by_service_and_user: dict[
             tuple[MediaType, int], dict[Service, dict[str, datetime]]
