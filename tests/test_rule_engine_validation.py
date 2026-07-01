@@ -7,6 +7,7 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    _matches_list_operator,
     derive_path_scope_library_ids,
     validate_rule_definition,
 )
@@ -83,6 +84,12 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             (TARGET_MOVIE_VERSION, "playback.has_activity", "is_true", None),
             (TARGET_SERIES, "playback.play_count", "greater_than", 2),
             (
+                TARGET_SERIES,
+                "playback.usernames",
+                "contains_any",
+                ["Alice", "Bob"],
+            ),
+            (
                 TARGET_SEASON,
                 "playback.total_duration_minutes",
                 "greater_than",
@@ -101,6 +108,44 @@ class RuleDefinitionValidationTests(unittest.TestCase):
                     _definition(field, operator, value),
                     target_scope=scope,
                 )
+
+    def test_playback_usernames_match_case_insensitively(self) -> None:
+        actual = ["Alice", "BOB"]
+
+        self.assertTrue(
+            _matches_list_operator(
+                actual,
+                "contains_any",
+                ["alice"],
+                field="playback.usernames",
+            )
+        )
+        self.assertTrue(
+            _matches_list_operator(
+                actual,
+                "contains_all",
+                ["alice", "bob"],
+                field="playback.usernames",
+            )
+        )
+        self.assertTrue(
+            _matches_list_operator(
+                actual,
+                "not_contains_any",
+                ["charlie"],
+                field="playback.usernames",
+            )
+        )
+
+    def test_rejects_numeric_operator_for_playback_usernames(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'playback.usernames'",
+        ):
+            validate_rule_definition(
+                _definition("playback.usernames", "greater_than", 1),
+                target_scope=TARGET_SERIES,
+            )
 
     def test_rejects_version_only_metadata_for_series_scope(self) -> None:
         with self.assertRaisesRegex(

@@ -9,6 +9,7 @@
   import * as Select from "$lib/components/ui/select/index.js";
   import PathPatternPicker from "$lib/components/settings/rules/path-pattern-picker.svelte";
   import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
+  import PlaybackUserPicker from "$lib/components/settings/rules/playback-user-picker.svelte";
   import MovieCollectionPicker from "$lib/components/settings/rules/movie-collection-picker.svelte";
   import GenrePicker from "$lib/components/settings/rules/genre-picker.svelte";
   import MediaServerCollectionPicker from "$lib/components/settings/rules/media-server-collection-picker.svelte";
@@ -93,6 +94,7 @@
 
   let pathPickerOpen = $state(false);
   let seerrPickerOpen = $state(false);
+  let playbackUserPickerOpen = $state(false);
   let collectionPickerOpen = $state(false);
   let genrePickerOpen = $state(false);
   let mediaServerCollectionPickerOpen = $state(false);
@@ -365,10 +367,17 @@
     },
     {
       value: "playback.unique_user_count",
-      label: "Playback users",
+      label: "Playback user count",
       kind: "number",
       operators: numericOperators,
       defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.usernames",
+      label: "Playback users",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
     },
     {
       value: "playback.last_activity_at",
@@ -959,6 +968,7 @@
     "playback.total_duration_minutes",
     "playback.longest_duration_minutes",
     "playback.unique_user_count",
+    "playback.usernames",
     "playback.last_activity_at",
     "playback.days_since_last_activity",
   ];
@@ -1397,6 +1407,8 @@
     if (c.operator === "matches_any_regex") return "regex patterns…";
     if (c.field === "seerr.requested_by_user_ids")
       return "Seerr user IDs (comma-separated)...";
+    if (c.field === "playback.usernames")
+      return "Playback usernames (comma-separated)...";
     if (c.field === "tmdb.collection_name")
       return "Collection names (comma-separated)...";
     if (c.field === "tmdb.genres") return "Genres (comma-separated)...";
@@ -1604,6 +1616,12 @@
   const applySeerrUserIds = (c: RuleCondition, ids: string[]) => {
     if (!listOperators.has(c.operator)) return;
     c.value = ids;
+    onChange();
+  };
+
+  const applyPlaybackUsernames = (c: RuleCondition, usernames: string[]) => {
+    if (!listOperators.has(c.operator)) return;
+    c.value = usernames;
     onChange();
   };
 
@@ -1937,6 +1955,17 @@
                 <span class="hidden md:inline">Pick Users</span>
               </Button>
             {/if}
+            {#if node.field === "playback.usernames" && listOperators.has(node.operator)}
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (playbackUserPickerOpen = true)}
+              >
+                <Users class="size-3.5" />
+                <span class="hidden md:inline">Pick Users</span>
+              </Button>
+            {/if}
             {#if node.field === "tmdb.collection_name"}
               <Button
                 size="sm"
@@ -2049,6 +2078,14 @@
       bind:open={seerrPickerOpen}
       initialSelectedIds={normalizeValueList(node.value)}
       onApply={(ids) => applySeerrUserIds(node, ids)}
+    />
+  {/if}
+
+  {#if node.field === "playback.usernames" && listOperators.has(node.operator)}
+    <PlaybackUserPicker
+      bind:open={playbackUserPickerOpen}
+      initialSelectedUsernames={normalizeValueList(node.value)}
+      onApply={(usernames) => applyPlaybackUsernames(node, usernames)}
     />
   {/if}
 

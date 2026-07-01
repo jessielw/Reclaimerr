@@ -4,6 +4,7 @@ import asyncio
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from backend.api.routes.rules import get_playback_users
 from backend.core.encryption import fer_encrypt
 from backend.core.rule_engine import (
     PLAYBACK_RULE_FIELDS,
@@ -24,11 +26,14 @@ from backend.database.models import (
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
     ServiceConfig,
+    User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import MediaType, Service, UserRole
 from backend.services import playback_history
 from backend.services.jellyfin import JellyfinService
 from backend.services.playback_history import (
+    _aggregate_values,
+    _backfill_event_usernames,
     _config_api_key,
     _insert_new_events,
     _normalize_reporting_events,
@@ -80,10 +85,12 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
                     "ItemType": "Episode",
                     "PlayDuration": 6,
                 },
-            ]
+            ],
+            {"user-1": "Alice"},
         )
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].source_item_id, "movie-1")
+        self.assertEqual(events[0].source_username, "Alice")
 
     def test_tautulli_uses_row_id_and_utc_timestamp(self) -> None:
         events = _normalize_tautulli_events(
@@ -93,6 +100,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
                     "media_type": "episode",
                     "rating_key": "9001",
                     "user_id": "7",
+                    "user": "Alice",
                     "play_duration": 120,
                     "stopped": 1_750_000_000,
                 }
@@ -100,6 +108,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].source_event_key, "42")
+        self.assertEqual(events[0].source_username, "Alice")
         self.assertIsNone(events[0].played_at.tzinfo)
 
     def test_resolver_returns_unavailable_for_unobserved_target(self) -> None:
@@ -119,10 +128,31 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
             resolver.resolve("series", 2, "playback.play_count"),
             RULE_VALUE_UNAVAILABLE,
         )
-        self.assertEqual(len(PLAYBACK_RULE_FIELDS), 7)
+        self.assertEqual(len(PLAYBACK_RULE_FIELDS), 8)
 
 
 class TautulliHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_users_returns_tautulli_user_rows(self) -> None:
+        client = TautulliClient(api_key="key", base_url="http://tautulli")
+        response = {
+            "response": {
+                "data": [
+                    {"user_id": "7", "username": "Alice"},
+                    {"user_id": "8", "username": "Bob"},
+                ]
+            }
+        }
+        with patch.object(
+            TautulliClient,
+            "_make_request",
+            new=AsyncMock(return_value=response),
+        ) as request:
+            users = await client.get_users()
+        await client.session.close()
+
+        self.assertEqual([user["username"] for user in users], ["Alice", "Bob"])
+        request.assert_awaited_once_with("get_users")
+
     async def test_history_records_use_one_ungrouped_paginated_pass(self) -> None:
         client = TautulliClient(api_key="key", base_url="http://tautulli")
         responses = [
@@ -286,6 +316,100 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(stored_events), 1)
         self.assertEqual(stored_events[0].source_event_key, events[0].source_event_key)
 
+    async def test_jellyfin_resolves_users_without_tautulli(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add(config)
+            await db.commit()
+
+        reporting_rows = [
+            {
+                "DateCreated": "2026-06-20 12:00:00",
+                "UserId": "user-1",
+                "ItemId": "movie-1",
+                "ItemType": "Movie",
+                "PlayDuration": 30,
+            }
+        ]
+        with (
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_plugin_status",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_users",
+                new=AsyncMock(
+                    return_value=[SimpleNamespace(id="user-1", name="Alice")]
+                ),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_events",
+                new=AsyncMock(return_value=reporting_rows),
+            ),
+        ):
+            status = await _refresh_reporting_config(config)
+
+        async with self.sessionmaker() as db:
+            event = (await db.execute(select(PlaybackHistoryEvent))).scalar_one()
+
+        self.assertTrue(status.available)
+        self.assertEqual(event.source_username, "Alice")
+
+    async def test_username_lookup_failure_keeps_playback_provider_available(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add(config)
+            await db.commit()
+
+        reporting_rows = [
+            {
+                "DateCreated": "2026-06-20 12:00:00",
+                "UserId": "user-1",
+                "ItemId": "movie-1",
+                "ItemType": "Movie",
+                "PlayDuration": 30,
+            }
+        ]
+        with (
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_plugin_status",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_users",
+                new=AsyncMock(side_effect=RuntimeError("users unavailable")),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_playback_reporting_events",
+                new=AsyncMock(return_value=reporting_rows),
+            ),
+        ):
+            status = await _refresh_reporting_config(config)
+
+        async with self.sessionmaker() as db:
+            event = (await db.execute(select(PlaybackHistoryEvent))).scalar_one()
+
+        self.assertTrue(status.available)
+        self.assertIsNone(event.source_username)
+
     async def test_insert_new_events_ignores_existing_event_conflict(self) -> None:
         async with self.sessionmaker() as db:
             config = ServiceConfig(
@@ -375,6 +499,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                         played_at=datetime(2025, 1, 1),
                         duration_seconds=120,
                         source_user_id="user",
+                        source_username="Alice",
                         tmdb_id=movie.tmdb_id,
                         movie_id=movie.id,
                     ),
@@ -387,6 +512,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                         played_at=datetime(2026, 2, 1),
                         duration_seconds=180,
                         source_user_id="user",
+                        source_username="Alice",
                         tmdb_id=movie.tmdb_id,
                         movie_id=movie.id,
                     ),
@@ -412,10 +538,229 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(aggregate.play_count, 2)
             self.assertEqual(aggregate.total_duration_seconds, 300)
             self.assertEqual(aggregate.unique_user_count, 1)
+            self.assertEqual(aggregate.usernames, ["Alice"])
+            self.assertTrue(aggregate.usernames_complete)
             self.assertIsNotNone(movie)
             assert movie is not None
             self.assertEqual(movie.view_count, 1)
             self.assertEqual(movie.last_viewed_at, datetime(2026, 2, 1))
+
+    async def test_unresolved_username_marks_only_username_field_unavailable(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=456)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="movie-item",
+                service_media_id="movie-source",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=config.id,
+                    source_event_key="unresolved",
+                    source_item_id="movie-item",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 2, 1),
+                    duration_seconds=180,
+                    source_user_id="missing-user",
+                    tmdb_id=movie.tmdb_id,
+                    movie_id=movie.id,
+                )
+            )
+            await db.commit()
+            version_id = version.id
+
+        await rebuild_playback_history_aggregates()
+
+        async with self.sessionmaker() as db:
+            aggregate = (
+                await db.execute(
+                    select(PlaybackHistoryAggregate).where(
+                        PlaybackHistoryAggregate.target_scope == "movie_version",
+                        PlaybackHistoryAggregate.target_id == version_id,
+                    )
+                )
+            ).scalar_one()
+
+        values = _aggregate_values(aggregate)
+        self.assertFalse(aggregate.usernames_complete)
+        self.assertEqual(values["playback.play_count"], 1)
+        self.assertNotIn("playback.usernames", values)
+
+    async def test_partial_username_resolution_keeps_resolved_usernames_available(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=456)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="movie-item",
+                service_media_id="movie-source",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryEvent(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=config.id,
+                        source_event_key="resolved",
+                        source_item_id="movie-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 2, 1),
+                        duration_seconds=180,
+                        source_user_id="known-user",
+                        source_username="norirara",
+                        tmdb_id=movie.tmdb_id,
+                        movie_id=movie.id,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=config.id,
+                        source_event_key="unresolved",
+                        source_item_id="movie-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 2, 2),
+                        duration_seconds=180,
+                        source_user_id="missing-user",
+                        tmdb_id=movie.tmdb_id,
+                        movie_id=movie.id,
+                    ),
+                ]
+            )
+            await db.commit()
+            version_id = version.id
+
+        await rebuild_playback_history_aggregates()
+
+        async with self.sessionmaker() as db:
+            aggregate = (
+                await db.execute(
+                    select(PlaybackHistoryAggregate).where(
+                        PlaybackHistoryAggregate.target_scope == "movie_version",
+                        PlaybackHistoryAggregate.target_id == version_id,
+                    )
+                )
+            ).scalar_one()
+
+        values = _aggregate_values(aggregate)
+        self.assertFalse(aggregate.usernames_complete)
+        self.assertEqual(values["playback.usernames"], ["norirara"])
+
+    async def test_backfills_retained_event_usernames(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add(config)
+            await db.flush()
+            event = PlaybackHistoryEvent(
+                source_service=Service.JELLYFIN,
+                source_service_config_id=config.id,
+                source_event_key="retained",
+                source_item_id="movie-item",
+                provider_media_type="movie",
+                played_at=datetime(2026, 2, 1),
+                duration_seconds=180,
+                source_user_id="user-1",
+            )
+            db.add(event)
+            await db.commit()
+
+            await _backfill_event_usernames(
+                db,
+                config_id=config.id,
+                usernames_by_id={"user-1": "Alice"},
+            )
+            await db.commit()
+            await db.refresh(event)
+
+            self.assertEqual(event.source_username, "Alice")
+
+    async def test_playback_user_lookup_deduplicates_case_and_sources(self) -> None:
+        async with self.sessionmaker() as db:
+            jellyfin = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([jellyfin, tautulli])
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryEvent(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=jellyfin.id,
+                        source_event_key="jf-alice",
+                        source_item_id="movie-1",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 2, 1),
+                        duration_seconds=180,
+                        source_user_id="1",
+                        source_username="Alice",
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=tautulli.id,
+                        source_event_key="tautulli-alice",
+                        source_item_id="movie-2",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 2, 1),
+                        duration_seconds=180,
+                        source_user_id="2",
+                        source_username="alice",
+                    ),
+                ]
+            )
+            await db.commit()
+
+            admin = User(
+                username="admin",
+                password_hash="hash",
+                role=UserRole.ADMIN,
+                permissions=[],
+            )
+            users = await get_playback_users(admin, db, q="ali", limit=100)
+
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0].username, "Alice")
+        self.assertEqual(users[0].source_services, ["jellyfin", "tautulli"])
 
     async def test_database_write_failure_is_not_reported_as_provider_failure(
         self,
@@ -455,6 +800,11 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                 JellyfinService,
                 "get_playback_reporting_events",
                 new=AsyncMock(return_value=reporting_rows),
+            ),
+            patch.object(
+                JellyfinService,
+                "get_users",
+                new=AsyncMock(return_value=[]),
             ),
             patch.object(
                 playback_history,

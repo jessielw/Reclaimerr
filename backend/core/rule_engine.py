@@ -42,6 +42,7 @@ PLAYBACK_RULE_FIELDS = {
     "playback.total_duration_minutes",
     "playback.longest_duration_minutes",
     "playback.unique_user_count",
+    "playback.usernames",
     "playback.last_activity_at",
     "playback.days_since_last_activity",
 }
@@ -110,7 +111,8 @@ FIELD_LABELS: dict[str, str] = {
     "playback.play_count": "Playback plays",
     "playback.total_duration_minutes": "Playback duration (minutes)",
     "playback.longest_duration_minutes": "Longest playback (minutes)",
-    "playback.unique_user_count": "Playback users",
+    "playback.unique_user_count": "Playback user count",
+    "playback.usernames": "Playback users",
     "playback.last_activity_at": "Last playback activity",
     "playback.days_since_last_activity": "Days since playback activity",
     "tmdb.popularity": "Popularity",
@@ -286,6 +288,7 @@ TEXT_FIELDS = {
     "arr.tags",
     "media_server.collections",
     "seerr.requested_by_user_ids",
+    "playback.usernames",
 }
 MULTI_VALUE_TEXT_FIELDS = {
     "arr.tags",
@@ -295,6 +298,7 @@ MULTI_VALUE_TEXT_FIELDS = {
     "subtitle.languages",
     "tmdb.original_language",
     "tmdb.origin_country",
+    "playback.usernames",
 }
 LANGUAGE_FIELDS = {
     "audio.languages",
@@ -408,6 +412,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
     "tmdb.genres": set(MULTI_VALUE_TEXT_OPERATORS),
     "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
+    "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
 }
 

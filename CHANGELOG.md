@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-07-01
+
+### Added
+
+- Rules
+  - playback.usernames
+    - Usernames are pulled straight from Jellyfin/Emby but Plex **requires** Tautulli for this rule to work properly
+  - Added a username rule node/picker in the frontend
+
+### Changed
+
+- Improved verbiage for auto deletion in candidates page
+- Updated backend dependencies
+  - apscheduler to 3.11.3
+  - fastapi to 0.139.0
+  - pillow to 12.3.0
+
+### Fixes
+
+- Fixed misleading label **Playback users** it is now **Playback user count**
+
 ## [0.1.7] - 2026-06-30
 
 ### Added

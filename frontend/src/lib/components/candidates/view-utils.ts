@@ -48,8 +48,8 @@ export const earliestAutoDeleteEntry = (
   );
 };
 
-const autoDeleteDelayLabel = (delayDays: number): string =>
-  delayDays === 0 ? "no delay" : `${delayDays}-day delay`;
+const autoDeleteReviewPeriodLabel = (delayDays: number): string =>
+  delayDays === 0 ? "no review period" : `${delayDays}-day review period`;
 
 export const candidateAutoDeleteLabel = (
   entry: ReclaimCandidateEntry,
@@ -58,11 +58,11 @@ export const candidateAutoDeleteLabel = (
   const eligibleAt = candidateDateEpoch(entry.auto_delete_eligible_at);
   const remainingMs = eligibleAt - Date.now();
   const isEligible = entry.auto_delete_is_eligible || remainingMs <= 0;
-  const policy = autoDeleteDelayLabel(entry.auto_delete_delay_days);
+  const policy = autoDeleteReviewPeriodLabel(entry.auto_delete_delay_days);
   const date = formatDate(entry.auto_delete_eligible_at);
 
   if (!entry.auto_delete_is_active) {
-    return `${date} (${policy}; disabled)`;
+    return `Eligible ${date} (${policy}; auto-delete disabled)`;
   }
   if (isEligible) return `Eligible now (${policy}; ${date})`;
 
@@ -71,7 +71,7 @@ export const candidateAutoDeleteLabel = (
     remainingHours >= 48
       ? `${Math.ceil(remainingHours / 24)} days`
       : `${remainingHours} hour${remainingHours === 1 ? "" : "s"}`;
-  return `In ${remaining} (${policy}; ${date})`;
+  return `Eligible ${date} (in ${remaining}; ${policy})`;
 };
 
 export const movieSummaryChips = (entry: ReclaimCandidateEntry): string[] => {

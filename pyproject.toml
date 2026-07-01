@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.1.7"
+version = "0.1.8"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -8,15 +8,15 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.5",
     "apprise>=1.11.0",
-    "apscheduler>=3.11.2,<4.0.0",
+    "apscheduler>=3.11.3,<4.0.0",
     "argon2-cffi>=25.1.0",
     "authlib>=1.7.2",
     "cryptography>=49.0.0",
-    "fastapi[standard]>=0.138.2",
+    "fastapi[standard]>=0.139.0",
     "granian>=2.7.8",
     "itsdangerous>=2.2.0",
     "niquests[speedups]>=3.20.0",
-    "pillow>=12.2.0",
+    "pillow>=12.3.0",
     "pydantic-settings>=2.14.2",
     "pyjwt>=2.13.0",
     "python-iso639>=2026.4.20",
