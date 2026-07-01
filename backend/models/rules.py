@@ -52,6 +52,11 @@ class SeerrUserLookupResponse(BaseModel):
     display_name: str | None = None
 
 
+class PlaybackUserLookupResponse(BaseModel):
+    username: str
+    source_services: list[str] = Field(default_factory=list)
+
+
 class MovieCollectionLookupResponse(BaseModel):
     name: str
     movie_count: int

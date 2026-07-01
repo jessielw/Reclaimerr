@@ -231,6 +231,13 @@ class TautulliClient:
                 break
         return records
 
+    async def get_users(self) -> list[Mapping[str, object]]:
+        """Return the users known to Tautulli."""
+
+        data = await self._make_request("get_users")
+        response = _mapping_from(data, "response")
+        return _mapping_list(response.get("data")) if response is not None else []
+
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         """Test Tautulli service connection without full initialization."""

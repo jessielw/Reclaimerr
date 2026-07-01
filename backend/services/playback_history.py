@@ -115,6 +115,7 @@ class _NormalizedEvent:
     played_at: datetime
     duration_seconds: int
     source_user_id: str | None
+    source_username: str | None
 
 
 @dataclass(slots=True)
@@ -126,6 +127,8 @@ class _Aggregate:
     total_duration_seconds: int = 0
     longest_duration_seconds: int = 0
     users: set[str] = field(default_factory=set)
+    usernames: dict[str, str] = field(default_factory=dict)
+    usernames_complete: bool = True
     first_activity_at: datetime | None = None
     last_activity_at: datetime | None = None
 
@@ -139,6 +142,13 @@ class _Aggregate:
         )
         if event.source_user_id:
             self.users.add(f"{event.source_service_config_id}:{event.source_user_id}")
+            username = str(event.source_username or "").strip()
+            if username:
+                self.usernames.setdefault(username.casefold(), username)
+            else:
+                self.usernames_complete = False
+        else:
+            self.usernames_complete = False
         if self.first_activity_at is None or event.played_at < self.first_activity_at:
             self.first_activity_at = event.played_at
         if self.last_activity_at is None or event.played_at > self.last_activity_at:
@@ -298,6 +308,7 @@ def _set_state(
 
 def _normalize_reporting_events(
     rows: Iterable[Mapping[str, object]],
+    usernames_by_id: Mapping[str, str] | None = None,
 ) -> list[_NormalizedEvent]:
     """Convert reporting plugin rows into normalized playback events."""
 
@@ -318,6 +329,7 @@ def _normalize_reporting_events(
         played_at = _parse_datetime(row.get("DateCreatedUtc") or row.get("DateCreated"))
         item_id = str(row.get("ItemId") or "").strip()
         user_id = str(row.get("UserId") or "").strip() or None
+        username = usernames_by_id.get(user_id) if user_id and usernames_by_id else None
         if duration is None or duration < threshold or played_at is None or not item_id:
             continue
         events.append(
@@ -334,6 +346,7 @@ def _normalize_reporting_events(
                 played_at=played_at,
                 duration_seconds=duration,
                 source_user_id=user_id,
+                source_username=username,
             )
         )
     return events
@@ -341,6 +354,7 @@ def _normalize_reporting_events(
 
 def _normalize_tautulli_events(
     rows: Iterable[Mapping[str, object]],
+    usernames_by_id: Mapping[str, str] | None = None,
 ) -> list[_NormalizedEvent]:
     """Convert Tautulli rows into normalized playback events."""
 
@@ -361,6 +375,15 @@ def _normalize_tautulli_events(
         played_at = _parse_datetime(row.get("stopped") or row.get("started"))
         item_id = str(row.get("rating_key") or "").strip()
         user_id = str(row.get("user_id") or row.get("user") or "").strip() or None
+        username = (
+            str(
+                (usernames_by_id.get(user_id) if user_id and usernames_by_id else "")
+                or row.get("user")
+                or row.get("friendly_name")
+                or ""
+            ).strip()
+            or None
+        )
         if duration is None or duration < threshold or played_at is None or not item_id:
             continue
         event_key = str(row.get("row_id") or "").strip() or _event_hash(
@@ -379,6 +402,7 @@ def _normalize_tautulli_events(
                 played_at=played_at,
                 duration_seconds=duration,
                 source_user_id=user_id,
+                source_username=username,
             )
         )
     return events
@@ -537,6 +561,7 @@ async def _upsert_events(
                     "played_at": event.played_at,
                     "duration_seconds": event.duration_seconds,
                     "source_user_id": event.source_user_id,
+                    "source_username": event.source_username,
                     "tmdb_id": tmdb_id,
                     "season_number": season_number,
                     "episode_number": episode_number,
@@ -553,6 +578,8 @@ async def _upsert_events(
         existing.played_at = event.played_at
         existing.duration_seconds = event.duration_seconds
         existing.source_user_id = event.source_user_id
+        if event.source_username:
+            existing.source_username = event.source_username
         if tmdb_id is not None:
             existing.tmdb_id = tmdb_id
             existing.season_number = season_number
@@ -562,6 +589,34 @@ async def _upsert_events(
             existing.season_id = season_id
             existing.episode_id = episode_id
     return await _insert_new_events(session, new_values)
+
+
+async def _backfill_event_usernames(
+    session: AsyncSession,
+    *,
+    config_id: int,
+    usernames_by_id: Mapping[str, str],
+) -> None:
+    """Apply current provider usernames to every retained event for a config."""
+
+    if not usernames_by_id:
+        return
+    events = (
+        (
+            await session.execute(
+                select(PlaybackHistoryEvent).where(
+                    PlaybackHistoryEvent.source_service_config_id == config_id,
+                    PlaybackHistoryEvent.source_user_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for event in events:
+        username = usernames_by_id.get(str(event.source_user_id or ""))
+        if username:
+            event.source_username = username
 
 
 async def _insert_new_events(
@@ -634,12 +689,25 @@ async def _refresh_reporting_config(
             )
             plugin_available = await client.get_playback_reporting_plugin_status()
             events: list[_NormalizedEvent] = []
+            usernames_by_id: dict[str, str] = {}
             if plugin_available:
+                try:
+                    usernames_by_id = {
+                        str(user.id): str(user.name).strip()
+                        for user in await client.get_users()
+                        if str(user.id).strip() and str(user.name).strip()
+                    }
+                except Exception as exc:
+                    LOG.warning(
+                        "Playback username lookup failed for "
+                        f"{config.service_type} config {config.id}: "
+                        f"{_provider_error_message(exc)}"
+                    )
                 since = _last_success_from(config)
                 if since is not None:
                     since -= timedelta(days=1)
                 rows = await client.get_playback_reporting_events(since=since)
-                events = _normalize_reporting_events(rows)
+                events = _normalize_reporting_events(rows, usernames_by_id)
         except Exception as exc:
             error = _provider_error_message(exc)
             LOG.warning(
@@ -665,6 +733,11 @@ async def _refresh_reporting_config(
             db_config = await session.get(ServiceConfig, config.id)
             if db_config is None:
                 raise ValueError(f"Service config {config.id} no longer exists")
+            await _backfill_event_usernames(
+                session,
+                config_id=db_config.id,
+                usernames_by_id=usernames_by_id,
+            )
             imported = await _upsert_events(
                 session,
                 config=db_config,
@@ -705,8 +778,25 @@ async def _refresh_tautulli_config(
             client = TautulliClient(
                 api_key=_config_api_key(config), base_url=config.base_url
             )
+            usernames_by_id: dict[str, str] = {}
+            try:
+                usernames_by_id = {
+                    str(row.get("user_id") or "").strip(): str(
+                        row.get("username") or row.get("friendly_name") or ""
+                    ).strip()
+                    for row in await client.get_users()
+                    if str(row.get("user_id") or "").strip()
+                    and str(
+                        row.get("username") or row.get("friendly_name") or ""
+                    ).strip()
+                }
+            except Exception as exc:
+                LOG.warning(
+                    "Playback username lookup failed for Tautulli config "
+                    f"{config.id}: {_provider_error_message(exc)}"
+                )
             rows = await client.get_history_records(since=_last_success_from(config))
-            events = _normalize_tautulli_events(rows)
+            events = _normalize_tautulli_events(rows, usernames_by_id)
         except Exception as exc:
             error = _provider_error_message(exc)
             LOG.warning(
@@ -723,6 +813,11 @@ async def _refresh_tautulli_config(
             db_config = await session.get(ServiceConfig, config.id)
             if db_config is None:
                 raise ValueError(f"Service config {config.id} no longer exists")
+            await _backfill_event_usernames(
+                session,
+                config_id=db_config.id,
+                usernames_by_id=usernames_by_id,
+            )
             imported = await _upsert_events(
                 session,
                 config=db_config,
@@ -818,7 +913,7 @@ def _aggregate_values(aggregate: PlaybackHistoryAggregate) -> dict[str, object]:
     """Convert an aggregate row into rule snapshot values."""
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    return {
+    values: dict[str, object] = {
         "playback.has_activity": aggregate.play_count > 0,
         "playback.play_count": aggregate.play_count,
         "playback.total_duration_minutes": aggregate.total_duration_seconds / 60,
@@ -831,6 +926,9 @@ def _aggregate_values(aggregate: PlaybackHistoryAggregate) -> dict[str, object]:
             else None
         ),
     }
+    if aggregate.usernames_complete or aggregate.usernames:
+        values["playback.usernames"] = list(aggregate.usernames or [])
+    return values
 
 
 async def rebuild_playback_history_aggregates() -> None:
@@ -979,6 +1077,8 @@ async def rebuild_playback_history_aggregates() -> None:
                     total_duration_seconds=aggregate.total_duration_seconds,
                     longest_duration_seconds=aggregate.longest_duration_seconds,
                     unique_user_count=len(aggregate.users),
+                    usernames=sorted(aggregate.usernames.values(), key=str.casefold),
+                    usernames_complete=aggregate.usernames_complete,
                     first_activity_at=aggregate.first_activity_at,
                     last_activity_at=aggregate.last_activity_at,
                 )
@@ -1119,6 +1219,7 @@ async def load_playback_rule_snapshot(
         "playback.total_duration_minutes": 0.0,
         "playback.longest_duration_minutes": 0.0,
         "playback.unique_user_count": 0,
+        "playback.usernames": [],
         "playback.last_activity_at": None,
         "playback.days_since_last_activity": None,
     }

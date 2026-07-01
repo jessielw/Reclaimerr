@@ -28,6 +28,7 @@ from backend.database import get_db
 from backend.database.models import (
     Movie,
     MovieVersion,
+    PlaybackHistoryEvent,
     ReclaimRule,
     Series,
     SeriesServiceRef,
@@ -52,6 +53,7 @@ from backend.models.rules import (
     PaginatedMediaServerCollectionsResponse,
     PaginatedMetadataValuesResponse,
     PaginatedMovieCollectionsResponse,
+    PlaybackUserLookupResponse,
     RulePreviewRequest,
     SeerrUserLookupResponse,
     ValidatePathCondition,
@@ -558,6 +560,51 @@ async def get_seerr_users(
             or needle in (user.display_name or "").lower()
         ]
     return response_users[:limit]
+
+
+@router.get("/rules/playback-users", response_model=list[PlaybackUserLookupResponse])
+async def get_playback_users(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    q: Annotated[str, Query()] = "",
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[PlaybackUserLookupResponse]:
+    """Return distinct usernames resolved from retained playback events."""
+
+    rows = (
+        await db.execute(
+            select(
+                PlaybackHistoryEvent.source_username,
+                PlaybackHistoryEvent.source_service,
+            ).where(PlaybackHistoryEvent.source_username.is_not(None))
+        )
+    ).all()
+    by_username: dict[str, PlaybackUserLookupResponse] = {}
+    for raw_username, source_service in rows:
+        username = str(raw_username or "").strip()
+        normalized = username.casefold()
+        if not normalized:
+            continue
+        existing = by_username.get(normalized)
+        source = source_service.value
+        if existing is None:
+            by_username[normalized] = PlaybackUserLookupResponse(
+                username=username,
+                source_services=[source],
+            )
+        elif source not in existing.source_services:
+            existing.source_services.append(source)
+
+    needle = q.strip().casefold()
+    users = [
+        user
+        for normalized, user in by_username.items()
+        if not needle or needle in normalized
+    ]
+    users.sort(key=lambda user: user.username.casefold())
+    for user in users:
+        user.source_services.sort()
+    return users[:limit]
 
 
 @router.get(

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rules
+  - playback.usernames
+    - Usernames are pulled straight from Jellyfin/Emby but Plex **requires** Tautulli for this rule to work properly
+  - Added a username rule node/picker in the frontend
+
 ### Fixes
 
 - Fixed misleading label **Playback users** it is now **Playback user count**

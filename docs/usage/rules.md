@@ -283,15 +283,16 @@ Playback history fields are available to movie-version, series, season, and
 episode rules. Reclaimerr imports compact events from the Jellyfin/Emby
 Playback Reporting plugin and Tautulli, then evaluates provider-neutral fields:
 
-| Field                        | Meaning                                      |
-| ---------------------------- | -------------------------------------------- |
-| Playback activity exists     | At least one qualifying playback event       |
-| Playback plays               | Number of qualifying playback events         |
-| Playback duration            | Total qualifying playback minutes            |
-| Longest playback             | Longest qualifying playback in minutes       |
+| Field                        | Meaning                                                |
+| ---------------------------- | ------------------------------------------------------ |
+| Playback activity exists     | At least one qualifying playback event                 |
+| Playback plays               | Number of qualifying playback events                   |
+| Playback duration            | Total qualifying playback minutes                      |
+| Longest playback             | Longest qualifying playback in minutes                 |
 | Playback user count          | Number of distinct source users with qualifying events |
-| Last playback activity       | Most recent qualifying event timestamp       |
-| Days since playback activity | Whole days since the most recent event       |
+| Playback users               | Resolved usernames with qualifying events              |
+| Last playback activity       | Most recent qualifying event timestamp                 |
+| Days since playback activity | Whole days since the most recent event                 |
 
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds
 are ignored. These thresholds prevent brief scrubs from counting as activity.
@@ -310,6 +311,16 @@ Playback data is loaded only when an enabled rule uses a `playback.*` field.
 Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting
 and Tautulli imports use an overlap window and event keys to avoid duplicate
 events during incremental refreshes.
+
+Playback-user rules match usernames case-insensitively and can require any,
+none, or all selected users. Jellyfin and Emby resolve names from their native
+user APIs; Tautulli resolves only the Plex history it supplies. If any user on
+an item cannot be resolved, username conditions remain unavailable for that
+item while the other playback metrics remain usable.
+
+Plex durable playback history, including playback-user rules, requires
+Tautulli. Reclaimerr does not currently import durable playback events directly
+from Plex.
 
 If no applicable provider is configured, a provider request fails, or an item
 cannot be observed through an available provider, playback values are unknown.

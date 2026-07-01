@@ -939,6 +939,9 @@ class PlaybackHistoryEvent(Base):
     source_user_id: Mapped[str | None] = mapped_column(
         String(255), default=None, index=True
     )
+    source_username: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     season_number: Mapped[int | None] = mapped_column(SmallInteger, default=None)
     episode_number: Mapped[int | None] = mapped_column(Integer, default=None)
@@ -992,6 +995,8 @@ class PlaybackHistoryAggregate(Base):
     total_duration_seconds: Mapped[int] = mapped_column(BigInteger, default=0)
     longest_duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
     unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
+    usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    usernames_complete: Mapped[bool] = mapped_column(Boolean, default=True)
     first_activity_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     last_activity_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, index=True
