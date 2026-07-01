@@ -1,5 +1,10 @@
 # Troubleshooting
 
+## Rules Not Working As Expected
+
+- Be sure you have all your services configured.
+- Be sure you have ran a full scan (especially after making changes to any services).
+
 ## The UI Does Not Load
 
 - Confirm the backend is running.
