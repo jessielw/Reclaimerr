@@ -238,6 +238,10 @@
     "exists",
     "not_exists",
   ];
+  const playbackActivityOperators: RuleConditionOperator[] = [
+    "is_true",
+    "is_false",
+  ];
 
   const requesterIdOperators: RuleConditionOperator[] = [
     "in",
@@ -339,9 +343,9 @@
     },
     {
       value: "playback.has_activity",
-      label: "Playback activity exists",
+      label: "Imported playback activity",
       kind: "boolean",
-      operators: booleanOperators,
+      operators: playbackActivityOperators,
       defaultOperator: "is_true",
     },
     {

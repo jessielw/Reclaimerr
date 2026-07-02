@@ -285,7 +285,7 @@ Playback Reporting plugin and Tautulli, then evaluates provider-neutral fields:
 
 | Field                        | Meaning                                                |
 | ---------------------------- | ------------------------------------------------------ |
-| Playback activity exists     | At least one qualifying playback event                 |
+| Imported playback activity   | At least one qualifying imported playback event        |
 | Playback plays               | Number of qualifying playback events                   |
 | Playback duration            | Total qualifying playback minutes                      |
 | Longest playback             | Longest qualifying playback in minutes                 |
@@ -306,6 +306,12 @@ is never used.
 The existing `watch.*` fields continue to describe the current library copy.
 The `playback.*` fields describe durable imported history and may therefore
 include activity from before the current copy was added.
+
+`Imported playback activity` is either true or false when a configured
+provider can observe the media target. Targets outside provider coverage are
+unknown and match neither value. Marking an item watched without playing it
+updates the current `watch.*` state but does not create an imported playback
+event.
 
 Playback data is loaded only when an enabled rule uses a `playback.*` field.
 Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting

@@ -25,6 +25,8 @@ from backend.database.models import (
     MovieVersion,
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
+    Season,
+    Series,
     ServiceConfig,
     User,
 )
@@ -32,14 +34,19 @@ from backend.enums import MediaType, Service, UserRole
 from backend.services import playback_history
 from backend.services.jellyfin import JellyfinService
 from backend.services.playback_history import (
+    PlaybackProviderStatus,
+    PlaybackRefreshResult,
     _aggregate_values,
     _backfill_event_usernames,
     _config_api_key,
     _insert_new_events,
     _normalize_reporting_events,
     _normalize_tautulli_events,
+    _playback_unavailable_reason,
     _refresh_reporting_config,
     _upsert_events,
+    load_playback_rule_snapshot,
+    log_playback_rule_coverage,
     rebuild_playback_history_aggregates,
 )
 from backend.services.tautulli import TautulliClient
@@ -129,6 +136,31 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
             RULE_VALUE_UNAVAILABLE,
         )
         self.assertEqual(len(PLAYBACK_RULE_FIELDS), 8)
+
+    def test_unknown_reason_distinguishes_provider_failure_and_no_provider(
+        self,
+    ) -> None:
+        self.assertEqual(
+            _playback_unavailable_reason(set(), PlaybackRefreshResult()),
+            "no playback provider configured",
+        )
+        self.assertEqual(
+            _playback_unavailable_reason(
+                {Service.PLEX},
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=4,
+                            provider=Service.TAUTULLI,
+                            observed_service=Service.PLEX,
+                            available=False,
+                            error="connection failed",
+                        )
+                    ]
+                ),
+            ),
+            "playback provider refresh failed for plex",
+        )
 
 
 class TautulliHistoryTests(unittest.IsolatedAsyncioTestCase):
@@ -265,6 +297,163 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
         if self.db_path.exists():
             self.db_path.unlink()
+
+    async def test_snapshot_logs_mixed_service_unknown_reason(self) -> None:
+        async with self.sessionmaker() as db:
+            plex_movie = Movie(title="Plex Movie", tmdb_id=101)
+            jellyfin_movie = Movie(title="Jellyfin Movie", tmdb_id=102)
+            db.add_all([plex_movie, jellyfin_movie])
+            await db.flush()
+            plex_version = MovieVersion(
+                movie_id=plex_movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            jellyfin_version = MovieVersion(
+                movie_id=jellyfin_movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="jellyfin-library",
+                library_name="Movies",
+            )
+            db.add_all([plex_version, jellyfin_version])
+            await db.commit()
+            plex_version_id = plex_version.id
+            jellyfin_version_id = jellyfin_version.id
+
+            refresh_result = PlaybackRefreshResult(
+                statuses=[
+                    PlaybackProviderStatus(
+                        config_id=7,
+                        provider=Service.TAUTULLI,
+                        observed_service=Service.PLEX,
+                        available=True,
+                    )
+                ]
+            )
+            snapshot = await load_playback_rule_snapshot(db, refresh_result)
+
+        self.assertIn(("movie_version", plex_version_id), snapshot.available_targets)
+        self.assertNotIn(
+            ("movie_version", jellyfin_version_id), snapshot.available_targets
+        )
+        self.assertEqual(snapshot.target_counts["movie_version"], 2)
+        self.assertEqual(snapshot.unavailable_count({"movie_version"}), 1)
+        self.assertEqual(
+            snapshot.unavailable_reasons["movie_version"],
+            {
+                "media service not covered by an available playback provider: jellyfin": 1
+            },
+        )
+        self.assertEqual(
+            snapshot.unavailable_target_samples["movie_version"],
+            [jellyfin_version_id],
+        )
+
+        with (
+            patch.object(playback_history.LOG, "warning") as warning,
+            patch.object(playback_history.LOG, "debug") as debug,
+        ):
+            log_playback_rule_coverage(snapshot, {"movie_version"})
+
+        debug_messages = [call.args[0] for call in debug.call_args_list]
+        self.assertTrue(
+            any("total=2, evaluable=1, unknown=1" in message for message in debug_messages)
+        )
+        self.assertIn(
+            "media service not covered by an available playback provider: jellyfin=1",
+            warning.call_args.args[0],
+        )
+        self.assertTrue(
+            any(str(jellyfin_version_id) in message for message in debug_messages)
+        )
+
+    async def test_snapshot_explains_missing_season_identity(self) -> None:
+        async with self.sessionmaker() as db:
+            series = Series(title="Series", tmdb_id=201)
+            db.add(series)
+            await db.flush()
+            season = Season(series_id=series.id, season_number=1)
+            db.add(season)
+            await db.commit()
+            season_id = season.id
+
+            snapshot = await load_playback_rule_snapshot(
+                db,
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=7,
+                            provider=Service.TAUTULLI,
+                            observed_service=Service.PLEX,
+                            available=True,
+                        )
+                    ]
+                ),
+            )
+
+        self.assertEqual(snapshot.unavailable_count({"season"}), 1)
+        self.assertEqual(
+            snapshot.unavailable_reasons["season"],
+            {"missing media-server identity": 1},
+        )
+        self.assertEqual(snapshot.unavailable_target_samples["season"], [season_id])
+
+    async def test_snapshot_treats_retained_history_as_evaluable(self) -> None:
+        async with self.sessionmaker() as db:
+            movie = Movie(title="Retained History", tmdb_id=301)
+            db.add(movie)
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                PlaybackHistoryAggregate(
+                    target_scope="movie_version",
+                    target_id=version.id,
+                    media_type=MediaType.MOVIE,
+                    play_count=1,
+                    total_duration_seconds=120,
+                    longest_duration_seconds=120,
+                    unique_user_count=1,
+                    usernames=["Alice"],
+                    usernames_complete=True,
+                    first_activity_at=datetime(2026, 1, 1),
+                    last_activity_at=datetime(2026, 1, 1),
+                )
+            )
+            await db.commit()
+            version_id = version.id
+
+            snapshot = await load_playback_rule_snapshot(
+                db,
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=7,
+                            provider=Service.TAUTULLI,
+                            observed_service=Service.PLEX,
+                            available=False,
+                            error="connection failed",
+                        )
+                    ]
+                ),
+            )
+
+        self.assertIn(("movie_version", version_id), snapshot.available_targets)
+        self.assertEqual(snapshot.unavailable_count({"movie_version"}), 0)
+        self.assertEqual(snapshot.unavailable_reasons["movie_version"], {})
 
     async def test_upsert_events_deduplicates_reporting_batch(self) -> None:
         reporting_row = {

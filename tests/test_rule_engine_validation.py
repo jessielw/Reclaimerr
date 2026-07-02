@@ -3,11 +3,13 @@ from __future__ import annotations
 import unittest
 
 from backend.core.rule_engine import (
+    RULE_VALUE_UNAVAILABLE,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
     _matches_list_operator,
+    _matches_operator,
     derive_path_scope_library_ids,
     validate_rule_definition,
 )
@@ -146,6 +148,33 @@ class RuleDefinitionValidationTests(unittest.TestCase):
                 _definition("playback.usernames", "greater_than", 1),
                 target_scope=TARGET_SERIES,
             )
+
+    def test_playback_activity_uses_true_false_and_preserves_unknown(self) -> None:
+        self.assertTrue(
+            _matches_operator(True, "is_true", None, field="playback.has_activity")
+        )
+        self.assertTrue(
+            _matches_operator(False, "is_false", None, field="playback.has_activity")
+        )
+        self.assertFalse(
+            _matches_operator(False, "is_true", None, field="playback.has_activity")
+        )
+        self.assertFalse(
+            _matches_operator(
+                RULE_VALUE_UNAVAILABLE,
+                "is_true",
+                None,
+                field="playback.has_activity",
+            )
+        )
+        self.assertFalse(
+            _matches_operator(
+                RULE_VALUE_UNAVAILABLE,
+                "is_false",
+                None,
+                field="playback.has_activity",
+            )
+        )
 
     def test_rejects_version_only_metadata_for_series_scope(self) -> None:
         with self.assertRaisesRegex(

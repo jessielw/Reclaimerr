@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-07-02
+
+### Added
+
+- Detailed playback unknown logging
+
+### Changed
+
+- Rules
+  - Cleaned up playback activity rules
+    - Renamed field **Playback activity exists** to **Imported playback activity**
+    - Editor now only offers is true and is false
+    - Preview explains totals are calculated before library filtering
+    - Unknown playback targets are explicitly shown as matching neither value
+    - Documented that manually marking watched doesn’t create playback events
+    - Existing saved rules remain compatible
+
+### Fixes
+
+- Docker: Granian now replaces the shell and runs as PID 1, ensuring Docker's SIGTERM reaches it directly during container shutdown
+
 ## [0.1.8] - 2026-07-01
 
 ### Added

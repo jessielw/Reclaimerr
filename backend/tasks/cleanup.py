@@ -101,6 +101,7 @@ from backend.services.notifications import (
 from backend.services.playback_history import (
     PlaybackRuleSnapshot,
     load_playback_rule_snapshot,
+    log_playback_rule_coverage,
     refresh_playback_history,
 )
 from backend.services.post_action_webhooks import (
@@ -1199,6 +1200,7 @@ async def _activate_playback_history_for_rules(
     snapshot = await load_playback_rule_snapshot(db, refresh_result)
     PlaybackHistoryResolver(snapshot.values_by_target).activate()
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
+    log_playback_rule_coverage(snapshot, scopes)
     unavailable_count = snapshot.unavailable_count(scopes)
     if unavailable_count == 0:
         return _PlaybackRuleDataResult(snapshot=snapshot)
@@ -1208,7 +1210,9 @@ async def _activate_playback_history_for_rules(
     elif not snapshot.has_configured_provider:
         error = "No Playback Reporting or Tautulli provider is configured"
     else:
-        error = "No configured playback provider can observe these media targets"
+        error = (
+            "Some media targets are not observable by the configured playback providers"
+        )
     return _PlaybackRuleDataResult(
         snapshot=snapshot,
         unavailable_count=unavailable_count,

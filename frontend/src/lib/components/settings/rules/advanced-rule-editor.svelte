@@ -1211,9 +1211,9 @@
                 Evaluated <strong
                   >{previewData.metadata.source_media_count}</strong
                 >
-                active item{previewData.metadata.source_media_count === 1
+                active source item{previewData.metadata.source_media_count === 1
                   ? ""
-                  : "s"}.
+                  : "s"} before applying library scope and other rule conditions.
                 {#if previewData.metadata.skipped_favorites_count > 0 || previewData.metadata.skipped_protected_count > 0}
                   Excluded
                   {#if previewData.metadata.skipped_favorites_count > 0}
@@ -1265,12 +1265,13 @@
         </Notice>
       {/if}
       {#if previewData?.metadata && previewData.metadata.playback_unavailable_count > 0}
-        <Notice type="warning" title="Playback History Unavailable">
-          Durable playback conditions could not be evaluated for
+        <Notice type="warning" title="Playback History Coverage">
+          Of the active source items, imported playback history could not be
+          observed for
           {previewData.metadata.playback_unavailable_count}
           media target{previewData.metadata.playback_unavailable_count === 1
             ? ""
-            : "s"}. Those unknown values did not match.
+            : "s"}. These are unknown values and match neither true nor false.
           {#if previewData.metadata.playback_error}
             {previewData.metadata.playback_error}
           {/if}

@@ -93,6 +93,9 @@ class PlaybackRuleSnapshot:
     target_counts: dict[str, int]
     errors: list[str]
     has_configured_provider: bool
+    provider_statuses: list[PlaybackProviderStatus]
+    unavailable_reasons: dict[str, dict[str, int]]
+    unavailable_target_samples: dict[str, list[int]]
 
     def unavailable_count(self, scopes: Iterable[str]) -> int:
         """Return the number of targets in the given scopes without data."""
@@ -103,6 +106,109 @@ class PlaybackRuleSnapshot:
         )
         total = sum(self.target_counts.get(scope, 0) for scope in scope_set)
         return max(0, total - available)
+
+
+def _playback_unavailable_reason(
+    target_services: set[Service],
+    refresh_result: PlaybackRefreshResult,
+) -> str:
+    """Explain why a current media target cannot be observed for playback rules."""
+
+    if not refresh_result.statuses:
+        return "no playback provider configured"
+
+    failed_services = {
+        status.observed_service
+        for status in refresh_result.statuses
+        if not status.available and status.error
+    }
+    unavailable_services = {
+        status.observed_service
+        for status in refresh_result.statuses
+        if not status.available and not status.error
+    }
+    failed_targets = target_services & failed_services
+    if failed_targets:
+        services = ", ".join(sorted(service.value for service in failed_targets))
+        return f"playback provider refresh failed for {services}"
+
+    unavailable_targets = target_services & unavailable_services
+    if unavailable_targets:
+        services = ", ".join(sorted(service.value for service in unavailable_targets))
+        return f"playback provider unavailable for {services}"
+
+    available_services = refresh_result.available_services
+    if target_services and not target_services.intersection(available_services):
+        services = ", ".join(sorted(service.value for service in target_services))
+        return (
+            f"media service not covered by an available playback provider: {services}"
+        )
+    if not target_services:
+        return "missing media-server identity"
+    return "missing playback target mapping"
+
+
+def log_playback_rule_coverage(
+    snapshot: PlaybackRuleSnapshot, scopes: Iterable[str]
+) -> None:
+    """Log observable and unknown playback-rule targets with diagnostic reasons."""
+
+    selected_scopes = sorted(set(scopes))
+    provider_summary = (
+        ", ".join(
+            f"{status.provider.value}#{status.config_id}->{status.observed_service.value}="
+            f"{'available' if status.available else 'unavailable'}"
+            for status in snapshot.provider_statuses
+        )
+        or "none configured"
+    )
+    coverage_parts: list[str] = []
+    unknown_total = 0
+    for scope in selected_scopes:
+        total = snapshot.target_counts.get(scope, 0)
+        evaluable = sum(
+            1
+            for target_scope, _target_id in snapshot.available_targets
+            if target_scope == scope
+        )
+        unknown = max(0, total - evaluable)
+        unknown_total += unknown
+        coverage_parts.append(
+            f"{scope}: total={total}, evaluable={evaluable}, unknown={unknown}"
+        )
+
+    LOG.debug(
+        "Playback rule coverage: "
+        f"providers=[{provider_summary}]; "
+        f"{'; '.join(coverage_parts) or 'no target scopes'}"
+    )
+    if unknown_total == 0:
+        return
+
+    reason_parts: list[str] = []
+    classified_total = 0
+    for scope in selected_scopes:
+        for reason, count in sorted(
+            snapshot.unavailable_reasons.get(scope, {}).items()
+        ):
+            classified_total += count
+            reason_parts.append(f"{scope}/{reason}={count}")
+    LOG.warning(
+        f"Playback rules have {unknown_total} unknown target(s): "
+        f"{'; '.join(reason_parts) or 'reason unavailable'}"
+    )
+    sample_parts = [
+        f"{scope}={snapshot.unavailable_target_samples.get(scope, [])}"
+        for scope in selected_scopes
+        if snapshot.unavailable_target_samples.get(scope)
+    ]
+    if sample_parts:
+        LOG.debug("Playback unknown target ID samples: " + "; ".join(sample_parts))
+    if classified_total != unknown_total:
+        LOG.warning(
+            "Playback coverage diagnostic mismatch: "
+            f"unknown={unknown_total}, classified={classified_total}"
+        )
 
 
 @dataclass(slots=True)
@@ -1213,6 +1319,10 @@ async def load_playback_rule_snapshot(
         (row.target_scope, row.target_id): _aggregate_values(row)
         for row in (await db.execute(select(PlaybackHistoryAggregate))).scalars().all()
     }
+
+    # retained durable history remains evaluable even if its provider is currently
+    # unavailable. Live coverage is only required to prove the zero event case.
+    available_targets.update(values_by_target)
     zero_values: dict[str, object] = {
         "playback.has_activity": False,
         "playback.play_count": 0,
@@ -1226,38 +1336,107 @@ async def load_playback_rule_snapshot(
     for key in available_targets:
         values_by_target.setdefault(key, dict(zero_values))
 
+    target_services: dict[str, dict[int, set[Service]]] = {
+        scope: {} for scope in PLAYBACK_TARGET_SCOPES
+    }
+    movie_identity_rows = (
+        await db.execute(
+            select(MovieVersion.id, MovieVersion.service)
+            .join(Movie, MovieVersion.movie_id == Movie.id)
+            .where(Movie.removed_at.is_(None))
+        )
+    ).all()
+    target_services["movie_version"] = {
+        version_id: {service} for version_id, service in movie_identity_rows
+    }
+
+    active_series_ids = {
+        series_id
+        for (series_id,) in (
+            await db.execute(select(Series.id).where(Series.removed_at.is_(None)))
+        ).all()
+    }
+    series_services: dict[int, set[Service]] = {
+        series_id: set() for series_id in active_series_ids
+    }
+    series_identity_rows = (
+        await db.execute(
+            select(SeriesServiceRef.series_id, SeriesServiceRef.service)
+            .join(Series, SeriesServiceRef.series_id == Series.id)
+            .where(Series.removed_at.is_(None))
+        )
+    ).all()
+    for series_id, service in series_identity_rows:
+        series_services[series_id].add(service)
+    target_services["series"] = series_services
+
+    season_identity_rows = (
+        await db.execute(
+            select(
+                Season.id,
+                Season.plex_season_rating_key,
+                Season.jellyfin_season_id,
+                Season.emby_season_id,
+            )
+            .join(Series, Season.series_id == Series.id)
+            .where(Series.removed_at.is_(None))
+        )
+    ).all()
+    target_services["season"] = {
+        season_id: {
+            service
+            for service, identity in (
+                (Service.PLEX, plex_id),
+                (Service.JELLYFIN, jellyfin_id),
+                (Service.EMBY, emby_id),
+            )
+            if identity
+        }
+        for season_id, plex_id, jellyfin_id, emby_id in season_identity_rows
+    }
+
+    episode_identity_rows = (
+        await db.execute(
+            select(
+                Episode.id,
+                Episode.plex_rating_key,
+                Episode.jellyfin_episode_id,
+                Episode.emby_episode_id,
+            )
+            .join(Season, Episode.season_id == Season.id)
+            .join(Series, Season.series_id == Series.id)
+            .where(Series.removed_at.is_(None))
+        )
+    ).all()
+    target_services["episode"] = {
+        episode_id: {
+            service
+            for service, identity in (
+                (Service.PLEX, plex_id),
+                (Service.JELLYFIN, jellyfin_id),
+                (Service.EMBY, emby_id),
+            )
+            if identity
+        }
+        for episode_id, plex_id, jellyfin_id, emby_id in episode_identity_rows
+    }
+
+    unavailable_reasons: dict[str, dict[str, int]] = {}
+    unavailable_target_samples: dict[str, list[int]] = {}
+    for scope, services_by_target in target_services.items():
+        reason_counts: defaultdict[str, int] = defaultdict(int)
+        unknown_ids: list[int] = []
+        for target_id, services in services_by_target.items():
+            if (scope, target_id) in available_targets:
+                continue
+            reason_counts[_playback_unavailable_reason(services, refresh_result)] += 1
+            unknown_ids.append(target_id)
+        unavailable_reasons[scope] = dict(reason_counts)
+        unavailable_target_samples[scope] = sorted(unknown_ids)[:10]
+
     target_counts = {
-        "movie_version": int(
-            await db.scalar(
-                select(func.count(MovieVersion.id))
-                .join(Movie, MovieVersion.movie_id == Movie.id)
-                .where(Movie.removed_at.is_(None))
-            )
-            or 0
-        ),
-        "series": int(
-            await db.scalar(
-                select(func.count(Series.id)).where(Series.removed_at.is_(None))
-            )
-            or 0
-        ),
-        "season": int(
-            await db.scalar(
-                select(func.count(Season.id))
-                .join(Series, Season.series_id == Series.id)
-                .where(Series.removed_at.is_(None))
-            )
-            or 0
-        ),
-        "episode": int(
-            await db.scalar(
-                select(func.count(Episode.id))
-                .join(Season, Episode.season_id == Season.id)
-                .join(Series, Season.series_id == Series.id)
-                .where(Series.removed_at.is_(None))
-            )
-            or 0
-        ),
+        scope: len(services_by_target)
+        for scope, services_by_target in target_services.items()
     }
     return PlaybackRuleSnapshot(
         values_by_target=values_by_target,
@@ -1265,4 +1444,7 @@ async def load_playback_rule_snapshot(
         target_counts=target_counts,
         errors=refresh_result.errors,
         has_configured_provider=refresh_result.has_configured_provider,
+        provider_statuses=list(refresh_result.statuses),
+        unavailable_reasons=unavailable_reasons,
+        unavailable_target_samples=unavailable_target_samples,
     )
