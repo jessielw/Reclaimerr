@@ -5,7 +5,9 @@
 <script lang="ts">
   import { getContext, setContext, untrack } from "svelte";
   import { Button } from "$lib/components/ui/button/index.js";
+  import * as Command from "$lib/components/ui/command/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
+  import * as Popover from "$lib/components/ui/popover/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import PathPatternPicker from "$lib/components/settings/rules/path-pattern-picker.svelte";
   import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
@@ -15,6 +17,7 @@
   import MediaServerCollectionPicker from "$lib/components/settings/rules/media-server-collection-picker.svelte";
   import MetadataValuePicker from "$lib/components/settings/rules/metadata-value-picker.svelte";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
+  import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
@@ -93,6 +96,8 @@
   }: Props = $props();
 
   let pathPickerOpen = $state(false);
+  let fieldPickerOpen = $state(false);
+  let fieldQuery = $state("");
   let seerrPickerOpen = $state(false);
   let playbackUserPickerOpen = $state(false);
   let collectionPickerOpen = $state(false);
@@ -1565,6 +1570,12 @@
     onChange();
   };
 
+  const selectConditionField = (c: RuleCondition, fieldValue: string) => {
+    setConditionField(c, fieldValue);
+    fieldPickerOpen = false;
+    fieldQuery = "";
+  };
+
   const setConditionOperator = (
     c: RuleCondition,
     op: RuleConditionOperator,
@@ -1860,33 +1871,55 @@
       class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 md:flex md:flex-row md:flex-wrap md:items-center"
     >
       <!-- field selector -->
-      <Select.Root
-        type="single"
-        value={node.field}
-        onValueChange={(value) => setConditionField(node, value)}
+      <Popover.Root
+        open={fieldPickerOpen}
+        onOpenChange={(open) => {
+          fieldPickerOpen = open;
+          if (!open) fieldQuery = "";
+        }}
       >
-        <Select.Trigger
-          class="col-start-1 row-start-1 h-8 w-full min-w-0 md:col-auto md:row-auto md:w-auto md:flex-1 md:min-w-36 text-sm text-foreground cursor-pointer bg-background"
+        <Popover.Trigger
+          class="col-start-1 row-start-1 w-full min-w-0 md:col-auto md:row-auto md:w-auto md:flex-1 md:min-w-36"
         >
-          {fieldLabel(node.field)}
-        </Select.Trigger>
-        <!-- organize fields into common and categorized groups for the UI -->
-        <Select.Content>
-          {#each groupedFields as group, index (group.key)}
-            <Select.Group>
-              <Select.GroupHeading>{group.label}</Select.GroupHeading>
-              {#each group.items as field (field.value)}
-                <Select.Item value={field.value} label={field.label}
-                  >{field.label}</Select.Item
-                >
+          <Button
+            type="button"
+            variant="outline"
+            aria-label="Select rule field"
+            aria-expanded={fieldPickerOpen}
+            class="h-8 w-full min-w-0 justify-between bg-background px-3 text-sm font-normal text-foreground cursor-pointer"
+          >
+            <span class="truncate">{fieldLabel(node.field)}</span>
+            <ChevronsUpDown class="size-4 shrink-0 opacity-60" />
+          </Button>
+        </Popover.Trigger>
+        <Popover.Content
+          align="start"
+          class="w-(--bits-popover-anchor-width) min-w-72 p-0 gap-0"
+        >
+          <Command.Root class="rounded-md p-0">
+            <Command.Input
+              bind:value={fieldQuery}
+              placeholder="Search rule fields..."
+            />
+            <Command.List class="max-h-80">
+              <Command.Empty>No matching rule fields.</Command.Empty>
+              {#each groupedFields as group (group.key)}
+                <Command.Group heading={group.label}>
+                  {#each group.items as field (field.value)}
+                    <Command.Item
+                      value={field.value}
+                      keywords={[field.label, group.label, field.value]}
+                      onSelect={() => selectConditionField(node, field.value)}
+                    >
+                      {field.label}
+                    </Command.Item>
+                  {/each}
+                </Command.Group>
               {/each}
-            </Select.Group>
-            {#if index < groupedFields.length - 1}
-              <Select.Separator />
-            {/if}
-          {/each}
-        </Select.Content>
-      </Select.Root>
+            </Command.List>
+          </Command.Root>
+        </Popover.Content>
+      </Popover.Root>
 
       <!-- operator selector -->
       <Select.Root
