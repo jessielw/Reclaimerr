@@ -23,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Alembic migration added (existing admin-message subscriptions carry over to new-request notifications)
   - Added notification mapping, preference, scope, and permission tests
 
-
 ### Changed
 
 - Dependencies
