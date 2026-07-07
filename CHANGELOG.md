@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Season watch-completion rules now use Sonarr's complete known episode inventory, preventing missing or future episodes from being treated as already watched
 - Metacritic count pill not styled the same as the others
 - Plex episode history responses that expose series IDs through `grandparentKey` now populate series, season, and episode requester-watch rules correctly
 - Plex watch history performs a one-time full rebuild after the TV parser upgrade so previously skipped episode plays are backfilled

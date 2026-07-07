@@ -2267,27 +2267,33 @@ def _effective_last_viewed(
 def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     """Return season watch completion as (fully_watched, watched_percent).
 
-    Uses episode level watch state when episode rows are present. If no episodes are
-    available in the loaded season relationship, both values are treated as unknown.
+    Sonarr's canonical episode inventory is the denominator. This prevents a season
+    with every downloaded episode watched from appearing complete while Sonarr knows
+    about missing or future episodes.
     """
-    episodes = season.episodes or []
-    total_episodes = len(episodes)
-    if total_episodes == 0:
+    expected_episode_numbers = set(season.sonarr_episode_numbers or [])
+    if not expected_episode_numbers:
         return None, None
 
-    watched_episodes = 0
+    episodes = season.episodes or []
+    watched_episode_numbers: set[int] = set()
     for episode in episodes:
+        if episode.episode_number not in expected_episode_numbers:
+            continue
         effective_last_viewed = _effective_last_viewed(
             episode.last_viewed_at, season.added_at
         )
         if effective_last_viewed is not None:
-            watched_episodes += 1
+            watched_episode_numbers.add(episode.episode_number)
             continue
         if episode.last_viewed_at is None and (episode.view_count or 0) > 0:
-            watched_episodes += 1
+            watched_episode_numbers.add(episode.episode_number)
 
-    watched_percent = round((watched_episodes / total_episodes) * 100, 2)
-    return watched_episodes == total_episodes, watched_percent
+    watched_percent = round(
+        (len(watched_episode_numbers) / len(expected_episode_numbers)) * 100,
+        2,
+    )
+    return expected_episode_numbers.issubset(watched_episode_numbers), watched_percent
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

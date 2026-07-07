@@ -1891,6 +1891,8 @@ async def sync_series(
                 # accumulate resolved tag labels per series across all Sonarr instances
                 series_tags: dict[int, set[str]] = {}
                 series_episode_dates: dict[int, dict[tuple[int, int], datetime]] = {}
+                series_episode_inventory: dict[int, dict[int, set[int]]] = {}
+                inventory_fetched_series_ids: set[int] = set()
                 date_fetch_failed_series_ids: set[int] = set()
                 for config_id, client in sonarr_clients.items():
                     await session.execute(
@@ -1908,35 +1910,42 @@ async def sync_series(
                     ]
                     semaphore = asyncio.Semaphore(SONARR_DATE_FETCH_CONCURRENCY)
 
-                    async def _fetch_episode_dates(
-                        arr_series_id: int,
-                    ) -> dict[tuple[int, int], datetime]:
+                    async def _fetch_episode_data(arr_series_id: int) -> Any:
                         async with semaphore:
-                            return await client.get_episode_file_dates(arr_series_id)
+                            return await client.get_episode_sync_data(arr_series_id)
 
                     date_results = await asyncio.gather(
                         *(
-                            _fetch_episode_dates(arr_series.id)
+                            _fetch_episode_data(arr_series.id)
                             for arr_series, _series_id in matched_series
                         ),
                         return_exceptions=True,
                     )
-                    for (arr_series, series_id), date_result in zip(
+                    for (arr_series, series_id), episode_result in zip(
                         matched_series, date_results, strict=True
                     ):
-                        if isinstance(date_result, BaseException):
+                        if isinstance(episode_result, BaseException):
                             date_fetch_failed_series_ids.add(series_id)
                             LOG.warning(
-                                "Failed to fetch Sonarr episode file dates for "
+                                "Failed to fetch Sonarr episode data for "
                                 f"series {arr_series.id} on config {config_id}: "
-                                f"{date_result}"
+                                f"{episode_result}"
                             )
                             continue
+                        inventory_fetched_series_ids.add(series_id)
                         bucket = series_episode_dates.setdefault(series_id, {})
-                        for key, added_at in date_result.items():
+                        for key, added_at in episode_result.file_dates.items():
                             current = bucket.get(key)
                             if current is None or added_at > current:
                                 bucket[key] = added_at
+                        inventory = series_episode_inventory.setdefault(series_id, {})
+                        for (
+                            season_number,
+                            episode_numbers,
+                        ) in episode_result.episode_numbers_by_season.items():
+                            inventory.setdefault(season_number, set()).update(
+                                episode_numbers
+                            )
 
                     for arr_series in all_series:
                         if not arr_series.tmdb_id:
@@ -1978,13 +1987,26 @@ async def sync_series(
                     for season in (
                         await session.execute(
                             select(Season).where(
-                                Season.series_id.in_(eligible_series_ids)
+                                Season.series_id.in_(series_id_by_tmdb.values())
                             )
                         )
                     )
                     .scalars()
                     .all()
                 }
+                for season in season_objects.values():
+                    if (
+                        season.series_id in date_fetch_failed_series_ids
+                        or season.series_id not in inventory_fetched_series_ids
+                    ):
+                        season.sonarr_episode_numbers = None
+                        continue
+                    episode_numbers = series_episode_inventory.get(
+                        season.series_id, {}
+                    ).get(season.season_number)
+                    season.sonarr_episode_numbers = (
+                        sorted(episode_numbers) if episode_numbers else None
+                    )
                 episode_rows = (
                     await session.execute(
                         select(Episode, Season)
@@ -1997,9 +2019,7 @@ async def sync_series(
                 for episode, season in episode_rows:
                     episode_arr_added_at = series_episode_dates.get(
                         season.series_id, {}
-                    ).get(
-                        (season.season_number, episode.episode_number)
-                    )
+                    ).get((season.season_number, episode.episode_number))
                     episode.arr_added_at = episode_arr_added_at
                     if episode_arr_added_at is not None:
                         season_dates.setdefault(season.id, []).append(
@@ -2020,6 +2040,12 @@ async def sync_series(
                             series_dates.get(series_id, []), default=None
                         )
 
+                await session.commit()
+
+            else:
+                await session.execute(
+                    sql_update(Season).values(sonarr_episode_numbers=None)
+                )
                 await session.commit()
 
             if allow_soft_delete:

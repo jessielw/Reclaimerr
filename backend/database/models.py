@@ -1225,6 +1225,7 @@ class Season(Base):
     # aggregate stats
     size: Mapped[int | None] = mapped_column(Integer, default=None)
     episode_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    sonarr_episode_numbers: Mapped[list[int] | None] = mapped_column(JSON, default=None)
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)

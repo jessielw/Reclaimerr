@@ -1182,6 +1182,46 @@ def _rule_uses_sonarr_fields(rule: ReclaimRule) -> bool:
     )
 
 
+async def _season_watch_inventory_rule_data(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> _SonarrRuleDataResult:
+    """Report seasons whose canonical Sonarr episode inventory is unavailable."""
+    watch_rules = [
+        rule for rule in rules if _rule_uses_season_episode_watch_fields(rule)
+    ]
+    if not watch_rules:
+        return _SonarrRuleDataResult(set(), set())
+
+    rows = (
+        await db.execute(
+            select(Series.id, Season.sonarr_episode_numbers)
+            .join(Season, Season.series_id == Series.id)
+            .where(Series.removed_at.is_(None))
+        )
+    ).all()
+    unavailable_series_ids = {
+        series_id for series_id, inventory in rows if not inventory
+    }
+    preserve_protection_keys = {
+        (rule.id, series_id)
+        for rule in watch_rules
+        if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT
+        and isinstance(rule.id, int)
+        for series_id in unavailable_series_ids
+    }
+    error = (
+        "Run Sync Media to refresh Sonarr's season episode inventory"
+        if unavailable_series_ids
+        else None
+    )
+    return _SonarrRuleDataResult(
+        unavailable_series_ids=unavailable_series_ids,
+        preserve_protection_keys=preserve_protection_keys,
+        error=error,
+    )
+
+
 def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
@@ -1302,6 +1342,7 @@ async def _activate_sonarr_rule_data_for_rules(
     sonarr_series_snapshot: _SonarrSeriesSnapshot | None = None,
 ) -> _SonarrRuleDataResult:
     """Load Sonarr-derived values needed by active TV rules."""
+    watch_inventory_result = await _season_watch_inventory_rule_data(db, rules)
     sonarr_rules = [
         rule
         for rule in rules
@@ -1310,7 +1351,7 @@ async def _activate_sonarr_rule_data_for_rules(
     ]
     if not sonarr_rules:
         SonarrRuleDataResolver({}).activate()
-        return _SonarrRuleDataResult(set(), set())
+        return watch_inventory_result
 
     episode_state_rules = [
         rule
@@ -1550,10 +1591,15 @@ async def _activate_sonarr_rule_data_for_rules(
             f"{len(needed_series_ids)} series"
         )
 
+    unavailable_series_ids.update(watch_inventory_result.unavailable_series_ids)
+    preserve_protection_keys.update(watch_inventory_result.preserve_protection_keys)
+    errors_out = [
+        message for message in (error, watch_inventory_result.error) if message
+    ]
     return _SonarrRuleDataResult(
         unavailable_series_ids=unavailable_series_ids,
         preserve_protection_keys=preserve_protection_keys,
-        error=error,
+        error="; ".join(errors_out) or None,
     )
 
 

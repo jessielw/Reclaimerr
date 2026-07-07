@@ -94,6 +94,32 @@ def test_sonarr_episode_file_dates_filter_and_keep_latest_date() -> None:
     asyncio.run(run())
 
 
+def test_sonarr_episode_sync_data_includes_episodes_without_files() -> None:
+    async def run() -> None:
+        client = SonarrClient(api_key="key", base_url="http://sonarr")
+        request = AsyncMock(
+            return_value=(
+                200,
+                [
+                    {"seasonNumber": 1, "episodeNumber": 1, "hasFile": True},
+                    {"seasonNumber": 1, "episodeNumber": 2, "hasFile": False},
+                    {"seasonNumber": 0, "episodeNumber": 3, "hasFile": False},
+                    {"seasonNumber": 1, "episodeNumber": 0, "hasFile": False},
+                ],
+            )
+        )
+        try:
+            with patch.object(SonarrClient, "_make_request", request):
+                data = await client.get_episode_sync_data(42)
+        finally:
+            await client.session.close()
+
+        assert data.episode_numbers_by_season == {1: {1, 2}, 0: {3}}
+        assert data.file_dates == {}
+
+    asyncio.run(run())
+
+
 def test_paths_equivalent_uses_scoped_arr_mapping() -> None:
     mappings = [
         {

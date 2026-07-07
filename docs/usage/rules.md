@@ -291,6 +291,17 @@ durable completed Plex history requires Tautulli.
 
 ### Sonarr Rule Data
 
+`Season fully watched` and `Season watched (%)` use Sonarr's complete known
+episode inventory as their denominator. Episodes Sonarr knows about still count
+when they are unaired or do not have files, so six watched episodes out of seven
+known episodes is 85.71%, not complete. Run `Sync Media` after upgrading or
+after Sonarr discovers new episodes.
+
+If a season has no successfully synchronized Sonarr episode inventory, its
+watch completion is unknown. Boolean and numeric completion conditions do not
+match that season; Reclaimerr does not fall back to treating the currently
+downloaded episodes as the complete season.
+
 `Sonarr series status` exposes Sonarr's canonical series status independently
 from the TMDB-backed `Series status` field. It is available to series, season,
 and episode rules with the values `continuing`, `ended`, `upcoming`, and

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,14 @@ from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.models.media import ArrTag
 from backend.models.services.sonarr import SonarrSeason, SonarrSeries
+
+
+@dataclass(slots=True, frozen=True)
+class SonarrEpisodeSyncData:
+    """Episode inventory and file dates returned by one Sonarr request."""
+
+    file_dates: dict[tuple[int, int], datetime]
+    episode_numbers_by_season: dict[int, set[int]]
 
 
 def _as_bool(value: object, default: bool = False) -> bool:
@@ -605,6 +614,11 @@ class SonarrClient:
     ) -> dict[tuple[int, int], datetime]:
         """Return Sonarr file-import dates keyed by season and episode number."""
 
+        return (await self.get_episode_sync_data(series_id)).file_dates
+
+    async def get_episode_sync_data(self, series_id: int) -> SonarrEpisodeSyncData:
+        """Return Sonarr's canonical episode inventory and file-import dates."""
+
         status_code, data = await self._make_request(
             "GET",
             "episode",
@@ -618,11 +632,24 @@ class SonarrClient:
             )
 
         dates: dict[tuple[int, int], datetime] = {}
+        episode_numbers_by_season: dict[int, set[int]] = {}
         for episode in data:
-            if not isinstance(episode, Mapping) or not _as_bool(episode.get("hasFile")):
+            if not isinstance(episode, Mapping):
                 continue
             season_number = as_int(episode.get("seasonNumber"))
             episode_number = as_int(episode.get("episodeNumber"))
+            if (
+                season_number is None
+                or season_number < 0
+                or episode_number is None
+                or episode_number <= 0
+            ):
+                continue
+            episode_numbers_by_season.setdefault(season_number, set()).add(
+                episode_number
+            )
+            if not _as_bool(episode.get("hasFile")):
+                continue
             raw_file = episode.get("episodeFile")
             episode_file = raw_file if isinstance(raw_file, Mapping) else None
             added_at = (
@@ -630,13 +657,16 @@ class SonarrClient:
                 if episode_file is not None
                 else None
             )
-            if season_number is None or episode_number is None or added_at is None:
+            if added_at is None:
                 continue
             key = (season_number, episode_number)
             current = dates.get(key)
             if current is None or added_at > current:
                 dates[key] = added_at
-        return dates
+        return SonarrEpisodeSyncData(
+            file_dates=dates,
+            episode_numbers_by_season=episode_numbers_by_season,
+        )
 
     async def delete_episode_file(self, episode_file_id: int) -> None:
         """Delete a single episode file by its episode file ID.

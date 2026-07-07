@@ -1868,6 +1868,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
         series.service_refs = [_make_series_ref(service_id="sr-1")]
         season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1, 2]
         season.added_at = now - timedelta(days=10)
         season.episodes = [
             Episode(season_id=1, episode_number=1, view_count=1),
@@ -1906,6 +1907,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
         series.service_refs = [_make_series_ref(service_id="sr-1")]
         season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1, 2]
         season.episodes = [
             Episode(season_id=1, episode_number=1, view_count=1),
             Episode(season_id=1, episode_number=2, view_count=0),
@@ -1965,6 +1967,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
         series.service_refs = [_make_series_ref(service_id="sr-1")]
         season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1]
         season.added_at = now
         season.episodes = [
             Episode(
@@ -2023,6 +2026,66 @@ class CleanupMediaRuleTests(unittest.TestCase):
         )
         self.assertTrue(
             _evaluate_rule_for_season(series, season, watched_percent_zero_rule, {}, [])
+        )
+
+    def test_season_watch_progress_includes_missing_sonarr_episodes(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1, 2, 3, 4, 5, 6, 7]
+        season.episodes = [
+            Episode(season_id=1, episode_number=number, view_count=1)
+            for number in range(1, 7)
+        ]
+        fully_watched_rule = ReclaimRule(
+            name="season-canonical-progress",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        watched_percent_rule = ReclaimRule(
+            name="season-canonical-percent",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="season",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "season.watched_percent",
+                            "operator": "equals",
+                            "value": 85.71,
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+
+        self.assertFalse(
+            _evaluate_rule_for_season(series, season, fully_watched_rule, {}, [])
+        )
+        self.assertTrue(
+            _evaluate_rule_for_season(series, season, watched_percent_rule, {}, [])
         )
 
     def test_evaluate_rule_for_season_watched_progress_unknown_without_episodes(
