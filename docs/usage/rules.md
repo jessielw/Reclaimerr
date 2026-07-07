@@ -85,6 +85,23 @@ size field.
 Text and list comparisons are case-insensitive unless a field documents
 additional normalization.
 
+### Substring Operators (Arr tags)
+
+The Arr tags field matches whole tag names with the list operators above. It
+also supports substring matching, which matches a tag by a fragment of its
+name. Each operator takes comma-separated terms with the same any/none
+behavior as `matches any` and `matches none`.
+
+| Internal operator        | UI label         | Meaning                            |
+| ------------------------ | ---------------- | ---------------------------------- |
+| `contains_substring`     | contains         | Some tag contains one of the terms |
+| `not_contains_substring` | does not contain | No tag contains any of the terms   |
+
+For example, `contains chart` matches a tag such as `weekly-chart-2024`, and
+`contains chart, -best` matches a tag containing either fragment. To require
+several fragments at once, combine `contains` conditions with an AND group. A
+blank term matches nothing.
+
 ### Missing Values
 
 `exists` matches populated metadata. `does not exist` matches missing or empty
