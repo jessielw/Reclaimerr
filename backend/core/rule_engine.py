@@ -194,6 +194,8 @@ OPERATOR_LABELS: dict[str, str] = {
     "not_contains_any": "matches none",
     "contains_all": "matches all",
     "not_contains_all": "does not match all",
+    "contains_substring": "contains",
+    "not_contains_substring": "does not contain",
     "exists": "exists",
     "not_exists": "missing",
     "is_true": "is true",
@@ -388,6 +390,10 @@ MULTI_VALUE_TEXT_OPERATORS = {
     "exists",
     "not_exists",
 }
+TAG_SUBSTRING_OPERATORS = {
+    "contains_substring",
+    "not_contains_substring",
+}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -417,6 +423,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
+    "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS,
 }
 
 TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
@@ -2039,6 +2046,15 @@ def _matches_operator(
         return _matches_any_regex(_as_list(actual), _as_list(expected))
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected, field=field)
+    if operator in TAG_SUBSTRING_OPERATORS:
+        needles = [_normalize(item) for item in _as_list(expected) if _exists(item)]
+        if not needles:
+            return False
+        haystacks = [_normalize(item) for item in _as_list(actual) if _exists(item)]
+        found = any(
+            needle in haystack for haystack in haystacks for needle in needles
+        )
+        return found if operator == "contains_substring" else not found
     if field in MULTI_VALUE_TEXT_FIELDS and operator in {"equals", "not_equals"}:
         list_operator = "contains_any" if operator == "equals" else "not_contains_any"
         return _matches_list_operator(actual, list_operator, expected, field=field)
