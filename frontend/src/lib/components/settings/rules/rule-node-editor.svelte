@@ -596,7 +596,7 @@
     },
     {
       value: "tmdb.vote_average",
-      label: "TMDB rating",
+      label: "TMDB rating (0-10)",
       kind: "number",
       operators: numericOperators,
       defaultOperator: "greater_than_or_equal",

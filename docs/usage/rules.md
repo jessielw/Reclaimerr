@@ -136,15 +136,15 @@ existing media-server added date is not replaced or backfilled.
 
 ### TMDB Metadata
 
-| Field                       | Scope                   | Value                                              |
-| --------------------------- | ----------------------- | -------------------------------------------------- |
-| Original language           | All scopes              | Canonical ISO 639-3 language code                  |
-| Origin country              | All scopes              | Case-insensitive country code such as `US` or `JP` |
-| Runtime                     | Movie version           | TMDB movie runtime in minutes                      |
-| Genres                      | All scopes              | TMDB genre names                                   |
-| Rating / Votes / Popularity | All scopes              | Current stored TMDB metadata                       |
-| Release date                | Movie version           | Movie release date                                 |
-| First / last air date       | Series, season, episode | Dates inherited from the parent series             |
+| Field                       | Scope                   | Value                                                                                                     |
+| --------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| Original language           | All scopes              | Canonical ISO 639-3 language code                                                                         |
+| Origin country              | All scopes              | Case-insensitive country code such as `US` or `JP`                                                        |
+| Runtime                     | Movie version           | TMDB movie runtime in minutes                                                                             |
+| Genres                      | All scopes              | TMDB genre names                                                                                          |
+| Rating / Votes / Popularity | All scopes              | TMDB rating uses the raw 0-10 `vote_average` scale; votes and popularity use current stored TMDB metadata |
+| Release date                | Movie version           | Movie release date                                                                                        |
+| First / last air date       | Series, season, episode | Dates inherited from the parent series                                                                    |
 
 Original-language values are normalized before comparison. For example, `en`,
 `eng`, and `English` all compare as `eng`. The picker displays languages found
@@ -152,6 +152,9 @@ in the local database, but manual entry remains available.
 
 Origin-country comparisons are case-insensitive. The country picker displays
 codes currently found in local TMDB metadata.
+
+TMDB rating comparisons use the raw `vote_average` value from TMDB on a 0-10
+scale. That is different from percentage-style ratings elsewhere in the app.
 
 ### External Ratings
 

@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playback snapshots now retain per-user, per-episode watch state instead of only series level activity
 - Duplicate playback evidence is consolidated using the latest qualifying watch timestamp
 - Added a database migration for persisted per-user episode watch snapshots
+- Explicitly state for TMDB rating we use a 0-10 scale instead of a 0-100 in docs/rule node editor
 
 ### Fixed
 
