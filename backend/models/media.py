@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
 from backend.user_types import AudioCodecFamily, MediaServerType, VideoCodecFamily
@@ -628,6 +628,8 @@ class RulePreviewMetadata(BaseModel):
     skipped_protected_count: int = 0
     sonarr_unavailable_count: int = 0
     sonarr_error: str | None = None
+    season_inventory_unavailable_count: int = 0
+    season_inventory_unavailable_examples: list[str] = Field(default_factory=list)
     playback_unavailable_count: int = 0
     playback_error: str | None = None
     matched_count: int = 0

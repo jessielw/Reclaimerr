@@ -1687,8 +1687,16 @@ def _build_context(
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
-            "season.fully_watched": season_fully_watched,
-            "season.watched_percent": season_watched_percent,
+            "season.fully_watched": (
+                season_fully_watched
+                if season_fully_watched is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "season.watched_percent": (
+                season_watched_percent
+                if season_watched_percent is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "season.is_latest_season": is_latest_season,
             "season.seasons_from_latest": seasons_from_latest,
             "tmdb.first_air_date": series.tmdb_first_air_date,
@@ -1849,8 +1857,16 @@ def _build_context(
             "episode.days_since_air_date": _days_between(episode.air_date, now),
             "season.season_number": season.season_number,
             "season.episode_count": season.episode_count,
-            "season.fully_watched": season_fully_watched_ep,
-            "season.watched_percent": season_watched_percent_ep,
+            "season.fully_watched": (
+                season_fully_watched_ep
+                if season_fully_watched_ep is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "season.watched_percent": (
+                season_watched_percent_ep
+                if season_watched_percent_ep is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "season.is_latest_season": is_latest_season_ep,
             "season.seasons_from_latest": seasons_from_latest_ep,
             "season.air_date": season.air_date,

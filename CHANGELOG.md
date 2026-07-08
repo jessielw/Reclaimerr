@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Revise verbiage for 'canonical season episode inventory unavailable' to something that is a bit more clear
 
+### Fixed
+
+- Season-inventory preview warnings now count only evaluated seasons affected by the current rule and include example titles
+
 ## [0.1.10] - 2026-07-07
 
 ### Added

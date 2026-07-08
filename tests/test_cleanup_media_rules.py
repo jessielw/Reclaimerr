@@ -2141,7 +2141,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(
             _evaluate_rule_for_season(series, season, is_true_rule, {}, [])
         )
-        self.assertTrue(
+        self.assertFalse(
             _evaluate_rule_for_season(series, season, not_exists_rule, {}, [])
         )
 
@@ -2574,6 +2574,73 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._engine.dispose()
         if self._db_path.exists():
             self._db_path.unlink()
+
+    async def test_season_inventory_warning_respects_rule_scope(self) -> None:
+        rule = ReclaimRule(
+            name="Scoped season completion",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope=TARGET_SEASON,
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "library.id",
+                            "operator": "contains_any",
+                            "value": ["tv"],
+                        },
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        },
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        scoped = Series(title="Scoped Show", tmdb_id=12001, size=1024)
+        out_of_scope = Series(title="Kids Show", tmdb_id=12002, size=1024)
+        async with self._sessionmaker() as db:
+            db.add_all([rule, scoped, out_of_scope])
+            await db.flush()
+            db.add_all(
+                [
+                    SeriesServiceRef(
+                        series_id=scoped.id,
+                        service=Service.PLEX,
+                        service_id="scoped",
+                        library_id="tv",
+                        library_name="TV",
+                    ),
+                    SeriesServiceRef(
+                        series_id=out_of_scope.id,
+                        service=Service.PLEX,
+                        service_id="kids",
+                        library_id="kids",
+                        library_name="Kids",
+                    ),
+                    Season(series_id=scoped.id, season_number=1, size=512),
+                    Season(series_id=out_of_scope.id, season_number=1, size=512),
+                ]
+            )
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            rule = (await db.execute(select(ReclaimRule))).scalar_one()
+            result = await collect_rule_preview_matches_with_metadata(db, [rule])
+
+        self.assertEqual(result.matches, [])
+        self.assertEqual(result.metadata.sonarr_unavailable_count, 0)
+        self.assertEqual(result.metadata.season_inventory_unavailable_count, 1)
+        self.assertEqual(
+            result.metadata.season_inventory_unavailable_examples,
+            ["Scoped Show S01"],
+        )
 
     async def test_requester_watch_ignores_partial_durable_movie_sessions(
         self,

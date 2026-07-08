@@ -1256,11 +1256,29 @@
       </div>
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
         <Notice type="warning" title="Sonarr Data Unavailable">
-          Canonical Sonarr season episode inventory was unavailable for
+          Sonarr rule data could not be evaluated for
           {previewData.metadata.sonarr_unavailable_count}
-          series. Affected seasons were treated as unknown and did not match.
+          series. Those unknown values did not match.
           {#if previewData.metadata.sonarr_error}
             {previewData.metadata.sonarr_error}
+          {/if}
+        </Notice>
+      {/if}
+      {#if previewData?.metadata && previewData.metadata.season_inventory_unavailable_count > 0}
+        <Notice type="warning" title="Season Inventory Unavailable">
+          The current rule required Sonarr's episode inventory, but it was
+          unavailable for
+          {previewData.metadata.season_inventory_unavailable_count}
+          evaluated season{previewData.metadata
+            .season_inventory_unavailable_count === 1
+            ? ""
+            : "s"}. Only those seasons were treated as unknown and did not
+          match. Run Sync Media to refresh the inventory.
+          {#if previewData.metadata.season_inventory_unavailable_examples.length > 0}
+            Examples:
+            {previewData.metadata.season_inventory_unavailable_examples.join(
+              ", ",
+            )}.
           {/if}
         </Notice>
       {/if}

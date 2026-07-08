@@ -1351,7 +1351,10 @@ async def _activate_sonarr_rule_data_for_rules(
     ]
     if not sonarr_rules:
         SonarrRuleDataResolver({}).activate()
-        return watch_inventory_result
+        return _SonarrRuleDataResult(
+            unavailable_series_ids=set(),
+            preserve_protection_keys=(watch_inventory_result.preserve_protection_keys),
+        )
 
     episode_state_rules = [
         rule
@@ -1591,15 +1594,11 @@ async def _activate_sonarr_rule_data_for_rules(
             f"{len(needed_series_ids)} series"
         )
 
-    unavailable_series_ids.update(watch_inventory_result.unavailable_series_ids)
     preserve_protection_keys.update(watch_inventory_result.preserve_protection_keys)
-    errors_out = [
-        message for message in (error, watch_inventory_result.error) if message
-    ]
     return _SonarrRuleDataResult(
         unavailable_series_ids=unavailable_series_ids,
         preserve_protection_keys=preserve_protection_keys,
-        error="; ".join(errors_out) or None,
+        error=error,
     )
 
 
@@ -3664,6 +3663,21 @@ async def _collect_season_candidate_records(
             reasons: list[dict[str, Any]] = []
 
             for rule in rules:
+                if (
+                    preview_metadata is not None
+                    and season.size
+                    and _rule_uses_season_episode_watch_fields(rule)
+                    and evaluate_advanced_rule_state(
+                        rule,
+                        target_scope=TARGET_SEASON,
+                        series=series,
+                        season=season,
+                    )
+                    is None
+                ):
+                    _record_unavailable_season_inventory(
+                        preview_metadata, series, season
+                    )
                 if _evaluate_rule_for_season(
                     series, season, rule, matched_criteria, reasons
                 ):
@@ -3883,6 +3897,21 @@ async def _collect_episode_candidate_records(
                 reasons: list[dict[str, Any]] = []
 
                 for rule in rules:
+                    if (
+                        preview_metadata is not None
+                        and _rule_uses_season_episode_watch_fields(rule)
+                        and evaluate_advanced_rule_state(
+                            rule,
+                            target_scope=TARGET_EPISODE,
+                            series=series,
+                            season=season,
+                            episode=episode,
+                        )
+                        is None
+                    ):
+                        _record_unavailable_season_inventory(
+                            preview_metadata, series, season
+                        )
                     if _evaluate_rule_for_episode(
                         series, season, episode, rule, matched_criteria, reasons
                     ):
@@ -4116,6 +4145,25 @@ def _evaluate_rule_for_season(
         season_label=label,
     )
     return True
+
+
+def _record_unavailable_season_inventory(
+    metadata: RulePreviewMatchMetadata,
+    series: Series,
+    season: Season,
+) -> None:
+    """Record one preview-scoped season with unavailable Sonarr inventory."""
+    key = (series.id, season.id)
+    if key in metadata.season_inventory_unavailable_keys:
+        return
+    metadata.season_inventory_unavailable_keys.add(key)
+    metadata.season_inventory_unavailable_count = len(
+        metadata.season_inventory_unavailable_keys
+    )
+    if len(metadata.season_inventory_unavailable_examples) < 5:
+        metadata.season_inventory_unavailable_examples.append(
+            f"{series.title} S{season.season_number:02d}"
+        )
 
 
 def _evaluate_rule_for_episode(

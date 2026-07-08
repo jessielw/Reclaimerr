@@ -300,7 +300,9 @@ after Sonarr discovers new episodes.
 If a season has no successfully synchronized Sonarr episode inventory, its
 watch completion is unknown. Boolean and numeric completion conditions do not
 match that season; Reclaimerr does not fall back to treating the currently
-downloaded episodes as the complete season.
+downloaded episodes as the complete season. Preview warnings count only seasons
+where missing inventory affects the current rule after its other conditions are
+applied, and show up to five example titles to aid troubleshooting.
 
 `Sonarr series status` exposes Sonarr's canonical series status independently
 from the TMDB-backed `Series status` field. It is available to series, season,

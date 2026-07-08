@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -90,6 +90,12 @@ class RulePreviewMatchMetadata:
     skipped_protected_count: int = 0
     sonarr_unavailable_count: int = 0
     sonarr_error: str | None = None
+    season_inventory_unavailable_count: int = 0
+    season_inventory_unavailable_examples: list[str] = field(default_factory=list)
+    season_inventory_unavailable_keys: set[tuple[int, int]] = field(
+        default_factory=set,
+        repr=False,
+    )
     playback_unavailable_count: int = 0
     playback_error: str | None = None
     matched_count: int = 0

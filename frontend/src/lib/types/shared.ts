@@ -1043,6 +1043,8 @@ export interface RulePreviewMetadata {
   skipped_protected_count: number;
   sonarr_unavailable_count: number;
   sonarr_error: string | null;
+  season_inventory_unavailable_count: number;
+  season_inventory_unavailable_examples: string[];
   playback_unavailable_count: number;
   playback_error: string | null;
   matched_count: number;
