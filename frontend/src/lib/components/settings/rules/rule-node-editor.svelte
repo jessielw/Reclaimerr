@@ -25,6 +25,12 @@
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { canMoveRuleNodeToGroup } from "$lib/components/settings/rules/rule-tree-dnd.js";
   import {
+    byteAmountText,
+    inferByteUnit,
+    parseByteAmount,
+    type ByteUnit,
+  } from "$lib/components/settings/rules/rule-size-input.js";
+  import {
     dragHandle,
     dragHandleZone,
     SHADOW_ITEM_MARKER_PROPERTY_NAME,
@@ -53,7 +59,7 @@
   }
 
   type RuleTargetScope = "movie_version" | "series" | "season" | "episode";
-  type FieldKind = "number" | "text" | "boolean" | "temporal";
+  type FieldKind = "number" | "bytes" | "text" | "boolean" | "temporal";
 
   interface FieldConfig {
     value: string;
@@ -302,8 +308,8 @@
     },
     {
       value: "media.size",
-      label: "Size (bytes)",
-      kind: "number",
+      label: "Size",
+      kind: "bytes",
       operators: numericOperators,
       defaultOperator: "greater_than",
     },
@@ -974,8 +980,8 @@
     },
     {
       value: "disk.free_bytes",
-      label: "Disk free (bytes)",
-      kind: "number",
+      label: "Disk free",
+      kind: "bytes",
       operators: numericOperators,
       defaultOperator: "less_than",
     },
@@ -1435,6 +1441,8 @@
     operatorLabelMap[value] ?? value;
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
+  const isByteInput = (c: RuleCondition) =>
+    fieldConfig(c.field).kind === "bytes" && !listOperators.has(c.operator);
   const isTemporalInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "temporal" &&
     !valuelessOperators.has(c.operator);
@@ -1462,6 +1470,15 @@
     if (Array.isArray(v)) return v.join(", ");
     return v === null || v === undefined ? "" : String(v);
   };
+
+  const BYTE_UNITS: ByteUnit[] = ["B", "KB", "MB", "GB", "TB"];
+  let byteUnit = $state<ByteUnit>(
+    untrack(() =>
+      node.type === "condition" && fieldConfig(node.field).kind === "bytes"
+        ? inferByteUnit(node.value)
+        : "GB",
+    ),
+  );
 
   const normalizeValueList = (value: RuleCondition["value"]): string[] =>
     (Array.isArray(value) ? value : value == null ? [] : [value])
@@ -1564,7 +1581,7 @@
         .filter(Boolean);
       return;
     }
-    if (fieldConfig(c.field).kind === "number") {
+    if (["number", "bytes"].includes(fieldConfig(c.field).kind)) {
       if (raw === "") {
         c.value = null;
         return;
@@ -1581,7 +1598,13 @@
     onChange();
   };
 
+  const setByteConditionValue = (c: RuleCondition, raw: string) => {
+    c.value = parseByteAmount(raw, byteUnit);
+    onChange();
+  };
+
   const setConditionField = (c: RuleCondition, fieldValue: string) => {
+    const previousKind = fieldConfig(c.field).kind;
     const raw = valueText(c);
     c.field = fieldValue;
     ensureValidOperator(c);
@@ -1590,6 +1613,12 @@
       if (valuelessOperators.has(c.operator)) delete c.value;
       else if (listOperators.has(c.operator)) c.value = [];
       else c.value = "";
+    } else if (
+      fieldConfig(fieldValue).kind === "bytes" &&
+      previousKind !== "bytes"
+    ) {
+      c.value = null;
+      byteUnit = "GB";
     } else {
       applyConditionValue(c, raw);
     }
@@ -1974,7 +2003,42 @@
         <div
           class="col-span-2 row-start-3 flex flex-wrap items-center gap-2 w-full min-w-0 md:col-auto md:row-auto md:flex-1 md:min-w-[18rem]"
         >
-          {#if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
+          {#if isByteInput(node)}
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+              <Input
+                class="h-8 min-w-0 flex-1 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+                type="number"
+                min="0"
+                step="any"
+                placeholder="Size"
+                value={byteAmountText(node.value, byteUnit)}
+                oninput={(e) =>
+                  setByteConditionValue(node, e.currentTarget.value)}
+              />
+              <Select.Root
+                type="single"
+                value={byteUnit}
+                onValueChange={(value) => (byteUnit = value as ByteUnit)}
+              >
+                <Select.Trigger
+                  class="h-8 w-20 shrink-0 text-sm text-foreground cursor-pointer bg-background"
+                  aria-label="Size unit"
+                >
+                  {byteUnit}
+                </Select.Trigger>
+                <Select.Content>
+                  {#each BYTE_UNITS as unit}
+                    <Select.Item value={unit} label={unit}>{unit}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+            {#if typeof node.value === "number" && Number.isFinite(node.value)}
+              <span class="w-full text-xs text-muted-foreground">
+                {Math.round(node.value).toLocaleString()} bytes
+              </span>
+            {/if}
+          {:else if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
             <Select.Root
               type="single"
               value={typeof node.value === "string" ? node.value : ""}

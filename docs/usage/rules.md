@@ -130,6 +130,10 @@ rule.
 | Days since added                 | All scopes    | Age of the existing media-server added date              |
 | Days since latest Arr file added | All scopes    | Age of Radarr/Sonarr's latest file-import date           |
 
+Size and disk-free conditions use an amount and unit selector in the editor.
+Rules continue to store integer byte values, using 1024-based KB, MB, GB, and
+TB conversions for compatibility with existing rules.
+
 Arr file-added dates are populated during Radarr and Sonarr syncs. They remain
 empty when an item cannot be matched or an Arr service is not configured; the
 existing media-server added date is not replaced or backfilled.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rule size fields now accept human-friendly B, KB, MB, GB, and TB values while preserving byte-based rule payloads
+
 ### Changed
 
 - Revise verbiage for 'canonical season episode inventory unavailable' to something that is a bit more clear
