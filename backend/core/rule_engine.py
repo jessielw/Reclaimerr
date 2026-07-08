@@ -37,6 +37,20 @@ SONARR_RULE_FIELDS = {
     "sonarr.latest_season_has_unaired_episodes",
     "sonarr.latest_season_has_finale",
 }
+ARR_ID_RULE_FIELDS = {"arr.movie_ids", "arr.series_ids"}
+FAVORITES_RULE_FIELDS = {
+    "favorites.exists",
+    "favorites.usernames",
+    "favorites.user_count",
+}
+RANK_RULE_FIELDS = {
+    "episode.position_by_air_date",
+    "season.position_by_air_date",
+}
+COLLECTION_RULE_FIELDS = {
+    "collection.latest_sibling_watched_at",
+    "collection.days_since_latest_sibling_watched",
+}
 PLAYBACK_RULE_FIELDS = {
     "playback.has_activity",
     "playback.play_count",
@@ -73,6 +87,7 @@ def normalize_rule_outcome(rule: ReclaimRule) -> str:
 
 FIELD_LABELS: dict[str, str] = {
     "library.id": "Library",
+    "media.title": "Title",
     "media.path": "Path",
     "media.file_name": "Filename",
     "media.size": "Size",
@@ -162,6 +177,8 @@ FIELD_LABELS: dict[str, str] = {
     "media.duration": "Duration",
     "media_server.collections": "Media server collections",
     "arr.tags": "Arr tags",
+    "arr.movie_ids": "Radarr movie IDs",
+    "arr.series_ids": "Sonarr series IDs",
     "arr.monitored": "Arr monitored",
     "sonarr.latest_season_has_unaired_episodes": (
         "Sonarr latest season has unaired episodes"
@@ -173,6 +190,16 @@ FIELD_LABELS: dict[str, str] = {
     "seerr.requester_has_watched": "Seerr requester has watched",
     "seerr.last_requested_at": "Seerr latest active request",
     "seerr.days_since_last_requested": "Days since latest active Seerr request",
+    "favorites.exists": "Favorited or watchlisted",
+    "favorites.usernames": "Favorite/watchlist users",
+    "favorites.user_count": "Favorite/watchlist user count",
+    "episode.position_by_air_date": "Episode position by air date",
+    "season.position_by_air_date": "Season position by air date",
+    "collection.latest_sibling_watched_at": "Collection sibling last watched",
+    "collection.days_since_latest_sibling_watched": (
+        "Days since collection sibling watched"
+    ),
+    "media_server.user_rating": "Media server user rating",
     "disk.free_bytes": "Disk free (bytes)",
     "disk.free_percent": "Disk free (%)",
 }
@@ -226,6 +253,11 @@ NUMERIC_FIELDS = {
     "playback.longest_duration_minutes",
     "playback.unique_user_count",
     "playback.days_since_last_activity",
+    "favorites.user_count",
+    "episode.position_by_air_date",
+    "season.position_by_air_date",
+    "collection.days_since_latest_sibling_watched",
+    "media_server.user_rating",
     "tmdb.days_since_release",
     "tmdb.days_since_first_air_date",
     "tmdb.days_since_last_air_date",
@@ -276,6 +308,7 @@ NUMERIC_FIELDS = {
 TEXT_FIELDS = {
     "tmdb.collection_name",
     "tmdb.genres",
+    "media.title",
     "tmdb.original_language",
     "tmdb.origin_country",
     "media_server.collections",
@@ -291,12 +324,18 @@ TEXT_FIELDS = {
     "video.color_transfer",
     "video.color_primaries",
     "arr.tags",
+    "arr.movie_ids",
+    "arr.series_ids",
     "media_server.collections",
+    "favorites.usernames",
     "seerr.requested_by_user_ids",
     "playback.usernames",
 }
 MULTI_VALUE_TEXT_FIELDS = {
     "arr.tags",
+    "arr.movie_ids",
+    "arr.series_ids",
+    "favorites.usernames",
     "video.codec_family",
     "audio.codec_family",
     "audio.languages",
@@ -321,6 +360,7 @@ BOOLEAN_FIELDS = {
     "season.fully_watched",
     "season.is_latest_season",
     "watch.never_watched",
+    "favorites.exists",
     "playback.has_activity",
     "arr.monitored",
     "sonarr.latest_season_has_unaired_episodes",
@@ -330,6 +370,7 @@ BOOLEAN_FIELDS = {
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
+    "collection.latest_sibling_watched_at",
     "playback.last_activity_at",
     "tmdb.release_date",
     "tmdb.first_air_date",
@@ -422,7 +463,10 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "tmdb.genres": set(MULTI_VALUE_TEXT_OPERATORS),
     "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
+    "favorites.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
+    "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
+    "arr.series_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS,
 }
 
@@ -432,6 +476,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "anilist.popularity",
         "anilist.score",
         "arr.monitored",
+        "arr.movie_ids",
         "arr.tags",
         "audio.channels",
         "audio.bitrate_kbps",
@@ -449,6 +494,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "metacritic.user_vote_count",
         "metacritic.vote_count",
         "library.id",
+        "media.title",
         "media.days_since_added",
         "arr.days_since_file_added",
         "media.container",
@@ -458,6 +504,12 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.size",
         "media.year",
         "media_server.collections",
+        "media_server.user_rating",
+        "favorites.exists",
+        "favorites.usernames",
+        "favorites.user_count",
+        "collection.latest_sibling_watched_at",
+        "collection.days_since_latest_sibling_watched",
         "seerr.requested",
         "seerr.last_requested_at",
         "seerr.days_since_last_requested",
@@ -506,6 +558,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "anilist.popularity",
         "anilist.score",
         "arr.monitored",
+        "arr.series_ids",
         "arr.tags",
         "audio.channels",
         "audio.codec_family",
@@ -520,6 +573,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "metacritic.user_vote_count",
         "metacritic.vote_count",
         "library.id",
+        "media.title",
         "media.days_since_added",
         "arr.days_since_file_added",
         "media.file_name",
@@ -527,6 +581,10 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.size",
         "media.year",
         "media_server.collections",
+        "media_server.user_rating",
+        "favorites.exists",
+        "favorites.usernames",
+        "favorites.user_count",
         "seerr.requested",
         "seerr.last_requested_at",
         "seerr.days_since_last_requested",
@@ -571,6 +629,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "anilist.popularity",
         "anilist.score",
         "arr.monitored",
+        "arr.series_ids",
         "arr.tags",
         "audio.channels",
         "audio.codec_family",
@@ -586,6 +645,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "metacritic.user_vote_count",
         "metacritic.vote_count",
         "library.id",
+        "media.title",
         "media.days_since_added",
         "arr.days_since_file_added",
         "media.file_name",
@@ -593,6 +653,10 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.size",
         "media.year",
         "media_server.collections",
+        "media_server.user_rating",
+        "favorites.exists",
+        "favorites.usernames",
+        "favorites.user_count",
         "season.air_date",
         "season.days_since_air_date",
         "season.episode_count",
@@ -600,6 +664,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "season.is_latest_season",
         "season.season_number",
         "season.seasons_from_latest",
+        "season.position_by_air_date",
         "season.watched_percent",
         "seerr.requested",
         "seerr.last_requested_at",
@@ -643,12 +708,14 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "anilist.popularity",
         "anilist.score",
         "arr.monitored",
+        "arr.series_ids",
         "arr.tags",
         "disk.free_bytes",
         "disk.free_percent",
         "episode.air_date",
         "episode.days_since_air_date",
         "episode.number",
+        "episode.position_by_air_date",
         "episode.season_number",
         "imdb.rating",
         "imdb.vote_count",
@@ -659,6 +726,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "metacritic.user_vote_count",
         "metacritic.vote_count",
         "library.id",
+        "media.title",
         "media.days_since_added",
         "arr.days_since_file_added",
         "media.file_name",
@@ -666,6 +734,10 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "media.size",
         "media.year",
         "media_server.collections",
+        "media_server.user_rating",
+        "favorites.exists",
+        "favorites.usernames",
+        "favorites.user_count",
         "season.air_date",
         "season.days_since_air_date",
         "season.episode_count",
@@ -800,6 +872,146 @@ class DiskStatsResolver:
             )
         except Exception:
             return None
+
+
+class ArrRuleDataResolver:
+    """Holds preloaded Radarr/Sonarr IDs for rule evaluation."""
+
+    _ctx: ContextVar[ArrRuleDataResolver | None] = ContextVar(
+        "arr_rule_data_resolver", default=None
+    )
+
+    __slots__ = ("_movie_ids_by_movie_id", "_series_ids_by_series_id")
+
+    def __init__(
+        self,
+        *,
+        movie_ids_by_movie_id: Mapping[int, Iterable[int]] | None = None,
+        series_ids_by_series_id: Mapping[int, Iterable[int]] | None = None,
+    ) -> None:
+        self._movie_ids_by_movie_id = {
+            movie_id: sorted({str(value) for value in values})
+            for movie_id, values in (movie_ids_by_movie_id or {}).items()
+        }
+        self._series_ids_by_series_id = {
+            series_id: sorted({str(value) for value in values})
+            for series_id, values in (series_ids_by_series_id or {}).items()
+        }
+
+    def activate(self) -> None:
+        ArrRuleDataResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> ArrRuleDataResolver | None:
+        return cls._ctx.get()
+
+    def movie_ids(self, movie_id: int | None) -> list[str] | UnavailableRuleValue:
+        if movie_id is None:
+            return []
+        return self._movie_ids_by_movie_id.get(movie_id, [])
+
+    def series_ids(self, series_id: int | None) -> list[str] | UnavailableRuleValue:
+        if series_id is None:
+            return []
+        return self._series_ids_by_series_id.get(series_id, [])
+
+
+class FavoritesRuleDataResolver:
+    """Holds preloaded favorite/watchlist users keyed by media type and TMDB ID."""
+
+    _ctx: ContextVar[FavoritesRuleDataResolver | None] = ContextVar(
+        "favorites_rule_data_resolver", default=None
+    )
+
+    __slots__ = ("_usernames_by_key",)
+
+    def __init__(
+        self,
+        usernames_by_key: Mapping[tuple[MediaType, int], Iterable[str]] | None = None,
+    ) -> None:
+        self._usernames_by_key = {
+            key: sorted(
+                {normalized for value in values if (normalized := str(value).strip())},
+                key=str.casefold,
+            )
+            for key, values in (usernames_by_key or {}).items()
+        }
+
+    def activate(self) -> None:
+        FavoritesRuleDataResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> FavoritesRuleDataResolver | None:
+        return cls._ctx.get()
+
+    def usernames(self, media_type: MediaType, tmdb_id: int | None) -> list[str]:
+        if tmdb_id is None:
+            return []
+        return self._usernames_by_key.get((media_type, tmdb_id), [])
+
+
+class RankRuleDataResolver:
+    """Holds precomputed newest-first retention ranks for seasons and episodes."""
+
+    _ctx: ContextVar[RankRuleDataResolver | None] = ContextVar(
+        "rank_rule_data_resolver", default=None
+    )
+
+    __slots__ = ("_season_rank_by_id", "_episode_rank_by_id")
+
+    def __init__(
+        self,
+        *,
+        season_rank_by_id: Mapping[int, int] | None = None,
+        episode_rank_by_id: Mapping[int, int] | None = None,
+    ) -> None:
+        self._season_rank_by_id = dict(season_rank_by_id or {})
+        self._episode_rank_by_id = dict(episode_rank_by_id or {})
+
+    def activate(self) -> None:
+        RankRuleDataResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> RankRuleDataResolver | None:
+        return cls._ctx.get()
+
+    def season_rank(self, season_id: int | None) -> int | UnavailableRuleValue:
+        if season_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        return self._season_rank_by_id.get(season_id, RULE_VALUE_UNAVAILABLE)
+
+    def episode_rank(self, episode_id: int | None) -> int | UnavailableRuleValue:
+        if episode_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        return self._episode_rank_by_id.get(episode_id, RULE_VALUE_UNAVAILABLE)
+
+
+class CollectionSiblingRuleDataResolver:
+    """Holds collection sibling watch activity by movie id."""
+
+    _ctx: ContextVar[CollectionSiblingRuleDataResolver | None] = ContextVar(
+        "collection_sibling_rule_data_resolver", default=None
+    )
+
+    __slots__ = ("_latest_by_movie_id",)
+
+    def __init__(
+        self,
+        latest_watched_by_movie_id: Mapping[int, datetime | None] | None = None,
+    ) -> None:
+        self._latest_by_movie_id = dict(latest_watched_by_movie_id or {})
+
+    def activate(self) -> None:
+        CollectionSiblingRuleDataResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> CollectionSiblingRuleDataResolver | None:
+        return cls._ctx.get()
+
+    def latest(self, movie_id: int | None) -> datetime | None | UnavailableRuleValue:
+        if movie_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        return self._latest_by_movie_id.get(movie_id)
 
 
 class SeerrRequestResolver:
@@ -1395,6 +1607,10 @@ def _build_context(
     _seerr_resolver = SeerrRequestResolver.current()
     _sonarr_resolver = SonarrRuleDataResolver.current()
     _playback_resolver = PlaybackHistoryResolver.current()
+    _arr_resolver = ArrRuleDataResolver.current()
+    _favorites_resolver = FavoritesRuleDataResolver.current()
+    _rank_resolver = RankRuleDataResolver.current()
+    _collection_resolver = CollectionSiblingRuleDataResolver.current()
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
@@ -1403,8 +1619,29 @@ def _build_context(
         _added = version.added_at or movie.added_at
         _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
         _file_name = version.file_name or _path_basename(version.path)
+        _favorite_users = (
+            _favorites_resolver.usernames(MediaType.MOVIE, movie.tmdb_id)
+            if _favorites_resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _favorite_user_count = (
+            len(_favorite_users)
+            if isinstance(_favorite_users, list)
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _collection_latest = (
+            _collection_resolver.latest(movie.id)
+            if _collection_resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _collection_days_since_latest = (
+            _days_between(_collection_latest, now)
+            if isinstance(_collection_latest, datetime) or _collection_latest is None
+            else RULE_VALUE_UNAVAILABLE
+        )
         return {
             "library.id": [version.library_id],
+            "media.title": movie.title,
             "media.path": [version.path] if version.path else [],
             "media.file_name": [_file_name] if _file_name else [],
             "media.size": size,
@@ -1477,8 +1714,27 @@ def _build_context(
             "video.color_primaries": version.video_color_primaries,
             "media.duration": version.duration,
             "arr.tags": movie.arr_tags or [],
+            "arr.movie_ids": (
+                _arr_resolver.movie_ids(movie.id)
+                if _arr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "arr.monitored": movie.is_monitored,
             "movie.version_count": len(movie.versions or []),
+            "media_server.user_rating": (
+                version.media_server_user_rating
+                if version.media_server_user_rating is not None
+                else movie.media_server_user_rating
+            ),
+            "favorites.exists": (
+                bool(_favorite_users)
+                if _favorite_users is not RULE_VALUE_UNAVAILABLE
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "favorites.usernames": _favorite_users,
+            "favorites.user_count": (_favorite_user_count),
+            "collection.latest_sibling_watched_at": _collection_latest,
+            "collection.days_since_latest_sibling_watched": _collection_days_since_latest,
             "seerr.requested": (
                 _seerr_resolver.resolve(MediaType.MOVIE, movie.tmdb_id)
                 if _seerr_resolver
@@ -1530,8 +1786,19 @@ def _build_context(
             _resolver.resolve(_series_path) if (_resolver and _series_path) else None
         )
         _last_viewed = _effective_last_viewed(series.last_viewed_at, series.added_at)
+        _favorite_users = (
+            _favorites_resolver.usernames(MediaType.SERIES, series.tmdb_id)
+            if _favorites_resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _favorite_user_count = (
+            len(_favorite_users)
+            if isinstance(_favorite_users, list)
+            else RULE_VALUE_UNAVAILABLE
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
+            "media.title": series.title,
             "media.path": [ref.path for ref in refs if ref.path],
             "media.file_name": _series_file_names,
             "media.size": series.size,
@@ -1591,7 +1858,20 @@ def _build_context(
             "audio.channels": series.max_audio_channels,
             "subtitle.languages": series.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.series_ids": (
+                _arr_resolver.series_ids(series.id)
+                if _arr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "arr.monitored": series.is_monitored,
+            "media_server.user_rating": series.media_server_user_rating,
+            "favorites.exists": (
+                bool(_favorite_users)
+                if _favorite_users is not RULE_VALUE_UNAVAILABLE
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "favorites.usernames": _favorite_users,
+            "favorites.user_count": (_favorite_user_count),
             "sonarr.latest_season_has_unaired_episodes": (
                 _sonarr_resolver.resolve(
                     series.id, "sonarr.latest_season_has_unaired_episodes"
@@ -1668,8 +1948,19 @@ def _build_context(
             is_latest_season = False
         _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
         _last_viewed = _effective_last_viewed(season.last_viewed_at, season.added_at)
+        _favorite_users = (
+            _favorites_resolver.usernames(MediaType.SERIES, series.tmdb_id)
+            if _favorites_resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _favorite_user_count = (
+            len(_favorite_users)
+            if isinstance(_favorite_users, list)
+            else RULE_VALUE_UNAVAILABLE
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
+            "media.title": series.title,
             "media.path": [ref.path for ref in refs if ref.path],
             "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
@@ -1699,6 +1990,11 @@ def _build_context(
             ),
             "season.is_latest_season": is_latest_season,
             "season.seasons_from_latest": seasons_from_latest,
+            "season.position_by_air_date": (
+                _rank_resolver.season_rank(season.id)
+                if _rank_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -1747,7 +2043,24 @@ def _build_context(
             "audio.languages": season.audio_languages,
             "subtitle.languages": season.subtitle_languages,
             "arr.tags": series.arr_tags or [],
+            "arr.series_ids": (
+                _arr_resolver.series_ids(series.id)
+                if _arr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "arr.monitored": season.is_monitored,
+            "media_server.user_rating": (
+                season.media_server_user_rating
+                if season.media_server_user_rating is not None
+                else series.media_server_user_rating
+            ),
+            "favorites.exists": (
+                bool(_favorite_users)
+                if _favorite_users is not RULE_VALUE_UNAVAILABLE
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "favorites.usernames": _favorite_users,
+            "favorites.user_count": (_favorite_user_count),
             "sonarr.series_status": (
                 _sonarr_resolver.resolve(series.id, "sonarr.series_status")
                 if _sonarr_resolver
@@ -1837,8 +2150,19 @@ def _build_context(
         _last_viewed_ep = _effective_last_viewed(
             episode.last_viewed_at, season.added_at
         )
+        _favorite_users = (
+            _favorites_resolver.usernames(MediaType.SERIES, series.tmdb_id)
+            if _favorites_resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+        _favorite_user_count = (
+            len(_favorite_users)
+            if isinstance(_favorite_users, list)
+            else RULE_VALUE_UNAVAILABLE
+        )
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
+            "media.title": series.title,
             "media.path": [episode.path] if episode.path else [],
             "media.file_name": [_episode_file_name] if _episode_file_name else [],
             "media.size": episode.size,
@@ -1852,6 +2176,11 @@ def _build_context(
             "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
             **_playback_context(_playback_resolver, TARGET_EPISODE, episode.id),
             "episode.number": episode.episode_number,
+            "episode.position_by_air_date": (
+                _rank_resolver.episode_rank(episode.id)
+                if _rank_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "episode.season_number": season.season_number,
             "episode.air_date": episode.air_date,
             "episode.days_since_air_date": _days_between(episode.air_date, now),
@@ -1869,6 +2198,11 @@ def _build_context(
             ),
             "season.is_latest_season": is_latest_season_ep,
             "season.seasons_from_latest": seasons_from_latest_ep,
+            "season.position_by_air_date": (
+                _rank_resolver.season_rank(season.id)
+                if _rank_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "tmdb.first_air_date": series.tmdb_first_air_date,
@@ -1910,7 +2244,26 @@ def _build_context(
             "series.tmdb_season_count": series.season_count,
             "series.library_season_count": _library_season_count(series),
             "arr.tags": series.arr_tags or [],
+            "arr.series_ids": (
+                _arr_resolver.series_ids(series.id)
+                if _arr_resolver
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "arr.monitored": season.is_monitored,
+            "media_server.user_rating": (
+                episode.media_server_user_rating
+                if episode.media_server_user_rating is not None
+                else season.media_server_user_rating
+                if season.media_server_user_rating is not None
+                else series.media_server_user_rating
+            ),
+            "favorites.exists": (
+                bool(_favorite_users)
+                if _favorite_users is not RULE_VALUE_UNAVAILABLE
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "favorites.usernames": _favorite_users,
+            "favorites.user_count": (_favorite_user_count),
             "sonarr.series_status": (
                 _sonarr_resolver.resolve(series.id, "sonarr.series_status")
                 if _sonarr_resolver

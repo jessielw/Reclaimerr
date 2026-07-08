@@ -10,10 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Rule size fields now accept human-friendly B, KB, MB, GB, and TB values while preserving byte-based rule payloads
+- Added new rule fields:
+  - Title
+  - Radarr movie IDs
+  - Sonarr series IDs
+  - Favorited/watchlisted
+  - Favorite/watchlist users
+  - Favorite/watchlist user count
+  - Season position by air date
+  - Episode position by air date
+  - Collection sibling last watched
+  - Days since collection sibling watched
+  - Media server user rating
 
 ### Changed
 
 - Revise verbiage for 'canonical season episode inventory unavailable' to something that is a bit more clear
+- Updated rule editor dropdown/scoping so the new fields only show where valid
 
 ### Fixed
 

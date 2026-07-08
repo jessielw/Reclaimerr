@@ -560,6 +560,7 @@ async def _sync_seasons(
             s.subtitle_languages = sd.subtitle_languages
             s.path = sd.path
             s.episode_paths = sd.episode_paths
+            s.media_server_user_rating = sd.media_server_user_rating
             if sd.service_season_id:
                 if service_type is Service.JELLYFIN:
                     s.jellyfin_season_id = sd.service_season_id
@@ -598,6 +599,7 @@ async def _sync_seasons(
                 jellyfin_season_id=jellyfin_id,
                 emby_season_id=emby_id,
                 plex_season_rating_key=plex_key,
+                media_server_user_rating=sd.media_server_user_rating,
             )
             new_season.added_at = sd.added_at
             new_season.path = sd.path
@@ -740,6 +742,8 @@ async def _upsert_episodes(
                 e.size = ep.size
             if ep.path is not None:
                 e.path = ep.path
+            if ep.media_server_user_rating is not None:
+                e.media_server_user_rating = ep.media_server_user_rating
             if service_type is Service.PLEX and ep.plex_rating_key:
                 e.plex_rating_key = ep.plex_rating_key
             elif service_type is Service.JELLYFIN and ep.jellyfin_episode_id:
@@ -759,6 +763,7 @@ async def _upsert_episodes(
                 plex_rating_key=ep.plex_rating_key,
                 jellyfin_episode_id=ep.jellyfin_episode_id,
                 emby_episode_id=ep.emby_episode_id,
+                media_server_user_rating=ep.media_server_user_rating,
             )
             session.add(new_ep)
             # We have to register in existing_eps so a duplicate ep_number later in the
@@ -970,6 +975,7 @@ async def _upsert_movie_versions(
                         subtitle_languages=ver.subtitle_languages,
                         has_chapters=ver.has_chapters,
                         media_server_collection_names=ver.media_server_collection_names,
+                        media_server_user_rating=ver.media_server_user_rating,
                     )
                 )
                 continue
@@ -1012,6 +1018,7 @@ async def _upsert_movie_versions(
         ev.subtitle_languages = ver.subtitle_languages
         ev.has_chapters = ver.has_chapters
         ev.media_server_collection_names = ver.media_server_collection_names
+        ev.media_server_user_rating = ver.media_server_user_rating
         if ver.added_at:
             ev.added_at = ver.added_at
 
@@ -1109,6 +1116,22 @@ async def gather_movies(
                 view_count=merged_view_count,
                 last_viewed_at=merged_lva,
                 played_by_user_count=max(pbu_candidates) if pbu_candidates else None,
+                media_server_user_rating=max(
+                    rating
+                    for rating in (
+                        existing.media_server_user_rating,
+                        movie.media_server_user_rating,
+                    )
+                    if rating is not None
+                )
+                if any(
+                    rating is not None
+                    for rating in (
+                        existing.media_server_user_rating,
+                        movie.media_server_user_rating,
+                    )
+                )
+                else None,
             )
 
     if skipped_count > 0:
@@ -1283,6 +1306,9 @@ async def sync_movies(
                         existing_movie.added_at = earliest_added
                     existing_movie.last_viewed_at = movie.last_viewed_at
                     existing_movie.view_count = movie.view_count
+                    existing_movie.media_server_user_rating = (
+                        movie.media_server_user_rating
+                    )
 
                     # restore if soft-deleted
                     if existing_movie.removed_at:
@@ -1321,6 +1347,9 @@ async def sync_movies(
                             existing_movie.added_at = earliest_added
                         existing_movie.last_viewed_at = movie.last_viewed_at
                         existing_movie.view_count = movie.view_count
+                        existing_movie.media_server_user_rating = (
+                            movie.media_server_user_rating
+                        )
                         if existing_movie.removed_at:
                             existing_movie.removed_at = None
                             LOG.info(
@@ -1344,6 +1373,7 @@ async def sync_movies(
                             imdb_id=imdb_id,
                             last_viewed_at=movie.last_viewed_at,
                             view_count=movie.view_count,
+                            media_server_user_rating=movie.media_server_user_rating,
                         )
 
                         if earliest_added:
@@ -1404,6 +1434,7 @@ async def sync_movies(
                                     subtitle_languages=ver.subtitle_languages,
                                     has_chapters=ver.has_chapters,
                                     media_server_collection_names=ver.media_server_collection_names,
+                                    media_server_user_rating=ver.media_server_user_rating,
                                 )
                             )
 
@@ -1747,6 +1778,9 @@ async def sync_series(
                         existing_series_obj.added_at = series.added_at
                     existing_series_obj.last_viewed_at = series.last_viewed_at
                     existing_series_obj.view_count = series.view_count
+                    existing_series_obj.media_server_user_rating = (
+                        series.media_server_user_rating
+                    )
 
                     # restore if soft-deleted
                     if existing_series_obj.removed_at:
@@ -1785,6 +1819,7 @@ async def sync_series(
                         tvdb_id=series.external_ids.tvdb,
                         last_viewed_at=series.last_viewed_at,
                         view_count=series.view_count,
+                        media_server_user_rating=series.media_server_user_rating,
                         has_hdr=media_rollup["has_hdr"],
                         has_dolby_vision=media_rollup["has_dolby_vision"],
                         max_video_width=media_rollup["max_video_width"],

@@ -764,6 +764,7 @@ class PlexService:
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
         season_paths: dict[tuple[str, int], str] = {}
         season_episode_paths: dict[tuple[str, int], list[str]] = {}
+        season_user_ratings: dict[tuple[str, int], float] = {}
         # episode data: (series_key, season_number) -> list of AggregatedEpisodeData
         season_episode_data: dict[tuple[str, int], list[AggregatedEpisodeData]] = {}
 
@@ -1035,8 +1036,20 @@ class PlexService:
                             size=ep_size,
                             path=ep_path,
                             plex_rating_key=str(episode.get("ratingKey", "")),
+                            media_server_user_rating=as_float(
+                                source_episode.get("userRating")
+                                or episode.get("userRating")
+                            ),
                         )
                     )
+                    episode_rating = as_float(
+                        source_episode.get("userRating") or episode.get("userRating")
+                    )
+                    if episode_rating is not None:
+                        season_user_ratings[sk] = max(
+                            season_user_ratings.get(sk, episode_rating),
+                            episode_rating,
+                        )
 
         # build AggregatedSeasonData objects
         season_data: dict[tuple[str, int], AggregatedSeasonData] = {}
@@ -1069,6 +1082,7 @@ class PlexService:
                 path=season_paths.get(sk),
                 episode_paths=season_episode_paths.get(sk) or None,
                 episode_data=season_episode_data.get(sk) or [],
+                media_server_user_rating=season_user_ratings.get(sk),
             )
 
         return series_sizes, series_paths, season_data
@@ -1276,6 +1290,11 @@ class PlexService:
                                 else None
                             ),
                             media_server_collection_names=collection_names,
+                            media_server_user_rating=as_float(
+                                source_item.get("userRating")
+                                if source_item
+                                else item.get("userRating")
+                            ),
                         )
                     )
 
@@ -1294,6 +1313,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         str(item["ratingKey"])
                     ),
+                    media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_movies.append(movie)
 
@@ -1459,6 +1479,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         rating_key
                     ),
+                    media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_series.append(series)
 
@@ -1858,6 +1879,7 @@ class PlexService:
                     m.last_viewed_at, history.get(m.id)
                 ),
                 played_by_user_count=history[m.id][2] if m.id in history else None,
+                media_server_user_rating=m.media_server_user_rating,
             )
             for m in movies
         ]
@@ -1930,6 +1952,7 @@ class PlexService:
                         path=sd.path,
                         episode_paths=sd.episode_paths,
                         episode_data=sd.episode_data,
+                        media_server_user_rating=sd.media_server_user_rating,
                     )
                 )
 
@@ -1950,6 +1973,7 @@ class PlexService:
                     last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
                     played_by_user_count=s_hist[2] if s_hist else None,
                     media_server_collection_names=s.media_server_collection_names,
+                    media_server_user_rating=s.media_server_user_rating,
                     season_data=merged_seasons,
                 )
             )

@@ -14,7 +14,11 @@ from sqlalchemy.orm import selectinload
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
 from backend.core.rule_engine import (
+    ARR_ID_RULE_FIELDS,
+    COLLECTION_RULE_FIELDS,
+    FAVORITES_RULE_FIELDS,
     PLAYBACK_RULE_FIELDS,
+    RANK_RULE_FIELDS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
@@ -23,8 +27,12 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    ArrRuleDataResolver,
+    CollectionSiblingRuleDataResolver,
     DiskStatsResolver,
+    FavoritesRuleDataResolver,
     PlaybackHistoryResolver,
+    RankRuleDataResolver,
     SeerrRequestResolver,
     SonarrRuleDataResolver,
     SonarrRuleValue,
@@ -685,6 +693,14 @@ async def collect_rule_preview_matches_with_metadata(
         list(rules),
         sonarr_series_snapshot=sonarr_series_snapshot,
     )
+    await _activate_arr_id_rule_data_for_rules(db, list(rules))
+    await _activate_favorites_rule_data_for_rules(
+        db,
+        list(rules),
+        require_fresh=False,
+    )
+    await _activate_rank_rule_data_for_rules(db, list(rules))
+    await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
     await _activate_seerr_request_resolver_for_rules(
         db,
         list(rules),
@@ -1175,6 +1191,11 @@ def _rules_use_field(rules: list[ReclaimRule], field: str) -> bool:
     return any(collect_rule_conditions(rule.definition, field=field) for rule in rules)
 
 
+def _rules_use_any_field(rules: list[ReclaimRule], fields: Iterable[str]) -> bool:
+    """Return True if any rule condition references one of the requested fields."""
+    return any(_rules_use_field(rules, field) for field in fields)
+
+
 def _rule_uses_sonarr_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
@@ -1262,6 +1283,243 @@ async def _activate_playback_history_for_rules(
         unavailable_count=unavailable_count,
         error=error,
     )
+
+
+async def _activate_arr_id_rule_data_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> None:
+    if not _rules_use_any_field(rules, ARR_ID_RULE_FIELDS):
+        ArrRuleDataResolver().activate()
+        return
+
+    movie_ids_by_movie_id: dict[int, set[int]] = {}
+    series_ids_by_series_id: dict[int, set[int]] = {}
+    if _rules_use_field(rules, "arr.movie_ids"):
+        rows = (
+            await db.execute(
+                select(MovieArrRef.movie_id, MovieArrRef.arr_movie_id).where(
+                    MovieArrRef.arr_movie_id.is_not(None)
+                )
+            )
+        ).all()
+        for movie_id, arr_movie_id in rows:
+            movie_ids_by_movie_id.setdefault(movie_id, set()).add(arr_movie_id)
+    if _rules_use_field(rules, "arr.series_ids"):
+        rows = (
+            await db.execute(
+                select(SeriesArrRef.series_id, SeriesArrRef.arr_series_id).where(
+                    SeriesArrRef.arr_series_id.is_not(None)
+                )
+            )
+        ).all()
+        for series_id, arr_series_id in rows:
+            series_ids_by_series_id.setdefault(series_id, set()).add(arr_series_id)
+
+    ArrRuleDataResolver(
+        movie_ids_by_movie_id=movie_ids_by_movie_id,
+        series_ids_by_series_id=series_ids_by_series_id,
+    ).activate()
+
+
+async def _activate_favorites_rule_data_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    require_fresh: bool = False,
+) -> None:
+    if not _rules_use_any_field(rules, FAVORITES_RULE_FIELDS):
+        FavoritesRuleDataResolver({}).activate()
+        return
+
+    ok, error = await media_favorites_snapshot_cache.ensure_fresh_snapshot(
+        force=require_fresh
+    )
+    if not ok and error:
+        LOG.warning(
+            "Favorites/watchlist rule data refresh failed; using existing snapshot: "
+            f"{error}"
+        )
+    elif error:
+        LOG.debug(
+            f"Using stale favorites/watchlist rule data due to refresh error: {error}"
+        )
+
+    rows = (
+        await db.execute(
+            select(
+                MediaFavorite.media_type,
+                MediaFavorite.tmdb_id,
+                MediaFavorite.username,
+            )
+        )
+    ).all()
+    usernames_by_key: dict[tuple[MediaType, int], set[str]] = {}
+    for media_type, tmdb_id, username in rows:
+        if not tmdb_id or not username:
+            continue
+        usernames_by_key.setdefault((media_type, int(tmdb_id)), set()).add(
+            str(username)
+        )
+    FavoritesRuleDataResolver(usernames_by_key).activate()
+
+
+async def _activate_rank_rule_data_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> None:
+    if not _rules_use_any_field(rules, RANK_RULE_FIELDS):
+        RankRuleDataResolver().activate()
+        return
+
+    season_rank_by_id: dict[int, int] = {}
+    episode_rank_by_id: dict[int, int] = {}
+
+    if _rules_use_field(rules, "season.position_by_air_date"):
+        season_rows = (
+            await db.execute(
+                select(
+                    Season.id,
+                    Season.series_id,
+                    Season.season_number,
+                    Season.air_date,
+                    Season.arr_added_at,
+                ).where(Season.season_number > 0)
+            )
+        ).all()
+        seasons_by_series: dict[int, list[tuple[int, datetime, int]]] = {}
+        for (
+            season_id,
+            series_id,
+            season_number,
+            air_date,
+            arr_added_at,
+        ) in season_rows:
+            rank_date = air_date or arr_added_at
+            if rank_date is None:
+                continue
+            seasons_by_series.setdefault(series_id, []).append(
+                (season_id, ensure_utc(rank_date), int(season_number))
+            )
+        for ranked_seasons in seasons_by_series.values():
+            ranked_seasons.sort(key=lambda item: (item[1], item[2]), reverse=True)
+            for index, (season_id, _rank_date, _season_number) in enumerate(
+                ranked_seasons, start=1
+            ):
+                season_rank_by_id[season_id] = index
+
+    if _rules_use_field(rules, "episode.position_by_air_date"):
+        episode_rows = (
+            await db.execute(
+                select(
+                    Episode.id,
+                    Season.series_id,
+                    Season.season_number,
+                    Episode.episode_number,
+                    Episode.air_date,
+                    Episode.arr_added_at,
+                )
+                .join(Season, Episode.season_id == Season.id)
+                .where(Season.season_number > 0)
+            )
+        ).all()
+        episodes_by_series: dict[int, list[tuple[int, datetime, int, int]]] = {}
+        for (
+            episode_id,
+            series_id,
+            season_number,
+            episode_number,
+            air_date,
+            arr_added_at,
+        ) in episode_rows:
+            rank_date = air_date or arr_added_at
+            if rank_date is None:
+                continue
+            episodes_by_series.setdefault(series_id, []).append(
+                (
+                    episode_id,
+                    ensure_utc(rank_date),
+                    int(season_number),
+                    int(episode_number),
+                )
+            )
+        for ranked_episodes in episodes_by_series.values():
+            ranked_episodes.sort(
+                key=lambda item: (item[1], item[2], item[3]), reverse=True
+            )
+            for index, (
+                episode_id,
+                _rank_date,
+                _season_number,
+                _episode_number,
+            ) in enumerate(ranked_episodes, start=1):
+                episode_rank_by_id[episode_id] = index
+
+    RankRuleDataResolver(
+        season_rank_by_id=season_rank_by_id,
+        episode_rank_by_id=episode_rank_by_id,
+    ).activate()
+
+
+def _normalized_rule_collection_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = normalize_leaving_soon_collection_title(value)
+    return normalized.casefold() if normalized else None
+
+
+async def _activate_collection_sibling_rule_data_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+) -> None:
+    if not _rules_use_any_field(rules, COLLECTION_RULE_FIELDS):
+        CollectionSiblingRuleDataResolver({}).activate()
+        return
+
+    rows = (
+        await db.execute(
+            select(
+                Movie.id,
+                Movie.last_viewed_at,
+                MovieVersion.media_server_collection_names,
+            )
+            .join(MovieVersion, MovieVersion.movie_id == Movie.id)
+            .where(Movie.removed_at.is_(None))
+        )
+    ).all()
+
+    movie_collections: dict[int, set[str]] = {}
+    collection_watch_dates: dict[str, list[tuple[int, datetime]]] = {}
+    leaving_soon_name = _normalized_rule_collection_name("Leaving Soon")
+    for movie_id, last_viewed_at, collection_names in rows:
+        normalized_names = {
+            normalized
+            for name in (collection_names or [])
+            if (normalized := _normalized_rule_collection_name(str(name)))
+            and normalized != leaving_soon_name
+        }
+        if not normalized_names:
+            continue
+        movie_collections.setdefault(movie_id, set()).update(normalized_names)
+        if last_viewed_at is None:
+            continue
+        watched_at = ensure_utc(last_viewed_at)
+        for name in normalized_names:
+            collection_watch_dates.setdefault(name, []).append((movie_id, watched_at))
+
+    latest_by_movie_id: dict[int, datetime | None] = {}
+    for movie_id, collection_names in movie_collections.items():
+        candidates = [
+            watched_at
+            for collection_name in collection_names
+            for sibling_id, watched_at in collection_watch_dates.get(
+                collection_name, []
+            )
+            if sibling_id != movie_id
+        ]
+        latest_by_movie_id[movie_id] = max(candidates) if candidates else None
+
+    CollectionSiblingRuleDataResolver(latest_by_movie_id).activate()
 
 
 def _parse_sonarr_datetime(value: object) -> datetime | None:
@@ -2898,6 +3156,14 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             list(rules),
             sonarr_series_snapshot=sonarr_series_snapshot,
         )
+        await _activate_arr_id_rule_data_for_rules(db, list(rules))
+        await _activate_favorites_rule_data_for_rules(
+            db,
+            list(rules),
+            require_fresh=True,
+        )
+        await _activate_rank_rule_data_for_rules(db, list(rules))
+        await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
 
         preserved_protection_rule_ids: set[int] = set()
         seerr_skipped_rules = 0

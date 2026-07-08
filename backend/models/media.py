@@ -82,6 +82,7 @@ class MovieVersionData:
     # chapters
     has_chapters: bool | None = None
     media_server_collection_names: list[str] | None = None
+    media_server_user_rating: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -97,6 +98,7 @@ class AggregatedMovieData:
     last_viewed_at: datetime | None
     # jellyfin-specific (None for Plex)
     played_by_user_count: int | None = None
+    media_server_user_rating: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -113,6 +115,7 @@ class AggregatedEpisodeData:
     plex_rating_key: str | None = None
     jellyfin_episode_id: str | None = None
     emby_episode_id: str | None = None
+    media_server_user_rating: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -158,6 +161,7 @@ class AggregatedSeasonData:
     audio_languages: list[str] | None = None
     max_audio_channels: int | None = None
     subtitle_languages: list[str] | None = None
+    media_server_user_rating: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -180,6 +184,7 @@ class AggregatedSeriesData:
     # jellyfin/emby specific (None for Plex)
     played_by_user_count: int | None = None
     media_server_collection_names: list[str] | None = None
+    media_server_user_rating: float | None = None
     # season level breakdown (populated by service layer)
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
 

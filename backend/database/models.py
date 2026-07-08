@@ -646,6 +646,7 @@ class Movie(Base):
     # watch tracking (from media server)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
 
     # lifecycle tracking
     added_at: Mapped[datetime | None] = mapped_column(
@@ -760,6 +761,7 @@ class MovieVersion(Base):
     media_server_collection_names: Mapped[list[str] | None] = mapped_column(
         JSON, default=None
     )
+    media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -1158,6 +1160,7 @@ class Series(Base):
     # watch tracking (from plex/jellyfin/emby)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
     # aggregate media signals
     has_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
     has_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
@@ -1228,6 +1231,7 @@ class Season(Base):
     sonarr_episode_numbers: Mapped[list[int] | None] = mapped_column(JSON, default=None)
     view_count: Mapped[int | None] = mapped_column(Integer, default=None)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
     episode_paths: Mapped[list[str] | None] = mapped_column(JSON, default=None)
@@ -1302,6 +1306,7 @@ class Episode(Base):
     # watch tracking
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
     arr_added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )

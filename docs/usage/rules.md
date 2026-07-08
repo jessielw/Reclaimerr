@@ -122,6 +122,7 @@ rule.
 
 | Field                            | Scope         | Value                                                    |
 | -------------------------------- | ------------- | -------------------------------------------------------- |
+| Title                            | All scopes    | Movie title or parent series title                       |
 | Year                             | All scopes    | Movie year or the parent series year                     |
 | Size                             | All scopes    | Bytes for the evaluated file, series, season, or episode |
 | Duration                         | Movie version | Media-server duration in milliseconds                    |
@@ -129,6 +130,7 @@ rule.
 | Path / Filename                  | All scopes    | Local media-server path information                      |
 | Days since added                 | All scopes    | Age of the existing media-server added date              |
 | Days since latest Arr file added | All scopes    | Age of Radarr/Sonarr's latest file-import date           |
+| Media server user rating         | All scopes    | User rating reported by Plex, Jellyfin, or Emby          |
 
 Size and disk-free conditions use an amount and unit selector in the editor.
 Rules continue to store integer byte values, using 1024-based KB, MB, GB, and
@@ -137,6 +139,63 @@ TB conversions for compatibility with existing rules.
 Arr file-added dates are populated during Radarr and Sonarr syncs. They remain
 empty when an item cannot be matched or an Arr service is not configured; the
 existing media-server added date is not replaced or backfilled.
+
+Media-server user ratings are stored during media sync when the provider
+reports a user-specific rating for the item. Missing ratings do not match
+numeric comparisons; use `does not exist` to find unrated media.
+
+### Arr Identifiers
+
+| Field             | Scope                   | Value                                 |
+| ----------------- | ----------------------- | ------------------------------------- |
+| Radarr movie IDs  | Movie version           | One or more Radarr IDs for the movie  |
+| Sonarr series IDs | Series, season, episode | One or more Sonarr IDs for the series |
+
+Reclaimerr can map one local item to multiple Radarr or Sonarr instances, so
+Arr ID fields are multi-value text fields. Use `matches any` for a precise
+rule against one known Arr ID, or `matches all` when an item must be present in
+several configured Arr instances.
+
+### Favorites and Watchlists
+
+Favorite/watchlist rule fields use the same snapshot that powers favorites
+protection. Jellyfin and Emby favorites are included, and Plex watchlists are
+included for linked Plex users.
+
+| Field                         | Scope      | Value                                          |
+| ----------------------------- | ---------- | ---------------------------------------------- |
+| Favorited or watchlisted      | All scopes | Boolean, true when any known user has the item |
+| Favorite/watchlist users      | All scopes | Usernames from the favorite/watchlist snapshot |
+| Favorite/watchlist user count | All scopes | Number of unique users with the item favorited |
+
+For season and episode rules, favorite/watchlist state is inherited from the
+parent series TMDB ID.
+
+### Retention Position Fields
+
+| Field                        | Scope   | Value                                             |
+| ---------------------------- | ------- | ------------------------------------------------- |
+| Season position by air date  | Season  | Newest local regular season in the series is `1`  |
+| Episode position by air date | Episode | Newest local regular episode in the series is `1` |
+
+Season 0 specials are excluded. Items without an air date or Arr file-added
+date have unknown rank and do not match numeric comparisons. These fields are
+intended for rules such as "keep the newest 2 seasons" or "keep the newest 10
+episodes" by matching positions greater than the number you want to keep.
+
+### Collection Sibling Activity
+
+Movie-version rules can check whether another movie in the same media-server
+collection has been watched recently.
+
+| Field                                 | Scope         | Value                                             |
+| ------------------------------------- | ------------- | ------------------------------------------------- |
+| Collection sibling last watched       | Movie version | Latest watch timestamp from another movie sibling |
+| Days since collection sibling watched | Movie version | Whole days since that sibling watch timestamp     |
+
+The current movie is excluded from the sibling calculation. Reclaimerr-managed
+Leaving Soon collections are ignored so temporary cleanup collections do not
+affect rules.
 
 ### TMDB Metadata
 
