@@ -1256,9 +1256,9 @@
       </div>
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
         <Notice type="warning" title="Sonarr Data Unavailable">
-          Sonarr episode-state conditions could not be evaluated for
+          Canonical Sonarr season episode inventory was unavailable for
           {previewData.metadata.sonarr_unavailable_count}
-          series. Those unknown values did not match.
+          series. Affected seasons were treated as unknown and did not match.
           {#if previewData.metadata.sonarr_error}
             {previewData.metadata.sonarr_error}
           {/if}
