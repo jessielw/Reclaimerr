@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.1.10"
+version = "0.1.11"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -15,7 +15,7 @@ dependencies = [
     "fastapi[standard]>=0.139.0",
     "granian>=2.7.9",
     "itsdangerous>=2.2.0",
-    "niquests[speedups]>=3.20.0",
+    "niquests[speedups]>=3.20.1",
     "pillow>=12.3.0",
     "pydantic-settings>=2.14.2",
     "pyjwt>=2.13.0",

@@ -25,6 +25,12 @@
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { canMoveRuleNodeToGroup } from "$lib/components/settings/rules/rule-tree-dnd.js";
   import {
+    byteAmountText,
+    inferByteUnit,
+    parseByteAmount,
+    type ByteUnit,
+  } from "$lib/components/settings/rules/rule-size-input.js";
+  import {
     dragHandle,
     dragHandleZone,
     SHADOW_ITEM_MARKER_PROPERTY_NAME,
@@ -53,7 +59,7 @@
   }
 
   type RuleTargetScope = "movie_version" | "series" | "season" | "episode";
-  type FieldKind = "number" | "text" | "boolean" | "temporal";
+  type FieldKind = "number" | "bytes" | "text" | "boolean" | "temporal";
 
   interface FieldConfig {
     value: string;
@@ -294,6 +300,13 @@
       defaultOperator: "matches_any_regex",
     },
     {
+      value: "media.title",
+      label: "Title",
+      kind: "text",
+      operators: textOperators,
+      defaultOperator: "equals",
+    },
+    {
       value: "media.file_name",
       label: "Filename",
       kind: "text",
@@ -302,8 +315,8 @@
     },
     {
       value: "media.size",
-      label: "Size (bytes)",
-      kind: "number",
+      label: "Size",
+      kind: "bytes",
       operators: numericOperators,
       defaultOperator: "greater_than",
     },
@@ -903,10 +916,31 @@
       defaultOperator: "contains_any",
     },
     {
+      value: "media_server.user_rating",
+      label: "Media server user rating",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
       value: "arr.tags",
       label: "Arr tags",
       kind: "text",
       operators: arrTagsOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "arr.movie_ids",
+      label: "Radarr movie IDs",
+      kind: "text",
+      operators: requesterIdOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "arr.series_ids",
+      label: "Sonarr series IDs",
+      kind: "text",
+      operators: requesterIdOperators,
       defaultOperator: "contains_any",
     },
     {
@@ -973,9 +1007,58 @@
       defaultOperator: "contains_any",
     },
     {
-      value: "disk.free_bytes",
-      label: "Disk free (bytes)",
+      value: "favorites.exists",
+      label: "Favorited or watchlisted",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "favorites.usernames",
+      label: "Favorite/watchlist users",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "favorites.user_count",
+      label: "Favorite/watchlist user count",
       kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "episode.position_by_air_date",
+      label: "Episode position by air date",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than",
+    },
+    {
+      value: "season.position_by_air_date",
+      label: "Season position by air date",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than",
+    },
+    {
+      value: "collection.latest_sibling_watched_at",
+      label: "Collection sibling last watched",
+      kind: "temporal",
+      operators: temporalOperators,
+      defaultOperator: "exists",
+    },
+    {
+      value: "collection.days_since_latest_sibling_watched",
+      label: "Days since collection sibling watched",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "less_than_or_equal",
+    },
+    {
+      value: "disk.free_bytes",
+      label: "Disk free",
+      kind: "bytes",
       operators: numericOperators,
       defaultOperator: "less_than",
     },
@@ -1005,6 +1088,7 @@
       "anilist.popularity",
       "anilist.score",
       "arr.monitored",
+      "arr.movie_ids",
       "arr.tags",
       "arr.days_since_file_added",
       "audio.bitrate_kbps",
@@ -1023,6 +1107,7 @@
       "metacritic.user_vote_count",
       "metacritic.vote_count",
       "library.id",
+      "media.title",
       "media.days_since_added",
       "media.container",
       "media.duration",
@@ -1031,6 +1116,12 @@
       "media.size",
       "media.year",
       "media_server.collections",
+      "media_server.user_rating",
+      "favorites.exists",
+      "favorites.usernames",
+      "favorites.user_count",
+      "collection.latest_sibling_watched_at",
+      "collection.days_since_latest_sibling_watched",
       "seerr.requested",
       "seerr.last_requested_at",
       "seerr.days_since_last_requested",
@@ -1079,6 +1170,7 @@
       "anilist.popularity",
       "anilist.score",
       "arr.monitored",
+      "arr.series_ids",
       "arr.tags",
       "arr.days_since_file_added",
       "audio.channels",
@@ -1094,12 +1186,17 @@
       "metacritic.user_vote_count",
       "metacritic.vote_count",
       "library.id",
+      "media.title",
       "media.days_since_added",
       "media.file_name",
       "media.path",
       "media.size",
       "media.year",
       "media_server.collections",
+      "media_server.user_rating",
+      "favorites.exists",
+      "favorites.usernames",
+      "favorites.user_count",
       "seerr.requested",
       "seerr.last_requested_at",
       "seerr.days_since_last_requested",
@@ -1144,6 +1241,7 @@
       "anilist.popularity",
       "anilist.score",
       "arr.monitored",
+      "arr.series_ids",
       "arr.tags",
       "arr.days_since_file_added",
       "audio.channels",
@@ -1160,12 +1258,17 @@
       "metacritic.user_vote_count",
       "metacritic.vote_count",
       "library.id",
+      "media.title",
       "media.days_since_added",
       "media.file_name",
       "media.path",
       "media.size",
       "media.year",
       "media_server.collections",
+      "media_server.user_rating",
+      "favorites.exists",
+      "favorites.usernames",
+      "favorites.user_count",
       "season.air_date",
       "season.days_since_air_date",
       "season.episode_count",
@@ -1173,6 +1276,7 @@
       "season.is_latest_season",
       "season.season_number",
       "season.seasons_from_latest",
+      "season.position_by_air_date",
       "season.watched_percent",
       "seerr.requested",
       "seerr.last_requested_at",
@@ -1216,6 +1320,7 @@
       "anilist.popularity",
       "anilist.score",
       "arr.monitored",
+      "arr.series_ids",
       "arr.tags",
       "arr.days_since_file_added",
       "disk.free_bytes",
@@ -1223,6 +1328,7 @@
       "episode.air_date",
       "episode.days_since_air_date",
       "episode.number",
+      "episode.position_by_air_date",
       "episode.season_number",
       "imdb.rating",
       "imdb.vote_count",
@@ -1233,12 +1339,17 @@
       "metacritic.user_vote_count",
       "metacritic.vote_count",
       "library.id",
+      "media.title",
       "media.days_since_added",
       "media.file_name",
       "media.path",
       "media.size",
       "media.year",
       "media_server.collections",
+      "media_server.user_rating",
+      "favorites.exists",
+      "favorites.usernames",
+      "favorites.user_count",
       "season.air_date",
       "season.days_since_air_date",
       "season.episode_count",
@@ -1246,6 +1357,7 @@
       "season.is_latest_season",
       "season.season_number",
       "season.seasons_from_latest",
+      "season.position_by_air_date",
       "season.watched_percent",
       "seerr.requested",
       "seerr.last_requested_at",
@@ -1321,6 +1433,10 @@
         return "Media";
       case "media_server":
         return "Media Server";
+      case "collection":
+        return "Collections";
+      case "favorites":
+        return "Favorites";
       case "watch":
         return "Watch";
       case "playback":
@@ -1435,6 +1551,8 @@
     operatorLabelMap[value] ?? value;
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
+  const isByteInput = (c: RuleCondition) =>
+    fieldConfig(c.field).kind === "bytes" && !listOperators.has(c.operator);
   const isTemporalInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "temporal" &&
     !valuelessOperators.has(c.operator);
@@ -1462,6 +1580,15 @@
     if (Array.isArray(v)) return v.join(", ");
     return v === null || v === undefined ? "" : String(v);
   };
+
+  const BYTE_UNITS: ByteUnit[] = ["B", "KB", "MB", "GB", "TB"];
+  let byteUnit = $state<ByteUnit>(
+    untrack(() =>
+      node.type === "condition" && fieldConfig(node.field).kind === "bytes"
+        ? inferByteUnit(node.value)
+        : "GB",
+    ),
+  );
 
   const normalizeValueList = (value: RuleCondition["value"]): string[] =>
     (Array.isArray(value) ? value : value == null ? [] : [value])
@@ -1564,7 +1691,7 @@
         .filter(Boolean);
       return;
     }
-    if (fieldConfig(c.field).kind === "number") {
+    if (["number", "bytes"].includes(fieldConfig(c.field).kind)) {
       if (raw === "") {
         c.value = null;
         return;
@@ -1581,7 +1708,13 @@
     onChange();
   };
 
+  const setByteConditionValue = (c: RuleCondition, raw: string) => {
+    c.value = parseByteAmount(raw, byteUnit);
+    onChange();
+  };
+
   const setConditionField = (c: RuleCondition, fieldValue: string) => {
+    const previousKind = fieldConfig(c.field).kind;
     const raw = valueText(c);
     c.field = fieldValue;
     ensureValidOperator(c);
@@ -1590,6 +1723,12 @@
       if (valuelessOperators.has(c.operator)) delete c.value;
       else if (listOperators.has(c.operator)) c.value = [];
       else c.value = "";
+    } else if (
+      fieldConfig(fieldValue).kind === "bytes" &&
+      previousKind !== "bytes"
+    ) {
+      c.value = null;
+      byteUnit = "GB";
     } else {
       applyConditionValue(c, raw);
     }
@@ -1974,7 +2113,42 @@
         <div
           class="col-span-2 row-start-3 flex flex-wrap items-center gap-2 w-full min-w-0 md:col-auto md:row-auto md:flex-1 md:min-w-[18rem]"
         >
-          {#if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
+          {#if isByteInput(node)}
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+              <Input
+                class="h-8 min-w-0 flex-1 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+                type="number"
+                min="0"
+                step="any"
+                placeholder="Size"
+                value={byteAmountText(node.value, byteUnit)}
+                oninput={(e) =>
+                  setByteConditionValue(node, e.currentTarget.value)}
+              />
+              <Select.Root
+                type="single"
+                value={byteUnit}
+                onValueChange={(value) => (byteUnit = value as ByteUnit)}
+              >
+                <Select.Trigger
+                  class="h-8 w-20 shrink-0 text-sm text-foreground cursor-pointer bg-background"
+                  aria-label="Size unit"
+                >
+                  {byteUnit}
+                </Select.Trigger>
+                <Select.Content>
+                  {#each BYTE_UNITS as unit}
+                    <Select.Item value={unit} label={unit}>{unit}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+            {#if typeof node.value === "number" && Number.isFinite(node.value)}
+              <span class="w-full text-xs text-muted-foreground">
+                {Math.round(node.value).toLocaleString()} bytes
+              </span>
+            {/if}
+          {:else if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
             <Select.Root
               type="single"
               value={typeof node.value === "string" ? node.value : ""}

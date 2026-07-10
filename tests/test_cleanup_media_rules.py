@@ -18,6 +18,10 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    ArrRuleDataResolver,
+    CollectionSiblingRuleDataResolver,
+    FavoritesRuleDataResolver,
+    RankRuleDataResolver,
     SeerrRequestResolver,
     SonarrRuleDataResolver,
     evaluate_advanced_rule,
@@ -524,6 +528,108 @@ class CleanupMediaRuleTests(unittest.TestCase):
         )
 
         self.assertTrue(_evaluate_movie_version_rule(movie, version, rule, {}, []))
+
+    def test_movie_version_identifier_favorite_collection_and_rating_fields_match(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        movie = Movie(
+            title="Exact Movie",
+            tmdb_id=1,
+            media_server_user_rating=7.5,
+        )
+        movie.id = 7
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=1,
+            media_server_user_rating=8.5,
+        )
+        movie.versions = [version]
+        ArrRuleDataResolver(movie_ids_by_movie_id={7: {123}}).activate()
+        FavoritesRuleDataResolver({(MediaType.MOVIE, 1): {"alice"}}).activate()
+        CollectionSiblingRuleDataResolver({7: now - timedelta(days=3)}).activate()
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                _condition("media.title", "equals", "exact movie"),
+                _condition("media_server.user_rating", "greater_than_or_equal", 8),
+                _condition("arr.movie_ids", "contains_any", ["123"]),
+                _condition("favorites.exists", "is_true"),
+                _condition("favorites.usernames", "contains_any", ["Alice"]),
+                _condition("favorites.user_count", "equals", 1),
+                _condition("collection.latest_sibling_watched_at", "exists"),
+                _condition(
+                    "collection.days_since_latest_sibling_watched",
+                    "less_than_or_equal",
+                    5,
+                ),
+            ),
+        )
+
+        self.assertTrue(_evaluate_movie_version_rule(movie, version, rule, {}, []))
+
+    def test_tv_arr_favorites_ranks_and_rating_fields_match(self) -> None:
+        series = Series(
+            title="Exact Series",
+            tmdb_id=42,
+            media_server_user_rating=5.0,
+        )
+        series.id = 10
+        season = Season(
+            series_id=10,
+            season_number=2,
+            size=1,
+            media_server_user_rating=6.0,
+        )
+        season.id = 20
+        episode = Episode(
+            season_id=20,
+            episode_number=8,
+            size=1,
+            media_server_user_rating=7.0,
+        )
+        episode.id = 30
+        series.seasons = [season]
+        season.episodes = [episode]
+        ArrRuleDataResolver(series_ids_by_series_id={10: {456}}).activate()
+        FavoritesRuleDataResolver({(MediaType.SERIES, 42): {"bob"}}).activate()
+        RankRuleDataResolver(
+            season_rank_by_id={20: 2},
+            episode_rank_by_id={30: 7},
+        ).activate()
+        season_rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_SEASON,
+            _group(
+                "and",
+                _condition("media.title", "equals", "exact series"),
+                _condition("arr.series_ids", "contains_any", ["456"]),
+                _condition("favorites.exists", "is_true"),
+                _condition("favorites.usernames", "contains_any", ["BOB"]),
+                _condition("favorites.user_count", "equals", 1),
+                _condition("season.position_by_air_date", "equals", 2),
+                _condition("media_server.user_rating", "greater_than_or_equal", 6),
+            ),
+        )
+        episode_rule = _rule_with_root(
+            MediaType.SERIES,
+            TARGET_EPISODE,
+            _group(
+                "and",
+                _condition("arr.series_ids", "contains_any", ["456"]),
+                _condition("episode.position_by_air_date", "equals", 7),
+                _condition("season.position_by_air_date", "equals", 2),
+                _condition("media_server.user_rating", "equals", 7),
+            ),
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, season, season_rule, {}, []))
+        self.assertTrue(
+            _evaluate_rule_for_episode(series, season, episode, episode_rule, {}, [])
+        )
 
     def test_external_rating_fields_match_movie_version_scope(self) -> None:
         movie = Movie(
@@ -2141,7 +2247,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(
             _evaluate_rule_for_season(series, season, is_true_rule, {}, [])
         )
-        self.assertTrue(
+        self.assertFalse(
             _evaluate_rule_for_season(series, season, not_exists_rule, {}, [])
         )
 
@@ -2574,6 +2680,73 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._engine.dispose()
         if self._db_path.exists():
             self._db_path.unlink()
+
+    async def test_season_inventory_warning_respects_rule_scope(self) -> None:
+        rule = ReclaimRule(
+            name="Scoped season completion",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope=TARGET_SEASON,
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "library.id",
+                            "operator": "contains_any",
+                            "value": ["tv"],
+                        },
+                        {
+                            "type": "condition",
+                            "field": "season.fully_watched",
+                            "operator": "is_true",
+                        },
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        scoped = Series(title="Scoped Show", tmdb_id=12001, size=1024)
+        out_of_scope = Series(title="Kids Show", tmdb_id=12002, size=1024)
+        async with self._sessionmaker() as db:
+            db.add_all([rule, scoped, out_of_scope])
+            await db.flush()
+            db.add_all(
+                [
+                    SeriesServiceRef(
+                        series_id=scoped.id,
+                        service=Service.PLEX,
+                        service_id="scoped",
+                        library_id="tv",
+                        library_name="TV",
+                    ),
+                    SeriesServiceRef(
+                        series_id=out_of_scope.id,
+                        service=Service.PLEX,
+                        service_id="kids",
+                        library_id="kids",
+                        library_name="Kids",
+                    ),
+                    Season(series_id=scoped.id, season_number=1, size=512),
+                    Season(series_id=out_of_scope.id, season_number=1, size=512),
+                ]
+            )
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            rule = (await db.execute(select(ReclaimRule))).scalar_one()
+            result = await collect_rule_preview_matches_with_metadata(db, [rule])
+
+        self.assertEqual(result.matches, [])
+        self.assertEqual(result.metadata.sonarr_unavailable_count, 0)
+        self.assertEqual(result.metadata.season_inventory_unavailable_count, 1)
+        self.assertEqual(
+            result.metadata.season_inventory_unavailable_examples,
+            ["Scoped Show S01"],
+        )
 
     async def test_requester_watch_ignores_partial_durable_movie_sessions(
         self,

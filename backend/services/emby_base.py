@@ -62,6 +62,7 @@ class _MovieAggregate:
     view_count: int
     last_viewed_at: datetime | None
     played_by_user_count: int
+    media_server_user_rating: float | None = None
 
 
 @dataclass(slots=True)
@@ -81,6 +82,7 @@ class _SeriesAggregate:
     played_by_user_count: int
     media_server_collection_names: list[str] | None
     season_data: list[AggregatedSeasonData]
+    media_server_user_rating: float | None = None
 
 
 class EmbyServiceBase:
@@ -860,6 +862,11 @@ class EmbyServiceBase:
                 if user_data_raw.get("LastPlayedDate")
                 else None,
                 played=user_data_raw.get("Played", False),
+                rating=as_float(
+                    user_data_raw.get("Rating")
+                    or user_data_raw.get("UserRating")
+                    or user_data_raw.get("PersonalRating")
+                ),
             )
             external_ids = ExternalIDs(
                 imdb=provider_ids.get("Imdb"),
@@ -974,6 +981,7 @@ class EmbyServiceBase:
                             )
                         ),
                         media_server_collection_names=collection_names,
+                        media_server_user_rating=user_data.rating,
                     )
                 )
             movie = EmbyMovieBase(
@@ -1051,6 +1059,11 @@ class EmbyServiceBase:
                 if user_data_raw.get("LastPlayedDate")
                 else None,
                 played=user_data_raw.get("Played", False),
+                rating=as_float(
+                    user_data_raw.get("Rating")
+                    or user_data_raw.get("UserRating")
+                    or user_data_raw.get("PersonalRating")
+                ),
             )
             provider_ids = item.get("ProviderIds", {})
             external_ids = ExternalIDs(
@@ -1115,6 +1128,7 @@ class EmbyServiceBase:
         season_subtitle_languages: dict[tuple[str, int], set[str]] = {}
         season_paths: dict[tuple[str, int], str] = {}
         season_episode_paths: dict[tuple[str, int], list[str]] = {}
+        season_user_ratings: dict[tuple[str, int], float] = {}
         # episode data: (series_id, season_number) -> list of AggregatedEpisodeData
         season_episode_data: dict[tuple[str, int], list[AggregatedEpisodeData]] = {}
 
@@ -1226,6 +1240,16 @@ class EmbyServiceBase:
 
                 # watch data
                 user_data = episode.get("UserData", {})
+                episode_user_rating = as_float(
+                    user_data.get("Rating")
+                    or user_data.get("UserRating")
+                    or user_data.get("PersonalRating")
+                )
+                if episode_user_rating is not None:
+                    season_user_ratings[sk] = max(
+                        season_user_ratings.get(sk, episode_user_rating),
+                        episode_user_rating,
+                    )
                 play_count = user_data.get("PlayCount", 0) or 0
                 season_view_counts[sk] = season_view_counts.get(sk, 0) + play_count
                 ep_last_viewed_at: datetime | None = None
@@ -1282,6 +1306,7 @@ class EmbyServiceBase:
                                 emby_episode_id=ep_item_id
                                 if self.service_type == Service.EMBY
                                 else None,
+                                media_server_user_rating=episode_user_rating,
                             )
                         )
 
@@ -1397,6 +1422,7 @@ class EmbyServiceBase:
                 path=season_paths.get(sk),
                 episode_paths=season_episode_paths.get(sk) or None,
                 episode_data=season_episode_data.get(sk) or [],
+                media_server_user_rating=season_user_ratings.get(sk),
             )
 
         return series_sizes, season_data
@@ -1686,6 +1712,9 @@ class EmbyServiceBase:
                             played_by_user_count=(
                                 1 if (movie.user_data and movie.user_data.played) else 0
                             ),
+                            media_server_user_rating=(
+                                movie.user_data.rating if movie.user_data else None
+                            ),
                         )
                     else:
                         # aggregate data
@@ -1703,6 +1732,13 @@ class EmbyServiceBase:
                                     )
                             if movie.user_data.played:
                                 existing.played_by_user_count += 1
+                            if movie.user_data.rating is not None:
+                                existing.media_server_user_rating = max(
+                                    existing.media_server_user_rating
+                                    if existing.media_server_user_rating is not None
+                                    else movie.user_data.rating,
+                                    movie.user_data.rating,
+                                )
 
         # convert to final format
         return [
@@ -1714,6 +1750,7 @@ class EmbyServiceBase:
                 view_count=data.view_count,
                 last_viewed_at=data.last_viewed_at,
                 played_by_user_count=data.played_by_user_count,
+                media_server_user_rating=data.media_server_user_rating,
             )
             for data in movie_data.values()
         ]
@@ -1806,12 +1843,22 @@ class EmbyServiceBase:
                                 for k, v in season_data_map.items()
                                 if k[0] == series.id
                             ],
+                            media_server_user_rating=(
+                                series.user_data.rating if series.user_data else None
+                            ),
                         )
                     else:
                         # aggregate data
                         existing = series_data[series.id]
                         if series.user_data:
                             existing.view_count += series.user_data.play_count
+                            if series.user_data.rating is not None:
+                                existing.media_server_user_rating = max(
+                                    existing.media_server_user_rating
+                                    if existing.media_server_user_rating is not None
+                                    else series.user_data.rating,
+                                    series.user_data.rating,
+                                )
 
                         # update last_viewed_at if this user's episodes were watched more recently
                         if episode_last_watched:
@@ -1839,6 +1886,7 @@ class EmbyServiceBase:
                 last_viewed_at=data.last_viewed_at,
                 played_by_user_count=data.played_by_user_count,
                 media_server_collection_names=data.media_server_collection_names,
+                media_server_user_rating=data.media_server_user_rating,
                 season_data=data.season_data,
             )
             for data in series_data.values()

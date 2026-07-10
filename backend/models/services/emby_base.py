@@ -23,6 +23,7 @@ class EmbyUserDataBase:
     play_count: int
     last_played_date: datetime | None
     played: bool
+    rating: float | None = None
 
 
 @dataclass(slots=True, frozen=True)

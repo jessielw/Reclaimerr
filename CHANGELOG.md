@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-07-10
+
+### Added
+
+- Rule size fields now accept human-friendly B, KB, MB, GB, and TB values while preserving byte-based rule payloads
+- Added new rule fields:
+  - Title
+  - Radarr movie IDs
+  - Sonarr series IDs
+  - Favorited/watchlisted
+  - Favorite/watchlist users
+  - Favorite/watchlist user count
+  - Season position by air date
+  - Episode position by air date
+  - Collection sibling last watched
+  - Days since collection sibling watched
+  - Media server user rating
+
+### Changed
+
+- Revise verbiage for 'canonical season episode inventory unavailable' to something that is a bit more clear
+- Updated rule editor dropdown/scoping so the new fields only show where valid
+- Updated dependency niquests to 3.20.1
+
+### Fixed
+
+- Season-inventory preview warnings now count only evaluated seasons affected by the current rule and include example titles
+
 ## [0.1.10] - 2026-07-07
 
 ### Added
