@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Service bootstrap now retries initialization briefly so transient startup/proxy delays are less likely to leave services unloaded
+
+### Fixed
+
+- Scheduled sync/cleanup tasks no longer disappear for the whole process when the main media server is temporarily unavailable during startup
+- Manual sync tasks now reload enabled services before running and fail with a clear error instead of completing silently when no main media server is available
+- Main media server sync skip messages now log as warnings so startup/service issues are visible without debug logging
+
 ## [0.2.0] - 2026-07-11
 
 ### Added
