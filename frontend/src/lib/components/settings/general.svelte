@@ -1127,7 +1127,9 @@
           </div>
         </div>
         <p class="text-xs text-muted-foreground mt-2">
-          Local paths where reclaimed files will be placed.
+          Local paths where reclaimed files will be placed. Folder structure is
+          preserved under the matched path mapping root; without a mapping,
+          Reclaimerr preserves the media folder.
         </p>
       {/if}
     </div>
