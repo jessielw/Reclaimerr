@@ -9,7 +9,6 @@ from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import (
     BackgroundJob,
-    GeneralSettings,
     ServiceConfig,
     TaskSchedule,
 )
@@ -78,14 +77,6 @@ async def is_task_enabled(task: Task) -> bool:
         enabled = result.scalar_one_or_none()
     # default safe behavior for unknown schedule row: treat as enabled
     return True if enabled is None else bool(enabled)
-
-
-async def is_auto_delete_enabled() -> bool:
-    """Whether automatic cleanup deletion is enabled in general settings."""
-    async with async_db() as session:
-        result = await session.execute(select(GeneralSettings.auto_delete_enabled))
-        enabled = result.scalar_one_or_none()
-    return bool(enabled)
 
 
 async def _get_active_task_job(task: Task) -> BackgroundJob | None:

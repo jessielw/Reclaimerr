@@ -52,6 +52,7 @@ def test_legacy_rule_action_defaults_to_candidate() -> None:
     action = _normalize_rule_action(None, "Legacy Rule", "movie_version")
     assert action["outcome"] == "candidate"
     assert action["candidate"] is True
+    assert action["auto_delete_enabled"] is False
     assert action["auto_delete_delay_days"] is None
 
 
@@ -69,6 +70,22 @@ def test_candidate_rule_action_normalizes_auto_delete_delay(
     )
 
     assert action["auto_delete_delay_days"] == expected
+
+
+def test_candidate_rule_action_normalizes_auto_delete_enabled() -> None:
+    enabled = _normalize_rule_action(
+        {"auto_delete_enabled": True},
+        "Candidate Rule",
+        "movie_version",
+    )
+    disabled = _normalize_rule_action(
+        {"auto_delete_enabled": "true"},
+        "Candidate Rule",
+        "movie_version",
+    )
+
+    assert enabled["auto_delete_enabled"] is True
+    assert disabled["auto_delete_enabled"] is False
 
 
 def test_protection_rule_action_disables_destructive_settings() -> None:
@@ -89,6 +106,7 @@ def test_protection_rule_action_disables_destructive_settings() -> None:
     assert action["tag_enabled"] is False
     assert action["arr_tag"] is None
     assert action["media_server_action"] is None
+    assert action["auto_delete_enabled"] is False
     assert action["auto_delete_delay_days"] is None
     assert action["radarr_service_config_id"] is None
 

@@ -285,7 +285,6 @@ export interface GeneralSettings {
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
-  auto_delete_enabled: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
   application_url: string | null;
@@ -436,6 +435,7 @@ export interface RuleAction {
   arr_tag: string | null;
   arr_action: "delete" | "unmonitor";
   media_server_action: "delete" | null;
+  auto_delete_enabled: boolean;
   auto_delete_delay_days: number | null;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;

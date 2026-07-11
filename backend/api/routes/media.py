@@ -30,7 +30,6 @@ from backend.database.models import (
     SeriesArrRef,
     SeriesServiceRef,
     ServiceMediaLibrary,
-    TaskSchedule,
     User,
 )
 from backend.enums import (
@@ -380,14 +379,19 @@ async def _get_candidate_page_groups(
         )
         size_bytes = int(row.effective_size_bytes or 0)
         created_at = row.created_at or datetime.min
-        deletion_at = resolve_auto_delete_policy(
+        deletion_policy = resolve_auto_delete_policy(
             media_type=row.media_type,
             matched_rule_ids=row.matched_rule_ids or [],
             created_at=created_at,
             rule_actions_by_id=deletion_rule_actions,
             movie_delay_days=deletion_movie_delay_days,
             series_delay_days=deletion_series_delay_days,
-        ).eligible_at
+        )
+        deletion_at = (
+            deletion_policy.eligible_at
+            if deletion_policy.is_enabled
+            else datetime.max.replace(tzinfo=UTC)
+        )
         group = groups_by_key.get(key)
         if group is None:
             groups_by_key[key] = CandidateDisplayGroup(
@@ -1500,27 +1504,7 @@ async def get_candidates(
             ),
         )
 
-    auto_delete_settings_row = (
-        await db.execute(
-            select(
-                GeneralSettings,
-                select(TaskSchedule.enabled)
-                .where(TaskSchedule.task == Task.DELETE_CLEANUP_CANDIDATES)
-                .scalar_subquery(),
-            )
-        )
-    ).first()
-    auto_delete_settings = (
-        auto_delete_settings_row[0] if auto_delete_settings_row is not None else None
-    )
-    auto_delete_task_enabled = bool(
-        auto_delete_settings_row[1] if auto_delete_settings_row is not None else False
-    )
-    auto_delete_is_active = bool(
-        auto_delete_settings is not None
-        and auto_delete_settings.auto_delete_enabled
-        and auto_delete_task_enabled
-    )
+    auto_delete_settings = (await db.execute(select(GeneralSettings))).scalars().first()
     auto_delete_movie_delay_days = (
         auto_delete_settings.auto_delete_movie_delay_days
         if auto_delete_settings is not None
@@ -1930,7 +1914,7 @@ async def get_candidates(
                     to_utc_isoformat(auto_delete_policy.eligible_at) or ""
                 ),
                 auto_delete_is_eligible=auto_delete_policy.is_eligible,
-                auto_delete_is_active=auto_delete_is_active,
+                auto_delete_is_active=auto_delete_policy.is_enabled,
                 season_id=c.season_id,
                 season_number=row.season_number,
                 series_title=row.series_title if c.season_id is not None else None,

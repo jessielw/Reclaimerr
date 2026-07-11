@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rule editor now has an explicit "Automatic Deletion" switch, with delay settings only shown when enabled
+
 ### Changed
 
 - Verbiage for movie action in general settings
+- Auto delete is now controlled **per rule** instead of **globally**:
+  - Delete Cleanup Candidates task can now run normally, but it only deletes candidates produced by rules that opted into auto-delete
+  - Candidates whose matched rule does not enable auto-delete now show Not enabled for matched rule(s) instead of implying a pending delete date
+  - Default review periods remain global defaults, but they are just defaults for rules that opt into auto-delete
 
 ### Fixed
 
@@ -19,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - If no path mapping matches, file moves preserve the immediate media folder instead of dropping the file directly into the destination
   - Existing destination files/directories are no longer overwritten; the move fails safely
   - Added unit testing for movie structure preservation, fallback behavior, collision safety, directory moves, and flat season moves
+
+### Removed
+
+- Global auto delete setting has been removed from General settings
 
 ## [0.1.11] - 2026-07-10
 

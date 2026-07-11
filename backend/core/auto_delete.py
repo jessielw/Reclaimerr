@@ -12,6 +12,7 @@ MAX_AUTO_DELETE_DELAY_DAYS = 3650
 
 @dataclass(slots=True, frozen=True)
 class AutoDeletePolicy:
+    is_enabled: bool
     delay_days: int
     eligible_at: datetime
     is_eligible: bool
@@ -50,16 +51,18 @@ def resolve_auto_delete_policy(
     matched_delays: list[int] = []
     for rule_id in matched_rule_ids:
         action = rule_actions_by_id.get(rule_id)
-        override = _valid_override(
-            action.get("auto_delete_delay_days") if action is not None else None
-        )
+        if not action or action.get("auto_delete_enabled") is not True:
+            continue
+        override = _valid_override(action.get("auto_delete_delay_days"))
         matched_delays.append(override if override is not None else global_delay)
 
+    is_enabled = bool(matched_delays)
     delay_days = max(matched_delays, default=global_delay)
     eligible_at = _as_utc(created_at) + timedelta(days=delay_days)
     effective_now = _as_utc(now) if now is not None else datetime.now(UTC)
     return AutoDeletePolicy(
+        is_enabled=is_enabled,
         delay_days=delay_days,
         eligible_at=eligible_at,
-        is_eligible=effective_now >= eligible_at,
+        is_eligible=is_enabled and effective_now >= eligible_at,
     )

@@ -334,7 +334,6 @@ class GeneralSettingsResponse(BaseModel):
     media_server_fallback_enabled: bool = True
     default_arr_delete_behavior: Literal["unmonitor", "remove_if_empty"] = "unmonitor"
     add_arr_import_exclusions_on_delete: bool = True
-    auto_delete_enabled: bool = False
     auto_delete_movie_delay_days: int = Field(default=14, ge=0, le=3650)
     auto_delete_series_delay_days: int = Field(default=7, ge=0, le=3650)
     application_url: str | None = None

@@ -2,11 +2,13 @@
 
 Reclaimerr deletes candidates in a fixed order.
 
-Scheduled automatic deletion first applies the candidate's review period. The
-global movie and TV delays can be overridden by candidate rules, and the
-longest delay from all matching rules wins. Candidates remain visible and
-tagged while waiting; Reclaimerr does not move them to a quarantine folder.
-Manual delete and move actions are immediate and do not use this delay.
+Scheduled automatic deletion only applies to candidates from rules that
+explicitly enable automatic deletion. It then applies the candidate's review
+period. The default movie and TV delays can be overridden by auto-delete-enabled
+candidate rules, and the longest delay from all matching opted-in rules wins.
+Candidates remain visible and tagged while waiting; Reclaimerr does not move
+them to a quarantine folder. Manual delete and move actions are immediate and
+do not use this delay.
 
 When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 movie or series from its managed Plex, Jellyfin, and Emby collections. This

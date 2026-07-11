@@ -14,7 +14,6 @@ from backend.core.task_runtime import (
     MAIN_SERVER_REQUIRED_TASKS,
     can_disable_task,
     enqueue_scheduled_task,
-    is_auto_delete_enabled,
 )
 from backend.database import async_db
 from backend.database.models import TaskSchedule
@@ -110,8 +109,8 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
     {
         "task": Task.DELETE_CLEANUP_CANDIDATES,
         "description": (
-            "Automatically deletes eligible cleanup candidates. Requires the "
-            "General Settings automatic deletion opt-in before this task can be enabled."
+            "Automatically deletes eligible cleanup candidates from rules that "
+            "explicitly enable automatic deletion."
         ),
         "schedule_type": ScheduleType.CRON,
         "schedule_value": "0 2 * * *",  # daily at 2 AM
@@ -326,16 +325,6 @@ async def update_task_schedule(
 
         if not can_disable_task(task) and task_schedule.enabled != enabled:
             raise ValueError(f"Task '{task.value}' does not support enable/disable")
-
-        if (
-            task is Task.DELETE_CLEANUP_CANDIDATES
-            and enabled
-            and not await is_auto_delete_enabled()
-        ):
-            raise ValueError(
-                "Task 'delete_cleanup_candidates' requires the automatic deletion "
-                "opt-in in General Settings before it can be enabled"
-            )
 
         was_enabled = task_schedule.enabled
         task_schedule.schedule_type = schedule_type

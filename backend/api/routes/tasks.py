@@ -13,7 +13,6 @@ from backend.core.service_manager import service_manager
 from backend.core.task_runtime import (
     MAIN_SERVER_REQUIRED_TASKS,
     can_disable_task,
-    is_auto_delete_enabled,
     is_task_enabled,
     request_task_run,
 )
@@ -194,17 +193,6 @@ async def run_task_now(
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
     try:
-        if (
-            task_enum is Task.DELETE_CLEANUP_CANDIDATES
-            and not await is_auto_delete_enabled()
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Automatic cleanup deletion is disabled in General Settings. "
-                    "Enable it there before running this task."
-                ),
-            )
         if not await is_task_enabled(task_enum):
             raise HTTPException(
                 status_code=409,

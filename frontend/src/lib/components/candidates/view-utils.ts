@@ -55,15 +55,14 @@ export const candidateAutoDeleteLabel = (
   entry: ReclaimCandidateEntry,
   formatDate: (value: string) => string,
 ): string => {
+  if (!entry.auto_delete_is_active) {
+    return "Not enabled for matched rule(s)";
+  }
   const eligibleAt = candidateDateEpoch(entry.auto_delete_eligible_at);
   const remainingMs = eligibleAt - Date.now();
   const isEligible = entry.auto_delete_is_eligible || remainingMs <= 0;
   const policy = autoDeleteReviewPeriodLabel(entry.auto_delete_delay_days);
   const date = formatDate(entry.auto_delete_eligible_at);
-
-  if (!entry.auto_delete_is_active) {
-    return `Eligible ${date} (${policy}; auto-delete disabled)`;
-  }
   if (isEligible) return `Eligible now (${policy}; ${date})`;
 
   const remainingHours = Math.max(1, Math.ceil(remainingMs / 3_600_000));

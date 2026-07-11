@@ -41,7 +41,6 @@
     media_server_fallback_enabled: true,
     default_arr_delete_behavior: "unmonitor",
     add_arr_import_exclusions_on_delete: true,
-    auto_delete_enabled: false,
     auto_delete_movie_delay_days: 14,
     auto_delete_series_delay_days: 7,
     application_url: null,

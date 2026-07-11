@@ -230,13 +230,6 @@ def _is_episode_scope(model: Any) -> Any:
     return model.episode_id.isnot(None)
 
 
-async def _is_auto_delete_enabled() -> bool:
-    async with async_db() as db:
-        result = await db.execute(select(GeneralSettings.auto_delete_enabled))
-        enabled = result.scalar_one_or_none()
-    return bool(enabled)
-
-
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
         candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
@@ -422,6 +415,9 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 series_delay_days=series_delay_days,
                 now=now,
             )
+            if not policy.is_enabled:
+                blocked_count += 1
+                continue
             if policy.is_eligible:
                 eligible_ids.append(candidate.id)
             else:
@@ -4854,18 +4850,6 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
     LOG.info("Starting automatic cleanup candidate deletion")
 
     async with track_task_execution(Task.DELETE_CLEANUP_CANDIDATES):
-        if not await _is_auto_delete_enabled():
-            LOG.info(
-                "Automatic cleanup deletion skipped because it is disabled in General Settings"
-            )
-            return {
-                "eligible": 0,
-                "waiting": 0,
-                "skipped": 0,
-                "deleted": 0,
-                "failed": 0,
-            }
-
         (
             eligible_ids,
             skipped_count,

@@ -13,6 +13,7 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
+    ReclaimRule,
     Season,
     Series,
     SeriesServiceRef,
@@ -67,6 +68,18 @@ def _candidate(
 
 
 async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
+    db.add(
+        ReclaimRule(
+            name="Auto-delete rule",
+            media_type=MediaType.SERIES,
+            enabled=True,
+            target_scope="series",
+            definition=None,
+            action={"auto_delete_enabled": True},
+        )
+    )
+    await db.flush()
+
     alpha = Movie(title="Alpha Movie", tmdb_id=101, year=2001, size=700)
     bravo = Movie(title="Bravo Movie", tmdb_id=102, year=2002, size=1000)
     charlie = Series(title="Charlie Show", tmdb_id=201, year=2010, size=500)
@@ -503,10 +516,7 @@ def test_get_candidates_includes_media_page_metadata() -> None:
             charlie_episode = by_id[ids["charlie_candidate_ids"][2]]
             assert charlie_episode.media_library_names == ["TV Shows"]
             assert charlie_episode.media_added_at is None
-            assert (
-                charlie_episode.media_last_viewed_at
-                == "2025-05-06T10:00:00+00:00"
-            )
+            assert charlie_episode.media_last_viewed_at == "2025-05-06T10:00:00+00:00"
             assert charlie_episode.media_view_count == 8
 
         await engine.dispose()

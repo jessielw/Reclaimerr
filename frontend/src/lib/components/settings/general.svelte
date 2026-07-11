@@ -14,7 +14,6 @@
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { Checkbox } from "$lib/components/ui/checkbox/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
-  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import {
     MediaType,
     PageAccess,
@@ -61,7 +60,6 @@
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
   let addArrImportExclusionsOnDelete = $state(true);
-  let autoDeleteEnabled = $state(false);
   let autoDeleteMovieDelayDays = $state(14);
   let autoDeleteSeriesDelayDays = $state(7);
   let applicationUrl = $state("");
@@ -80,7 +78,6 @@
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   let testingWebhookIndex = $state<number | null>(null);
-  let showAutoDeleteConfirm = $state(false);
 
   // default settings for webhook
   const serviceTypeOptions = ["plex", "jellyfin", "emby", "radarr", "sonarr"];
@@ -116,23 +113,6 @@
       usernames.push(normalized);
     }
     return usernames;
-  };
-
-  const closeAutoDeleteConfirm = () => {
-    showAutoDeleteConfirm = false;
-  };
-
-  const confirmAutoDeleteEnabled = () => {
-    autoDeleteEnabled = true;
-    showAutoDeleteConfirm = false;
-  };
-
-  const handleAutoDeleteEnabledChange = (checked: boolean) => {
-    if (checked) {
-      showAutoDeleteConfirm = true;
-      return;
-    }
-    autoDeleteEnabled = false;
   };
 
   const toggleDefaultAllowedPage = (page: PageAccess, checked: boolean) => {
@@ -195,7 +175,6 @@
         media_server_fallback_enabled: mediaServerFallbackEnabled,
         default_arr_delete_behavior: defaultArrDeleteBehavior,
         add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
-        auto_delete_enabled: autoDeleteEnabled,
         auto_delete_movie_delay_days: autoDeleteMovieDelayDays,
         auto_delete_series_delay_days: autoDeleteSeriesDelayDays,
         application_url: applicationUrl.trim() || null,
@@ -414,7 +393,6 @@
           settings.default_arr_delete_behavior ?? "unmonitor";
         addArrImportExclusionsOnDelete =
           settings.add_arr_import_exclusions_on_delete ?? true;
-        autoDeleteEnabled = settings.auto_delete_enabled ?? false;
         autoDeleteMovieDelayDays = settings.auto_delete_movie_delay_days ?? 14;
         autoDeleteSeriesDelayDays = settings.auto_delete_series_delay_days ?? 7;
         applicationUrl = settings.application_url ?? "";
@@ -1207,25 +1185,18 @@
       {/if}
     </div>
 
-    <!-- automatic deletion opt-in -->
-    <div
-      class="bg-muted/50 border border-destructive/30 rounded-lg p-4 shadow-sm"
-    >
-      <div class="flex items-center justify-between mb-1">
+    <!-- automatic deletion defaults -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="mb-1">
         <h3 class="font-semibold text-foreground">
-          Enable Automatic Cleanup Deletion
+          Default Auto-Delete Review Periods
         </h3>
-        <Switch
-          id="autoDeleteEnabled"
-          checked={autoDeleteEnabled}
-          onCheckedChange={handleAutoDeleteEnabledChange}
-        />
       </div>
       <p class="text-muted-foreground text-sm mb-3">
-        Global safety gate for the scheduled
-        <code>Delete Cleanup Candidates</code> task. Nothing is deleted
-        automatically until this setting is enabled and the task is separately
-        enabled in the <strong>Tasks</strong> section.
+        These defaults are used by cleanup rules that explicitly enable
+        automatic deletion and do not set their own delay. The
+        <code>Delete Cleanup Candidates</code> task must still be scheduled for eligible
+        candidates to be deleted.
       </p>
       <div class="grid gap-3 sm:grid-cols-2 mb-3">
         <div class="space-y-2">
@@ -1260,22 +1231,17 @@
       </div>
       <p class="text-xs text-muted-foreground mb-3">
         The countdown starts when an item first becomes a candidate. Rule-level
-        overrides can replace these defaults; when multiple rules match, the
-        longest delay wins. Use 0 for immediate eligibility.
+        overrides can replace these defaults; when multiple auto-delete-enabled
+        rules match, the longest delay wins. Use 0 for immediate eligibility.
       </p>
       <div
-        class="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-foreground"
+        class="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-foreground"
       >
-        <p class="font-medium">Warning</p>
+        <p class="font-medium">Rule opt-in required</p>
         <p class="mt-1">
-          When both the opt-in and task schedule are enabled, Reclaimerr will
-          permanently delete cleanup candidates after their review period
-          expires without per-item approval. Protected media and items with
-          pending protection or delete requests are skipped.
-        </p>
-        <p class="mt-2 text-xs text-muted-foreground">
-          Turning this off automatically disables the scheduled delete task and
-          cancels pending task runs for it.
+          Reclaimerr only auto-deletes candidates created by cleanup rules with
+          automatic deletion enabled. Protected media and items with pending
+          protection or delete requests are skipped.
         </p>
       </div>
     </div>
@@ -1368,39 +1334,3 @@
     </div>
   {/if}
 </div>
-
-<AlertDialog.Root
-  open={showAutoDeleteConfirm}
-  onOpenChange={(value) => {
-    showAutoDeleteConfirm = value;
-  }}
->
-  <AlertDialog.Content
-    class="bg-card border border-border rounded-lg p-6 max-w-md w-full"
-  >
-    <AlertDialog.Header>
-      <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2">
-        Enable automatic cleanup deletion?
-      </AlertDialog.Title>
-      <AlertDialog.Description class="text-muted-foreground">
-        This only unlocks the scheduled delete task. Once you also enable the
-        task in <strong>Tasks</strong>, Reclaimerr can permanently delete
-        cleanup candidates after their configured review period.
-      </AlertDialog.Description>
-    </AlertDialog.Header>
-    <AlertDialog.Footer class="flex justify-end gap-3 pt-4">
-      <AlertDialog.Cancel
-        class="cursor-pointer hover text-foreground bg-secondary"
-        onclick={closeAutoDeleteConfirm}
-      >
-        Cancel
-      </AlertDialog.Cancel>
-      <AlertDialog.Action
-        class="cursor-pointer bg-destructive text-destructive-foreground hover:bg-destructive/90"
-        onclick={confirmAutoDeleteEnabled}
-      >
-        Enable
-      </AlertDialog.Action>
-    </AlertDialog.Footer>
-  </AlertDialog.Content>
-</AlertDialog.Root>
