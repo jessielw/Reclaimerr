@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Verbiage for movie action in general settings
 
+### Fixed
+
+- Moving files instead of delete would sometimes result in the folder structure not being retained
+  - Move helpers now preserve folder structure under the matched path mapping root in
+  - Movie moves no longer flatten into the destination root
+  - If no path mapping matches, file moves preserve the immediate media folder instead of dropping the file directly into the destination
+  - Existing destination files/directories are no longer overwritten; the move fails safely
+  - Added unit testing for movie structure preservation, fallback behavior, collision safety, directory moves, and flat season moves
+
 ## [0.1.11] - 2026-07-10
 
 ### Added

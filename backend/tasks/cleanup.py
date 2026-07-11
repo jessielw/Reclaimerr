@@ -5907,7 +5907,12 @@ async def _delete_movie_candidates(
                         )
                         if local_path:
                             try:
-                                move_media(local_path, destination_root)
+                                move_media(
+                                    local_path,
+                                    destination_root,
+                                    move_path_mappings,
+                                    service_type=ver.service.value,
+                                )
                                 LOG.info(
                                     f"Moved '{m['title']}' to {destination_root} "
                                     f"before Radarr library removal"
@@ -6589,7 +6594,12 @@ async def _delete_series_candidates(
                         )
                         if local_series_path:
                             try:
-                                move_directory(local_series_path, destination_root)
+                                move_directory(
+                                    local_series_path,
+                                    destination_root,
+                                    move_path_mappings,
+                                    service_type=series_ref.service.value,
+                                )
                                 LOG.info(
                                     f"Moved '{series_info['title']}' to "
                                     f"{destination_root} before Sonarr library removal"
@@ -8407,7 +8417,12 @@ async def _move_specific_candidates_impl(
                 continue
 
             # move the file + same stem siblings to destination
-            dest = move_media(local_path, destination_root)
+            dest = move_media(
+                local_path,
+                destination_root,
+                path_mappings,
+                service_type=version.service.value,
+            )
 
             # unmonitor in Radarr so it doesn't re-queue a download
             radarr_clients = service_manager.radarr_clients()
@@ -8679,13 +8694,22 @@ async def _move_specific_candidates_impl(
                             destination_root,
                             episode_paths=season.episode_paths or [],
                             path_mappings=path_mappings,
+                            service_type=series_ref.service.value,
                         )
                     else:
-                        # nest under the series folder name so the destination is readable
-                        series_dest_root = destination_root / local_series_path.name
-                        dest = move_directory(season_folder, series_dest_root)
+                        dest = move_directory(
+                            season_folder,
+                            destination_root,
+                            path_mappings,
+                            service_type=series_ref.service.value,
+                        )
                 else:
-                    dest = move_directory(local_series_path, destination_root)
+                    dest = move_directory(
+                        local_series_path,
+                        destination_root,
+                        path_mappings,
+                        service_type=series_ref.service.value,
+                    )
 
                 # unmonitor in Sonarr so it doesn't re-queue a download
                 sonarr_clients = service_manager.sonarr_clients()

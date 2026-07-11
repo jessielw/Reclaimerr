@@ -270,8 +270,58 @@ def sibling_cleanup(local_path: Path) -> None:
         LOG.debug(f"sibling_cleanup: could not remove directory {parent}: {e}")
 
 
-def _move_single_file(src: Path, destination_root: Path) -> Path:
-    """Move a single file into *destination_root*, deleting the source afterward.
+def _destination_relative_parent(
+    src: Path,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
+    fallback_parent: Path | None = None,
+) -> Path:
+    """Return the folder structure to preserve under a move destination.
+
+    Prefer the path below the matched local path-mapping root. Without a
+    matching mapping, fall back to the immediate media folder so file moves do
+    not flatten directly into the destination root.
+    """
+    resolved_src = src.resolve()
+    sorted_mappings = sorted(
+        path_mappings or [],
+        key=lambda mapping: (
+            0
+            if service_config_id is not None
+            and mapping.get("service_config_id") == service_config_id
+            else 1
+            if service_type
+            and str(mapping.get("service_type") or "").lower() == service_type.lower()
+            and not mapping.get("service_config_id")
+            else 2
+            if not mapping.get("service_type") and not mapping.get("service_config_id")
+            else 3,
+            -len(str(mapping.get("local_prefix") or "")),
+        ),
+    )
+    for mapping in sorted_mappings:
+        if not _mapping_applies_to_scope(
+            mapping,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        ):
+            continue
+        local_prefix = str(mapping.get("local_prefix") or "").strip()
+        if not local_prefix:
+            continue
+        try:
+            relative = resolved_src.relative_to(Path(local_prefix).resolve())
+        except ValueError:
+            continue
+        return relative.parent
+
+    return fallback_parent if fallback_parent is not None else Path(src.parent.name)
+
+
+def _move_single_file_to_path(src: Path, dest: Path) -> Path:
+    """Move a single file to *dest*, deleting the source afterward.
 
     Tries an OS-level rename first (fast, atomic, same filesystem).  Falls back
     to explicit copy + verify + delete so the source is guaranteed to be removed
@@ -280,7 +330,10 @@ def _move_single_file(src: Path, destination_root: Path) -> Path:
     Raises:
         OSError: If the copy or source deletion fails.
     """
-    dest = destination_root / src.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise FileExistsError(f"move_media: destination already exists: {dest}")
+
     # fast path: same filesystem rename
     try:
         os_rename(src, dest)
@@ -302,6 +355,11 @@ def _move_single_file(src: Path, destination_root: Path) -> Path:
     # delete source only after verified copy
     src.unlink()
     return dest
+
+
+def _move_single_file(src: Path, destination_root: Path) -> Path:
+    """Move a single file into *destination_root*, deleting the source afterward."""
+    return _move_single_file_to_path(src, destination_root / src.name)
 
 
 def find_season_folder(series_path: Path, season_number: int) -> Path | None:
@@ -346,6 +404,8 @@ def move_season_files(
     destination_root: Path,
     episode_paths: list[str],
     path_mappings: list[dict[str, Any]] | None = None,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
 ) -> Path:
     """Move only the episode files belonging to a season out of a flat series directory.
 
@@ -357,8 +417,8 @@ def move_season_files(
 
     Args:
         series_path: Flat series directory containing episodes from multiple seasons.
-        destination_root: Parent directory to move files into. Files land in
-            ``destination_root / series_path.name /``.
+        destination_root: Parent directory to move files into. Files land in a
+            folder preserving path-mapping-relative structure.
         episode_paths: Exact episode file paths as stored from the media server sync.
         path_mappings: Path mappings for resolving container/remote paths to local paths.
 
@@ -368,12 +428,27 @@ def move_season_files(
     Raises:
         OSError: If a file move fails.
     """
-    dest_dir = destination_root / series_path.name
+    dest_dir = (
+        destination_root
+        / _destination_relative_parent(
+            series_path,
+            path_mappings,
+            service_type=service_type,
+            service_config_id=service_config_id,
+            fallback_parent=Path(),
+        )
+        / series_path.name
+    )
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     episode_stems: set[str] = set()
     for raw_path in episode_paths:
-        local = resolve_path(raw_path, path_mappings)
+        local = resolve_path(
+            raw_path,
+            path_mappings,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        )
         if local and local.is_file():
             episode_stems.add(local.stem)
         else:
@@ -399,7 +474,14 @@ def move_season_files(
     return dest_dir
 
 
-def move_directory(src: Path, destination_root: Path) -> Path:
+def move_directory(
+    src: Path,
+    destination_root: Path,
+    path_mappings: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
+) -> Path:
     """Move directory *src* into *destination_root*.
 
     Tries an OS-level rename first (fast, same filesystem).  Falls back to
@@ -408,6 +490,8 @@ def move_directory(src: Path, destination_root: Path) -> Path:
     Args:
         src: Source directory to move.
         destination_root: Parent directory to move *src* into.
+        path_mappings: Optional path mappings used to preserve folder structure
+            beneath the matched local prefix.
 
     Returns:
         The final destination path (``destination_root / src.name``).
@@ -415,8 +499,17 @@ def move_directory(src: Path, destination_root: Path) -> Path:
     Raises:
         OSError: If the copy or source removal fails.
     """
-    destination_root.mkdir(parents=True, exist_ok=True)
-    dest = destination_root / src.name
+    relative_parent = _destination_relative_parent(
+        src,
+        path_mappings,
+        service_type=service_type,
+        service_config_id=service_config_id,
+        fallback_parent=Path(),
+    )
+    dest = destination_root / relative_parent / src.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise FileExistsError(f"move_directory: destination already exists: {dest}")
 
     try:
         os_rename(src, dest)
@@ -430,7 +523,14 @@ def move_directory(src: Path, destination_root: Path) -> Path:
     return dest
 
 
-def move_media(src: Path, destination_root: Path) -> Path:
+def move_media(
+    src: Path,
+    destination_root: Path,
+    path_mappings: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    service_type: str | None = None,
+    service_config_id: int | None = None,
+) -> Path:
     """Move *src* into *destination_root*, along with any same stem siblings.
 
     Siblings (subtitles, NFOs, cover images, etc.) share the same filename
@@ -440,6 +540,8 @@ def move_media(src: Path, destination_root: Path) -> Path:
     Args:
         src: Absolute path to the primary media file.
         destination_root: Root directory to move all files into.
+        path_mappings: Optional path mappings used to preserve folder structure
+            beneath the matched local prefix.
 
     Returns:
         The final destination ``Path`` of the primary file.
@@ -447,10 +549,16 @@ def move_media(src: Path, destination_root: Path) -> Path:
     Raises:
         OSError: If the primary file move fails.
     """
-    destination_root.mkdir(parents=True, exist_ok=True)
+    relative_parent = _destination_relative_parent(
+        src,
+        path_mappings,
+        service_type=service_type,
+        service_config_id=service_config_id,
+    )
+    dest_dir = destination_root / relative_parent
 
     # move the primary file first (let this raise on failure)
-    dest = _move_single_file(src, destination_root)
+    dest = _move_single_file(src, dest_dir)
     LOG.info(f"move_media: moved {src} -> {dest}")
 
     # move same stem siblings (subtitles, NFOs, images, or whatever we find)
@@ -460,7 +568,7 @@ def move_media(src: Path, destination_root: Path) -> Path:
         for sibling in list(parent.iterdir()):
             if sibling.is_file() and sibling.stem == stem:
                 try:
-                    sibling_dest = _move_single_file(sibling, destination_root)
+                    sibling_dest = _move_single_file(sibling, dest_dir)
                     LOG.info(f"move_media: moved sibling {sibling} -> {sibling_dest}")
                 except OSError as e:
                     LOG.warning(f"move_media: could not move sibling {sibling}: {e}")

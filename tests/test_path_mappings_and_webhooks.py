@@ -3,7 +3,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from backend.core.utils.filesystem import resolve_path
+import pytest
+
+from backend.core.utils.filesystem import (
+    move_directory,
+    move_media,
+    move_season_files,
+    resolve_path,
+)
 from backend.enums import MediaType, Service
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.services.post_action_webhooks import send_post_action_webhook
@@ -99,6 +106,124 @@ def test_resolve_path_supports_root_source_mapping(tmp_path: Path) -> None:
         "/media/Movie/file.mkv",
         [{"source_prefix": "/", "local_prefix": str(root)}],
     ) == (root / "media" / "Movie" / "file.mkv")
+
+
+def test_move_media_preserves_mapping_relative_folder_structure(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie One (2024)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie One (2024).mkv"
+    subtitle_file = movie_dir / "Movie One (2024).srt"
+    media_file.write_bytes(b"movie")
+    subtitle_file.write_bytes(b"subtitle")
+    destination_root = tmp_path / "reclaimed"
+
+    moved_to = move_media(
+        media_file,
+        destination_root,
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    expected_dir = destination_root / "movies" / "Movie One (2024)"
+    assert moved_to == expected_dir / "Movie One (2024).mkv"
+    assert moved_to.read_bytes() == b"movie"
+    assert (expected_dir / "Movie One (2024).srt").read_bytes() == b"subtitle"
+    assert not media_file.exists()
+    assert not subtitle_file.exists()
+
+
+def test_move_media_without_mapping_preserves_immediate_media_folder(
+    tmp_path: Path,
+) -> None:
+    movie_dir = tmp_path / "library" / "Movie Two (2025)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Two (2025).mkv"
+    media_file.write_bytes(b"movie")
+    destination_root = tmp_path / "reclaimed"
+
+    moved_to = move_media(media_file, destination_root)
+
+    assert moved_to == destination_root / "Movie Two (2025)" / "Movie Two (2025).mkv"
+    assert moved_to.read_bytes() == b"movie"
+    assert not media_file.exists()
+
+
+def test_move_media_does_not_overwrite_existing_destination(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Three (2026)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Three (2026).mkv"
+    media_file.write_bytes(b"source")
+    destination_file = (
+        tmp_path
+        / "reclaimed"
+        / "movies"
+        / "Movie Three (2026)"
+        / "Movie Three (2026).mkv"
+    )
+    destination_file.parent.mkdir(parents=True)
+    destination_file.write_bytes(b"existing")
+
+    with pytest.raises(FileExistsError):
+        move_media(
+            media_file,
+            tmp_path / "reclaimed",
+            [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+        )
+
+    assert media_file.read_bytes() == b"source"
+    assert destination_file.read_bytes() == b"existing"
+
+
+def test_move_directory_preserves_mapping_relative_folder_structure(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Show One"
+    season_dir = series_dir / "Season 01"
+    season_dir.mkdir(parents=True)
+    episode_file = season_dir / "Show One - S01E01.mkv"
+    episode_file.write_bytes(b"episode")
+
+    moved_to = move_directory(
+        series_dir,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == tmp_path / "reclaimed" / "tv" / "Show One"
+    assert (moved_to / "Season 01" / "Show One - S01E01.mkv").read_bytes() == b"episode"
+    assert not series_dir.exists()
+
+
+def test_move_season_files_preserves_series_folder_for_flat_series(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Flat Show"
+    series_dir.mkdir(parents=True)
+    season_one = series_dir / "Flat Show - S01E01.mkv"
+    season_one_sub = series_dir / "Flat Show - S01E01.srt"
+    season_two = series_dir / "Flat Show - S02E01.mkv"
+    season_one.write_bytes(b"s1")
+    season_one_sub.write_bytes(b"sub")
+    season_two.write_bytes(b"s2")
+
+    moved_to = move_season_files(
+        series_dir,
+        tmp_path / "reclaimed",
+        episode_paths=["/remote/tv/Flat Show/Flat Show - S01E01.mkv"],
+        path_mappings=[{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == tmp_path / "reclaimed" / "tv" / "Flat Show"
+    assert (moved_to / "Flat Show - S01E01.mkv").read_bytes() == b"s1"
+    assert (moved_to / "Flat Show - S01E01.srt").read_bytes() == b"sub"
+    assert not season_one.exists()
+    assert not season_one_sub.exists()
+    assert season_two.read_bytes() == b"s2"
 
 
 def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
