@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.2.0"
+version = "0.2.1"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

@@ -2849,7 +2849,7 @@ async def sync_media() -> dict[str, Any] | None:
     4. Update watch data from any linked servers
     """
     if not service_manager.main_media_server:
-        LOG.debug("No main media server configured - skipping sync")
+        LOG.warning("No main media server configured - skipping sync")
         return None
 
     # determine main server
@@ -3099,7 +3099,7 @@ async def resync_media() -> None:
     from the new main server.
     """
     if not service_manager.main_media_server:
-        LOG.debug("No main media server configured - skipping resync")
+        LOG.warning("No main media server configured - skipping resync")
         return
 
     LOG.info("Starting resync...")
@@ -3197,7 +3197,7 @@ async def _update_series_tmdb_metadata(
 async def sync_media_libraries() -> dict[str, Any]:
     """Update service libraries in the database from the main media server."""
     if not service_manager.main_media_server:
-        LOG.debug("No main media server configured - skipping library sync")
+        LOG.warning("No main media server configured - skipping library sync")
         return {"libraries": [], "affected_rules": []}
 
     async with track_task_execution(Task.SYNC_MEDIA_LIBRARIES):

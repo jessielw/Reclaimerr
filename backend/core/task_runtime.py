@@ -6,6 +6,8 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.core.logger import LOG
+from backend.core.service_bootstrap import load_enabled_services
+from backend.core.service_manager import service_manager
 from backend.database import async_db
 from backend.database.models import (
     BackgroundJob,
@@ -47,6 +49,14 @@ MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
         Task.SCAN_CLEANUP_CANDIDATES,
         Task.TAG_CLEANUP_CANDIDATES,
         Task.DELETE_CLEANUP_CANDIDATES,
+    }
+)
+
+TASK_RUNNER_MAIN_SERVER_PREFLIGHT_TASKS: frozenset[Task] = frozenset(
+    {
+        Task.SYNC_MEDIA,
+        Task.RESYNC_MEDIA,
+        Task.SYNC_MEDIA_LIBRARIES,
     }
 )
 
@@ -155,10 +165,32 @@ async def _run_linked_data_sync() -> None:
             await sync_linked_data(service_config.service_type)  # type: ignore
 
 
+async def _ensure_main_media_server_for_task(task: Task) -> None:
+    """Ensure tasks that require a main media server do not silently no-op."""
+    if task not in TASK_RUNNER_MAIN_SERVER_PREFLIGHT_TASKS:
+        return
+
+    if service_manager.main_media_server is None:
+        LOG.warning(
+            f"{task.friendly_name()} requested but no main media server is loaded; "
+            "reloading enabled service configurations before execution"
+        )
+        await load_enabled_services()
+
+    if service_manager.main_media_server is None:
+        raise RuntimeError(
+            f"{task.friendly_name()} requires an enabled main media server, but "
+            "none is currently available. Check the media server configuration, "
+            "main-server selection, API key, URL, and service health."
+        )
+
+
 async def execute_task(task: Task) -> dict[str, Any] | None:
     if not await is_task_enabled(task):
         LOG.info(f"Skipped task execution for {task.friendly_name()} (disabled)")
         return None
+
+    await _ensure_main_media_server_for_task(task)
 
     if task is Task.SYNC_MEDIA:
         return await sync_media()

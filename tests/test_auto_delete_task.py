@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -210,6 +211,30 @@ def test_execute_task_refreshes_playback_history(monkeypatch):
 
         refresh_mock.assert_awaited_once()
         assert result == {"providers": 1}
+
+    asyncio.run(run())
+
+
+def test_execute_task_sync_media_fails_when_main_server_unavailable(monkeypatch):
+    async def run() -> None:
+        monkeypatch.setattr(
+            "backend.core.task_runtime.is_task_enabled",
+            AsyncMock(return_value=True),
+        )
+        load_services = AsyncMock()
+        monkeypatch.setattr(
+            "backend.core.task_runtime.load_enabled_services",
+            load_services,
+        )
+        monkeypatch.setattr(
+            "backend.core.task_runtime.service_manager._main_media_server",
+            None,
+        )
+
+        with pytest.raises(RuntimeError, match="requires an enabled main media server"):
+            await execute_task(Task.SYNC_MEDIA)
+
+        load_services.assert_awaited_once()
 
     asyncio.run(run())
 

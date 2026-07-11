@@ -9,12 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
-from backend.core.service_manager import service_manager
-from backend.core.task_runtime import (
-    MAIN_SERVER_REQUIRED_TASKS,
-    can_disable_task,
-    enqueue_scheduled_task,
-)
+from backend.core.task_runtime import can_disable_task, enqueue_scheduled_task
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
@@ -240,17 +235,7 @@ async def setup_scheduler() -> None:
             if task_schedule.schedule_type is ScheduleType.MANUAL:
                 continue  # manual tasks are not scheduled
 
-            # skip tasks that require a main media server if none is configured
-            if (
-                task_schedule.task in MAIN_SERVER_REQUIRED_TASKS
-                and not service_manager.main_media_server
-            ):
-                LOG.info(
-                    f"Skipping {task_schedule.task.friendly_name()} - no main media server configured"
-                )
-                continue
-
-            elif task_schedule.schedule_type is ScheduleType.INTERVAL:  # interval
+            if task_schedule.schedule_type is ScheduleType.INTERVAL:  # interval
                 interval_seconds = int(task_schedule.schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
@@ -271,43 +256,32 @@ async def setup_scheduler() -> None:
 
 
 async def refresh_main_server_tasks() -> None:
-    """Add or remove main-server-dependent tasks from the scheduler based on current state."""
-    has_main = service_manager.main_media_server is not None
+    """Refresh enabled non-manual schedules after service configuration changes."""
     async with async_db() as db:
-        for task in MAIN_SERVER_REQUIRED_TASKS:
-            result = await db.execute(
-                select(TaskSchedule).where(TaskSchedule.task == task)
-            )
-            db_schedule = result.scalar_one_or_none()
-            if (
-                not db_schedule
-                or not db_schedule.enabled
-                or db_schedule.schedule_type is ScheduleType.MANUAL
-            ):
+        result = await db.execute(select(TaskSchedule))
+        schedules = result.scalars().all()
+        for db_schedule in schedules:
+            task = db_schedule.task
+            job = scheduler.get_job(task.value)
+            if not db_schedule.enabled or db_schedule.schedule_type is ScheduleType.MANUAL:
+                if job:
+                    job.remove()
+                    LOG.info(f"Unscheduled {task.friendly_name()}")
                 continue
 
-            job = scheduler.get_job(task.value)
-            if has_main and not job:
-                if db_schedule.schedule_type is ScheduleType.INTERVAL:
-                    trigger = IntervalTrigger(seconds=int(db_schedule.schedule_value))
-                else:
-                    trigger = CronTrigger.from_crontab(db_schedule.schedule_value)
-                scheduler.add_job(
-                    enqueue_scheduled_task,
-                    trigger,
-                    args=[task],
-                    id=task.value,
-                    name=task.friendly_name(),
-                    replace_existing=True,
-                )
-                LOG.info(
-                    f"Scheduled {task.friendly_name()} (main server now configured)"
-                )
-            elif not has_main and job:
-                job.remove()
-                LOG.info(
-                    f"Unscheduled {task.friendly_name()} (no main server configured)"
-                )
+            if db_schedule.schedule_type is ScheduleType.INTERVAL:
+                trigger = IntervalTrigger(seconds=int(db_schedule.schedule_value))
+            else:
+                trigger = CronTrigger.from_crontab(db_schedule.schedule_value)
+            scheduler.add_job(
+                enqueue_scheduled_task,
+                trigger,
+                args=[task],
+                id=task.value,
+                name=task.friendly_name(),
+                replace_existing=True,
+            )
+            LOG.info(f"Refreshed task schedule: {task.friendly_name()}")
 
 
 async def update_task_schedule(
