@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -28,6 +27,7 @@ from backend.database.models import (
     ProtectedMedia,
     ProtectionRequest,
     ReclaimCandidate,
+    ReclaimRule,
     TaskSchedule,
     User,
 )
@@ -70,7 +70,6 @@ def test_auto_delete_defaults_and_metadata():
 
         async with session_maker() as db_session:
             settings = await get_general_settings(_admin_user(), db_session)
-            assert settings.auto_delete_enabled is False
             assert settings.auto_delete_movie_delay_days == 14
             assert settings.auto_delete_series_delay_days == 7
 
@@ -129,8 +128,8 @@ def test_auto_delete_policy_uses_longest_applicable_delay():
         matched_rule_ids=[1, 2],
         created_at=created_at,
         rule_actions_by_id={
-            1: {"auto_delete_delay_days": 3},
-            2: {"auto_delete_delay_days": 30},
+            1: {"auto_delete_enabled": True, "auto_delete_delay_days": 3},
+            2: {"auto_delete_enabled": True, "auto_delete_delay_days": 30},
         },
         movie_delay_days=14,
         series_delay_days=7,
@@ -140,6 +139,7 @@ def test_auto_delete_policy_uses_longest_applicable_delay():
     assert policy.delay_days == 30
     assert policy.eligible_at == created_at + timedelta(days=30)
     assert policy.is_eligible is False
+    assert policy.is_enabled is True
 
 
 def test_auto_delete_policy_inherits_global_delay_and_supports_zero():
@@ -149,7 +149,7 @@ def test_auto_delete_policy_inherits_global_delay_and_supports_zero():
         media_type=MediaType.SERIES,
         matched_rule_ids=[1],
         created_at=created_at,
-        rule_actions_by_id={1: None},
+        rule_actions_by_id={1: {"auto_delete_enabled": True}},
         movie_delay_days=14,
         series_delay_days=7,
         now=datetime(2026, 6, 8, 12, tzinfo=UTC),
@@ -158,7 +158,9 @@ def test_auto_delete_policy_inherits_global_delay_and_supports_zero():
         media_type=MediaType.SERIES,
         matched_rule_ids=[2],
         created_at=created_at,
-        rule_actions_by_id={2: {"auto_delete_delay_days": 0}},
+        rule_actions_by_id={
+            2: {"auto_delete_enabled": True, "auto_delete_delay_days": 0}
+        },
         movie_delay_days=14,
         series_delay_days=7,
         now=datetime(2026, 6, 1, 12, tzinfo=UTC),
@@ -166,8 +168,30 @@ def test_auto_delete_policy_inherits_global_delay_and_supports_zero():
 
     assert inherited.delay_days == 7
     assert inherited.is_eligible is True
+    assert inherited.is_enabled is True
     assert immediate.delay_days == 0
     assert immediate.is_eligible is True
+    assert immediate.is_enabled is True
+
+
+def test_auto_delete_policy_requires_rule_opt_in():
+    created_at = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+    disabled = resolve_auto_delete_policy(
+        media_type=MediaType.MOVIE,
+        matched_rule_ids=[1, 2],
+        created_at=created_at,
+        rule_actions_by_id={
+            1: {"auto_delete_delay_days": 0},
+            2: {"auto_delete_enabled": False, "auto_delete_delay_days": 0},
+        },
+        movie_delay_days=14,
+        series_delay_days=7,
+        now=created_at + timedelta(days=30),
+    )
+
+    assert disabled.is_enabled is False
+    assert disabled.is_eligible is False
 
 
 def test_execute_task_refreshes_playback_history(monkeypatch):
@@ -214,7 +238,7 @@ def test_execute_task_routes_external_rating_providers(monkeypatch):
     asyncio.run(run())
 
 
-def test_update_general_settings_disables_auto_delete_task(monkeypatch):
+def test_update_general_settings_preserves_delete_task_schedule(monkeypatch):
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -224,7 +248,7 @@ def test_update_general_settings_disables_auto_delete_task(monkeypatch):
         )
 
         async with session_maker() as db_session:
-            db_session.add(GeneralSettings(auto_delete_enabled=True))
+            db_session.add(GeneralSettings())
             db_session.add(
                 TaskSchedule(
                     task=Task.DELETE_CLEANUP_CANDIDATES,
@@ -238,33 +262,30 @@ def test_update_general_settings_disables_auto_delete_task(monkeypatch):
             )
             await db_session.commit()
 
-            disable_mock = AsyncMock()
-            monkeypatch.setattr(
-                "backend.scheduler.update_task_schedule",
-                disable_mock,
-            )
-
             response = await update_general_settings(
-                GeneralSettingsResponse(auto_delete_enabled=False),
+                GeneralSettingsResponse(),
                 _admin_user(),
                 db_session,
             )
 
-            assert response.auto_delete_enabled is False
-            disable_mock.assert_awaited_once()
-            kwargs = disable_mock.await_args.kwargs if disable_mock.await_args else {}
-            assert kwargs["task"] is Task.DELETE_CLEANUP_CANDIDATES
-            assert kwargs["enabled"] is False
-
             settings = (await db_session.execute(select(GeneralSettings))).scalar_one()
-            assert settings.auto_delete_enabled is False
+            assert response.auto_delete_movie_delay_days == 14
+            assert settings.auto_delete_movie_delay_days == 14
+            schedule = (
+                await db_session.execute(
+                    select(TaskSchedule).where(
+                        TaskSchedule.task == Task.DELETE_CLEANUP_CANDIDATES
+                    )
+                )
+            ).scalar_one()
+            assert schedule.enabled is True
 
         await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_update_task_schedule_blocks_auto_delete_enable_without_opt_in(
+def test_update_task_schedule_allows_delete_task_without_global_switch(
     monkeypatch,
 ):
     async def run() -> None:
@@ -276,7 +297,7 @@ def test_update_task_schedule_blocks_auto_delete_enable_without_opt_in(
         )
 
         async with session_maker() as db_session:
-            db_session.add(GeneralSettings(auto_delete_enabled=False))
+            db_session.add(GeneralSettings())
             db_session.add(
                 TaskSchedule(
                     task=Task.DELETE_CLEANUP_CANDIDATES,
@@ -294,13 +315,12 @@ def test_update_task_schedule_blocks_auto_delete_enable_without_opt_in(
         monkeypatch.setattr("backend.scheduler.async_db", async_db_override)
         monkeypatch.setattr("backend.core.task_runtime.async_db", async_db_override)
 
-        with pytest.raises(ValueError, match="General Settings"):
-            await update_task_schedule(
-                task=Task.DELETE_CLEANUP_CANDIDATES,
-                schedule_type=ScheduleType.CRON,
-                schedule_value="0 2 * * 0",
-                enabled=True,
-            )
+        await update_task_schedule(
+            task=Task.DELETE_CLEANUP_CANDIDATES,
+            schedule_type=ScheduleType.CRON,
+            schedule_value="0 2 * * 0",
+            enabled=True,
+        )
 
         async with session_maker() as db_session:
             schedule = (
@@ -310,25 +330,28 @@ def test_update_task_schedule_blocks_auto_delete_enable_without_opt_in(
                     )
                 )
             ).scalar_one()
-            assert schedule.enabled is False
+            assert schedule.enabled is True
 
         await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_run_task_now_rejects_auto_delete_without_opt_in(monkeypatch):
+def test_run_task_now_allows_delete_task_without_global_switch(monkeypatch):
     async def run() -> None:
         monkeypatch.setattr(
-            "backend.api.routes.tasks.is_auto_delete_enabled",
-            AsyncMock(return_value=False),
+            "backend.api.routes.tasks.is_task_enabled",
+            AsyncMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            "backend.api.routes.tasks.request_task_run",
+            AsyncMock(return_value=(SimpleNamespace(id=123), True)),
         )
 
-        with pytest.raises(HTTPException) as exc:
-            await run_task_now(Task.DELETE_CLEANUP_CANDIDATES.value, _admin_user())
+        result = await run_task_now(Task.DELETE_CLEANUP_CANDIDATES.value, _admin_user())
 
-        assert exc.value.status_code == 409
-        assert "General Settings" in str(exc.value.detail)
+        assert result["status"] == "success"
+        assert result["job_id"] == 123
 
     asyncio.run(run())
 
@@ -347,9 +370,17 @@ def test_delete_cleanup_candidates_skips_overlapping_entries(monkeypatch):
             db_session.add(admin)
             db_session.add(
                 GeneralSettings(
-                    auto_delete_enabled=True,
-                    auto_delete_movie_delay_days=0,
-                    auto_delete_series_delay_days=0,
+                    auto_delete_movie_delay_days=0, auto_delete_series_delay_days=0
+                )
+            )
+            db_session.add(
+                ReclaimRule(
+                    name="Auto delete",
+                    media_type=MediaType.SERIES,
+                    enabled=True,
+                    target_scope="episode",
+                    definition=None,
+                    action={"auto_delete_enabled": True},
                 )
             )
 
@@ -538,20 +569,28 @@ def test_delete_cleanup_candidates_waits_for_review_period(monkeypatch):
         async with session_maker() as db_session:
             db_session.add(
                 GeneralSettings(
-                    auto_delete_enabled=True,
-                    auto_delete_movie_delay_days=14,
-                    auto_delete_series_delay_days=7,
+                    auto_delete_movie_delay_days=14, auto_delete_series_delay_days=7
+                )
+            )
+            db_session.add(
+                ReclaimRule(
+                    name="Auto delete",
+                    media_type=MediaType.SERIES,
+                    enabled=True,
+                    target_scope="series",
+                    definition=None,
+                    action={"auto_delete_enabled": True},
                 )
             )
             waiting_candidate = ReclaimCandidate(
                 media_type=MediaType.MOVIE,
-                matched_rule_ids=[],
+                matched_rule_ids=[1],
                 matched_criteria={},
                 reason="waiting movie",
             )
             eligible_candidate = ReclaimCandidate(
                 media_type=MediaType.SERIES,
-                matched_rule_ids=[],
+                matched_rule_ids=[1],
                 matched_criteria={},
                 reason="eligible series",
             )

@@ -316,12 +316,6 @@
     entries.filter((e) => selectedIds.has(e.id)),
   );
 
-  const selectedEntriesHaveEpisodeScope = $derived(
-    selectedEntries.some(
-      (entry) => entry.episode_id != null || entry.episode_number != null,
-    ),
-  );
-
   const selectedTotalBytes = $derived(
     selectedEntries.reduce((acc, e) => acc + (e.estimated_space_bytes ?? 0), 0),
   );
@@ -570,10 +564,6 @@
   };
 
   const openSingleMove = (entry: ReclaimCandidateEntry) => {
-    if (entry.episode_id != null || entry.episode_number != null) {
-      toast.error("Episode candidates cannot be moved yet.");
-      return;
-    }
     moveTarget = entry;
     moveDialogOpen = true;
   };
@@ -644,10 +634,6 @@
 
   const submitBulkMove = async () => {
     if (selectedEntries.length === 0) return;
-    if (selectedEntriesHaveEpisodeScope) {
-      toast.error("Episode candidates cannot be moved yet.");
-      return;
-    }
     bulkMoveSubmitting = true;
     try {
       await queueCandidateOperation(
@@ -972,16 +958,25 @@
     isGroupPartialSelected(row);
   const movieGroupTotalBytes = (row: MovieGroupRow) => groupTotalBytes(row);
   const seriesGroupTotalBytes = (row: SeriesGroupRow) => groupTotalBytes(row);
+  const deleteWillMove = (entry: ReclaimCandidateEntry | null) =>
+    entry?.delete_operation === "move";
+  const selectedDeleteMoveCount = $derived(
+    selectedEntries.filter((entry) => entry.delete_operation === "move").length,
+  );
 
   onMount(async () => {
     mounted = true;
     await loadCandidates();
-    // load move enabled state from general settings
+    // load move destination availability from general settings
     try {
-      const settings = await get_api<{ move_enabled?: boolean }>(
-        "/api/settings/general",
+      const settings = await get_api<{
+        move_destination_movies?: string | null;
+        move_destination_series?: string | null;
+      }>("/api/settings/general");
+      moveEnabled = Boolean(
+        settings?.move_destination_movies?.trim() ||
+        settings?.move_destination_series?.trim(),
       );
-      moveEnabled = settings?.move_enabled ?? false;
     } catch {
       // non critical (move button simply won't appear)
     }
@@ -1004,11 +999,28 @@
           : ""}?</AlertDialog.Title
       >
       <AlertDialog.Description>
-        This will permanently delete {selectedEntries.length} item{selectedEntries.length !==
-        1
-          ? "s"
-          : ""} from all configured services and remove the files from disk. This
-        cannot be undone.
+        {#if selectedDeleteMoveCount === selectedEntries.length}
+          All selected items will be moved to the configured destination because
+          their matched rule has Move Instead of Delete enabled. Files will not
+          be deleted from disk.
+        {:else if selectedDeleteMoveCount > 0}
+          {selectedDeleteMoveCount} selected item{selectedDeleteMoveCount === 1
+            ? ""
+            : "s"} will be moved to the configured destination because a matched rule
+          has Move Instead of Delete enabled. The remaining {selectedEntries.length -
+            selectedDeleteMoveCount} item{selectedEntries.length -
+            selectedDeleteMoveCount ===
+          1
+            ? ""
+            : "s"} will be permanently deleted. This cannot be undone for deleted
+          files.
+        {:else}
+          This will permanently delete {selectedEntries.length} item{selectedEntries.length !==
+          1
+            ? "s"
+            : ""} from all configured services and remove the files from disk. This
+          cannot be undone.
+        {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>
@@ -1034,7 +1046,12 @@
       <AlertDialog.Title>Delete Permanently?</AlertDialog.Title>
       <AlertDialog.Description>
         {#if deleteTarget}
-          {#if deleteTarget.episode_number != null}
+          {#if deleteWillMove(deleteTarget)}
+            This matched rule uses Move Instead of Delete. <strong
+              >{deleteTarget.media_title}</strong
+            > will be moved to the configured destination folder and removed from
+            the media server instead of deleting the file.
+          {:else if deleteTarget.episode_number != null}
             Permanently delete episode <strong
               >S{String(deleteTarget.season_number ?? 0).padStart(
                 2,
@@ -1430,7 +1447,6 @@
                 <Button
                   size="sm"
                   class="cursor-pointer bg-amber-500/80 hover:bg-amber-500/60"
-                  disabled={selectedEntriesHaveEpisodeScope}
                   onclick={() => (bulkMoveDialogOpen = true)}
                 >
                   <FolderOutput class="size-4" />
@@ -1438,11 +1454,7 @@
                 </Button>
               </Tooltip.Trigger>
               <Tooltip.Content>
-                <p>
-                  {selectedEntriesHaveEpisodeScope
-                    ? "Episode candidates cannot be moved yet"
-                    : "Move to destination folder"}
-                </p>
+                <p>Move to destination folder</p>
               </Tooltip.Content>
             </Tooltip.Root>
           {/if}

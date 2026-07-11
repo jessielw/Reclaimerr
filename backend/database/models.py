@@ -299,8 +299,7 @@ class GeneralSettings(Base):
         JSON, default_factory=list
     )
 
-    # move settings
-    move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # move destinations
     move_destination_movies: Mapped[str | None] = mapped_column(
         String(1024), default=None
     )
@@ -316,7 +315,6 @@ class GeneralSettings(Base):
     add_arr_import_exclusions_on_delete: Mapped[bool] = mapped_column(
         Boolean, default=True
     )
-    auto_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_delete_movie_delay_days: Mapped[int] = mapped_column(Integer, default=14)
     auto_delete_series_delay_days: Mapped[int] = mapped_column(Integer, default=7)
     application_url: Mapped[str | None] = mapped_column(String(500), default=None)

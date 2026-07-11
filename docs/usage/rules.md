@@ -30,12 +30,21 @@ item. These entries are read-only on the Protected page because changing the
 rule is the source of truth. If a protection rule and a candidate rule match
 the same item, protection always takes precedence.
 
-Cleanup-candidate rules can optionally override the automatic deletion delay.
-Leave the override empty to inherit the global movie or TV delay. Values from
-`0` through `3650` days are supported, with `0` meaning immediately eligible.
-When multiple cleanup-candidate rules match the same item, Reclaimerr uses the
-longest applicable delay so a shorter rule cannot reduce another rule's review
-period.
+Cleanup-candidate rules can optionally enable automatic deletion. Rules that do
+not enable it still create candidates and can populate Leaving Soon
+collections, but the scheduled delete task skips them.
+
+Cleanup-candidate rules can also enable Move Instead of Delete. Delete actions
+for candidates matched by those rules move media to the configured destination
+folder instead of deleting the file. Destination folders are configured in
+General Settings. If multiple matched cleanup rules disagree, move wins.
+
+When automatic deletion is enabled for a rule, the rule can also override the
+review period. Leave the override empty to inherit the default movie or TV
+delay. Values from `0` through `3650` days are supported, with `0` meaning
+immediately eligible. When multiple auto-delete-enabled cleanup rules match the
+same item, Reclaimerr uses the longest applicable delay so a shorter rule
+cannot reduce another rule's review period.
 
 ## Target Scopes
 

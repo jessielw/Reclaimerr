@@ -40,9 +40,7 @@
       : "cursor-pointer rounded-full",
   );
   const iconCls = $derived(compact ? "size-3.5 shrink-0" : "size-4 shrink-0");
-  const canMove = $derived(
-    moveEnabled && entry.episode_id == null && entry.episode_number == null,
-  );
+  const canMove = $derived(moveEnabled);
 </script>
 
 {#if entry.has_pending_request}

@@ -20,3 +20,5 @@ class PostActionWebhookEvent:
     movie_version_id: int | None = None
     season_id: int | None = None
     season_number: int | None = None
+    episode_id: int | None = None
+    episode_number: int | None = None

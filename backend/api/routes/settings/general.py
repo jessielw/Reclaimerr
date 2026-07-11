@@ -23,10 +23,9 @@ from backend.database.models import (
     Series,
     SeriesServiceRef,
     ServiceConfig,
-    TaskSchedule,
     User,
 )
-from backend.enums import MediaType, Service, Task
+from backend.enums import MediaType, Service
 from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
     FavoritesMediaEntryResponse,
@@ -166,24 +165,7 @@ async def update_general_settings(
     current_leaving_soon_title = normalize_leaving_soon_collection_title(
         request.leaving_soon_collection_title
     )
-    was_auto_delete_enabled = bool(settings.auto_delete_enabled)
     was_leaving_soon_enabled = bool(settings.leaving_soon_enabled)
-    should_disable_auto_delete_task = False
-    delete_task_schedule_type = None
-    delete_task_schedule_value = None
-
-    if was_auto_delete_enabled and not request.auto_delete_enabled:
-        delete_task_schedule = (
-            await db.execute(
-                select(TaskSchedule).where(
-                    TaskSchedule.task == Task.DELETE_CLEANUP_CANDIDATES
-                )
-            )
-        ).scalar_one_or_none()
-        if delete_task_schedule is not None and delete_task_schedule.enabled:
-            should_disable_auto_delete_task = True
-            delete_task_schedule_type = delete_task_schedule.schedule_type
-            delete_task_schedule_value = delete_task_schedule.schedule_value
 
     # update fields
     settings.worker_poll_min_seconds = request.worker_poll_min_seconds
@@ -192,7 +174,6 @@ async def update_general_settings(
     settings.post_action_webhooks = [
         w.model_dump(mode="json") for w in request.post_action_webhooks
     ]
-    settings.move_enabled = request.move_enabled
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
@@ -200,7 +181,6 @@ async def update_general_settings(
     settings.add_arr_import_exclusions_on_delete = (
         request.add_arr_import_exclusions_on_delete
     )
-    settings.auto_delete_enabled = request.auto_delete_enabled
     settings.auto_delete_movie_delay_days = request.auto_delete_movie_delay_days
     settings.auto_delete_series_delay_days = request.auto_delete_series_delay_days
     settings.application_url = request.application_url
@@ -226,19 +206,6 @@ async def update_general_settings(
     db.add(settings)
     await db.commit()
     await db.refresh(settings)
-    if (
-        should_disable_auto_delete_task
-        and delete_task_schedule_type is not None
-        and delete_task_schedule_value is not None
-    ):
-        from backend.scheduler import update_task_schedule
-
-        await update_task_schedule(
-            task=Task.DELETE_CLEANUP_CANDIDATES,
-            schedule_type=delete_task_schedule_type,
-            schedule_value=delete_task_schedule_value,
-            enabled=False,
-        )
     invalidate_webhook_config_cache()
     return GeneralSettingsResponse.model_validate(settings)
 

@@ -230,13 +230,6 @@ def _is_episode_scope(model: Any) -> Any:
     return model.episode_id.isnot(None)
 
 
-async def _is_auto_delete_enabled() -> bool:
-    async with async_db() as db:
-        result = await db.execute(select(GeneralSettings.auto_delete_enabled))
-        enabled = result.scalar_one_or_none()
-    return bool(enabled)
-
-
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
         candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
@@ -422,6 +415,9 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 series_delay_days=series_delay_days,
                 now=now,
             )
+            if not policy.is_enabled:
+                blocked_count += 1
+                continue
             if policy.is_eligible:
                 eligible_ids.append(candidate.id)
             else:
@@ -4540,6 +4536,21 @@ def _get_arr_action(
     return resolved_action
 
 
+def _matched_rule_ids_should_move_instead_of_delete(
+    matched_rule_ids: Sequence[int],
+    rules: dict[int, ReclaimRule],
+) -> bool:
+    """Return True when any matched rule ID chooses move over delete."""
+    for rule_id in matched_rule_ids:
+        rule = rules.get(rule_id)
+        if (
+            rule is not None
+            and _rule_action(rule).get("move_instead_of_delete") is True
+        ):
+            return True
+    return False
+
+
 def _managed_tag_for_rule(rule: ReclaimRule) -> str | None:
     """Determine the rec-* tag to manage for a given rule, or None if no tagging."""
     action = _rule_action(rule)
@@ -4854,18 +4865,6 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
     LOG.info("Starting automatic cleanup candidate deletion")
 
     async with track_task_execution(Task.DELETE_CLEANUP_CANDIDATES):
-        if not await _is_auto_delete_enabled():
-            LOG.info(
-                "Automatic cleanup deletion skipped because it is disabled in General Settings"
-            )
-            return {
-                "eligible": 0,
-                "waiting": 0,
-                "skipped": 0,
-                "deleted": 0,
-                "failed": 0,
-            }
-
         (
             eligible_ids,
             skipped_count,
@@ -5183,6 +5182,8 @@ async def _dispatch_reclaim_event(
     movie_version_id: int | None = None,
     season_id: int | None = None,
     season_number: int | None = None,
+    episode_id: int | None = None,
+    episode_number: int | None = None,
     local_path: str | None = None,
 ) -> None:
     try:
@@ -5205,6 +5206,8 @@ async def _dispatch_reclaim_event(
                 movie_version_id=movie_version_id,
                 season_id=season_id,
                 season_number=season_number,
+                episode_id=episode_id,
+                episode_number=episode_number,
             )
         )
     except Exception as e:
@@ -5477,10 +5480,6 @@ async def _delete_movie_candidates(
             )
             if str(raw).strip()
         }
-        move_enabled = settings_row.move_enabled if settings_row else False
-        move_destination_movies = (
-            settings_row.move_destination_movies if settings_row else None
-        )
         move_path_mappings: list[dict[str, Any]] = (
             settings_row.path_mappings or [] if settings_row else []
         )
@@ -5869,68 +5868,10 @@ async def _delete_movie_candidates(
         LOG.info(f"Deleting {len(batch)} movies via Radarr config {config_id}")
         radarr_ids = [m["radarr_id"] for m in batch]
         try:
-            if (
-                move_enabled
-                and move_destination_movies
-                and move_destination_movies.strip()
-            ):
-                # move files first, then remove library entry without deleting files
-                destination_root = Path(move_destination_movies)
-                batch_movie_ids = {m["movie_id"] for m in batch if m["movie_id"]}
-                async with async_db() as db:
-                    version_rows = (
-                        (
-                            await db.execute(
-                                select(MovieVersion).where(
-                                    MovieVersion.movie_id.in_(batch_movie_ids)
-                                )
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-                versions_by_movie: dict[int, list[MovieVersion]] = {}
-                for ver in version_rows:
-                    if ver.movie_id:
-                        versions_by_movie.setdefault(ver.movie_id, []).append(ver)
-                for m in batch:
-                    mid = m["movie_id"]
-                    if not mid:
-                        continue
-                    for ver in versions_by_movie.get(mid, []):
-                        if not ver.path:
-                            continue
-                        local_path = resolve_path(
-                            ver.path,
-                            move_path_mappings,
-                            service_type=ver.service.value,
-                        )
-                        if local_path:
-                            try:
-                                move_media(local_path, destination_root)
-                                LOG.info(
-                                    f"Moved '{m['title']}' to {destination_root} "
-                                    f"before Radarr library removal"
-                                )
-                            except Exception as move_err:
-                                LOG.warning(
-                                    f"Pre-delete move failed for '{m['title']}': {move_err}"
-                                )
-                        else:
-                            LOG.warning(
-                                f"Cannot resolve path for '{m['title']}' ({ver.path!r}); "
-                                f"skipping pre-delete move"
-                            )
-                await client.delete_movies(
-                    radarr_ids,
-                    delete_files=False,
-                    add_import_exclusion=add_arr_import_exclusions_on_delete,
-                )
-            else:
-                await client.delete_movies(
-                    radarr_ids,
-                    add_import_exclusion=add_arr_import_exclusions_on_delete,
-                )
+            await client.delete_movies(
+                radarr_ids,
+                add_import_exclusion=add_arr_import_exclusions_on_delete,
+            )
             movies_to_delete.extend(batch)
             radarr_refresh_after_delete.setdefault(config_id, set()).update(radarr_ids)
         except Exception as e:
@@ -6402,14 +6343,6 @@ async def _delete_series_candidates(
             )
             if str(raw).strip()
         }
-        move_enabled = settings_row.move_enabled if settings_row else False
-        move_destination_series = (
-            settings_row.move_destination_series if settings_row else None
-        )
-        move_path_mappings: list[dict[str, Any]] = (
-            settings_row.path_mappings or [] if settings_row else []
-        )
-
     # get all series candidates from database
     async with async_db() as db:
         query = (
@@ -6565,61 +6498,11 @@ async def _delete_series_candidates(
         LOG.info(f"Deleting {len(batch)} series via Sonarr config {config_id}")
         try:
             for series_info in batch:
-                if (
-                    move_enabled
-                    and move_destination_series
-                    and move_destination_series.strip()
-                ):
-                    # move series directory first, then remove Sonarr library entry only
-                    destination_root = Path(move_destination_series)
-                    series_id = series_info["series_id"]
-                    async with async_db() as db:
-                        ref_result = await db.execute(
-                            select(SeriesServiceRef)
-                            .where(SeriesServiceRef.series_id == series_id)
-                            .where(SeriesServiceRef.path.isnot(None))
-                            .limit(1)
-                        )
-                        series_ref = ref_result.scalars().first()
-                    if series_ref and series_ref.path:
-                        local_series_path = resolve_path(
-                            series_ref.path,
-                            move_path_mappings,
-                            service_type=series_ref.service.value,
-                        )
-                        if local_series_path:
-                            try:
-                                move_directory(local_series_path, destination_root)
-                                LOG.info(
-                                    f"Moved '{series_info['title']}' to "
-                                    f"{destination_root} before Sonarr library removal"
-                                )
-                            except Exception as move_err:
-                                LOG.warning(
-                                    f"Pre-delete move failed for "
-                                    f"'{series_info['title']}': {move_err}"
-                                )
-                        else:
-                            LOG.warning(
-                                f"Cannot resolve path for '{series_info['title']}' "
-                                f"({series_ref.path!r}); skipping pre-delete move"
-                            )
-                    else:
-                        LOG.warning(
-                            f"No path available for '{series_info['title']}'; "
-                            f"skipping pre-delete move"
-                        )
-                    await client.delete_series(
-                        series_info["sonarr_id"],
-                        delete_files=False,
-                        add_import_exclusion=add_arr_import_exclusions_on_delete,
-                    )
-                else:
-                    await client.delete_series(
-                        series_info["sonarr_id"],
-                        delete_files=True,
-                        add_import_exclusion=add_arr_import_exclusions_on_delete,
-                    )
+                await client.delete_series(
+                    series_info["sonarr_id"],
+                    delete_files=True,
+                    add_import_exclusion=add_arr_import_exclusions_on_delete,
+                )
             series_to_delete.extend(batch)
             sonarr_refresh_after_delete.setdefault(config_id, set()).update(
                 {int(s["sonarr_id"]) for s in batch}
@@ -8178,48 +8061,87 @@ async def _delete_specific_candidates_impl(
 
     restrict = frozenset(candidate_ids)
 
-    # look up which types we're dealing with so we only invoke relevant paths
+    # look up which types/actions we're dealing with so we only invoke relevant paths
     async with async_db() as db:
         result = await db.execute(
-            select(ReclaimCandidate.id, ReclaimCandidate.media_type).where(
-                ReclaimCandidate.id.in_(restrict)
-            )
+            select(
+                ReclaimCandidate.id,
+                ReclaimCandidate.media_type,
+                ReclaimCandidate.matched_rule_ids,
+            ).where(ReclaimCandidate.id.in_(restrict))
         )
         rows = result.all()
 
     found_ids = {r[0] for r in rows}
-    types = {r[1] for r in rows}
+    all_rule_ids = {
+        rule_id for _id, _type, rule_ids in rows for rule_id in (rule_ids or [])
+    }
+    rules_by_id: dict[int, ReclaimRule] = {}
+    if all_rule_ids:
+        async with async_db() as db:
+            rules_by_id = {
+                rule.id: rule
+                for rule in (
+                    await db.execute(
+                        select(ReclaimRule).where(ReclaimRule.id.in_(all_rule_ids))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+    move_ids = {
+        candidate_id
+        for candidate_id, _media_type, rule_ids in rows
+        if _matched_rule_ids_should_move_instead_of_delete(rule_ids or [], rules_by_id)
+    }
+    delete_ids = found_ids - move_ids
+    delete_restrict = frozenset(delete_ids)
+    types = {
+        media_type
+        for candidate_id, media_type, _rule_ids in rows
+        if candidate_id in delete_ids
+    }
 
     LOG.info(
         f"Manual deletion of {len(found_ids)} candidate(s) requested "
-        f"(movies={MediaType.MOVIE in types}, series={MediaType.SERIES in types})"
+        f"({len(move_ids)} move-routed, {len(delete_ids)} delete-routed, "
+        f"movies={MediaType.MOVIE in types}, series={MediaType.SERIES in types})"
     )
 
-    deleted = 0
+    moved = 0
+    move_failed = 0
+    if move_ids:
+        moved, move_failed = await _move_specific_candidates_impl(
+            list(move_ids), approved_by=approved_by
+        )
+
+    delete_deleted = 0
     if MediaType.MOVIE in types and (
         service_manager.radarr or service_manager.main_media_server
     ):
-        deleted += await _delete_movie_candidates(
-            restrict_to_ids=restrict, approved_by=approved_by
+        delete_deleted += await _delete_movie_candidates(
+            restrict_to_ids=delete_restrict, approved_by=approved_by
         )
 
     if MediaType.SERIES in types and (
         service_manager.sonarr or service_manager.main_media_server
     ):
-        deleted += await _delete_series_candidates(
-            restrict_to_ids=restrict, approved_by=approved_by
+        delete_deleted += await _delete_series_candidates(
+            restrict_to_ids=delete_restrict, approved_by=approved_by
         )
-        deleted += await _delete_season_candidates(
-            restrict_to_ids=restrict, approved_by=approved_by
+        delete_deleted += await _delete_season_candidates(
+            restrict_to_ids=delete_restrict, approved_by=approved_by
         )
-        deleted += await _delete_episode_candidates(
-            restrict_to_ids=restrict, approved_by=approved_by
+        delete_deleted += await _delete_episode_candidates(
+            restrict_to_ids=delete_restrict, approved_by=approved_by
         )
 
-    failed = max(0, len(found_ids) - deleted)
-    if failed:
+    delete_failed = max(0, len(delete_ids) - delete_deleted)
+    failed = move_failed + delete_failed
+    if delete_failed:
         await _mark_unexplained_delete_failures(
-            found_ids,
+            delete_ids,
             (
                 "Candidate delete failed before a scoped handler could complete. "
                 "The candidate may be stale, have an invalid scope, lack an active "
@@ -8227,8 +8149,9 @@ async def _delete_specific_candidates_impl(
                 "specific error."
             ),
         )
-    LOG.info(f"Manual deletion complete: {deleted} deleted, {failed} failed")
-    return deleted, failed
+    processed = moved + delete_deleted
+    LOG.info(f"Manual deletion complete: {processed} processed, {failed} failed")
+    return processed, failed
 
 
 async def move_specific_candidates(
@@ -8272,23 +8195,27 @@ async def _move_specific_candidates_impl(
     if not candidate_ids:
         return 0, 0
 
-    # load move settings + path mappings from DB
+    # load move destinations + path mappings from DB
     async with async_db() as db:
         result = await db.execute(select(GeneralSettings))
         gen_settings = result.scalars().first()
 
-    if not gen_settings or not gen_settings.move_enabled:
-        LOG.warning("move_specific_candidates called but move is not enabled")
-        return 0, len(candidate_ids)
-
-    destination_movies_str = gen_settings.move_destination_movies or ""
-    destination_series_str = gen_settings.move_destination_series or ""
-    path_mappings = gen_settings.path_mappings or []
-    favorites_ignore_enabled = bool(gen_settings.favorites_ignore_enabled)
-    favorites_protect_all_users = bool(gen_settings.favorites_protect_all_users)
+    destination_movies_str = (
+        gen_settings.move_destination_movies if gen_settings else None
+    ) or ""
+    destination_series_str = (
+        gen_settings.move_destination_series if gen_settings else None
+    ) or ""
+    path_mappings = (gen_settings.path_mappings if gen_settings else None) or []
+    favorites_ignore_enabled = bool(
+        gen_settings.favorites_ignore_enabled if gen_settings else False
+    )
+    favorites_protect_all_users = bool(
+        gen_settings.favorites_protect_all_users if gen_settings else False
+    )
     favorites_usernames = {
         _normalize_favorites_username(str(raw))
-        for raw in (gen_settings.favorites_usernames or [])
+        for raw in ((gen_settings.favorites_usernames or []) if gen_settings else [])
         if str(raw).strip()
     }
 
@@ -8407,7 +8334,12 @@ async def _move_specific_candidates_impl(
                 continue
 
             # move the file + same stem siblings to destination
-            dest = move_media(local_path, destination_root)
+            dest = move_media(
+                local_path,
+                destination_root,
+                path_mappings,
+                service_type=version.service.value,
+            )
 
             # unmonitor in Radarr so it doesn't re-queue a download
             radarr_clients = service_manager.radarr_clients()
@@ -8546,6 +8478,7 @@ async def _move_specific_candidates_impl(
     if series_candidates:
         series_ids = list({c.series_id for c in series_candidates if c.series_id})
         season_ids = [c.season_id for c in series_candidates if c.season_id]
+        episode_ids = [c.episode_id for c in series_candidates if c.episode_id]
 
         async with async_db() as db:
             series_result = await db.execute(
@@ -8563,6 +8496,13 @@ async def _move_specific_candidates_impl(
                     select(Season).where(Season.id.in_(season_ids))
                 )
                 seasons_map = {s.id: s for s in seasons_result.scalars().all()}
+
+            episodes_map: dict[int, Episode] = {}
+            if episode_ids:
+                episodes_result = await db.execute(
+                    select(Episode).where(Episode.id.in_(episode_ids))
+                )
+                episodes_map = {e.id: e for e in episodes_result.scalars().all()}
 
             # load arr refs for Sonarr unmonitor routing
             arr_refs_result = await db.execute(
@@ -8626,22 +8566,47 @@ async def _move_specific_candidates_impl(
 
                 is_episode = candidate.episode_id is not None
                 is_season = candidate.season_id is not None and not is_episode
+                episode = (
+                    episodes_map.get(candidate.episode_id)
+                    if is_episode and candidate.episode_id
+                    else None
+                )
                 season = (
                     seasons_map.get(candidate.season_id)
-                    if is_season and candidate.season_id
+                    if (is_season or is_episode) and candidate.season_id
                     else None
                 )
                 season_folder: Path | None = None
 
+                local_episode_path = None
                 if is_episode:
-                    LOG.warning(
-                        f"move_specific_candidates: episode-scoped candidate {candidate.id} "
-                        f"is not supported by move"
+                    if episode is None or not episode.path:
+                        LOG.warning(
+                            f"move_specific_candidates: episode path missing "
+                            f"(candidate {candidate.id})"
+                        )
+                        failed += 1
+                        continue
+                    local_episode_path = resolve_path(
+                        episode.path,
+                        path_mappings,
+                        service_type=series_ref.service.value,
                     )
-                    failed += 1
-                    continue
+                    if local_episode_path is None:
+                        LOG.warning(
+                            f"move_specific_candidates: cannot resolve episode path "
+                            f"for '{series_obj.title}' (candidate {candidate.id})"
+                        )
+                        failed += 1
+                        continue
+                    dest = move_media(
+                        local_episode_path,
+                        destination_root,
+                        path_mappings,
+                        service_type=series_ref.service.value,
+                    )
 
-                if is_season:
+                elif is_season:
                     if season is None:
                         LOG.warning(
                             f"move_specific_candidates: season record missing "
@@ -8679,13 +8644,22 @@ async def _move_specific_candidates_impl(
                             destination_root,
                             episode_paths=season.episode_paths or [],
                             path_mappings=path_mappings,
+                            service_type=series_ref.service.value,
                         )
                     else:
-                        # nest under the series folder name so the destination is readable
-                        series_dest_root = destination_root / local_series_path.name
-                        dest = move_directory(season_folder, series_dest_root)
+                        dest = move_directory(
+                            season_folder,
+                            destination_root,
+                            path_mappings,
+                            service_type=series_ref.service.value,
+                        )
                 else:
-                    dest = move_directory(local_series_path, destination_root)
+                    dest = move_directory(
+                        local_series_path,
+                        destination_root,
+                        path_mappings,
+                        service_type=series_ref.service.value,
+                    )
 
                 # unmonitor in Sonarr so it doesn't re-queue a download
                 sonarr_clients = service_manager.sonarr_clients()
@@ -8696,6 +8670,8 @@ async def _move_specific_candidates_impl(
                         refs = series_arr_refs.get(candidate.series_id, [])
                         for config_id, arr_s_id, _arr_s_path in refs:
                             if config_id not in sonarr_clients or arr_s_id is None:
+                                continue
+                            if is_episode:
                                 continue
                             if is_season and season:
                                 await sonarr_clients[
@@ -8732,7 +8708,16 @@ async def _move_specific_candidates_impl(
                 try:
                     main_service = service_manager.main_media_server
                     if main_service and series_ref:
-                        if is_season and season:
+                        if is_episode and episode:
+                            if main_service is service_manager.jellyfin:
+                                episode_service_id = episode.jellyfin_episode_id
+                            elif main_service is service_manager.emby:
+                                episode_service_id = episode.emby_episode_id
+                            else:
+                                episode_service_id = episode.plex_rating_key
+                            if episode_service_id:
+                                await main_service.delete_item(episode_service_id)
+                        elif is_season and season:
                             # delete the season item from the media server
                             if main_service is service_manager.jellyfin:
                                 season_service_id = season.jellyfin_season_id
@@ -8761,7 +8746,57 @@ async def _move_specific_candidates_impl(
                     if cand:
                         await db.delete(cand)
 
-                    if is_season and season:
+                    if is_episode and episode:
+                        series_db = (
+                            await db.execute(
+                                select(Series).where(Series.id == candidate.series_id)
+                            )
+                        ).scalar_one_or_none()
+                        season_db = (
+                            await db.execute(
+                                select(Season).where(Season.id == candidate.season_id)
+                            )
+                        ).scalar_one_or_none()
+                        if series_db and series_db.size and episode.size:
+                            series_db.size = max(0, series_db.size - episode.size)
+                        if season_db and season_db.size and episode.size:
+                            season_db.size = max(0, season_db.size - episode.size)
+
+                        episode_db = (
+                            await db.execute(
+                                select(Episode).where(
+                                    Episode.id == candidate.episode_id
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if episode_db:
+                            await db.execute(
+                                delete(ReclaimCandidate).where(
+                                    ReclaimCandidate.episode_id == episode_db.id
+                                )
+                            )
+                            await db.execute(
+                                delete(DeleteRequest).where(
+                                    DeleteRequest.episode_id == episode_db.id
+                                )
+                            )
+                            await db.execute(
+                                update(ProtectionRequest)
+                                .where(ProtectionRequest.episode_id == episode_db.id)
+                                .values(episode_id=None)
+                            )
+                            await db.delete(episode_db)
+                            await db.flush()
+                            await _soft_remove_series_if_empty(db, candidate.series_id)
+
+                        ep_label = (
+                            f"S{season.season_number:02d}E{episode.episode_number:02d}"
+                            if season
+                            else f"E{episode.episode_number:02d}"
+                        )
+                        history_name = f"{series_obj.title} {ep_label}"
+                        history_size = episode.size
+                    elif is_season and season:
                         # reduce series size and remove season row
                         series_db = (
                             await db.execute(
@@ -8845,7 +8880,9 @@ async def _move_specific_candidates_impl(
                             media_type=MediaType.SERIES,
                             tmdb_id=series_obj.tmdb_id,
                             name=history_name,
-                            path=series_ref.path,
+                            path=episode.path
+                            if is_episode and episode
+                            else series_ref.path,
                             size=history_size,
                             attributes=_build_reclaim_history_attributes(
                                 season=season if is_season else None
@@ -8859,7 +8896,11 @@ async def _move_specific_candidates_impl(
                 moved += 1
                 LOG.info(f"Moved '{series_obj.title}' to {dest}")
                 event_local_path = (
-                    season_folder if is_season and season else local_series_path
+                    local_episode_path
+                    if is_episode and episode
+                    else season_folder
+                    if is_season and season
+                    else local_series_path
                 )
                 await _dispatch_reclaim_event(
                     action="moved",
@@ -8867,13 +8908,23 @@ async def _move_specific_candidates_impl(
                     title=series_obj.title,
                     tmdb_id=series_obj.tmdb_id,
                     candidate_id=candidate.id,
-                    path=season.path if is_season and season else series_ref.path,
+                    path=episode.path
+                    if is_episode and episode
+                    else season.path
+                    if is_season and season
+                    else series_ref.path,
                     local_path=str(event_local_path),
                     destination_path=str(dest),
                     service_type=series_ref.service,
-                    season_id=season.id if is_season and season else None,
+                    season_id=season.id
+                    if (is_season or is_episode) and season
+                    else None,
                     season_number=season.season_number
-                    if is_season and season
+                    if (is_season or is_episode) and season
+                    else None,
+                    episode_id=episode.id if is_episode and episode else None,
+                    episode_number=episode.episode_number
+                    if is_episode and episode
                     else None,
                 )
 

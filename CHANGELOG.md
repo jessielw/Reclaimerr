@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-11
+
+### Added
+
+- Rule editor now has an explicit "Automatic Deletion" switch, with delay settings only shown when enabled
+- Added the ability to move episodes as this feature was previously blocked to Movie/Season/Series only
+
+### Changed
+
+- Verbiage for movie action in general settings
+- **Auto delete** is now controlled **per rule** instead of **globally**:
+  - Delete Cleanup Candidates task can now run normally, but it only deletes candidates produced by rules that opted into auto-delete
+  - Candidates whose matched rule does not enable auto-delete now show Not enabled for matched rule(s) instead of implying a pending delete date
+  - Default review periods remain global defaults, but they are just defaults for rules that opt into auto-delete
+  - Updated docs with these changes
+- **Move** is now controlled **per rule** instead of **globally**:
+  - If this was previously enabled ALL of your rules will be migrated with this set to enabled automatically but all new rules will utilize the default of disabled
+  - Manual Delete also honors rule-level move behavior
+  - Candidate API now exposes delete_operation: "delete" | "move" so the UI can explain what Delete will do
+  - Updated docs with these changes
+
+### Fixed
+
+- Moving files instead of delete would sometimes result in the folder structure not being retained
+  - Move helpers now preserve folder structure under the matched path mapping root in
+  - Movie moves no longer flatten into the destination root
+  - If no path mapping matches, file moves preserve the immediate media folder instead of dropping the file directly into the destination
+  - Existing destination files/directories are no longer overwritten; the move fails safely
+  - Added unit testing for movie structure preservation, fallback behavior, collision safety, directory moves, and flat season moves
+
+### Removed
+
+- Global auto delete setting has been removed from General settings
+
 ## [0.1.11] - 2026-07-10
 
 ### Added

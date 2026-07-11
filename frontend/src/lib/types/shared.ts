@@ -279,13 +279,11 @@ export interface GeneralSettings {
   worker_poll_max_seconds: number | null;
   path_mappings: PathMapping[];
   post_action_webhooks: PostActionWebhookConfig[];
-  move_enabled: boolean;
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
-  auto_delete_enabled: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
   application_url: string | null;
@@ -436,7 +434,9 @@ export interface RuleAction {
   arr_tag: string | null;
   arr_action: "delete" | "unmonitor";
   media_server_action: "delete" | null;
+  auto_delete_enabled: boolean;
   auto_delete_delay_days: number | null;
+  move_instead_of_delete: boolean;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;
 }
@@ -1007,6 +1007,7 @@ export interface ReclaimCandidateEntry {
   auto_delete_eligible_at: string;
   auto_delete_is_eligible: boolean;
   auto_delete_is_active: boolean;
+  delete_operation: "delete" | "move";
   // populated for season level candidates
   season_id: number | null;
   season_number: number | null;
@@ -1034,7 +1035,7 @@ export interface ReclaimCandidateEntry {
 
 export type RulePreviewEntry = Omit<
   ReclaimCandidateEntry,
-  "id" | "has_pending_request" | "created_at"
+  "id" | "has_pending_request" | "created_at" | "delete_operation"
 >;
 
 export interface RulePreviewMetadata {
