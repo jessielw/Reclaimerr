@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -621,6 +622,7 @@ class CandidateEntry(CandidateEntryBase):
     auto_delete_eligible_at: str
     auto_delete_is_eligible: bool
     auto_delete_is_active: bool
+    delete_operation: Literal["delete", "move"] = "delete"
 
 
 class RulePreviewEntry(CandidateEntryBase):

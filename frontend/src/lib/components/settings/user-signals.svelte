@@ -35,7 +35,6 @@
     worker_poll_max_seconds: null,
     path_mappings: [],
     post_action_webhooks: [],
-    move_enabled: false,
     move_destination_movies: null,
     move_destination_series: null,
     media_server_fallback_enabled: true,

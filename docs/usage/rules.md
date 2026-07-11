@@ -34,6 +34,11 @@ Cleanup-candidate rules can optionally enable automatic deletion. Rules that do
 not enable it still create candidates and can populate Leaving Soon
 collections, but the scheduled delete task skips them.
 
+Cleanup-candidate rules can also enable Move Instead of Delete. Delete actions
+for candidates matched by those rules move media to the configured destination
+folder instead of deleting the file. Destination folders are configured in
+General Settings. If multiple matched cleanup rules disagree, move wins.
+
 When automatic deletion is enabled for a rule, the rule can also override the
 review period. Leave the override empty to inherit the default movie or TV
 delay. Values from `0` through `3650` days are supported, with `0` meaning

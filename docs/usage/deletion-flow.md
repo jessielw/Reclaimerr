@@ -6,9 +6,13 @@ Scheduled automatic deletion only applies to candidates from rules that
 explicitly enable automatic deletion. It then applies the candidate's review
 period. The default movie and TV delays can be overridden by auto-delete-enabled
 candidate rules, and the longest delay from all matching opted-in rules wins.
-Candidates remain visible and tagged while waiting; Reclaimerr does not move
-them to a quarantine folder. Manual delete and move actions are immediate and
-do not use this delay.
+Candidates remain visible and tagged while waiting. Manual delete and move
+actions are immediate and do not use this delay.
+
+Cleanup-candidate rules can also enable **Move Instead of Delete**. When a
+delete action runs for one of those candidates, Reclaimerr moves the file or
+folder to the configured destination and removes the source record instead of
+deleting the file. If multiple matched rules disagree, move wins over delete.
 
 When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 movie or series from its managed Plex, Jellyfin, and Emby collections. This
@@ -22,7 +26,7 @@ collections so failed or partially completed actions remain represented.
 | Mode                | Behavior                                                                        |
 | ------------------- | ------------------------------------------------------------------------------- |
 | `delete`            | Delete through Radarr, Sonarr, or the media server route used for the candidate |
-| `move`              | Move the file to the configured destination and remove the source record        |
+| `move`              | Move to the configured destination and remove the source record                 |
 | `fallback deletion` | Use the media server when ARR cannot handle the delete path                     |
 
 ## Routing Order
@@ -47,6 +51,7 @@ collections so failed or partially completed actions remain represented.
 - `Default ARR Delete Behavior`
 - `Allow Media Server Fallback Deletion`
 - `Add Arr Import List Exclusions on Delete`
+- `Move Destination Folders`
 
 ## Related Pages
 

@@ -123,6 +123,17 @@ def _candidate_effective_size_expr() -> Any:
     )
 
 
+def _candidate_delete_operation(
+    matched_rule_ids: list[int] | None,
+    rule_actions_by_id: dict[int, dict[str, Any] | None],
+) -> Literal["delete", "move"]:
+    for rule_id in matched_rule_ids or []:
+        action = rule_actions_by_id.get(rule_id) or {}
+        if action.get("move_instead_of_delete") is True:
+            return "move"
+    return "delete"
+
+
 def _apply_candidate_filters(
     query: Any, media_type: MediaType | None, search: str | None
 ) -> Any:
@@ -1915,6 +1926,10 @@ async def get_candidates(
                 ),
                 auto_delete_is_eligible=auto_delete_policy.is_eligible,
                 auto_delete_is_active=auto_delete_policy.is_enabled,
+                delete_operation=_candidate_delete_operation(
+                    cast(list[int], c.matched_rule_ids),
+                    candidate_rule_actions_by_id,
+                ),
                 season_id=c.season_id,
                 season_number=row.season_number,
                 series_title=row.series_title if c.season_id is not None else None,

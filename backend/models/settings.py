@@ -325,8 +325,7 @@ class GeneralSettingsResponse(BaseModel):
     # post action webhooks for delete/move integrations (Autopulse, scripts, etc.)
     post_action_webhooks: list[PostActionWebhookConfig] = Field(default_factory=list)
 
-    # move settings
-    move_enabled: bool = False
+    # move destinations
     move_destination_movies: str | None = None
     move_destination_series: str | None = None
 

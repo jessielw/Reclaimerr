@@ -6,8 +6,8 @@ set of environment variables for the runtime container or desktop process.
 ## Core Settings Areas
 
 - **Media servers** - connect Plex, Jellyfin, Emby, Radarr, and Sonarr
-- **General Settings** - path mappings, public application URL, fallback
-  deletion, Leaving Soon, and default auto-delete review periods
+- **General Settings** - path mappings, move destinations, public application
+  URL, fallback deletion, Leaving Soon, and default auto-delete review periods
 - **Tasks** - schedule scans, tagging, syncs, and optional auto-deletion
 - **Notifications** - configure Apprise destinations
 
@@ -66,6 +66,7 @@ instance.
 - `Default ARR Delete Behavior`
 - `Add Arr Import List Exclusions on Delete`
 - `Default Auto-Delete Review Periods`
+- `Move Destination Folders`
 
 ## Resetting The Admin Password
 

@@ -299,8 +299,7 @@ class GeneralSettings(Base):
         JSON, default_factory=list
     )
 
-    # move settings
-    move_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # move destinations
     move_destination_movies: Mapped[str | None] = mapped_column(
         String(1024), default=None
     )

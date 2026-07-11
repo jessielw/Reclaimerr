@@ -10,14 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Rule editor now has an explicit "Automatic Deletion" switch, with delay settings only shown when enabled
+- Added the ability to move episodes as this feature was previously blocked to Movie/Season/Series only
 
 ### Changed
 
 - Verbiage for movie action in general settings
-- Auto delete is now controlled **per rule** instead of **globally**:
+- **Auto delete** is now controlled **per rule** instead of **globally**:
   - Delete Cleanup Candidates task can now run normally, but it only deletes candidates produced by rules that opted into auto-delete
   - Candidates whose matched rule does not enable auto-delete now show Not enabled for matched rule(s) instead of implying a pending delete date
   - Default review periods remain global defaults, but they are just defaults for rules that opt into auto-delete
+  - Updated docs with these changes
+- **Move** is now controlled **per rule** instead of **globally**:
+  - If this was previously enabled ALL of your rules will be migrated with this set to enabled automatically but all new rules will utilize the default of disabled
+  - Manual Delete also honors rule-level move behavior
+  - Candidate API now exposes delete_operation: "delete" | "move" so the UI can explain what Delete will do
+  - Updated docs with these changes
 
 ### Fixed
 

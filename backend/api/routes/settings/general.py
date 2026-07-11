@@ -174,7 +174,6 @@ async def update_general_settings(
     settings.post_action_webhooks = [
         w.model_dump(mode="json") for w in request.post_action_webhooks
     ]
-    settings.move_enabled = request.move_enabled
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled

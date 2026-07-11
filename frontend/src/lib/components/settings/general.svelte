@@ -55,7 +55,6 @@
 
   let pathMappings = $state<PathMapping[]>([]);
   let postActionWebhooks = $state<PostActionWebhookConfig[]>([]);
-  let moveEnabled = $state(false);
   let moveDestinationMovies = $state("");
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
@@ -169,7 +168,6 @@
             headers: w.headers.filter((h) => h.name.trim()),
             timeout_seconds: Number(w.timeout_seconds) || 15,
           })),
-        move_enabled: moveEnabled,
         move_destination_movies: moveDestinationMovies,
         move_destination_series: moveDestinationSeries,
         media_server_fallback_enabled: mediaServerFallbackEnabled,
@@ -384,7 +382,6 @@
         };
         pathMappings = settings.path_mappings ?? [];
         postActionWebhooks = settings.post_action_webhooks ?? [];
-        moveEnabled = settings.move_enabled ?? false;
         moveDestinationMovies = settings.move_destination_movies ?? "";
         moveDestinationSeries = settings.move_destination_series ?? "";
         mediaServerFallbackEnabled =
@@ -1063,53 +1060,50 @@
       {/if}
     </div>
 
-    <!-- move settings -->
+    <!-- move destination settings -->
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
-      <div class="flex items-center justify-between mb-1">
-        <h3 class="font-semibold text-foreground">Move Instead of Delete</h3>
-        <Switch id="moveEnabled" bind:checked={moveEnabled} />
-      </div>
+      <h3 class="font-semibold text-foreground mb-1">
+        Move Destination Folders
+      </h3>
       <p class="text-muted-foreground text-sm mb-3">
-        When enabled, reclaim actions will move media files to a destination
-        folder instead of deleting them, allowing manual review before permanent
-        removal.
+        Configure where moved cleanup candidates are placed. Automatic
+        move-instead-of-delete behavior is enabled per cleanup rule.
       </p>
 
-      {#if moveEnabled}
-        <div class="grid gap-4 md:grid-cols-2">
-          <div>
-            <Label for="moveDestinationMovies" class="mb-2">
-              <span class="text-sm text-foreground">Movies Destination</span>
-            </Label>
-            <Input
-              id="moveDestinationMovies"
-              name="moveDestinationMovies"
-              type="text"
-              class="input-hover-el text-foreground placeholder:text-muted-foreground font-mono"
-              placeholder="/mnt/data/reclaimed/movies"
-              bind:value={moveDestinationMovies}
-            />
-          </div>
-          <div>
-            <Label for="moveDestinationSeries" class="mb-2">
-              <span class="text-sm text-foreground">Series Destination</span>
-            </Label>
-            <Input
-              id="moveDestinationSeries"
-              name="moveDestinationSeries"
-              type="text"
-              class="input-hover-el text-foreground placeholder:text-muted-foreground font-mono"
-              placeholder="/mnt/data/reclaimed/series"
-              bind:value={moveDestinationSeries}
-            />
-          </div>
+      <div class="grid gap-4 md:grid-cols-2">
+        <div>
+          <Label for="moveDestinationMovies" class="mb-2">
+            <span class="text-sm text-foreground">Movies Destination</span>
+          </Label>
+          <Input
+            id="moveDestinationMovies"
+            name="moveDestinationMovies"
+            type="text"
+            class="input-hover-el text-foreground placeholder:text-muted-foreground font-mono"
+            placeholder="/mnt/data/reclaimed/movies"
+            bind:value={moveDestinationMovies}
+          />
         </div>
-        <p class="text-xs text-muted-foreground mt-2">
-          Local paths where reclaimed files will be placed. Folder structure is
-          preserved under the matched path mapping root; without a mapping,
-          Reclaimerr preserves the media folder.
-        </p>
-      {/if}
+        <div>
+          <Label for="moveDestinationSeries" class="mb-2">
+            <span class="text-sm text-foreground">Series Destination</span>
+          </Label>
+          <Input
+            id="moveDestinationSeries"
+            name="moveDestinationSeries"
+            type="text"
+            class="input-hover-el text-foreground placeholder:text-muted-foreground font-mono"
+            placeholder="/mnt/data/reclaimed/series"
+            bind:value={moveDestinationSeries}
+          />
+        </div>
+      </div>
+      <p class="text-xs text-muted-foreground mt-2">
+        Local paths where reclaimed files will be placed. Folder structure is
+        preserved under the matched path mapping root; without a mapping,
+        Reclaimerr preserves the media folder. Manual move actions are available
+        when the relevant destination is configured.
+      </p>
     </div>
 
     <!-- media server fallback deletion -->

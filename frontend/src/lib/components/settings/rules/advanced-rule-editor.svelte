@@ -99,6 +99,9 @@
   );
   let tagEnabled = $state(initial.action?.tag_enabled ?? false);
   let autoDeleteEnabled = $state(initial.action?.auto_delete_enabled ?? false);
+  let moveInsteadOfDelete = $state(
+    initial.action?.move_instead_of_delete ?? false,
+  );
   let arrTag = $state(initial.action?.arr_tag ?? "");
   let autoDeleteDelayDays = $state(
     initial.action?.auto_delete_delay_days?.toString() ?? "",
@@ -636,6 +639,8 @@
             outcome === "candidate" && autoDeleteEnabled
               ? autoDeleteDelay
               : null,
+          move_instead_of_delete:
+            outcome === "candidate" ? moveInsteadOfDelete : false,
           radarr_service_config_id:
             outcome === "candidate" && targetScope === "movie_version"
               ? radarrServiceConfigId
@@ -1048,6 +1053,23 @@
           scheduled auto-delete will skip them until this rule is opted in.
         </p>
       {/if}
+    </div>
+
+    <div class="rounded-lg border border-border bg-card p-5 space-y-3">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <h3 class="font-semibold text-foreground">Move Instead of Delete</h3>
+          <p class="mt-1 text-sm text-muted-foreground">
+            Move this rule's candidates to the configured destination folder
+            when a delete action runs. If disabled, delete actions remove files.
+          </p>
+        </div>
+        <Switch id="moveInsteadOfDelete" bind:checked={moveInsteadOfDelete} />
+      </div>
+      <p class="text-xs text-muted-foreground">
+        Destination folders are configured in General Settings. If multiple
+        matched rules disagree, move wins over delete.
+      </p>
     </div>
 
     <div class="rounded-lg border border-border bg-card p-5 space-y-4">
