@@ -103,7 +103,7 @@
     initial.action?.move_instead_of_delete ?? false,
   );
   let arrTag = $state(initial.action?.arr_tag ?? "");
-  let autoDeleteDelayDays = $state(
+  let autoDeleteDelayDays = $state<string | number>(
     initial.action?.auto_delete_delay_days?.toString() ?? "",
   );
 
@@ -607,8 +607,9 @@
   const save = async () => {
     saving = true;
     try {
-      const autoDeleteDelay = autoDeleteDelayDays.trim()
-        ? Number(autoDeleteDelayDays)
+      const rawAutoDeleteDelay = String(autoDeleteDelayDays).trim();
+      const autoDeleteDelay = rawAutoDeleteDelay
+        ? Number(rawAutoDeleteDelay)
         : null;
       if (
         autoDeleteEnabled &&
