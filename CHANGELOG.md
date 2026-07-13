@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Now aggressively releases RAM back to OS
+  - Windows uses threaded subprocesses for tasks to instantly release RAM back to OS upon completion of task
+  - Unix utilizes asyncio subprocesses for tasks to instantly release ram back to the OS upon completion of tasks
 - Optimized task for AniList parsing
   - Skips movie/series updates when AniList values are unchanged
   - Clears stale AniList fields only when needed
