@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Optimized task for AniList parsing
+  - Skips movie/series updates when AniList values are unchanged
+  - Clears stale AniList fields only when needed
+  - Commits changed denormalized rows every 500 updates
+  - Added tests for AniList
 - IMDb ratings now use a separate cache database so large refreshes no longer bulk-write the main app database causing slowdowns/freezes during heavy write periods
 - User last seen is best effort with a long time out if a more important task is currently writing
 
