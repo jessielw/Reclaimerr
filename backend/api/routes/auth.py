@@ -17,11 +17,14 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
     COOKIE_NAME,
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    SESSION_TOUCH_BUSY_TIMEOUT_MS,
     SESSION_TTL_SECONDS,
     build_session_expires_at,
     create_access_token,
@@ -33,6 +36,7 @@ from backend.core.auth import (
     verify_password,
 )
 from backend.core.encryption import fer_decrypt
+from backend.core.logger import LOG
 from backend.core.oidc import (
     OIDCConfigError,
     OIDCError,
@@ -762,6 +766,9 @@ async def logout(
             payload = decode_token(token)
             session_id = get_session_id_from_payload(payload)
             if session_id is not None:
+                await db.execute(
+                    text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}")
+                )
                 result = await db.execute(
                     select(UserSession).where(UserSession.session_id == session_id)
                 )
@@ -773,6 +780,19 @@ async def logout(
         except HTTPException:
             # invalid/expired tokens are effectively logged out once cookie is removed
             pass
+        except OperationalError:
+            await db.rollback()
+            LOG.debug("Skipped session revocation during logout because SQLite is busy")
+        except Exception:
+            await db.rollback()
+            LOG.debug("Failed to revoke session during logout", exc_info=True)
+        finally:
+            try:
+                await db.execute(
+                    text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+                )
+            except Exception:
+                LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
 
     response.delete_cookie(
         key=COOKIE_NAME,

@@ -6,9 +6,11 @@ import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.database import get_db
@@ -27,6 +29,8 @@ COOKIE_NAME = "access_token"
 SESSION_TTL = timedelta(hours=24)
 SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
 SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
+SESSION_TOUCH_BUSY_TIMEOUT_MS = 250
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -204,13 +208,6 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session has expired"
         )
 
-    if (
-        user_session.last_seen_at is None
-        or (now - ensure_utc(user_session.last_seen_at))
-        >= SESSION_LAST_SEEN_TOUCH_INTERVAL
-    ):
-        user_session.last_seen_at = now
-
     request.state.session_id = session_id
 
     if not user.is_active:
@@ -218,7 +215,45 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled"
         )
 
+    if (
+        user_session.last_seen_at is None
+        or (now - ensure_utc(user_session.last_seen_at))
+        >= SESSION_LAST_SEEN_TOUCH_INTERVAL
+    ):
+        await _touch_user_session_last_seen(db, user_session.id, now)
+
     return user
+
+
+async def _touch_user_session_last_seen(
+    db: AsyncSession, session_row_id: int, now: datetime
+) -> None:
+    """Best-effort session activity write.
+
+    This value is useful account/session metadata, but it should not make normal API
+    requests fail when a heavy SQLite writer is active.
+    """
+    try:
+        await db.execute(text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}"))
+        await db.execute(
+            update(UserSession)
+            .where(UserSession.id == session_row_id)
+            .values(last_seen_at=now)
+        )
+        await db.commit()
+    except OperationalError:
+        await db.rollback()
+        LOG.debug("Skipped session last_seen_at update because SQLite is busy")
+    except Exception:
+        await db.rollback()
+        LOG.debug("Failed to update session last_seen_at", exc_info=True)
+    finally:
+        try:
+            await db.execute(
+                text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+            )
+        except Exception:
+            LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
 
 
 async def require_admin(

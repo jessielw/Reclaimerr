@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - IMDb ratings now use a separate cache database so large refreshes no longer bulk-write the main app database causing slowdowns/freezes during heavy write periods
+- User last seen is best effort with a long time out if a more important task is currently writing
 
 ## [0.2.2] - 2026-07-12
 
