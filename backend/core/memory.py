@@ -25,13 +25,15 @@ def current_memory_snapshot() -> MemorySnapshot:
     return MemorySnapshot(rss_mib=_linux_rss_mib())
 
 
-def log_memory_snapshot(label: str) -> MemorySnapshot:
+def log_memory_snapshot(label: str) -> MemorySnapshot | None:
+    if LOG.logger.level > LOG.LVL.DEBUG.value:
+        return None
     snapshot = current_memory_snapshot()
-    LOG.info(f"Memory {label}: {snapshot.label()}")
+    LOG.debug(f"Memory {label}: {snapshot.label()}")
     return snapshot
 
 
-def cleanup_process_memory(*, context: str) -> MemorySnapshot:
+def cleanup_process_memory(*, context: str) -> MemorySnapshot | None:
     """Collect Python garbage and ask glibc to return free arenas where possible."""
     gc.collect()
     _malloc_trim()
