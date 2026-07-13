@@ -2623,9 +2623,7 @@ def _matches_any_regex(
         ]
     else:
         normalized_values = [_normalize(value) for value in values if _exists(value)]
-    return any(
-        regex.search(value) for regex in compiled for value in normalized_values
-    )
+    return any(regex.search(value) for regex in compiled for value in normalized_values)
 
 
 def _path_basename(path: str | None) -> str | None:
