@@ -10,6 +10,78 @@ from typing import Any
 
 from backend.core.logger import LOG
 
+_MEDIA_FILE_EXTENSIONS = {
+    ".3g2",
+    ".3gp",
+    ".avi",
+    ".divx",
+    ".flv",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".mts",
+    ".ogm",
+    ".ogv",
+    ".rmvb",
+    ".ts",
+    ".vob",
+    ".webm",
+    ".wmv",
+}
+
+_NON_PRIMARY_MEDIA_STEM_TOKENS = {
+    "behindthescenes",
+    "deletedscene",
+    "deletedscenes",
+    "extra",
+    "extras",
+    "featurette",
+    "featurettes",
+    "interview",
+    "interviews",
+    "sample",
+    "scene",
+    "scenes",
+    "short",
+    "shorts",
+    "trailer",
+    "trailers",
+}
+
+_KNOWN_ASSET_DIRECTORY_NAMES = {
+    "behindthescenes",
+    "deletedscene",
+    "deletedscenes",
+    "extra",
+    "extras",
+    "featurette",
+    "featurettes",
+    "interview",
+    "interviews",
+    "sample",
+    "samples",
+    "scene",
+    "scenes",
+    "short",
+    "shorts",
+    "subs",
+    "subtitles",
+    "trailer",
+    "trailers",
+}
+
+
+def _compact_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _name_tokens(value: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", value.lower()) if token]
+
 
 def _mapping_applies_to_scope(
     mapping: Mapping[str, Any],
@@ -523,6 +595,75 @@ def move_directory(
     return dest
 
 
+def _is_media_file(path: Path) -> bool:
+    return path.suffix.lower() in _MEDIA_FILE_EXTENSIONS
+
+
+def _is_known_asset_directory(path: Path) -> bool:
+    return _compact_name(path.name) in _KNOWN_ASSET_DIRECTORY_NAMES
+
+
+def _is_primary_media_candidate(path: Path, primary: Path) -> bool:
+    if not _is_media_file(path):
+        return False
+    if path == primary:
+        return True
+    compact_stem = _compact_name(path.stem)
+    if compact_stem in _NON_PRIMARY_MEDIA_STEM_TOKENS:
+        return False
+    stem_tokens = _name_tokens(path.stem)
+    return not (bool(stem_tokens) and stem_tokens[-1] in _NON_PRIMARY_MEDIA_STEM_TOKENS)
+
+
+def _should_move_parent_directory_for_media(src: Path) -> bool:
+    """Return True when a media file's parent folder appears item-scoped.
+
+    Moving a whole parent folder is desirable for movie folders because it keeps
+    poster images, trailers, extras, and arbitrary sidecars together. It is not
+    safe for mixed folders such as a season folder with many episodes or a movie
+    folder with multiple primary versions, so those fall back to same-stem moves.
+    """
+    parent = src.parent
+    if not parent.is_dir():
+        return False
+
+    try:
+        entries = list(parent.iterdir())
+    except OSError as exc:
+        LOG.debug(f"move_media: could not inspect source directory {parent}: {exc}")
+        return False
+
+    unknown_directories = [
+        entry
+        for entry in entries
+        if entry.is_dir() and not _is_known_asset_directory(entry)
+    ]
+    if unknown_directories:
+        LOG.debug(
+            "move_media: not moving source folder "
+            f"{parent}; contains non-asset subdirectories: "
+            f"{', '.join(entry.name for entry in unknown_directories)}"
+        )
+        return False
+
+    primary_media_files = [
+        entry
+        for entry in entries
+        if entry.is_file() and _is_primary_media_candidate(entry, src)
+    ]
+    if len(primary_media_files) != 1:
+        LOG.debug(
+            "move_media: not moving source folder "
+            f"{parent}; found {len(primary_media_files)} primary media candidate(s)"
+        )
+        return False
+
+    try:
+        return primary_media_files[0].resolve() == src.resolve()
+    except OSError:
+        return primary_media_files[0] == src
+
+
 def move_media(
     src: Path,
     destination_root: Path,
@@ -531,10 +672,11 @@ def move_media(
     service_type: str | None = None,
     service_config_id: int | None = None,
 ) -> Path:
-    """Move *src* into *destination_root*, along with any same stem siblings.
+    """Move *src* into *destination_root* with related files where safe.
 
-    Siblings (subtitles, NFOs, cover images, etc.) share the same filename
-    stem as the primary media file and are moved to the same destination root.
+    If the source folder appears scoped to this one media item, the whole folder
+    is moved so arbitrary sidecars, posters, trailers, and extras are preserved.
+    Mixed folders fall back to moving the primary file plus same-stem siblings.
     The source directory is removed afterward if it becomes empty.
 
     Args:
@@ -549,6 +691,24 @@ def move_media(
     Raises:
         OSError: If the primary file move fails.
     """
+    parent = src.parent
+    if _should_move_parent_directory_for_media(src):
+        moved_parent = move_directory(
+            parent,
+            destination_root,
+            path_mappings,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        )
+        dest = moved_parent / src.name
+        LOG.info(f"move_media: moved source folder {parent} -> {moved_parent}")
+        return dest
+
+    LOG.info(
+        "move_media: source folder is not item-scoped; moving primary file "
+        f"and same-stem siblings only for {src}"
+    )
+
     relative_parent = _destination_relative_parent(
         src,
         path_mappings,
@@ -563,7 +723,6 @@ def move_media(
 
     # move same stem siblings (subtitles, NFOs, images, or whatever we find)
     stem = src.stem
-    parent = src.parent
     if parent.is_dir():
         for sibling in list(parent.iterdir()):
             if sibling.is_file() and sibling.stem == stem:

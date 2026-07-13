@@ -8382,10 +8382,13 @@ async def _move_specific_candidates_impl(
                 except Exception as arr_err:
                     LOG.warning(
                         f"move_specific_candidates: Radarr unmonitor failed for "
-                        f"'{movie.title}': {arr_err}"
+                        f"'{movie.title}' after files were moved; no delete fallback "
+                        f"will be attempted: {arr_err}"
                     )
 
-            # remove the item from the media server (no file deletion)
+            # Remove the item from the media server after the local files have
+            # already been moved. This is intentionally best-effort and never
+            # falls back to the normal destructive delete path.
             try:
                 main_service = service_manager.main_media_server
                 if main_service:
@@ -8394,8 +8397,9 @@ async def _move_specific_candidates_impl(
                     )
             except Exception as svc_err:
                 LOG.warning(
-                    f"move_specific_candidates: service removal failed for "
-                    f"'{movie.title}' after move: {svc_err}"
+                    f"move_specific_candidates: media-server metadata removal failed "
+                    f"for '{movie.title}' after files were moved; no delete fallback "
+                    f"will be attempted: {svc_err}"
                 )
 
             # update DB
@@ -8701,10 +8705,13 @@ async def _move_specific_candidates_impl(
                     except Exception as arr_err:
                         LOG.warning(
                             f"move_specific_candidates: Sonarr unmonitor failed for "
-                            f"'{series_obj.title}': {arr_err}"
+                            f"'{series_obj.title}' after files were moved; no delete "
+                            f"fallback will be attempted: {arr_err}"
                         )
 
-                # remove from media server (no file deletion - already moved)
+                # Remove from the media server after the local files have
+                # already been moved. This is intentionally best-effort and
+                # never falls back to the normal destructive delete path.
                 try:
                     main_service = service_manager.main_media_server
                     if main_service and series_ref:
@@ -8731,8 +8738,9 @@ async def _move_specific_candidates_impl(
                             await main_service.delete_item(series_ref.service_id)
                 except Exception as svc_err:
                     LOG.warning(
-                        f"move_specific_candidates: media server removal failed for "
-                        f"'{series_obj.title}' after move: {svc_err}"
+                        f"move_specific_candidates: media-server metadata removal "
+                        f"failed for '{series_obj.title}' after files were moved; "
+                        f"no delete fallback will be attempted: {svc_err}"
                     )
 
                 # update DB

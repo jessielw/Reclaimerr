@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Move instead of delete now preserves sidecar/folder assets more safely
+  - Item-scoped movie folders move as a folder so posters, subtitles, trailers, extras, and metadata come with the media
+  - Mixed folders, such as season folders or multi-version movie folders, stay conservative and only move the selected file plus same-stem sidecars
+  - Move cleanup logs now make it clear that post-move \*arr/media-server cleanup failures do not fall back to destructive deletion
 - Now aggressively releases RAM back to OS
   - Windows uses threaded subprocesses for tasks to instantly release RAM back to OS upon completion of task
   - Unix utilizes asyncio subprocesses for tasks to instantly release ram back to the OS upon completion of tasks
