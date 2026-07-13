@@ -177,6 +177,7 @@
     is_true: "is true",
     is_false: "is false",
     matches_any_regex: "matches regex",
+    not_matches_any_regex: "does not match regex",
   };
 
   const listOperators = new Set<RuleConditionOperator>([
@@ -189,6 +190,7 @@
     "contains_substring",
     "not_contains_substring",
     "matches_any_regex",
+    "not_matches_any_regex",
   ]);
 
   const valuelessOperators = new Set<RuleConditionOperator>([
@@ -235,6 +237,8 @@
     ...multiValueTextOperators,
     "contains_substring",
     "not_contains_substring",
+    "matches_any_regex",
+    "not_matches_any_regex",
   ];
 
   const libraryOperators: RuleConditionOperator[] = [
@@ -1557,7 +1561,11 @@
     fieldConfig(c.field).kind === "temporal" &&
     !valuelessOperators.has(c.operator);
   const valuePlaceholder = (c: RuleCondition) => {
-    if (c.operator === "matches_any_regex") return "regex patterns…";
+    if (
+      c.operator === "matches_any_regex" ||
+      c.operator === "not_matches_any_regex"
+    )
+      return "regex patterns…";
     if (c.field === "seerr.requested_by_user_ids")
       return "Seerr user IDs (comma-separated)...";
     if (c.field === "playback.usernames")
