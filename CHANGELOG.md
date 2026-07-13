@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added task memory logging and cleanup for heavy sync, cleanup scan, playback, IMDb, and AniList tasks
 - Task execution modes are now explicit, with heavy tasks isolated and lightweight tasks kept inline
 
+### Changed
+
+- IMDb ratings now use a separate cache database so large refreshes no longer bulk-write the main app database causing slowdowns/freezes during heavy write periods
+
 ## [0.2.2] - 2026-07-12
 
 ### Fixed
