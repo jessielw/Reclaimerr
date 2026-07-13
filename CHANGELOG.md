@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mixed folders, such as season folders or multi-version movie folders, stay conservative and only move the selected file plus same-stem sidecars
   - Move cleanup logs now make it clear that post-move \*arr/media-server cleanup failures do not fall back to destructive deletion
 - Now aggressively releases RAM back to OS
-  - Reclaimerr would idle after a while at about 1 GB of ram, this should take it back down to base line after tasks ~180 MBs or ram
+  - Reclaimerr would idle after a while at about 1 GB of ram, this should take it back down to base line after tasks ~180 MBs of ram
   - Windows uses threaded subprocesses for tasks to instantly release RAM back to OS upon completion of task
   - Unix utilizes asyncio subprocesses for tasks to instantly release ram back to the OS upon completion of tasks
 - Optimized task for AniList parsing
