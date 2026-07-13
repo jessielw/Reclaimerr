@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Heavy scheduled tasks now run in short-lived child processes by default to release retained post-task memory back to the OS
+- Added task memory logging and cleanup for heavy sync, cleanup scan, playback, IMDb, and AniList tasks
+- Task execution modes are now explicit, with heavy tasks isolated and lightweight tasks kept inline
+
 ## [0.2.2] - 2026-07-12
 
 ### Fixed

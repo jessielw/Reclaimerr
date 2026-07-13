@@ -102,10 +102,22 @@ async def refresh_anilist_ratings() -> None:
                     series_assignments=series_assignments,
                     anilist_meta_by_id=anilist_meta_by_id,
                 )
+                movie_count = len(movie_assignments)
+                series_count = len(series_assignments)
+                media_count = len(anilist_meta_by_id)
                 LOG.info(
                     "AniList supplemental refresh complete "
-                    f"(movies={len(movie_assignments)}, series={len(series_assignments)}, media={len(anilist_meta_by_id)})"
+                    f"(movies={movie_count}, series={series_count}, media={media_count})"
                 )
+                del mappings
+                del source_to_anilist_ids
+                del movie_assignments
+                del series_assignments
+                del anilist_ids
+                del anilist_meta_by_id
+                del payload
+                del mappings_response
+                del release
         except Exception as exc:
             await _persist_error(state.id, now, str(exc))
             raise

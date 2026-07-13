@@ -428,6 +428,13 @@ class ServiceManager:
         await self.clear_seerr()
         await self.clear_tautulli()
 
+    def clear_transient_caches(self) -> None:
+        """Clear large transient caches on long-lived service clients."""
+        for client in (self._plex, self._main_media_server):
+            clear_method = getattr(client, "clear_transient_caches", None)
+            if callable(clear_method):
+                clear_method()
+
 
 # global manager instance
 service_manager = ServiceManager()

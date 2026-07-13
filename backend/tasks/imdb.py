@@ -74,6 +74,8 @@ async def refresh_imdb_ratings() -> None:
                 content_length=content_length,
                 source_updated_at=source_updated_at,
             )
+            del payload
+            del response
             LOG.info(f"IMDb ratings refresh complete ({processed_rows} rows)")
         except Exception as exc:
             await _persist_error(state.id, now, str(exc))

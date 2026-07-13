@@ -44,7 +44,7 @@ from backend.core.settings import settings
 from backend.core.worker import worker_loop
 from backend.database import close_db, init_db
 from backend.enums import BackgroundJobType
-from backend.jobs import reset_stale_jobs
+from backend.jobs.queue import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.utils.create_admin import create_initial_admin
 

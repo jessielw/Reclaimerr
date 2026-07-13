@@ -7,7 +7,6 @@ from .queue import (
     reset_stale_jobs,
     update_background_job_payload,
 )
-from .runner import run_background_job
 
 __all__ = [
     "enqueue_background_job",
@@ -17,5 +16,4 @@ __all__ = [
     "fail_background_job",
     "reset_stale_jobs",
     "update_background_job_payload",
-    "run_background_job",
 ]
