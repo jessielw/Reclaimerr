@@ -164,6 +164,11 @@ class PlexService:
             pass
         return False
 
+    def clear_transient_caches(self) -> None:
+        """Clear large short-lived caches retained between task runs."""
+        self._history_records_cache.clear()
+        self._history_records_cache_expires_at.clear()
+
     async def delete_item(self, rating_key: str) -> None:
         """Delete an item (movie or series) from Plex.
 

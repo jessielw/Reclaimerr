@@ -28,6 +28,7 @@ ERROR_MSG_MAX_LENGTH = 2000
 ANILIST_BATCH_SIZE = 20
 ANILIST_MIN_INTERVAL_SECONDS = 2.1
 ANILIST_MAX_RETRIES = 5
+DENORMALIZE_COMMIT_BATCH_SIZE = 500
 
 __all__ = ["refresh_anilist_ratings"]
 
@@ -102,10 +103,22 @@ async def refresh_anilist_ratings() -> None:
                     series_assignments=series_assignments,
                     anilist_meta_by_id=anilist_meta_by_id,
                 )
+                movie_count = len(movie_assignments)
+                series_count = len(series_assignments)
+                media_count = len(anilist_meta_by_id)
                 LOG.info(
                     "AniList supplemental refresh complete "
-                    f"(movies={len(movie_assignments)}, series={len(series_assignments)}, media={len(anilist_meta_by_id)})"
+                    f"(movies={movie_count}, series={series_count}, media={media_count})"
                 )
+                del mappings
+                del source_to_anilist_ids
+                del movie_assignments
+                del series_assignments
+                del anilist_ids
+                del anilist_meta_by_id
+                del payload
+                del mappings_response
+                del release
         except Exception as exc:
             await _persist_error(state.id, now, str(exc))
             raise
@@ -327,10 +340,32 @@ async def _persist_denormalized(
     anilist_meta_by_id: dict[int, dict[str, Any]],
 ) -> None:
     async with async_db() as db:
-        movie_rows = (await db.execute(select(Movie.id))).all()
-        for (movie_id,) in movie_rows:
+        movie_rows = (
+            await db.execute(
+                select(
+                    Movie.id,
+                    Movie.anilist_id,
+                    Movie.anilist_score,
+                    Movie.anilist_popularity,
+                    Movie.anilist_favourites,
+                    Movie.anilist_refreshed_at,
+                )
+            )
+        ).all()
+
+        pending_updates = 0
+        for row in movie_rows:
+            movie_id = row.id
             assigned = movie_assignments.get(int(movie_id))
             if assigned is None:
+                if (
+                    row.anilist_id is None
+                    and row.anilist_score is None
+                    and row.anilist_popularity is None
+                    and row.anilist_favourites is None
+                    and row.anilist_refreshed_at is None
+                ):
+                    continue
                 await db.execute(
                     sql_update(Movie)
                     .where(Movie.id == movie_id)
@@ -342,25 +377,64 @@ async def _persist_denormalized(
                         anilist_refreshed_at=None,
                     )
                 )
+                pending_updates += 1
+                if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                    await db.commit()
+                    pending_updates = 0
                 continue
 
             meta = anilist_meta_by_id.get(assigned, {})
+            next_score = _coerce_int(meta.get("score"))
+            next_popularity = _coerce_int(meta.get("popularity"))
+            next_favourites = _coerce_int(meta.get("favourites"))
+            if (
+                row.anilist_id == assigned
+                and row.anilist_score == next_score
+                and row.anilist_popularity == next_popularity
+                and row.anilist_favourites == next_favourites
+                and row.anilist_refreshed_at is not None
+            ):
+                continue
             await db.execute(
                 sql_update(Movie)
                 .where(Movie.id == movie_id)
                 .values(
                     anilist_id=assigned,
-                    anilist_score=_coerce_int(meta.get("score")),
-                    anilist_popularity=_coerce_int(meta.get("popularity")),
-                    anilist_favourites=_coerce_int(meta.get("favourites")),
+                    anilist_score=next_score,
+                    anilist_popularity=next_popularity,
+                    anilist_favourites=next_favourites,
                     anilist_refreshed_at=now,
                 )
             )
+            pending_updates += 1
+            if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                await db.commit()
+                pending_updates = 0
 
-        series_rows = (await db.execute(select(Series.id))).all()
-        for (series_id,) in series_rows:
+        series_rows = (
+            await db.execute(
+                select(
+                    Series.id,
+                    Series.anilist_id,
+                    Series.anilist_score,
+                    Series.anilist_popularity,
+                    Series.anilist_favourites,
+                    Series.anilist_refreshed_at,
+                )
+            )
+        ).all()
+        for row in series_rows:
+            series_id = row.id
             assigned = series_assignments.get(int(series_id))
             if assigned is None:
+                if (
+                    row.anilist_id is None
+                    and row.anilist_score is None
+                    and row.anilist_popularity is None
+                    and row.anilist_favourites is None
+                    and row.anilist_refreshed_at is None
+                ):
+                    continue
                 await db.execute(
                     sql_update(Series)
                     .where(Series.id == series_id)
@@ -372,20 +446,39 @@ async def _persist_denormalized(
                         anilist_refreshed_at=None,
                     )
                 )
+                pending_updates += 1
+                if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                    await db.commit()
+                    pending_updates = 0
                 continue
 
             meta = anilist_meta_by_id.get(assigned, {})
+            next_score = _coerce_int(meta.get("score"))
+            next_popularity = _coerce_int(meta.get("popularity"))
+            next_favourites = _coerce_int(meta.get("favourites"))
+            if (
+                row.anilist_id == assigned
+                and row.anilist_score == next_score
+                and row.anilist_popularity == next_popularity
+                and row.anilist_favourites == next_favourites
+                and row.anilist_refreshed_at is not None
+            ):
+                continue
             await db.execute(
                 sql_update(Series)
                 .where(Series.id == series_id)
                 .values(
                     anilist_id=assigned,
-                    anilist_score=_coerce_int(meta.get("score")),
-                    anilist_popularity=_coerce_int(meta.get("popularity")),
-                    anilist_favourites=_coerce_int(meta.get("favourites")),
+                    anilist_score=next_score,
+                    anilist_popularity=next_popularity,
+                    anilist_favourites=next_favourites,
                     anilist_refreshed_at=now,
                 )
             )
+            pending_updates += 1
+            if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                await db.commit()
+                pending_updates = 0
 
         state = await db.get(AniListRatingsIngestState, state_id)
         if state is not None:

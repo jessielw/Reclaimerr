@@ -4,33 +4,32 @@ from datetime import UTC, datetime
 from typing import Any
 
 import niquests
-from sqlalchemy import case, exists, func, select
-from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy import update as sql_update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.imdb import (
     IMDB_TITLE_RATINGS_URL,
-    batched_rows,
     build_conditional_headers,
     parse_imdb_last_modified,
     parse_title_ratings_tsv_gz,
     sha256_hex,
 )
+from backend.core.imdb_cache import (
+    IMDbCacheMetadata,
+    get_cached_ratings,
+    persist_error,
+    persist_not_modified,
+    read_cache_state,
+    replace_cache,
+)
 from backend.core.logger import LOG
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
-from backend.database.models import (
-    IMDbRatingsIngestState,
-    IMDbTitleRating,
-    Movie,
-    Series,
-)
+from backend.database.models import Movie, Series
 from backend.enums import Task
 
-UPSERT_BATCH_SIZE = 5000
 ERROR_MSG_MAX_LENGTH = 2000
+DENORMALIZE_COMMIT_BATCH_SIZE = 500
 
 __all__ = ["refresh_imdb_ratings"]
 
@@ -38,10 +37,11 @@ __all__ = ["refresh_imdb_ratings"]
 async def refresh_imdb_ratings() -> None:
     """Refresh cached IMDb title ratings and denormalized ratings on media rows."""
     async with track_task_execution(Task.IMDB_RATINGS_REFRESH):
-        state = await _get_or_create_state()
+        state = read_cache_state()
         now = datetime.now(UTC)
         headers = build_conditional_headers(
-            etag=state.etag, last_modified=state.last_modified
+            etag=state.etag if state else None,
+            last_modified=state.last_modified if state else None,
         )
 
         LOG.info("Refreshing IMDb ratings dataset")
@@ -50,7 +50,8 @@ async def refresh_imdb_ratings() -> None:
             response = await _fetch_dataset(headers)
             status_code = int(response.status_code)
             if status_code == 304:
-                await _persist_not_modified(state.id, now)
+                persist_not_modified(now)
+                await _denormalize_media_imdb_ratings(now)
                 LOG.info("IMDb ratings dataset not modified (304)")
                 return
 
@@ -63,20 +64,28 @@ async def refresh_imdb_ratings() -> None:
                 _header_value(response.headers, "Content-Length"),
                 fallback=len(payload),
             )
-            source_updated_at = parse_imdb_last_modified(last_modified)
 
-            processed_rows = await _ingest_payload(
-                state_id=state.id,
-                payload=payload,
-                now=now,
-                etag=etag,
-                last_modified=last_modified,
-                content_length=content_length,
-                source_updated_at=source_updated_at,
+            processed_rows = replace_cache(
+                parse_title_ratings_tsv_gz(payload),
+                IMDbCacheMetadata(
+                    dataset_url=IMDB_TITLE_RATINGS_URL,
+                    etag=etag,
+                    last_modified=last_modified,
+                    sha256=sha256_hex(payload),
+                    content_length=content_length,
+                    row_count=0,
+                    last_checked_at=now,
+                    last_successful_refresh_at=now,
+                    source_updated_at=parse_imdb_last_modified(last_modified),
+                    last_error=None,
+                ),
             )
+            await _denormalize_media_imdb_ratings(now)
+            del payload
+            del response
             LOG.info(f"IMDb ratings refresh complete ({processed_rows} rows)")
         except Exception as exc:
-            await _persist_error(state.id, now, str(exc))
+            persist_error(now, str(exc), max_length=ERROR_MSG_MAX_LENGTH)
             raise
 
 
@@ -89,169 +98,129 @@ async def _fetch_dataset(headers: dict[str, str]) -> Any:
         )
 
 
-async def _ingest_payload(
-    *,
-    state_id: int,
-    payload: bytes,
-    now: datetime,
-    etag: str | None,
-    last_modified: str | None,
-    content_length: int,
-    source_updated_at: datetime | None,
-) -> int:
-    dataset_sha256 = sha256_hex(payload)
-    processed_rows = 0
+async def _denormalize_media_imdb_ratings(refreshed_at: datetime) -> None:
+    movie_changes = 0
+    series_changes = 0
 
     async with async_db() as db:
-        for batch in batched_rows(
-            parse_title_ratings_tsv_gz(payload), UPSERT_BATCH_SIZE
-        ):
-            values = [
-                {
-                    "imdb_id": row.imdb_id,
-                    "rating": row.rating,
-                    "vote_count": row.vote_count,
-                    "source_updated_at": source_updated_at,
-                    "refreshed_at": now,
-                }
-                for row in batch
-            ]
-            if not values:
-                continue
-
-            stmt = sqlite_insert(IMDbTitleRating).values(values)
-            upsert_stmt = stmt.on_conflict_do_update(
-                index_elements=["imdb_id"],
-                set_={
-                    "rating": stmt.excluded.rating,
-                    "vote_count": stmt.excluded.vote_count,
-                    "source_updated_at": stmt.excluded.source_updated_at,
-                    "refreshed_at": stmt.excluded.refreshed_at,
-                    "updated_at": func.now(),
-                },
+        movie_rows = (
+            await db.execute(
+                select(
+                    Movie.id,
+                    Movie.imdb_id,
+                    Movie.imdb_rating,
+                    Movie.imdb_vote_count,
+                    Movie.imdb_ratings_refreshed_at,
+                )
             )
-            await db.execute(upsert_stmt)
-            processed_rows += len(values)
-
-        await db.execute(
-            sql_delete(IMDbTitleRating).where(IMDbTitleRating.refreshed_at != now)
+        ).all()
+        movie_rating_rows = get_cached_ratings(
+            row.imdb_id for row in movie_rows if row.imdb_id
         )
+        pending_updates = 0
+        for row in movie_rows:
+            cached = movie_rating_rows.get(row.imdb_id) if row.imdb_id else None
+            rating = cached.rating if cached is not None else None
+            vote_count = cached.vote_count if cached is not None else None
+            refreshed_value = refreshed_at if cached is not None else None
+            if not _needs_denormalized_update(
+                current_rating=row.imdb_rating,
+                current_vote_count=row.imdb_vote_count,
+                current_refreshed_at=row.imdb_ratings_refreshed_at,
+                next_rating=rating,
+                next_vote_count=vote_count,
+                has_cached_rating=cached is not None,
+            ):
+                continue
+            await db.execute(
+                sql_update(Movie)
+                .where(Movie.id == row.id)
+                .values(
+                    imdb_rating=rating,
+                    imdb_vote_count=vote_count,
+                    imdb_ratings_refreshed_at=refreshed_value,
+                )
+            )
+            movie_changes += 1
+            pending_updates += 1
+            if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                await db.commit()
+                pending_updates = 0
 
-        await _denormalize_media_imdb_ratings(db, now)
-
-        state = await db.get(IMDbRatingsIngestState, state_id)
-        if state is not None:
-            state.dataset_url = IMDB_TITLE_RATINGS_URL
-            state.etag = etag
-            state.last_modified = last_modified
-            state.sha256 = dataset_sha256
-            state.content_length = content_length
-            state.row_count = processed_rows
-            state.last_checked_at = now
-            state.last_successful_refresh_at = now
-            state.last_error = None
-
-        await db.commit()
-
-    return processed_rows
-
-
-async def _denormalize_media_imdb_ratings(
-    db: AsyncSession, refreshed_at: datetime
-) -> None:
-    movie_rating_subq = (
-        select(IMDbTitleRating.rating)
-        .where(IMDbTitleRating.imdb_id == Movie.imdb_id)
-        .scalar_subquery()
-    )
-    movie_votes_subq = (
-        select(IMDbTitleRating.vote_count)
-        .where(IMDbTitleRating.imdb_id == Movie.imdb_id)
-        .scalar_subquery()
-    )
-    movie_exists = exists(
-        select(IMDbTitleRating.id).where(IMDbTitleRating.imdb_id == Movie.imdb_id)
-    )
-    await db.execute(
-        sql_update(Movie)
-        .where(Movie.imdb_id.is_not(None))
-        .values(
-            imdb_rating=movie_rating_subq,
-            imdb_vote_count=movie_votes_subq,
-            imdb_ratings_refreshed_at=case((movie_exists, refreshed_at), else_=None),
+        series_rows = (
+            await db.execute(
+                select(
+                    Series.id,
+                    Series.imdb_id,
+                    Series.imdb_rating,
+                    Series.imdb_vote_count,
+                    Series.imdb_ratings_refreshed_at,
+                )
+            )
+        ).all()
+        series_rating_rows = get_cached_ratings(
+            row.imdb_id for row in series_rows if row.imdb_id
         )
-    )
-    await db.execute(
-        sql_update(Movie)
-        .where(Movie.imdb_id.is_(None))
-        .values(
-            imdb_rating=None,
-            imdb_vote_count=None,
-            imdb_ratings_refreshed_at=None,
-        )
-    )
+        for row in series_rows:
+            cached = series_rating_rows.get(row.imdb_id) if row.imdb_id else None
+            rating = cached.rating if cached is not None else None
+            vote_count = cached.vote_count if cached is not None else None
+            refreshed_value = refreshed_at if cached is not None else None
+            if not _needs_denormalized_update(
+                current_rating=row.imdb_rating,
+                current_vote_count=row.imdb_vote_count,
+                current_refreshed_at=row.imdb_ratings_refreshed_at,
+                next_rating=rating,
+                next_vote_count=vote_count,
+                has_cached_rating=cached is not None,
+            ):
+                continue
+            await db.execute(
+                sql_update(Series)
+                .where(Series.id == row.id)
+                .values(
+                    imdb_rating=rating,
+                    imdb_vote_count=vote_count,
+                    imdb_ratings_refreshed_at=refreshed_value,
+                )
+            )
+            series_changes += 1
+            pending_updates += 1
+            if pending_updates >= DENORMALIZE_COMMIT_BATCH_SIZE:
+                await db.commit()
+                pending_updates = 0
 
-    series_rating_subq = (
-        select(IMDbTitleRating.rating)
-        .where(IMDbTitleRating.imdb_id == Series.imdb_id)
-        .scalar_subquery()
-    )
-    series_votes_subq = (
-        select(IMDbTitleRating.vote_count)
-        .where(IMDbTitleRating.imdb_id == Series.imdb_id)
-        .scalar_subquery()
-    )
-    series_exists = exists(
-        select(IMDbTitleRating.id).where(IMDbTitleRating.imdb_id == Series.imdb_id)
-    )
-    await db.execute(
-        sql_update(Series)
-        .where(Series.imdb_id.is_not(None))
-        .values(
-            imdb_rating=series_rating_subq,
-            imdb_vote_count=series_votes_subq,
-            imdb_ratings_refreshed_at=case((series_exists, refreshed_at), else_=None),
-        )
-    )
-    await db.execute(
-        sql_update(Series)
-        .where(Series.imdb_id.is_(None))
-        .values(
-            imdb_rating=None,
-            imdb_vote_count=None,
-            imdb_ratings_refreshed_at=None,
-        )
-    )
-
-
-async def _get_or_create_state() -> IMDbRatingsIngestState:
-    async with async_db() as db:
-        row = (await db.execute(select(IMDbRatingsIngestState))).scalars().first()
-        if row is None:
-            row = IMDbRatingsIngestState(dataset_url=IMDB_TITLE_RATINGS_URL)
-            db.add(row)
-            await db.commit()
-        return row
-
-
-async def _persist_not_modified(state_id: int, checked_at: datetime) -> None:
-    async with async_db() as db:
-        state = await db.get(IMDbRatingsIngestState, state_id)
-        if state is not None:
-            state.last_checked_at = checked_at
-            state.last_error = None
-            state.dataset_url = IMDB_TITLE_RATINGS_URL
+        if pending_updates:
             await db.commit()
 
+    LOG.info(
+        "IMDb ratings denormalization complete "
+        f"({movie_changes} movie row(s), {series_changes} series row(s) updated)"
+    )
 
-async def _persist_error(state_id: int, checked_at: datetime, error: str) -> None:
-    async with async_db() as db:
-        state = await db.get(IMDbRatingsIngestState, state_id)
-        if state is not None:
-            state.last_checked_at = checked_at
-            state.last_error = (error or "unknown error")[:ERROR_MSG_MAX_LENGTH]
-            state.dataset_url = IMDB_TITLE_RATINGS_URL
-            await db.commit()
+
+def _ratings_equal(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return abs(left - right) < 0.000001
+
+
+def _needs_denormalized_update(
+    *,
+    current_rating: float | None,
+    current_vote_count: int | None,
+    current_refreshed_at: datetime | None,
+    next_rating: float | None,
+    next_vote_count: int | None,
+    has_cached_rating: bool,
+) -> bool:
+    if not _ratings_equal(current_rating, next_rating):
+        return True
+    if current_vote_count != next_vote_count:
+        return True
+    if has_cached_rating:
+        return current_refreshed_at is None
+    return current_refreshed_at is not None
 
 
 def _header_value(headers: Any, key: str) -> str | None:

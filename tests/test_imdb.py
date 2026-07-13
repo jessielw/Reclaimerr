@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import gzip
-from datetime import UTC
+from datetime import UTC, datetime
 
 from backend.core.imdb import (
+    IMDB_TITLE_RATINGS_URL,
+    IMDbTitleRatingRow,
     batched_rows,
     build_conditional_headers,
     parse_imdb_last_modified,
     parse_title_ratings_tsv_gz,
+)
+from backend.core.imdb_cache import (
+    IMDbCacheMetadata,
+    get_cached_ratings,
+    read_cache_state,
+    replace_cache,
 )
 
 
@@ -67,3 +75,67 @@ def test_parse_imdb_last_modified() -> None:
     assert parsed is not None
     assert parsed.tzinfo == UTC
     assert parsed.year == 2015
+
+
+def test_imdb_cache_replace_and_lookup(tmp_path) -> None:
+    cache_path = tmp_path / "imdb_ratings.sqlite3"
+    refreshed_at = datetime(2026, 7, 13, tzinfo=UTC)
+
+    row_count = replace_cache(
+        [
+            IMDbTitleRatingRow("tt0000001", 5.7, 2217),
+            IMDbTitleRatingRow("tt0000002", 6.4, 2354),
+        ],
+        IMDbCacheMetadata(
+            dataset_url=IMDB_TITLE_RATINGS_URL,
+            etag='"etag"',
+            last_modified="Mon, 13 Jul 2026 00:00:00 GMT",
+            sha256="abc123",
+            content_length=123,
+            row_count=0,
+            last_checked_at=refreshed_at,
+            last_successful_refresh_at=refreshed_at,
+            source_updated_at=refreshed_at,
+        ),
+        path=cache_path,
+    )
+
+    assert row_count == 2
+    state = read_cache_state(cache_path)
+    assert state is not None
+    assert state.etag == '"etag"'
+    assert state.row_count == 2
+
+    ratings = get_cached_ratings(["tt0000001", "tt0000003"], cache_path)
+    assert set(ratings) == {"tt0000001"}
+    assert ratings["tt0000001"].rating == 5.7
+    assert ratings["tt0000001"].vote_count == 2217
+
+
+def test_imdb_cache_failed_replace_keeps_existing_cache(tmp_path) -> None:
+    cache_path = tmp_path / "imdb_ratings.sqlite3"
+    refreshed_at = datetime(2026, 7, 13, tzinfo=UTC)
+    metadata = IMDbCacheMetadata(
+        dataset_url=IMDB_TITLE_RATINGS_URL,
+        etag='"etag"',
+        last_modified="Mon, 13 Jul 2026 00:00:00 GMT",
+        sha256="abc123",
+        content_length=123,
+        row_count=0,
+        last_checked_at=refreshed_at,
+        last_successful_refresh_at=refreshed_at,
+    )
+
+    replace_cache(
+        [IMDbTitleRatingRow("tt0000001", 5.7, 2217)], metadata, path=cache_path
+    )
+
+    try:
+        replace_cache([], metadata, path=cache_path)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("empty IMDb cache replace should fail")
+
+    ratings = get_cached_ratings(["tt0000001"], cache_path)
+    assert ratings["tt0000001"].rating == 5.7

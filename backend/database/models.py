@@ -399,56 +399,6 @@ class AppUpdateState(Base):
     )
 
 
-class IMDbRatingsIngestState(Base):
-    """Track fetch/cache metadata for IMDb title ratings dataset ingest."""
-
-    __tablename__ = "imdb_ratings_ingest_state"
-
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, init=False, autoincrement=True
-    )
-    dataset_url: Mapped[str] = mapped_column(String(500), default="")
-    etag: Mapped[str | None] = mapped_column(String(255), default=None)
-    last_modified: Mapped[str | None] = mapped_column(String(255), default=None)
-    sha256: Mapped[str | None] = mapped_column(String(64), default=None)
-    content_length: Mapped[int | None] = mapped_column(BigInteger, default=None)
-    row_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    last_successful_refresh_at: Mapped[datetime | None] = mapped_column(
-        DateTime, default=None
-    )
-    last_error: Mapped[str | None] = mapped_column(Text, default=None)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), init=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(), init=False
-    )
-
-
-class IMDbTitleRating(Base):
-    """Cached IMDb rating/vote rows keyed by IMDb title ID."""
-
-    __tablename__ = "imdb_title_ratings"
-
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, init=False, autoincrement=True
-    )
-    imdb_id: Mapped[str] = mapped_column(String(20), unique=True)
-    rating: Mapped[float | None] = mapped_column(Float, default=None)
-    vote_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    refreshed_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), init=False
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), init=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(), init=False
-    )
-
-
 class AniListRatingsIngestState(Base):
     """Track fetch/cache metadata for AniBridge + AniList ratings ingest."""
 

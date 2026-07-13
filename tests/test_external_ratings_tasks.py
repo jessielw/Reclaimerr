@@ -7,13 +7,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import Base
-from backend.database.models import Movie, ServiceConfig
+from backend.database.models import AniListRatingsIngestState, Movie, ServiceConfig
 from backend.enums import Service
 from backend.services.external_ratings import (
     ExternalRatingValues,
     MDBListClient,
     OMDbClient,
 )
+from backend.tasks import anilist as anilist_tasks
 from backend.tasks import external_ratings as external_ratings_tasks
 
 
@@ -126,6 +127,67 @@ async def test_provider_tasks_keep_independent_caches_and_mdblist_precedence() -
         assert movie.rottentomatoes_tomato_meter == 93
         assert movie.metacritic_metascore == 81
         assert movie.external_ratings_source == "mdblist"
+
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_anilist_denormalization_skips_unchanged_media_rows() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    session_maker = async_sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    refreshed_at = datetime.now(UTC)
+    async with session_maker() as db:
+        movie = Movie(
+            title="AniList Movie",
+            tmdb_id=100,
+            imdb_id="tt100",
+            anilist_id=123,
+            anilist_score=85,
+            anilist_popularity=1000,
+            anilist_favourites=50,
+            anilist_refreshed_at=refreshed_at,
+        )
+        state = AniListRatingsIngestState(dataset_url="old")
+        db.add_all([movie, state])
+        await db.commit()
+        state_id = state.id
+
+    execute_count = 0
+    original_execute = AsyncSession.execute
+
+    async def counting_execute(self: AsyncSession, *args, **kwargs):
+        nonlocal execute_count
+        statement = args[0] if args else None
+        if str(statement).startswith("UPDATE movies"):
+            execute_count += 1
+        return await original_execute(self, *args, **kwargs)
+
+    with (
+        patch.object(anilist_tasks, "async_db", session_maker),
+        patch.object(AsyncSession, "execute", new=counting_execute),
+    ):
+        await anilist_tasks._persist_denormalized(
+            state_id=state_id,
+            now=datetime.now(UTC),
+            dataset_url="new",
+            etag=None,
+            last_modified=None,
+            content_length=123,
+            dataset_sha256="sha",
+            row_count=1,
+            movie_assignments={1: 123},
+            series_assignments={},
+            anilist_meta_by_id={
+                123: {"score": 85, "popularity": 1000, "favourites": 50}
+            },
+        )
+
+    assert execute_count == 0
 
     await engine.dispose()
 

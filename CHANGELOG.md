@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Heavy scheduled tasks now run in short-lived child processes by default to release retained post-task memory back to the OS
+- Added task memory logging and cleanup for heavy sync, cleanup scan, playback, IMDb, and AniList tasks
+- Task execution modes are now explicit, with heavy tasks isolated and lightweight tasks kept inline
+- Now logs memory snap shots in debug mode
+
+### Changed
+
+- Now aggressively releases RAM back to OS
+  - Windows uses threaded subprocesses for tasks to instantly release RAM back to OS upon completion of task
+  - Unix utilizes asyncio subprocesses for tasks to instantly release ram back to the OS upon completion of tasks
+- Optimized task for AniList parsing
+  - Skips movie/series updates when AniList values are unchanged
+  - Clears stale AniList fields only when needed
+  - Commits changed denormalized rows every 500 updates
+  - Added tests for AniList
+- IMDb ratings now use a separate cache database so large refreshes no longer bulk-write the main app database causing slowdowns/freezes during heavy write periods
+- User last seen is best effort with a long time out if a more important task is currently writing
+
 ## [0.2.2] - 2026-07-12
 
 ### Fixed
