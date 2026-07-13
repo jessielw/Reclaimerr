@@ -827,6 +827,30 @@ class ArrTagRegexOperatorTests(unittest.TestCase):
             )
         )
 
+    def test_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", [""], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale", "tag-2"],
+                "not_matches_any_regex",
+                [""],
+                field="arr.tags",
+            )
+        )
+
+    def test_matches_any_regex_invalid_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", ["[invalid"], field="arr.tags"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2609,6 +2609,8 @@ def _matches_any_regex(
     """
     compiled: list[re.Pattern[str]] = []
     for pattern in patterns:
+        if not _exists(pattern):
+            continue
         try:
             compiled.append(re.compile(str(pattern), re.IGNORECASE))
         except re.error:
