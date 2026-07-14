@@ -227,7 +227,8 @@ OPERATOR_LABELS: dict[str, str] = {
     "not_exists": "missing",
     "is_true": "is true",
     "is_false": "is false",
-    "matches_any_regex": "matches path",
+    "matches_any_regex": "matches regex",
+    "not_matches_any_regex": "does not match regex",
 }
 
 LIST_OPERATORS = {
@@ -238,6 +239,7 @@ LIST_OPERATORS = {
     "contains_all",
     "not_contains_all",
     "matches_any_regex",
+    "not_matches_any_regex",
 }
 VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
 NUMERIC_FIELDS = {
@@ -435,6 +437,7 @@ TAG_SUBSTRING_OPERATORS = {
     "contains_substring",
     "not_contains_substring",
 }
+REGEX_OPERATORS = {"matches_any_regex", "not_matches_any_regex"}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -467,7 +470,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.series_ids": set(SEERR_REQUESTER_ID_OPERATORS),
-    "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS,
+    "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS | REGEX_OPERATORS,
 }
 
 TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
@@ -1280,6 +1283,8 @@ def validate_rule_definition(
     if not _has_valid_definition(definition):
         raise ValueError("Rule definition must include a root group")
     _validate_node(definition["root"])
+    if not _has_enabled_condition(definition["root"]):
+        raise ValueError("Rule must include at least one enabled condition")
     if target_scope is not None:
         _validate_scope_fields(definition, target_scope)
 
@@ -1408,6 +1413,8 @@ def evaluate_advanced_rule(
     root = definition.get("root")
     if not isinstance(root, dict):
         return False, {}, []
+    if not _has_enabled_condition(root):
+        return False, {}, []
 
     compute_disk = _rule_uses_disk_fields(definition)
     context = _build_context(
@@ -1437,6 +1444,8 @@ def evaluate_advanced_rule_state(
     root = definition.get("root")
     if not isinstance(root, dict):
         return False
+    if not _has_enabled_condition(root):
+        return False
     context = _build_context(
         target_scope,
         movie,
@@ -1454,6 +1463,8 @@ def _evaluate_node_state(
     context: dict[str, Any],
 ) -> bool | None:
     """Return True, False, or None when unavailable values affect the result."""
+    if _node_is_disabled(node):
+        return True
     if node.get("type") == "group":
         op = str(node.get("op", "")).lower()
         children = node.get("children")
@@ -1464,7 +1475,12 @@ def _evaluate_node_state(
             or not all(isinstance(child, dict) for child in children)
         ):
             return False
-        child_states = [_evaluate_node_state(child, context) for child in children]
+        active_children = [child for child in children if not _node_is_disabled(child)]
+        if not active_children:
+            return True
+        child_states = [
+            _evaluate_node_state(child, context) for child in active_children
+        ]
         if op == "and":
             if False in child_states:
                 return False
@@ -1512,6 +1528,9 @@ def _iter_condition_nodes(
 ) -> Iterator[dict[str, Any]]:
     """Recursively iterate through the rule definition tree, yielding condition nodes
     that match the specified field if provided."""
+    if _node_is_disabled(node):
+        return
+
     if node.get("type") == "condition":
         node_field = str(node.get("field", ""))
         if field is None or node_field == field:
@@ -1558,6 +1577,10 @@ def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> Non
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
+    if node_type not in {"group", "condition"}:
+        raise ValueError("Rule node must be a group or condition")
+    if _node_is_disabled(node):
+        return
     if node_type == "group":
         op = str(node.get("op", "")).lower()
         if op not in {"and", "or"}:
@@ -1571,8 +1594,6 @@ def _validate_node(node: dict[str, Any]) -> None:
             _validate_node(child)
         return
 
-    if node_type != "condition":
-        raise ValueError("Rule node must be a group or condition")
     field = str(node.get("field", ""))
     operator = str(node.get("operator", ""))
     if field not in FIELD_LABELS:
@@ -1590,6 +1611,25 @@ def _validate_node(node: dict[str, Any]) -> None:
         normalized = [str(value).strip() for value in values if value is not None]
         if not any(normalized):
             raise ValueError("Library conditions require at least one library id")
+
+
+def _node_is_disabled(node: dict[str, Any]) -> bool:
+    """Return True when a rule node is explicitly disabled."""
+    return node.get("enabled") is False
+
+
+def _has_enabled_condition(node: dict[str, Any]) -> bool:
+    """Return True when the rule tree contains at least one enabled condition."""
+    if _node_is_disabled(node):
+        return False
+    if node.get("type") == "condition":
+        return True
+    children = node.get("children")
+    if not isinstance(children, list):
+        return False
+    return any(
+        isinstance(child, dict) and _has_enabled_condition(child) for child in children
+    )
 
 
 def _build_context(
@@ -2339,6 +2379,8 @@ def _evaluate_node(
     """Recursively evaluate a rule node against the provided context, updating the matched
     fields and reasons for the evaluation.
     """
+    if _node_is_disabled(node):
+        return True
     if node.get("type") == "group":
         op = str(node.get("op", "")).lower()
         if op not in {"and", "or"}:
@@ -2348,9 +2390,12 @@ def _evaluate_node(
             return False
         if not all(isinstance(child, dict) for child in children):
             return False
+        active_children = [child for child in children if not _node_is_disabled(child)]
+        if not active_children:
+            return True
         if op == "or":
             branch_matches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-            for child in children:
+            for child in active_children:
                 child_matched: dict[str, Any] = {}
                 child_reasons: list[dict[str, Any]] = []
                 if _evaluate_node(child, context, child_matched, child_reasons):
@@ -2362,7 +2407,7 @@ def _evaluate_node(
                 reasons.extend(child_reasons)
             return True
 
-        for child in children:
+        for child in active_children:
             if not _evaluate_node(child, context, matched, reasons):
                 return False
         return True
@@ -2411,8 +2456,11 @@ def _matches_operator(
         return actual is True
     if operator == "is_false":
         return actual is False
-    if operator == "matches_any_regex":
-        return _matches_any_regex(_as_list(actual), _as_list(expected))
+    if operator in REGEX_OPERATORS:
+        matched = _matches_any_regex(_as_list(actual), _as_list(expected), field=field)
+        if matched is None:  # no valid pattern: fail closed for both operators
+            return False
+        return matched if operator == "matches_any_regex" else not matched
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected, field=field)
     if operator in TAG_SUBSTRING_OPERATORS:
@@ -2591,19 +2639,33 @@ def _matches_path_prefix(actual: Any, expected: Any) -> bool:
     return actual_path == expected_path or actual_path.startswith(f"{expected_path}/")
 
 
-def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
-    """Evaluate whether any of the provided values match any of the provided regex patterns."""
-    normalized_values = [
-        normalize_fpath(value, lower=True) for value in values if _exists(value)
-    ]
+def _matches_any_regex(
+    values: list[Any], patterns: list[Any], *, field: str | None = None
+) -> bool | None:
+    """Return whether any value matches any regex pattern.
+
+    Returns ``None`` when no supplied pattern compiles, so callers can fail
+    closed for both the positive and negated operators. Path fields are
+    path-normalized; all other fields (e.g. ``arr.tags``) use plain string
+    normalization.
+    """
+    compiled: list[re.Pattern[str]] = []
     for pattern in patterns:
+        if not _exists(pattern):
+            continue
         try:
-            regex = re.compile(str(pattern), re.IGNORECASE)
+            compiled.append(re.compile(str(pattern), re.IGNORECASE))
         except re.error:
             continue
-        if any(regex.search(value) for value in normalized_values):
-            return True
-    return False
+    if not compiled:
+        return None
+    if field in PATH_FIELDS:
+        normalized_values = [
+            normalize_fpath(value, lower=True) for value in values if _exists(value)
+        ]
+    else:
+        normalized_values = [_normalize(value) for value in values if _exists(value)]
+    return any(regex.search(value) for regex in compiled for value in normalized_values)
 
 
 def _path_basename(path: str | None) -> str | None:

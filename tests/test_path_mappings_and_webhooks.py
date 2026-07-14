@@ -177,6 +177,115 @@ def test_move_media_does_not_overwrite_existing_destination(tmp_path: Path) -> N
     assert destination_file.read_bytes() == b"existing"
 
 
+def test_move_media_moves_item_scoped_folder_assets(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie With Assets (2026)"
+    extras_dir = movie_dir / "Trailers"
+    extras_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie With Assets (2026).mkv"
+    subtitle_file = movie_dir / "Movie With Assets (2026).en.srt"
+    poster_file = movie_dir / "poster.jpg"
+    trailer_file = extras_dir / "trailer.mkv"
+    media_file.write_bytes(b"movie")
+    subtitle_file.write_bytes(b"subtitle")
+    poster_file.write_bytes(b"poster")
+    trailer_file.write_bytes(b"trailer")
+
+    moved_to = move_media(
+        media_file,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    expected_dir = tmp_path / "reclaimed" / "movies" / "Movie With Assets (2026)"
+    assert moved_to == expected_dir / "Movie With Assets (2026).mkv"
+    assert moved_to.read_bytes() == b"movie"
+    assert (
+        expected_dir / "Movie With Assets (2026).en.srt"
+    ).read_bytes() == b"subtitle"
+    assert (expected_dir / "poster.jpg").read_bytes() == b"poster"
+    assert (expected_dir / "Trailers" / "trailer.mkv").read_bytes() == b"trailer"
+    assert not movie_dir.exists()
+
+
+def test_move_media_keeps_multi_version_folder_conservative(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Multi Version (2026)"
+    movie_dir.mkdir(parents=True)
+    selected_file = movie_dir / "Movie Multi Version (2026) - 1080p.mkv"
+    selected_subtitle = movie_dir / "Movie Multi Version (2026) - 1080p.srt"
+    other_version = movie_dir / "Movie Multi Version (2026) - 2160p.mkv"
+    poster_file = movie_dir / "poster.jpg"
+    selected_file.write_bytes(b"1080p")
+    selected_subtitle.write_bytes(b"subtitle")
+    other_version.write_bytes(b"2160p")
+    poster_file.write_bytes(b"poster")
+
+    moved_to = move_media(
+        selected_file,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    expected_dir = tmp_path / "reclaimed" / "movies" / "Movie Multi Version (2026)"
+    assert moved_to == expected_dir / "Movie Multi Version (2026) - 1080p.mkv"
+    assert moved_to.read_bytes() == b"1080p"
+    assert (
+        expected_dir / "Movie Multi Version (2026) - 1080p.srt"
+    ).read_bytes() == b"subtitle"
+    assert other_version.read_bytes() == b"2160p"
+    assert poster_file.read_bytes() == b"poster"
+    assert not selected_file.exists()
+    assert not selected_subtitle.exists()
+
+
+def test_move_media_does_not_treat_title_words_as_trailer_assets(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Trailer Park Movie (2026)"
+    movie_dir.mkdir(parents=True)
+    selected_file = movie_dir / "Trailer Park Movie (2026) - 1080p.mkv"
+    other_version = movie_dir / "Trailer Park Movie (2026) - 2160p.mkv"
+    selected_file.write_bytes(b"1080p")
+    other_version.write_bytes(b"2160p")
+
+    moved_to = move_media(
+        selected_file,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    expected_dir = tmp_path / "reclaimed" / "movies" / "Trailer Park Movie (2026)"
+    assert moved_to == expected_dir / "Trailer Park Movie (2026) - 1080p.mkv"
+    assert other_version.read_bytes() == b"2160p"
+
+
+def test_move_media_keeps_episode_folder_conservative(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    season_dir = local_root / "tv" / "Show One" / "Season 01"
+    season_dir.mkdir(parents=True)
+    selected_episode = season_dir / "Show One - S01E01.mkv"
+    selected_subtitle = season_dir / "Show One - S01E01.srt"
+    other_episode = season_dir / "Show One - S01E02.mkv"
+    selected_episode.write_bytes(b"e1")
+    selected_subtitle.write_bytes(b"sub")
+    other_episode.write_bytes(b"e2")
+
+    moved_to = move_media(
+        selected_episode,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    expected_dir = tmp_path / "reclaimed" / "tv" / "Show One" / "Season 01"
+    assert moved_to == expected_dir / "Show One - S01E01.mkv"
+    assert moved_to.read_bytes() == b"e1"
+    assert (expected_dir / "Show One - S01E01.srt").read_bytes() == b"sub"
+    assert other_episode.read_bytes() == b"e2"
+    assert season_dir.exists()
+
+
 def test_move_directory_preserves_mapping_relative_folder_structure(
     tmp_path: Path,
 ) -> None:

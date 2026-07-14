@@ -111,6 +111,29 @@ For example, `contains chart` matches a tag such as `weekly-chart-2024`, and
 several fragments at once, combine `contains` conditions with an AND group. A
 blank term matches nothing.
 
+### Regex Operators (Arr tags)
+
+The Arr tags field also matches tags with regular expressions. Each operator
+takes one or more patterns; a pattern is applied with `re.search` and is
+case-insensitive, so anchor with `^` and `$` to match a whole tag. Patterns
+within one operator combine with the same any/none behavior as the list
+operators.
+
+| Internal operator       | UI label             | Meaning                              |
+| ----------------------- | -------------------- | ------------------------------------ |
+| `matches_any_regex`     | matches regex        | Some tag matches one of the patterns |
+| `not_matches_any_regex` | does not match regex | No tag matches any of the patterns   |
+
+`matches_any_regex` is also available on the path fields. A condition with no
+valid pattern matches nothing, so `not_matches_any_regex` never matches an item
+on an empty or invalid pattern.
+
+For example, given tags that pair a base name with a `-stale` variant (such as
+`tag-1` and `tag-1-stale`), an AND group of `matches_any_regex` `tag-.*-stale$`
+and `not_matches_any_regex` `^tag-.*(?<!-stale)$` selects items that carry a
+`-stale` variant but no active base tag. An item still active under any tag keeps
+a value matching the second pattern, so it is excluded.
+
 ### Missing Values
 
 `exists` matches populated metadata. `does not exist` matches missing or empty

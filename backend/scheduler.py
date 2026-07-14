@@ -13,7 +13,7 @@ from backend.core.task_runtime import can_disable_task, enqueue_scheduled_task
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
-from backend.jobs import cancel_pending_background_jobs_by_dedupe_key
+from backend.jobs.queue import cancel_pending_background_jobs_by_dedupe_key
 
 scheduler = AsyncIOScheduler()
 
@@ -263,7 +263,10 @@ async def refresh_main_server_tasks() -> None:
         for db_schedule in schedules:
             task = db_schedule.task
             job = scheduler.get_job(task.value)
-            if not db_schedule.enabled or db_schedule.schedule_type is ScheduleType.MANUAL:
+            if (
+                not db_schedule.enabled
+                or db_schedule.schedule_type is ScheduleType.MANUAL
+            ):
                 if job:
                     job.remove()
                     LOG.info(f"Unscheduled {task.friendly_name()}")

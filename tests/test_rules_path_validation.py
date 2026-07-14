@@ -285,6 +285,73 @@ def test_create_rule_skips_existence_checks_for_path_negation_operator() -> None
     asyncio.run(run())
 
 
+def test_create_rule_rejects_invalid_tag_regex() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.commit()
+
+            payload = CleanupRuleCreate(
+                name="bad-tag-regex",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition=_definition("arr.tags", "matches_any_regex", ["[invalid"]),
+                action=None,
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await create_rule(payload, admin, db)
+
+            assert exc.value.status_code == 400
+            assert "Invalid regex pattern" in str(exc.value.detail)
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_create_rule_accepts_valid_tag_regex() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.commit()
+
+            payload = CleanupRuleCreate(
+                name="good-tag-regex",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition=_definition(
+                    "arr.tags", "not_matches_any_regex", ["^tag-.*(?<!-stale)$"]
+                ),
+                action=None,
+            )
+
+            # Should not raise.
+            await create_rule(payload, admin, db)
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_validate_paths_endpoint_supports_structured_and_legacy_payloads() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.core.service_runtime import handle_service_toggle
-from backend.core.task_runtime import execute_task
+from backend.core.task_process import run_task_job
 from backend.database.models import BackgroundJob
 from backend.enums import BackgroundJobType
 from backend.jobs.candidate_file_ops import run_candidate_file_op_job
@@ -35,7 +35,7 @@ async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
 
     if job.job_type is BackgroundJobType.TASK_RUN:
         task_payload = TaskRunJobPayload.model_validate(job.payload)
-        return await execute_task(task_payload.task)
+        return await run_task_job(task_payload.task)
 
     if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
         file_op_payload = CandidateFileOpJobPayload.model_validate(job.payload)

@@ -405,10 +405,12 @@ export type RuleConditionOperator =
   | "not_exists"
   | "is_true"
   | "is_false"
-  | "matches_any_regex";
+  | "matches_any_regex"
+  | "not_matches_any_regex";
 
 export interface RuleCondition {
   type: "condition";
+  enabled?: boolean;
   field: string;
   operator: RuleConditionOperator;
   value?: string | number | boolean | string[] | number[] | null;
@@ -416,6 +418,7 @@ export interface RuleCondition {
 
 export interface RuleGroup {
   type: "group";
+  enabled?: boolean;
   op: RuleGroupOperator;
   children: RuleNode[];
 }

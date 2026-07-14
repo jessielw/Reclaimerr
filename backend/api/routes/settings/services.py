@@ -30,7 +30,7 @@ from backend.database.models import (
     User,
 )
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Service
-from backend.jobs import enqueue_background_job
+from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import ServiceToggleJobPayload
 from backend.models.settings import (
     LibrarySelectionUpdate,

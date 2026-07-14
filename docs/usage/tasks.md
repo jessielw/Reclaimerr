@@ -20,6 +20,12 @@ The Tasks page groups these four jobs under **External Ratings**. MDBList and
 OMDb have independent schedules and refresh state; their default schedules are
 6 AM and 7 AM respectively.
 
+IMDb title ratings are stored in a separate cache database under
+`DATA_DIR/cache/imdb_ratings.sqlite3`. Reclaimerr copies only the relevant
+denormalized rating values onto movie and series rows in the main app database.
+This keeps the large IMDb dataset import from blocking normal app writes such
+as user, settings, and rule changes.
+
 ## Automatic Cleanup Deletion
 
 Automatic cleanup deletion is intentionally per-rule opt-in.

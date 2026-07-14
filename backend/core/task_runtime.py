@@ -15,7 +15,7 @@ from backend.database.models import (
     TaskSchedule,
 )
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
-from backend.jobs import enqueue_background_job
+from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
 from backend.tasks.anilist import refresh_anilist_ratings
 from backend.tasks.cleanup import (

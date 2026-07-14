@@ -921,6 +921,69 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertNotIn("watch.view_count", criteria)
         self.assertEqual(len(rule_reasons), 2)
 
+    def test_disabled_condition_is_ignored_during_evaluation(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=10 * 1024**3,
+        )
+        disabled_condition = _condition("media.size", "less_than", 1024)
+        disabled_condition["enabled"] = False
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                disabled_condition,
+                _condition("media.size", "greater_than", 1024),
+            ),
+        )
+
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_MOVIE_VERSION,
+            movie=movie,
+            version=version,
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(criteria["media.size"], 10 * 1024**3)
+        self.assertEqual(len(rule_reasons), 1)
+
+    def test_disabled_group_is_ignored_during_evaluation(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=10 * 1024**3,
+        )
+        disabled_group = _group(
+            "and",
+            _condition("media.size", "less_than", 1024),
+        )
+        disabled_group["enabled"] = False
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                disabled_group,
+                _condition("media.size", "greater_than", 1024),
+            ),
+        )
+
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_MOVIE_VERSION,
+            movie=movie,
+            version=version,
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(criteria["media.size"], 10 * 1024**3)
+        self.assertEqual(len(rule_reasons), 1)
+
     def test_malformed_runtime_group_fails_closed(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         version = _make_movie_version(
@@ -1832,6 +1895,41 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertTrue(_evaluate_movie_rule(tagged, rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(untagged, rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(other_tag, rule, {}, []))
+
+    def test_evaluate_rule_matches_stale_but_not_active_tags(self) -> None:
+        rule = _make_multi_condition_rule(
+            name="stale-not-active",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "arr.tags",
+                    "operator": "matches_any_regex",
+                    "value": ["tag-.*-stale$"],
+                },
+                {
+                    "type": "condition",
+                    "field": "arr.tags",
+                    "operator": "not_matches_any_regex",
+                    "value": ["^tag-.*(?<!-stale)$"],
+                },
+            ],
+        )
+
+        stale_only = Series(title="Stale Only", tmdb_id=901, size=20 * 1024**3)
+        stale_only.arr_tags = ["tag-1-stale"]
+        mixed = Series(title="Mixed", tmdb_id=902, size=20 * 1024**3)
+        mixed.arr_tags = ["tag-1-stale", "tag-2"]
+        active_only = Series(title="Active Only", tmdb_id=903, size=20 * 1024**3)
+        active_only.arr_tags = ["tag-2"]
+        untagged = Series(title="Untagged", tmdb_id=904, size=20 * 1024**3)
+        untagged.arr_tags = []
+
+        self.assertTrue(_evaluate_movie_rule(stale_only, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(mixed, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(active_only, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(untagged, rule, {}, []))
 
     def test_evaluate_series_rule_days_since_air_dates_passes_and_fails(self) -> None:
         now = datetime.now(UTC)

@@ -52,11 +52,15 @@ def parse_title_ratings_tsv_gz(payload: bytes) -> Iterator[IMDbTitleRatingRow]:
     """
     with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as compressed:
         with io.TextIOWrapper(compressed, encoding="utf-8", newline="") as text_stream:
-            reader = csv.DictReader(text_stream, delimiter="\t")
-            for raw_row in reader:
-                parsed = _parse_rating_row(raw_row)
-                if parsed is not None:
-                    yield parsed
+            yield from parse_title_ratings_tsv_lines(text_stream)
+
+
+def parse_title_ratings_tsv_lines(lines: Iterable[str]) -> Iterator[IMDbTitleRatingRow]:
+    reader = csv.DictReader(lines, delimiter="\t")
+    for raw_row in reader:
+        parsed = _parse_rating_row(raw_row)
+        if parsed is not None:
+            yield parsed
 
 
 def _parse_rating_row(raw_row: dict[str, str | None]) -> IMDbTitleRatingRow | None:

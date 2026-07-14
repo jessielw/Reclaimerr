@@ -10,6 +10,7 @@ from backend.core.rule_engine import (
     TARGET_SERIES,
     _matches_list_operator,
     _matches_operator,
+    collect_rule_conditions,
     derive_path_scope_library_ids,
     validate_rule_definition,
 )
@@ -30,6 +31,105 @@ def _definition(field: str, operator: str, value: object = 1) -> dict[str, objec
 
 
 class RuleDefinitionValidationTests(unittest.TestCase):
+    def test_disabled_conditions_are_ignored_by_collectors_and_validation(
+        self,
+    ) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "condition",
+                        "field": "not.a.real.field",
+                        "operator": "bad",
+                        "enabled": False,
+                    },
+                    {
+                        "type": "condition",
+                        "field": "library.id",
+                        "operator": "contains_any",
+                        "value": ["lib-1"],
+                    },
+                ],
+            },
+        }
+
+        validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
+        self.assertEqual(
+            collect_rule_conditions(definition),
+            [
+                {
+                    "type": "condition",
+                    "field": "library.id",
+                    "operator": "contains_any",
+                    "value": ["lib-1"],
+                }
+            ],
+        )
+        self.assertEqual(derive_path_scope_library_ids(definition), ["lib-1"])
+
+    def test_disabled_groups_are_ignored_by_collectors_and_validation(self) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "group",
+                        "op": "and",
+                        "enabled": False,
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "not.a.real.field",
+                                "operator": "bad",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "condition",
+                        "field": "media.size",
+                        "operator": "greater_than",
+                        "value": 1,
+                    },
+                ],
+            },
+        }
+
+        validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
+        self.assertEqual(
+            [condition["field"] for condition in collect_rule_conditions(definition)],
+            ["media.size"],
+        )
+
+    def test_requires_at_least_one_enabled_condition(self) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "condition",
+                        "field": "media.size",
+                        "operator": "greater_than",
+                        "value": 1,
+                        "enabled": False,
+                    }
+                ],
+            },
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "at least one enabled condition"
+        ):
+            validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
     def test_accepts_extended_metadata_fields_for_supported_scopes(self) -> None:
         cases = [
             (TARGET_MOVIE_VERSION, "media.year", "equals", 2005),
@@ -308,6 +408,20 @@ class RuleDefinitionValidationTests(unittest.TestCase):
         validate_rule_definition(
             _definition("media.path", "matches_any_regex", [r"movies/.+\\.mkv"]),
         )
+
+    def test_accepts_tag_regex_operators(self) -> None:
+        validate_rule_definition(
+            _definition("arr.tags", "matches_any_regex", ["tag-.*-stale$"]),
+        )
+        validate_rule_definition(
+            _definition("arr.tags", "not_matches_any_regex", ["^tag-.*(?<!-stale)$"]),
+        )
+
+    def test_rejects_tag_regex_operator_on_non_tag_field(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_rule_definition(
+                _definition("media.title", "not_matches_any_regex", ["x"]),
+            )
 
     def test_rejects_boolean_field_with_numeric_operator(self) -> None:
         with self.assertRaisesRegex(
@@ -740,6 +854,102 @@ class ArrTagSubstringOperatorTests(unittest.TestCase):
                 _definition("tmdb.genres", "contains_substring", "chart"),
                 target_scope=TARGET_MOVIE_VERSION,
             )
+
+
+class ArrTagRegexOperatorTests(unittest.TestCase):
+    def test_matches_any_regex_matches_tag(self) -> None:
+        tags = ["tag-1-stale", "tag-2"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_is_case_insensitive(self) -> None:
+        tags = ["TAG-1-STALE"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_multiple_patterns_or(self) -> None:
+        tags = ["tag-2"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["nope", "^tag-2$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_no_match(self) -> None:
+        tags = ["tag-2"]
+        self.assertFalse(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_empty_patterns_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", [], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_true_when_no_active_tag(self) -> None:
+        tags = ["tag-1-stale"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "not_matches_any_regex", ["^tag-.*(?<!-stale)$"], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_false_when_active_tag_present(self) -> None:
+        tags = ["tag-1-stale", "tag-2"]
+        self.assertFalse(
+            _matches_operator(
+                tags, "not_matches_any_regex", ["^tag-.*(?<!-stale)$"], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_empty_patterns_fails_closed(self) -> None:
+        # A condition with no valid pattern must not match everything.
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale", "tag-2"], "not_matches_any_regex", [], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_invalid_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "not_matches_any_regex", ["[invalid"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", [""], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale", "tag-2"],
+                "not_matches_any_regex",
+                [""],
+                field="arr.tags",
+            )
+        )
+
+    def test_matches_any_regex_invalid_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", ["[invalid"], field="arr.tags"
+            )
+        )
 
 
 if __name__ == "__main__":

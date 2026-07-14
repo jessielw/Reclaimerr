@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
@@ -14,6 +15,7 @@ from backend.api.routes.account import (
     revoke_other_sessions,
     revoke_session,
 )
+from backend.api.routes.auth import logout
 from backend.core.auth import COOKIE_NAME, create_access_token, get_current_user
 from backend.database import Base
 from backend.database.models import User, UserSession
@@ -236,5 +238,40 @@ def test_revoke_current_session_clears_cookie() -> None:
             assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie.lower()
 
         await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_logout_clears_cookie_when_session_revoke_hits_sqlite_lock() -> None:
+    async def run() -> None:
+        class LockedDb:
+            execute_calls = 0
+            rollback_called = False
+
+            async def execute(self, *_: object, **__: object) -> object:
+                self.execute_calls += 1
+                if self.execute_calls == 1:
+                    return object()
+                raise OperationalError("UPDATE user_sessions", {}, Exception("locked"))
+
+            async def rollback(self) -> None:
+                self.rollback_called = True
+
+        token = create_access_token(
+            data={"sub": "1"},
+            token_version=0,
+            session_id="locked-session",
+        )
+        request = _make_request_with_cookie(token)
+        response = Response()
+        db = LockedDb()
+
+        result = await logout(request=request, response=response, db=db)  # type: ignore[arg-type]
+
+        assert result == {"message": "Logged out successfully"}
+        assert db.rollback_called is True
+        set_cookie = response.headers.get("set-cookie", "")
+        assert COOKIE_NAME in set_cookie
+        assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie.lower()
 
     asyncio.run(run())
