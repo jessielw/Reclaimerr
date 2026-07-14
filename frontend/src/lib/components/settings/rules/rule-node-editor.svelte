@@ -1893,7 +1893,7 @@
     >
       <!-- group header -->
       <div
-        class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5 
+        class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5
           border-b border-border/60"
       >
         {#if onRemove}
@@ -2314,7 +2314,7 @@
       <!-- node actions -->
       {#if onRemove}
         <div
-          class="col-start-2 row-start-1 flex items-center gap-3 self-center justify-self-end shrink-0 
+          class="col-start-2 row-start-1 flex items-center gap-3 self-center justify-self-end shrink-0
             md:col-auto md:row-auto"
         >
           <Switch
