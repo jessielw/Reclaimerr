@@ -409,6 +409,7 @@ export type RuleConditionOperator =
 
 export interface RuleCondition {
   type: "condition";
+  enabled?: boolean;
   field: string;
   operator: RuleConditionOperator;
   value?: string | number | boolean | string[] | number[] | null;
@@ -416,6 +417,7 @@ export interface RuleCondition {
 
 export interface RuleGroup {
   type: "group";
+  enabled?: boolean;
   op: RuleGroupOperator;
   children: RuleNode[];
 }

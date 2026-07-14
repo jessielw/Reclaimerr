@@ -921,6 +921,69 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertNotIn("watch.view_count", criteria)
         self.assertEqual(len(rule_reasons), 2)
 
+    def test_disabled_condition_is_ignored_during_evaluation(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=10 * 1024**3,
+        )
+        disabled_condition = _condition("media.size", "less_than", 1024)
+        disabled_condition["enabled"] = False
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                disabled_condition,
+                _condition("media.size", "greater_than", 1024),
+            ),
+        )
+
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_MOVIE_VERSION,
+            movie=movie,
+            version=version,
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(criteria["media.size"], 10 * 1024**3)
+        self.assertEqual(len(rule_reasons), 1)
+
+    def test_disabled_group_is_ignored_during_evaluation(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(
+            service_media_id="media-1",
+            service_item_id="item-1",
+            size=10 * 1024**3,
+        )
+        disabled_group = _group(
+            "and",
+            _condition("media.size", "less_than", 1024),
+        )
+        disabled_group["enabled"] = False
+        rule = _rule_with_root(
+            MediaType.MOVIE,
+            TARGET_MOVIE_VERSION,
+            _group(
+                "and",
+                disabled_group,
+                _condition("media.size", "greater_than", 1024),
+            ),
+        )
+
+        matched, criteria, rule_reasons = evaluate_advanced_rule(
+            rule,
+            target_scope=TARGET_MOVIE_VERSION,
+            movie=movie,
+            version=version,
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(criteria["media.size"], 10 * 1024**3)
+        self.assertEqual(len(rule_reasons), 1)
+
     def test_malformed_runtime_group_fails_closed(self) -> None:
         movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
         version = _make_movie_version(

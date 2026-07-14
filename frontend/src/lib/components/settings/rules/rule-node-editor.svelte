@@ -9,6 +9,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Popover from "$lib/components/ui/popover/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import PathPatternPicker from "$lib/components/settings/rules/path-pattern-picker.svelte";
   import SeerrUserPicker from "$lib/components/settings/rules/seerr-user-picker.svelte";
   import PlaybackUserPicker from "$lib/components/settings/rules/playback-user-picker.svelte";
@@ -1778,6 +1779,17 @@
     onChange();
   };
 
+  const nodeEnabled = (ruleNode: RuleNode) => ruleNode.enabled !== false;
+
+  const setNodeEnabled = (ruleNode: RuleNode, enabledValue: boolean) => {
+    if (enabledValue) {
+      delete ruleNode.enabled;
+    } else {
+      ruleNode.enabled = false;
+    }
+    onChange();
+  };
+
   const addPathPattern = (c: RuleCondition, pattern: string) => {
     const cleaned = pattern.trim();
     if (!cleaned) return;
@@ -1869,10 +1881,12 @@
   >
     <div
       class={`rule-group-card rounded-lg border border-border/70 ${groupBg(depth)} overflow-hidden`}
+      class:rule-node-disabled={!nodeEnabled(node)}
     >
       <!-- group header -->
       <div
-        class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5 border-b border-border/60"
+        class="rule-group-header flex items-start md:items-center gap-2 px-2 py-2 md:px-4 md:py-2.5 
+          border-b border-border/60"
       >
         {#if onRemove}
           <button
@@ -1884,6 +1898,15 @@
           >
             <GripVertical class="size-4" />
           </button>
+          <Switch
+            class="h-4 w-7 shrink-0"
+            checked={nodeEnabled(node)}
+            title={nodeEnabled(node)
+              ? "Disable this group"
+              : "Enable this group"}
+            aria-label={nodeEnabled(node) ? "Disable group" : "Enable group"}
+            onCheckedChange={(value) => setNodeEnabled(node, value)}
+          />
         {/if}
 
         <!-- AND / OR toggle -->
@@ -2011,6 +2034,7 @@
   <!-- condition row -->
   <div
     class={`rule-condition relative rounded-md border border-border/70 py-2 pr-2 pl-10 md:py-2.5 md:pr-3 md:pl-11 ${conditionBg(depth)}`}
+    class:rule-node-disabled={!nodeEnabled(node)}
     style={`--rule-depth: ${depth}`}
   >
     {#if onRemove}
@@ -2143,11 +2167,6 @@
                 </Select.Content>
               </Select.Root>
             </div>
-            {#if typeof node.value === "number" && Number.isFinite(node.value)}
-              <span class="w-full text-xs text-muted-foreground">
-                {Math.round(node.value).toLocaleString()} bytes
-              </span>
-            {/if}
           {:else if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
             <Select.Root
               type="single"
@@ -2284,15 +2303,31 @@
         <div class="hidden md:flex md:flex-1"></div>
       {/if}
 
-      <!-- remove button -->
+      <!-- node actions -->
       {#if onRemove}
-        <Button
-          size="icon-sm"
-          class="col-start-2 row-start-1 cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground self-center shrink-0 md:col-auto md:row-auto"
-          onclick={onRemove}
+        <div
+          class="col-start-2 row-start-1 flex items-center gap-3 self-center justify-self-end shrink-0 
+            md:col-auto md:row-auto"
         >
-          <Trash2 class="size-3.5" />
-        </Button>
+          <Switch
+            class="h-4 w-7 shrink-0"
+            checked={nodeEnabled(node)}
+            title={nodeEnabled(node)
+              ? "Disable this condition"
+              : "Enable this condition"}
+            aria-label={nodeEnabled(node)
+              ? "Disable condition"
+              : "Enable condition"}
+            onCheckedChange={(value) => setNodeEnabled(node, value)}
+          />
+          <Button
+            size="icon-sm"
+            class="cursor-pointer bg-destructive/80 hover:bg-destructive/90 text-destructive-foreground shrink-0"
+            onclick={onRemove}
+          >
+            <Trash2 class="size-3.5" />
+          </Button>
+        </div>
       {/if}
 
       {#if !isFieldCompatibleForScope(node.field)}
@@ -2394,6 +2429,11 @@
   .rule-drag-handle {
     touch-action: none;
     user-select: none;
+  }
+
+  .rule-node-disabled {
+    opacity: 0.62;
+    border-style: dashed;
   }
 
   .rule-group-children {

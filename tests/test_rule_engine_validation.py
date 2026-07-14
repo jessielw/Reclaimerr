@@ -10,6 +10,7 @@ from backend.core.rule_engine import (
     TARGET_SERIES,
     _matches_list_operator,
     _matches_operator,
+    collect_rule_conditions,
     derive_path_scope_library_ids,
     validate_rule_definition,
 )
@@ -30,6 +31,105 @@ def _definition(field: str, operator: str, value: object = 1) -> dict[str, objec
 
 
 class RuleDefinitionValidationTests(unittest.TestCase):
+    def test_disabled_conditions_are_ignored_by_collectors_and_validation(
+        self,
+    ) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "condition",
+                        "field": "not.a.real.field",
+                        "operator": "bad",
+                        "enabled": False,
+                    },
+                    {
+                        "type": "condition",
+                        "field": "library.id",
+                        "operator": "contains_any",
+                        "value": ["lib-1"],
+                    },
+                ],
+            },
+        }
+
+        validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
+        self.assertEqual(
+            collect_rule_conditions(definition),
+            [
+                {
+                    "type": "condition",
+                    "field": "library.id",
+                    "operator": "contains_any",
+                    "value": ["lib-1"],
+                }
+            ],
+        )
+        self.assertEqual(derive_path_scope_library_ids(definition), ["lib-1"])
+
+    def test_disabled_groups_are_ignored_by_collectors_and_validation(self) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "group",
+                        "op": "and",
+                        "enabled": False,
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "not.a.real.field",
+                                "operator": "bad",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "condition",
+                        "field": "media.size",
+                        "operator": "greater_than",
+                        "value": 1,
+                    },
+                ],
+            },
+        }
+
+        validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
+        self.assertEqual(
+            [condition["field"] for condition in collect_rule_conditions(definition)],
+            ["media.size"],
+        )
+
+    def test_requires_at_least_one_enabled_condition(self) -> None:
+        definition = {
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "condition",
+                        "field": "media.size",
+                        "operator": "greater_than",
+                        "value": 1,
+                        "enabled": False,
+                    }
+                ],
+            },
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "at least one enabled condition"
+        ):
+            validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
+
     def test_accepts_extended_metadata_fields_for_supported_scopes(self) -> None:
         cases = [
             (TARGET_MOVIE_VERSION, "media.year", "equals", 2005),
