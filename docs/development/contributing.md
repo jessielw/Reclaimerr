@@ -44,6 +44,10 @@ worker, or deletion behavior.
 - Backend: `ruff check .` and `ruff format .`
 - Frontend: `npm run format` and `npm run check`
 
+CI runs `ruff check` and `ruff format --check`, so run `ruff format .` (not just
+`ruff check`) before pushing. Use `ruff format --check .` to verify formatting the
+same way CI does, without modifying files.
+
 ## Desktop
 
 - To run desktop in development use `uv run --extra desktop python -m desktop`

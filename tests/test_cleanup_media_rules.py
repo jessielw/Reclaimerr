@@ -1896,6 +1896,41 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(_evaluate_movie_rule(untagged, rule, {}, []))
         self.assertFalse(_evaluate_movie_rule(other_tag, rule, {}, []))
 
+    def test_evaluate_rule_matches_stale_but_not_active_tags(self) -> None:
+        rule = _make_multi_condition_rule(
+            name="stale-not-active",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            conditions=[
+                {
+                    "type": "condition",
+                    "field": "arr.tags",
+                    "operator": "matches_any_regex",
+                    "value": ["tag-.*-stale$"],
+                },
+                {
+                    "type": "condition",
+                    "field": "arr.tags",
+                    "operator": "not_matches_any_regex",
+                    "value": ["^tag-.*(?<!-stale)$"],
+                },
+            ],
+        )
+
+        stale_only = Series(title="Stale Only", tmdb_id=901, size=20 * 1024**3)
+        stale_only.arr_tags = ["tag-1-stale"]
+        mixed = Series(title="Mixed", tmdb_id=902, size=20 * 1024**3)
+        mixed.arr_tags = ["tag-1-stale", "tag-2"]
+        active_only = Series(title="Active Only", tmdb_id=903, size=20 * 1024**3)
+        active_only.arr_tags = ["tag-2"]
+        untagged = Series(title="Untagged", tmdb_id=904, size=20 * 1024**3)
+        untagged.arr_tags = []
+
+        self.assertTrue(_evaluate_movie_rule(stale_only, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(mixed, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(active_only, rule, {}, []))
+        self.assertFalse(_evaluate_movie_rule(untagged, rule, {}, []))
+
     def test_evaluate_series_rule_days_since_air_dates_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)

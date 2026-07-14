@@ -409,6 +409,20 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             _definition("media.path", "matches_any_regex", [r"movies/.+\\.mkv"]),
         )
 
+    def test_accepts_tag_regex_operators(self) -> None:
+        validate_rule_definition(
+            _definition("arr.tags", "matches_any_regex", ["tag-.*-stale$"]),
+        )
+        validate_rule_definition(
+            _definition("arr.tags", "not_matches_any_regex", ["^tag-.*(?<!-stale)$"]),
+        )
+
+    def test_rejects_tag_regex_operator_on_non_tag_field(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_rule_definition(
+                _definition("media.title", "not_matches_any_regex", ["x"]),
+            )
+
     def test_rejects_boolean_field_with_numeric_operator(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -840,6 +854,102 @@ class ArrTagSubstringOperatorTests(unittest.TestCase):
                 _definition("tmdb.genres", "contains_substring", "chart"),
                 target_scope=TARGET_MOVIE_VERSION,
             )
+
+
+class ArrTagRegexOperatorTests(unittest.TestCase):
+    def test_matches_any_regex_matches_tag(self) -> None:
+        tags = ["tag-1-stale", "tag-2"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_is_case_insensitive(self) -> None:
+        tags = ["TAG-1-STALE"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_multiple_patterns_or(self) -> None:
+        tags = ["tag-2"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "matches_any_regex", ["nope", "^tag-2$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_no_match(self) -> None:
+        tags = ["tag-2"]
+        self.assertFalse(
+            _matches_operator(
+                tags, "matches_any_regex", ["tag-.*-stale$"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_empty_patterns_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", [], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_true_when_no_active_tag(self) -> None:
+        tags = ["tag-1-stale"]
+        self.assertTrue(
+            _matches_operator(
+                tags, "not_matches_any_regex", ["^tag-.*(?<!-stale)$"], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_false_when_active_tag_present(self) -> None:
+        tags = ["tag-1-stale", "tag-2"]
+        self.assertFalse(
+            _matches_operator(
+                tags, "not_matches_any_regex", ["^tag-.*(?<!-stale)$"], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_empty_patterns_fails_closed(self) -> None:
+        # A condition with no valid pattern must not match everything.
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale", "tag-2"], "not_matches_any_regex", [], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_invalid_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "not_matches_any_regex", ["[invalid"], field="arr.tags"
+            )
+        )
+
+    def test_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", [""], field="arr.tags"
+            )
+        )
+
+    def test_not_matches_any_regex_empty_string_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale", "tag-2"],
+                "not_matches_any_regex",
+                [""],
+                field="arr.tags",
+            )
+        )
+
+    def test_matches_any_regex_invalid_pattern_fails_closed(self) -> None:
+        self.assertFalse(
+            _matches_operator(
+                ["tag-1-stale"], "matches_any_regex", ["[invalid"], field="arr.tags"
+            )
+        )
 
 
 if __name__ == "__main__":

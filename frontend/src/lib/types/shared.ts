@@ -405,7 +405,8 @@ export type RuleConditionOperator =
   | "not_exists"
   | "is_true"
   | "is_false"
-  | "matches_any_regex";
+  | "matches_any_regex"
+  | "not_matches_any_regex";
 
 export interface RuleCondition {
   type: "condition";

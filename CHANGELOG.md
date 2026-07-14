@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added task memory logging and cleanup for heavy sync, cleanup scan, playback, IMDb, and AniList tasks
 - Task execution modes are now explicit, with heavy tasks isolated and lightweight tasks kept inline
 - Now logs memory snap shots in debug mode
+- Arr tags rule conditions can now match with regular expressions (`matches regex` / `does not match regex`)
 
 ### Changed
 

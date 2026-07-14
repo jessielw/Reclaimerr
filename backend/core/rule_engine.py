@@ -227,7 +227,8 @@ OPERATOR_LABELS: dict[str, str] = {
     "not_exists": "missing",
     "is_true": "is true",
     "is_false": "is false",
-    "matches_any_regex": "matches path",
+    "matches_any_regex": "matches regex",
+    "not_matches_any_regex": "does not match regex",
 }
 
 LIST_OPERATORS = {
@@ -238,6 +239,7 @@ LIST_OPERATORS = {
     "contains_all",
     "not_contains_all",
     "matches_any_regex",
+    "not_matches_any_regex",
 }
 VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
 NUMERIC_FIELDS = {
@@ -435,6 +437,7 @@ TAG_SUBSTRING_OPERATORS = {
     "contains_substring",
     "not_contains_substring",
 }
+REGEX_OPERATORS = {"matches_any_regex", "not_matches_any_regex"}
 TEMPORAL_OPERATORS = {
     "exists",
     "not_exists",
@@ -467,7 +470,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.series_ids": set(SEERR_REQUESTER_ID_OPERATORS),
-    "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS,
+    "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS | REGEX_OPERATORS,
 }
 
 TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
@@ -2453,8 +2456,11 @@ def _matches_operator(
         return actual is True
     if operator == "is_false":
         return actual is False
-    if operator == "matches_any_regex":
-        return _matches_any_regex(_as_list(actual), _as_list(expected))
+    if operator in REGEX_OPERATORS:
+        matched = _matches_any_regex(_as_list(actual), _as_list(expected), field=field)
+        if matched is None:  # no valid pattern: fail closed for both operators
+            return False
+        return matched if operator == "matches_any_regex" else not matched
     if operator in LIST_OPERATORS:
         return _matches_list_operator(actual, operator, expected, field=field)
     if operator in TAG_SUBSTRING_OPERATORS:
@@ -2633,19 +2639,33 @@ def _matches_path_prefix(actual: Any, expected: Any) -> bool:
     return actual_path == expected_path or actual_path.startswith(f"{expected_path}/")
 
 
-def _matches_any_regex(values: list[Any], patterns: list[Any]) -> bool:
-    """Evaluate whether any of the provided values match any of the provided regex patterns."""
-    normalized_values = [
-        normalize_fpath(value, lower=True) for value in values if _exists(value)
-    ]
+def _matches_any_regex(
+    values: list[Any], patterns: list[Any], *, field: str | None = None
+) -> bool | None:
+    """Return whether any value matches any regex pattern.
+
+    Returns ``None`` when no supplied pattern compiles, so callers can fail
+    closed for both the positive and negated operators. Path fields are
+    path-normalized; all other fields (e.g. ``arr.tags``) use plain string
+    normalization.
+    """
+    compiled: list[re.Pattern[str]] = []
     for pattern in patterns:
+        if not _exists(pattern):
+            continue
         try:
-            regex = re.compile(str(pattern), re.IGNORECASE)
+            compiled.append(re.compile(str(pattern), re.IGNORECASE))
         except re.error:
             continue
-        if any(regex.search(value) for value in normalized_values):
-            return True
-    return False
+    if not compiled:
+        return None
+    if field in PATH_FIELDS:
+        normalized_values = [
+            normalize_fpath(value, lower=True) for value in values if _exists(value)
+        ]
+    else:
+        normalized_values = [_normalize(value) for value in values if _exists(value)]
+    return any(regex.search(value) for regex in compiled for value in normalized_values)
 
 
 def _path_basename(path: str | None) -> str | None:

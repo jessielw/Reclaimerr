@@ -12,9 +12,11 @@ from backend.api.candidate_views import build_rule_preview_items
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.rule_engine import (
+    REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
     TARGET_MOVIE_VERSION,
+    collect_rule_conditions,
     collect_rule_path_conditions,
     derive_path_scope_library_ids,
     normalize_rule_definition,
@@ -492,6 +494,26 @@ def _validate_definition_path_syntax(definition: dict[str, Any] | None) -> None:
             ) from exc
 
 
+def _validate_definition_tag_regex_syntax(definition: dict[str, Any] | None) -> None:
+    """Validate arr.tags regex patterns for syntax, without requiring indexed media."""
+    for condition in collect_rule_conditions(definition, field="arr.tags"):
+        operator = str(condition.get("operator", "")).lower()
+        if operator not in REGEX_OPERATORS:
+            continue
+        raw = condition.get("value")
+        patterns = raw if isinstance(raw, list) else [raw]
+        for pattern in patterns:
+            if pattern is None:
+                continue
+            try:
+                re.compile(str(pattern), re.IGNORECASE)
+            except re.error as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid regex pattern '{pattern}'",
+                ) from exc
+
+
 @router.get("/rules/path-tree")
 async def get_path_tree(
     _admin: Annotated[User, Depends(require_admin)],
@@ -949,6 +971,7 @@ async def create_rule(
         rule_data.target_scope, rule_data.media_type
     )
     _validate_definition_path_syntax(rule_data.definition)
+    _validate_definition_tag_regex_syntax(rule_data.definition)
     new_rule = ReclaimRule(
         name=rule_data.name,
         media_type=effective_media_type,
@@ -1078,6 +1101,7 @@ async def preview_rule_matches(
 
     effective_media_type = _media_type_for_target(body.target_scope, body.media_type)
     _validate_definition_path_syntax(body.definition)
+    _validate_definition_tag_regex_syntax(body.definition)
 
     preview_rule = ReclaimRule(
         name=(body.name or "").strip() or "Preview Rule",
@@ -1151,6 +1175,7 @@ async def import_rules(
             except ValueError as e:
                 raise ValueError(str(e)) from e
             _validate_definition_path_syntax(rule_data.definition)
+            _validate_definition_tag_regex_syntax(rule_data.definition)
 
             name = rule_data.name
             if name in used_names:
@@ -1257,6 +1282,7 @@ async def update_rule(
             ) from e
 
         _validate_definition_path_syntax(effective_definition)
+        _validate_definition_tag_regex_syntax(effective_definition)
 
     for field, value in update_data.items():
         setattr(rule, field, value)
