@@ -8656,6 +8656,7 @@ async def _move_specific_candidates_impl(
                             destination_root,
                             path_mappings,
                             service_type=series_ref.service.value,
+                            cleanup_empty_parent=True,
                         )
                 else:
                     dest = move_directory(

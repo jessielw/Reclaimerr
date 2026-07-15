@@ -307,6 +307,45 @@ def test_move_directory_preserves_mapping_relative_folder_structure(
     assert not series_dir.exists()
 
 
+def test_move_directory_can_remove_empty_source_parent(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Show One"
+    season_dir = series_dir / "Season 01"
+    season_dir.mkdir(parents=True)
+    episode_file = season_dir / "Show One - S01E01.mkv"
+    episode_file.write_bytes(b"episode")
+
+    moved_to = move_directory(
+        season_dir,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+        cleanup_empty_parent=True,
+    )
+
+    assert moved_to == tmp_path / "reclaimed" / "tv" / "Show One" / "Season 01"
+    assert (moved_to / "Show One - S01E01.mkv").read_bytes() == b"episode"
+    assert not season_dir.exists()
+    assert not series_dir.exists()
+
+
+def test_move_directory_leaves_empty_source_parent_by_default(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Show Two"
+    season_dir = series_dir / "Season 01"
+    season_dir.mkdir(parents=True)
+    episode_file = season_dir / "Show Two - S01E01.mkv"
+    episode_file.write_bytes(b"episode")
+
+    move_directory(
+        season_dir,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert not season_dir.exists()
+    assert series_dir.exists()
+
+
 def test_move_season_files_preserves_series_folder_for_flat_series(
     tmp_path: Path,
 ) -> None:
