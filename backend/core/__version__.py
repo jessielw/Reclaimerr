@@ -3,4 +3,4 @@ from semver import VersionInfo
 program_name = "Reclaimerr"
 program_url = "https://github.com/jessielw/reclaimerr"
 
-__version__ = VersionInfo.parse("0.2.3")
+__version__ = VersionInfo.parse("0.2.4")
