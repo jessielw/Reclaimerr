@@ -553,6 +553,7 @@ def move_directory(
     *,
     service_type: str | None = None,
     service_config_id: int | None = None,
+    cleanup_empty_parent: bool = False,
 ) -> Path:
     """Move directory *src* into *destination_root*.
 
@@ -564,6 +565,8 @@ def move_directory(
         destination_root: Parent directory to move *src* into.
         path_mappings: Optional path mappings used to preserve folder structure
             beneath the matched local prefix.
+        cleanup_empty_parent: Remove *src*'s immediate parent if it is empty
+            after the directory move. This is intentionally not recursive.
 
     Returns:
         The final destination path (``destination_root / src.name``).
@@ -583,14 +586,23 @@ def move_directory(
     if dest.exists():
         raise FileExistsError(f"move_directory: destination already exists: {dest}")
 
+    source_parent = src.parent
     try:
         os_rename(src, dest)
-        return dest
     except OSError:
-        pass  # cross-device (fall through to copy + remove)
+        # cross-device (fall through to copy + remove)
+        shutil.copytree(str(src), str(dest))
+        shutil.rmtree(str(src))
 
-    shutil.copytree(str(src), str(dest))
-    shutil.rmtree(str(src))
+    if cleanup_empty_parent:
+        try:
+            if source_parent.is_dir() and not any(source_parent.iterdir()):
+                source_parent.rmdir()
+                LOG.info(f"move_directory: removed empty source parent {source_parent}")
+        except OSError as exc:
+            LOG.debug(
+                f"move_directory: could not remove source parent {source_parent}: {exc}"
+            )
 
     return dest
 
