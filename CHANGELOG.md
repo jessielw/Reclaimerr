@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated FastAPI to 0.139.2
+
 ### Fixed
 
 - Empty movie folders left behind after move cleanup are removed when safe
