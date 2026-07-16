@@ -12,7 +12,6 @@ from backend.core.logger import LOG
 from backend.core.memory import cleanup_process_memory, log_memory_snapshot
 from backend.core.service_manager import service_manager
 from backend.enums import Task
-from desktop.utils import is_bundled
 
 TASK_CHILD_ENV = "RECLAIMERR_TASK_CHILD"
 TASK_ISOLATION_ENV = "RECLAIMERR_TASK_ISOLATION"
@@ -225,7 +224,10 @@ def _run_task_in_blocking_subprocess(
 
 
 def _task_child_command() -> list[str]:
-    if is_bundled is not None:
+    # The backend also runs in Docker/source deployments where the desktop
+    # package is intentionally absent. Frozen desktop builds expose this on
+    # ``sys`` directly, so task execution does not need a desktop dependency.
+    if getattr(sys, "frozen", False):
         return [sys.executable, TASK_CHILD_ARG]
     return [sys.executable, "-m", "backend.core.task_child"]
 
