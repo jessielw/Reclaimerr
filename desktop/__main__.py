@@ -3,6 +3,7 @@ import multiprocessing
 # must be the very first call when frozen
 multiprocessing.freeze_support()
 
+import asyncio
 import os
 import signal
 import sys
@@ -12,9 +13,18 @@ from typing import Any
 from filelock import FileLock, Timeout
 
 from desktop.server import ReclaimerServer
-from desktop.tray import create_icon
+
+TASK_CHILD_ARG = "--task-child"
 
 server = ReclaimerServer()
+
+if TASK_CHILD_ARG in sys.argv[1:]:
+    server.prepare_env()
+    from backend.core.task_child import run_task_child
+
+    raise SystemExit(asyncio.run(run_task_child()))
+
+from desktop.tray import create_icon
 
 # Single instance enforcement. FileLock uses an OS level exclusive file lock
 # that is automatically released if the process crashes (no stale lock files).

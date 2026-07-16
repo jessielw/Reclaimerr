@@ -12,9 +12,11 @@ from backend.core.logger import LOG
 from backend.core.memory import cleanup_process_memory, log_memory_snapshot
 from backend.core.service_manager import service_manager
 from backend.enums import Task
+from desktop.utils import is_bundled
 
 TASK_CHILD_ENV = "RECLAIMERR_TASK_CHILD"
 TASK_ISOLATION_ENV = "RECLAIMERR_TASK_ISOLATION"
+TASK_CHILD_ARG = "--task-child"
 
 
 class TaskExecutionMode(StrEnum):
@@ -96,6 +98,7 @@ async def run_task_with_memory_cleanup(task: Task) -> dict[str, Any] | None:
 async def run_task_in_subprocess(task: Task) -> dict[str, Any] | None:
     request = json.dumps({"task": task.value}, separators=(",", ":")).encode()
     env = {**os.environ, TASK_CHILD_ENV: "1"}
+    command = _task_child_command()
     if os.name == "nt":
         LOG.info(
             f"Running {task.friendly_name()} in a Windows thread-backed child process"
@@ -105,13 +108,12 @@ async def run_task_in_subprocess(task: Task) -> dict[str, Any] | None:
             task,
             request,
             env,
+            command,
         )
 
     try:
         process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "backend.core.task_child",
+            *command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -163,9 +165,10 @@ def _run_task_in_blocking_subprocess(
     task: Task,
     request: bytes,
     env: dict[str, str],
+    command: list[str] | None = None,
 ) -> dict[str, Any] | None:
     process = subprocess.Popen(
-        [sys.executable, "-m", "backend.core.task_child"],
+        command or _task_child_command(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -219,6 +222,12 @@ def _run_task_in_blocking_subprocess(
 
     payload = result.get("result")
     return payload if isinstance(payload, dict) else None
+
+
+def _task_child_command() -> list[str]:
+    if is_bundled is not None:
+        return [sys.executable, TASK_CHILD_ARG]
+    return [sys.executable, "-m", "backend.core.task_child"]
 
 
 async def _collect_stdout(

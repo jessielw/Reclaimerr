@@ -60,6 +60,8 @@ def test_parse_child_result_uses_last_valid_json() -> None:
 def test_blocking_subprocess_reads_stdout_result_and_streams_stderr(
     monkeypatch,
 ) -> None:
+    captured_command: list[str] | None = None
+
     class FakeInput:
         closed = False
 
@@ -94,7 +96,9 @@ def test_blocking_subprocess_reads_stdout_result_and_streams_stderr(
             self.closed = True
 
     class FakeProcess:
-        def __init__(self, *_args, **_kwargs) -> None:
+        def __init__(self, args, **_kwargs) -> None:
+            nonlocal captured_command
+            captured_command = args
             self.stdin = FakeInput()
             self.stdout = FakeOutput('{"ok":true,"result":{"rows":1}}\n')
             self.stderr = FakeError()
@@ -109,15 +113,22 @@ def test_blocking_subprocess_reads_stdout_result_and_streams_stderr(
         Task.IMDB_RATINGS_REFRESH,
         b'{"task":"imdb_ratings_refresh"}',
         {},
+        ["python", "-m", "backend.core.task_child"],
     )
 
     assert result == {"rows": 1}
+    assert captured_command == ["python", "-m", "backend.core.task_child"]
 
 
 def test_run_task_in_subprocess_uses_blocking_child_on_windows(
     monkeypatch,
 ) -> None:
-    def blocking_child(task: Task, _request: bytes, _env: dict[str, str]):
+    def blocking_child(
+        task: Task,
+        _request: bytes,
+        _env: dict[str, str],
+        _command: list[str],
+    ):
         return {"task": task.value}
 
     def unexpected_async_subprocess(*_args, **_kwargs):
@@ -138,6 +149,27 @@ def test_run_task_in_subprocess_uses_blocking_child_on_windows(
     result = asyncio.run(task_process.run_task_in_subprocess(Task.IMDB_RATINGS_REFRESH))
 
     assert result == {"task": Task.IMDB_RATINGS_REFRESH.value}
+
+
+def test_task_child_command_uses_python_module_in_source(monkeypatch) -> None:
+    monkeypatch.setattr(task_process.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(task_process.sys, "executable", "python")
+
+    assert task_process._task_child_command() == [
+        "python",
+        "-m",
+        "backend.core.task_child",
+    ]
+
+
+def test_task_child_command_uses_desktop_child_arg_when_frozen(monkeypatch) -> None:
+    monkeypatch.setattr(task_process.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(task_process.sys, "executable", "reclaimerr.exe")
+
+    assert task_process._task_child_command() == [
+        "reclaimerr.exe",
+        task_process.TASK_CHILD_ARG,
+    ]
 
 
 def test_run_task_in_subprocess_falls_back_inline_for_unsupported_non_windows_loop(

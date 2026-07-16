@@ -24,7 +24,7 @@ SERVICE_BOOTSTRAP_TASKS: frozenset[Task] = frozenset(
 )
 
 
-async def _main() -> int:
+async def run_task_child() -> int:
     try:
         raw_request = sys.stdin.readline()
         request = json.loads(raw_request)
@@ -63,4 +63,4 @@ def _write_result(payload: dict[str, Any]) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(_main()))
+    raise SystemExit(asyncio.run(run_task_child()))

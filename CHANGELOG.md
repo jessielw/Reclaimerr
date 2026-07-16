@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Empty movie folders left behind after move cleanup are removed when safe
+- Desktop client unable to launch tasks since v0.2.3:
+  - Task isolation now launches a dedicated child-task mode so heavy tasks return proper results in frozen Windows builds
 
 ## [0.2.4] - 2026-07-15
 
