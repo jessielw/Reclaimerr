@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Jellyfin and Emby playback rules now use persisted native completed-watch snapshots after Sync Media; Playback Reporting remains optional enrichment for durable event and duration data
 
+### Fixed
+
+- Docker build importing a desktop module it does not need that could sometimes result in a crash at startup
+
 ## [0.2.5] - 2026-07-16
 
 ### Changed
