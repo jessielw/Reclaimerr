@@ -1323,9 +1323,8 @@
         </Notice>
       {/if}
       {#if previewData?.metadata && previewData.metadata.playback_unavailable_count > 0}
-        <Notice type="warning" title="Playback History Coverage">
-          Of the active source items, imported playback history could not be
-          observed for
+        <Notice type="warning" title="Playback Coverage">
+          Of the active source items, playback data could not be observed for
           {previewData.metadata.playback_unavailable_count}
           media target{previewData.metadata.playback_unavailable_count === 1
             ? ""

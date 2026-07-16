@@ -132,6 +132,19 @@ class MediaWatchSnapshot:
 
 
 @dataclass(slots=True, frozen=True)
+class NativePlaybackSnapshot:
+    """Current completed playback state for one media-server item and user."""
+
+    source_item_id: str
+    provider_media_type: Literal["movie", "episode"]
+    source_user_id: str
+    source_username: str | None
+    play_count: int
+    completed: bool
+    last_activity_at: datetime | None
+
+
+@dataclass(slots=True, frozen=True)
 class AggregatedSeasonData:
     """Season with aggregated watch data from a media server."""
 

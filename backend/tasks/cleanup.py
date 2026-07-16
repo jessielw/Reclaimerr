@@ -1262,18 +1262,32 @@ async def _activate_playback_history_for_rules(
     snapshot = await load_playback_rule_snapshot(db, refresh_result)
     PlaybackHistoryResolver(snapshot.values_by_target).activate()
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
-    log_playback_rule_coverage(snapshot, scopes)
-    unavailable_count = snapshot.unavailable_count(scopes)
+    fields = {
+        field
+        for rule in playback_rules
+        for field in PLAYBACK_RULE_FIELDS
+        if collect_rule_conditions(rule.definition, field=field)
+    }
+    log_playback_rule_coverage(snapshot, scopes, fields)
+    unavailable_count = snapshot.unavailable_count(scopes, fields)
     if unavailable_count == 0:
         return _PlaybackRuleDataResult(snapshot=snapshot)
 
     if snapshot.errors:
         error = "; ".join(snapshot.errors)
     elif not snapshot.has_configured_provider:
-        error = "No Playback Reporting or Tautulli provider is configured"
+        error = "No playback source is configured"
+    elif fields & {
+        "playback.total_duration_minutes",
+        "playback.longest_duration_minutes",
+    }:
+        error = (
+            "Playback duration fields require imported Playback Reporting or "
+            "Tautulli history for the media source"
+        )
     else:
         error = (
-            "Some media targets are not observable by the configured playback providers"
+            "Some media targets are not observable by the configured playback sources"
         )
     return _PlaybackRuleDataResult(
         snapshot=snapshot,

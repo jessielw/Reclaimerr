@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Jellyfin and Emby playback rules now use persisted native completed-watch snapshots after Sync Media; Playback Reporting remains optional enrichment for durable event and duration data
+
 ## [0.2.5] - 2026-07-16
 
 ### Changed

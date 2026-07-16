@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from asyncio import Lock
+from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -16,16 +18,90 @@ from backend.database.models import (
     Episode,
     MediaWatchUser,
     MediaWatchUserEpisode,
+    Movie,
+    MovieVersion,
+    NativePlaybackAggregate,
+    NativePlaybackUser,
     Season,
     Series,
     ServiceConfig,
+    SupplementalMediaMatch,
 )
 from backend.enums import MediaType, Service
-from backend.models.media import MediaWatchSnapshot
+from backend.models.media import MediaWatchSnapshot, NativePlaybackSnapshot
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
 from backend.user_types import MEDIA_SERVERS
+
+
+@dataclass(slots=True)
+class _NativePlaybackAggregate:
+    """Mutable native state while rebuilding one persisted aggregate row."""
+
+    media_type: MediaType
+    item_users: dict[tuple[str, str], NativePlaybackSnapshot] = field(
+        default_factory=dict
+    )
+
+    def add(self, snapshot: NativePlaybackSnapshot) -> None:
+        identity = (snapshot.source_item_id, snapshot.source_user_id)
+        current = self.item_users.get(identity)
+        if current is None:
+            self.item_users[identity] = snapshot
+            return
+
+        current_at = current.last_activity_at
+        candidate_at = snapshot.last_activity_at
+        if snapshot.play_count > current.play_count or (
+            snapshot.play_count == current.play_count
+            and candidate_at is not None
+            and (current_at is None or candidate_at > current_at)
+        ):
+            self.item_users[identity] = snapshot
+
+    @property
+    def has_activity(self) -> bool:
+        return any(
+            row.completed or row.play_count > 0 or row.last_activity_at is not None
+            for row in self.item_users.values()
+        )
+
+    @property
+    def play_count(self) -> int:
+        return sum(row.play_count for row in self.item_users.values())
+
+    @property
+    def unique_user_count(self) -> int:
+        return len({row.source_user_id for row in self.item_users.values()})
+
+    @property
+    def usernames_by_user_id(self) -> dict[str, str]:
+        names: dict[str, str] = {}
+        for row in self.item_users.values():
+            if row.source_username and row.source_username.strip():
+                names.setdefault(row.source_user_id, row.source_username.strip())
+        return names
+
+    @property
+    def usernames_complete(self) -> bool:
+        return len(self.usernames_by_user_id) == self.unique_user_count
+
+    @property
+    def usernames(self) -> list[str]:
+        names = set(self.usernames_by_user_id.values())
+        return sorted(names, key=str.casefold)
+
+    @property
+    def last_activity_at(self) -> datetime | None:
+        return max(
+            (
+                row.last_activity_at
+                for row in self.item_users.values()
+                if row.last_activity_at is not None
+            ),
+            default=None,
+        )
 
 
 class MediaWatchSnapshotCache:
@@ -40,6 +116,13 @@ class MediaWatchSnapshotCache:
     _PLEX_FORMAT_VERSION = 3
     _PLEX_OVERLAP_WINDOW = timedelta(days=1)
     _PLEX_FULL_REBUILD_INTERVAL = timedelta(days=7)
+    _NATIVE_PLAYBACK_SYNC_STATE_KEY = "native_playback_sync"
+    _NATIVE_PLAYBACK_FORMAT_VERSION_KEY = "format_version"
+    _NATIVE_PLAYBACK_AVAILABLE_KEY = "available"
+    _NATIVE_PLAYBACK_LAST_SUCCESS_AT_KEY = "last_success_at"
+    _NATIVE_PLAYBACK_LAST_ATTEMPT_AT_KEY = "last_attempt_at"
+    _NATIVE_PLAYBACK_LAST_ERROR_KEY = "last_error"
+    _NATIVE_PLAYBACK_FORMAT_VERSION = 1
 
     def __init__(self) -> None:
         self._refresh_lock = Lock()
@@ -84,6 +167,353 @@ class MediaWatchSnapshotCache:
         if normalized is None:
             normalized = datetime.now(UTC)
         return normalized.isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _set_native_playback_sync_state(
+        cls,
+        config: ServiceConfig,
+        *,
+        available: bool,
+        error: str | None = None,
+    ) -> None:
+        extra_settings = (
+            dict(config.extra_settings)
+            if isinstance(config.extra_settings, dict)
+            else {}
+        )
+        previous = extra_settings.get(cls._NATIVE_PLAYBACK_SYNC_STATE_KEY)
+        state = dict(previous) if isinstance(previous, dict) else {}
+        now = cls._to_utc_iso(datetime.now(UTC))
+        state[cls._NATIVE_PLAYBACK_FORMAT_VERSION_KEY] = (
+            cls._NATIVE_PLAYBACK_FORMAT_VERSION
+        )
+        state[cls._NATIVE_PLAYBACK_AVAILABLE_KEY] = available
+        state[cls._NATIVE_PLAYBACK_LAST_ATTEMPT_AT_KEY] = now
+        state[cls._NATIVE_PLAYBACK_LAST_ERROR_KEY] = error
+        if available:
+            state[cls._NATIVE_PLAYBACK_LAST_SUCCESS_AT_KEY] = now
+        extra_settings[cls._NATIVE_PLAYBACK_SYNC_STATE_KEY] = state
+        config.extra_settings = extra_settings
+
+    @classmethod
+    def _build_native_playback_rows(
+        cls,
+        *,
+        source_service: Service,
+        source_service_config_id: int,
+        snapshots: list[NativePlaybackSnapshot],
+    ) -> list[NativePlaybackUser]:
+        merged: dict[tuple[str, str], NativePlaybackSnapshot] = {}
+        for snapshot in snapshots:
+            identity = (snapshot.source_item_id, snapshot.source_user_id)
+            current = merged.get(identity)
+            if current is None:
+                merged[identity] = snapshot
+                continue
+            current_at = cls._as_utc_datetime(current.last_activity_at)
+            candidate_at = cls._as_utc_datetime(snapshot.last_activity_at)
+            if snapshot.play_count > current.play_count or (
+                snapshot.play_count == current.play_count
+                and candidate_at is not None
+                and (current_at is None or candidate_at > current_at)
+            ):
+                merged[identity] = snapshot
+
+        refreshed_at = datetime.now(UTC)
+        return [
+            NativePlaybackUser(
+                source_service=source_service,
+                source_service_config_id=source_service_config_id,
+                source_item_id=snapshot.source_item_id,
+                provider_media_type=snapshot.provider_media_type,
+                source_user_id=snapshot.source_user_id,
+                source_username=(
+                    snapshot.source_username.strip()
+                    if snapshot.source_username and snapshot.source_username.strip()
+                    else None
+                ),
+                source_username_normalized=(
+                    cls._normalize_user_key(snapshot.source_username)
+                    if snapshot.source_username and snapshot.source_username.strip()
+                    else None
+                ),
+                play_count=snapshot.play_count,
+                completed=snapshot.completed,
+                last_activity_at=cls._as_utc_datetime(snapshot.last_activity_at),
+                refreshed_at=refreshed_at,
+            )
+            for snapshot in merged.values()
+        ]
+
+    @classmethod
+    async def _build_requester_snapshots_from_native(
+        cls,
+        *,
+        session: AsyncSession,
+        source_service: Service,
+        snapshots: list[NativePlaybackSnapshot],
+    ) -> list[MediaWatchSnapshot]:
+        """Derive completed requester-watch evidence from native item snapshots."""
+
+        completed = [
+            snapshot
+            for snapshot in snapshots
+            if snapshot.completed
+            and snapshot.last_activity_at is not None
+            and snapshot.source_username
+            and snapshot.source_username.strip()
+        ]
+        if not completed:
+            return []
+
+        movie_ids = {
+            snapshot.source_item_id
+            for snapshot in completed
+            if snapshot.provider_media_type == "movie"
+        }
+        movie_tmdb_by_source_id: dict[str, int] = {}
+        if movie_ids:
+            movie_rows = (
+                await session.execute(
+                    select(MovieVersion.service_item_id, Movie.tmdb_id)
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == source_service,
+                        MovieVersion.service_item_id.in_(movie_ids),
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+            movie_tmdb_by_source_id = {
+                str(source_id): int(tmdb_id)
+                for source_id, tmdb_id in movie_rows
+                if source_id is not None and tmdb_id is not None
+            }
+            supplemental_rows = (
+                await session.execute(
+                    select(SupplementalMediaMatch.source_item_id, Movie.tmdb_id)
+                    .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
+                    .where(
+                        SupplementalMediaMatch.source_service == source_service,
+                        SupplementalMediaMatch.media_type == MediaType.MOVIE,
+                        SupplementalMediaMatch.source_item_id.in_(movie_ids),
+                        SupplementalMediaMatch.movie_id.is_not(None),
+                        Movie.removed_at.is_(None),
+                    )
+                )
+            ).all()
+            for source_id, tmdb_id in supplemental_rows:
+                if source_id is not None and tmdb_id is not None:
+                    movie_tmdb_by_source_id.setdefault(str(source_id), int(tmdb_id))
+
+        episode_ids = {
+            snapshot.source_item_id
+            for snapshot in completed
+            if snapshot.provider_media_type == "episode"
+        }
+        episode_tmdb_by_source_id: dict[str, int] = {}
+        episode_column = {
+            Service.JELLYFIN: Episode.jellyfin_episode_id,
+            Service.EMBY: Episode.emby_episode_id,
+        }.get(source_service)
+        if episode_ids and episode_column is not None:
+            episode_rows = (
+                await session.execute(
+                    select(episode_column, Series.tmdb_id)
+                    .join(Season, Episode.season_id == Season.id)
+                    .join(Series, Season.series_id == Series.id)
+                    .where(
+                        episode_column.in_(episode_ids),
+                        Series.removed_at.is_(None),
+                    )
+                )
+            ).all()
+            episode_tmdb_by_source_id = {
+                str(source_id): int(tmdb_id)
+                for source_id, tmdb_id in episode_rows
+                if source_id is not None and tmdb_id is not None
+            }
+
+        result: list[MediaWatchSnapshot] = []
+        for snapshot in completed:
+            username = snapshot.source_username
+            if username is None:
+                continue
+            tmdb_id = (
+                movie_tmdb_by_source_id.get(snapshot.source_item_id)
+                if snapshot.provider_media_type == "movie"
+                else episode_tmdb_by_source_id.get(snapshot.source_item_id)
+            )
+            if tmdb_id is None or snapshot.last_activity_at is None:
+                continue
+            result.append(
+                MediaWatchSnapshot(
+                    media_type=(
+                        MediaType.MOVIE
+                        if snapshot.provider_media_type == "movie"
+                        else MediaType.SERIES
+                    ),
+                    tmdb_id=tmdb_id,
+                    watch_user_key=username.strip(),
+                    last_watched_at=snapshot.last_activity_at,
+                    play_count=snapshot.play_count,
+                    source_item_id=(
+                        snapshot.source_item_id
+                        if snapshot.provider_media_type == "episode"
+                        else None
+                    ),
+                )
+            )
+        return result
+
+    @classmethod
+    async def _rebuild_native_playback_aggregates(cls, session: AsyncSession) -> None:
+        """Map native item snapshots to rule targets using exact service IDs."""
+
+        # Production sessions disable autoflush. Make pending native rows visible
+        # before rebuilding, regardless of which caller invokes this helper.
+        await session.flush()
+
+        movie_targets: dict[tuple[Service, str], set[int]] = defaultdict(set)
+        for service, item_id, version_id in (
+            await session.execute(
+                select(
+                    MovieVersion.service,
+                    MovieVersion.service_item_id,
+                    MovieVersion.id,
+                )
+                .join(Movie, MovieVersion.movie_id == Movie.id)
+                .where(Movie.removed_at.is_(None))
+            )
+        ).all():
+            movie_targets[(service, str(item_id))].add(version_id)
+
+        supplemental_movie_rows = (
+            await session.execute(
+                select(
+                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_item_id,
+                    MovieVersion.id,
+                )
+                .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
+                .join(MovieVersion, MovieVersion.movie_id == Movie.id)
+                .where(
+                    SupplementalMediaMatch.media_type == MediaType.MOVIE,
+                    SupplementalMediaMatch.movie_id.is_not(None),
+                    Movie.removed_at.is_(None),
+                )
+            )
+        ).all()
+        for service, item_id, version_id in supplemental_movie_rows:
+            movie_targets[(service, str(item_id))].add(version_id)
+
+        episode_targets: dict[tuple[Service, str], tuple[int, int, int]] = {}
+        for (
+            episode_id,
+            season_id,
+            series_id,
+            jellyfin_id,
+            emby_id,
+        ) in (
+            await session.execute(
+                select(
+                    Episode.id,
+                    Season.id,
+                    Series.id,
+                    Episode.jellyfin_episode_id,
+                    Episode.emby_episode_id,
+                )
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(Series.removed_at.is_(None))
+            )
+        ).all():
+            if jellyfin_id:
+                episode_targets[(Service.JELLYFIN, str(jellyfin_id))] = (
+                    episode_id,
+                    season_id,
+                    series_id,
+                )
+            if emby_id:
+                episode_targets[(Service.EMBY, str(emby_id))] = (
+                    episode_id,
+                    season_id,
+                    series_id,
+                )
+
+        aggregates: dict[tuple[int, str, int], _NativePlaybackAggregate] = {}
+        source_services: dict[int, Service] = {}
+        rows = (await session.execute(select(NativePlaybackUser))).scalars().all()
+        for row in rows:
+            source_services[row.source_service_config_id] = row.source_service
+            target_keys: list[tuple[str, int]] = []
+            if row.provider_media_type == "movie":
+                target_keys.extend(
+                    ("movie_version", version_id)
+                    for version_id in movie_targets.get(
+                        (row.source_service, row.source_item_id), set()
+                    )
+                )
+            elif row.provider_media_type == "episode":
+                target = episode_targets.get((row.source_service, row.source_item_id))
+                if target is not None:
+                    episode_id, season_id, series_id = target
+                    target_keys.extend(
+                        [
+                            ("series", series_id),
+                            ("season", season_id),
+                            ("episode", episode_id),
+                        ]
+                    )
+            if not target_keys:
+                continue
+
+            snapshot = NativePlaybackSnapshot(
+                source_item_id=row.source_item_id,
+                provider_media_type=(
+                    "movie" if row.provider_media_type == "movie" else "episode"
+                ),
+                source_user_id=row.source_user_id,
+                source_username=row.source_username,
+                play_count=row.play_count,
+                completed=row.completed,
+                last_activity_at=cls._as_utc_datetime(row.last_activity_at),
+            )
+            for scope, target_id in target_keys:
+                identity = (row.source_service_config_id, scope, target_id)
+                aggregate = aggregates.setdefault(
+                    identity,
+                    _NativePlaybackAggregate(
+                        media_type=(
+                            MediaType.MOVIE
+                            if scope == "movie_version"
+                            else MediaType.SERIES
+                        )
+                    ),
+                )
+                aggregate.add(snapshot)
+
+        await session.execute(sql_delete(NativePlaybackAggregate))
+        refreshed_at = datetime.now(UTC)
+        session.add_all(
+            [
+                NativePlaybackAggregate(
+                    source_service=source_services[config_id],
+                    source_service_config_id=config_id,
+                    target_scope=scope,
+                    target_id=target_id,
+                    media_type=aggregate.media_type,
+                    has_activity=aggregate.has_activity,
+                    play_count=aggregate.play_count,
+                    unique_user_count=aggregate.unique_user_count,
+                    usernames=aggregate.usernames,
+                    usernames_complete=aggregate.usernames_complete,
+                    last_activity_at=aggregate.last_activity_at,
+                    refreshed_at=refreshed_at,
+                )
+                for (config_id, scope, target_id), aggregate in aggregates.items()
+            ]
+        )
 
     @staticmethod
     def _as_utc_datetime(value: datetime | None) -> datetime | None:
@@ -266,6 +696,8 @@ class MediaWatchSnapshotCache:
                     if not supported:
                         await session.execute(sql_delete(MediaWatchUser))
                         await session.execute(sql_delete(MediaWatchUserEpisode))
+                        await session.execute(sql_delete(NativePlaybackUser))
+                        await session.execute(sql_delete(NativePlaybackAggregate))
                         await session.commit()
                         return True, None
 
@@ -278,6 +710,14 @@ class MediaWatchSnapshotCache:
                             service_instance,
                             (PlexService, JellyfinService, EmbyService),
                         ):
+                            if config.service_type in {Service.JELLYFIN, Service.EMBY}:
+                                self._set_native_playback_sync_state(
+                                    config,
+                                    available=False,
+                                    error="media-server client is not initialized",
+                                )
+                                session.add(config)
+                                await session.commit()
                             LOG.warning(
                                 f"Watch snapshot skip for {config.service_type} "
                                 f"(config_id={config.id}): client not initialized"
@@ -286,6 +726,7 @@ class MediaWatchSnapshotCache:
                         try:
                             incremental_mode = False
                             max_viewed_at: datetime | None = None
+                            native_playback_snapshots: list[NativePlaybackSnapshot] = []
                             if isinstance(service_instance, PlexService):
                                 extra_settings = (
                                     dict(config.extra_settings)
@@ -352,10 +793,24 @@ class MediaWatchSnapshotCache:
                                 config.extra_settings = extra_settings
                                 session.add(config)
                             else:
+                                native_playback_snapshots = await service_instance.get_native_playback_user_snapshots()
                                 snapshots = (
-                                    await service_instance.get_watched_user_snapshots()
+                                    await self._build_requester_snapshots_from_native(
+                                        session=session,
+                                        source_service=config.service_type,
+                                        snapshots=native_playback_snapshots,
+                                    )
                                 )
                         except Exception as exc:
+                            await session.rollback()
+                            if config.service_type in {Service.JELLYFIN, Service.EMBY}:
+                                self._set_native_playback_sync_state(
+                                    config,
+                                    available=False,
+                                    error=str(exc),
+                                )
+                                session.add(config)
+                                await session.commit()
                             LOG.warning(
                                 f"Watch snapshot fetch failed for {config.service_type} "
                                 f"(config_id={config.id}): {exc}"
@@ -576,6 +1031,29 @@ class MediaWatchSnapshotCache:
                             )
                             if episode_rows:
                                 session.add_all(episode_rows)
+
+                        if config.service_type in {Service.JELLYFIN, Service.EMBY}:
+                            native_rows = self._build_native_playback_rows(
+                                source_service=config.service_type,
+                                source_service_config_id=config.id,
+                                snapshots=native_playback_snapshots,
+                            )
+                            await session.execute(
+                                sql_delete(NativePlaybackUser).where(
+                                    NativePlaybackUser.source_service
+                                    == config.service_type,
+                                    NativePlaybackUser.source_service_config_id
+                                    == config.id,
+                                )
+                            )
+                            if native_rows:
+                                session.add_all(native_rows)
+                            await self._rebuild_native_playback_aggregates(session)
+                            self._set_native_playback_sync_state(
+                                config,
+                                available=True,
+                            )
+                            session.add(config)
                         await session.commit()
                         refreshed_servers += 1
                         LOG.info(
@@ -583,6 +1061,12 @@ class MediaWatchSnapshotCache:
                             f"(config_id={config.id}): {len(rows)} row(s)"
                             f", {len(episode_rows)} episode row(s), "
                             f"{unmatched_episode_count} unmatched episode event(s)"
+                            + (
+                                f", {len(native_playback_snapshots)} native playback row(s)"
+                                if config.service_type
+                                in {Service.JELLYFIN, Service.EMBY}
+                                else ""
+                            )
                         )
 
                     if refreshed_servers == 0:

@@ -376,7 +376,7 @@
     },
     {
       value: "playback.has_activity",
-      label: "Imported playback activity",
+      label: "Playback activity",
       kind: "boolean",
       operators: playbackActivityOperators,
       defaultOperator: "is_true",

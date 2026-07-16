@@ -906,6 +906,83 @@ class MediaWatchUserEpisode(Base):
     )
 
 
+class NativePlaybackUser(Base):
+    """Current per-user playback state reported directly by a media server."""
+
+    __tablename__ = "native_playback_users"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service_config_id",
+            "source_item_id",
+            "source_user_id",
+            name="uq_native_playback_user_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_item_id: Mapped[str] = mapped_column(String(255), index=True)
+    provider_media_type: Mapped[str] = mapped_column(String(16), index=True)
+    source_user_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_username: Mapped[str | None] = mapped_column(String(255), default=None)
+    source_username_normalized: Mapped[str | None] = mapped_column(
+        String(255), default=None, index=True
+    )
+    play_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, index=True
+    )
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class NativePlaybackAggregate(Base):
+    """Current native playback totals for a rule target and media-server config."""
+
+    __tablename__ = "native_playback_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service_config_id",
+            "target_scope",
+            "target_id",
+            name="uq_native_playback_aggregate_target",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    target_scope: Mapped[str] = mapped_column(String(24), index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    has_activity: Mapped[bool] = mapped_column(Boolean, default=False)
+    play_count: Mapped[int] = mapped_column(Integer, default=0)
+    unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
+    usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    usernames_complete: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, index=True
+    )
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class PlaybackHistoryEvent(Base):
     """Compact provider playback event retained for durable rule evaluation."""
 

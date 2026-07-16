@@ -123,7 +123,7 @@ FIELD_LABELS: dict[str, str] = {
     "episode.air_date": "Episode air date",
     "episode.days_since_air_date": "Days since episode aired",
     "watch.never_watched": "Never watched",
-    "playback.has_activity": "Imported playback activity",
+    "playback.has_activity": "Playback activity",
     "playback.play_count": "Playback plays",
     "playback.total_duration_minutes": "Playback duration (minutes)",
     "playback.longest_duration_minutes": "Longest playback (minutes)",
