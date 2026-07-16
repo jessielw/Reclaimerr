@@ -47,12 +47,12 @@ class Bundled:
 
     @staticmethod
     def is_bundled() -> Path | None:
-        """Detect if running in a PyInstaller bundle and return the bundle's temp path if so."""
-        is_meipass = getattr(sys, "_MEIPASS", None)
-        if getattr(sys, "frozen", False) and is_meipass:
-            if is_meipass:
-                return Path(is_meipass)
-        return None
+        """Detect if running in a PyInstaller bundle and return the bundle path if so."""
+        if not getattr(sys, "frozen", False):
+            return None
+
+        meipass = getattr(sys, "_MEIPASS", None)
+        return Path(meipass) if meipass else None
 
 
 # we should always use this instance instead of the class Bundled directly

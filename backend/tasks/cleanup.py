@@ -52,6 +52,7 @@ from backend.core.utils.filesystem import (
     move_media,
     move_season_files,
     normalize_fpath,
+    remove_empty_directory,
     resolve_path,
     sibling_cleanup,
 )
@@ -8333,6 +8334,8 @@ async def _move_specific_candidates_impl(
                 failed += 1
                 continue
 
+            source_movie_folder = local_path.parent
+
             # move the file + same stem siblings to destination
             dest = move_media(
                 local_path,
@@ -8401,6 +8404,11 @@ async def _move_specific_candidates_impl(
                     f"for '{movie.title}' after files were moved; no delete fallback "
                     f"will be attempted: {svc_err}"
                 )
+
+            remove_empty_directory(
+                source_movie_folder,
+                log_context="move_specific_candidates",
+            )
 
             # update DB
             async with async_db() as db:

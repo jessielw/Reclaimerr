@@ -9,6 +9,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    remove_empty_directory,
     resolve_path,
 )
 from backend.enums import MediaType, Service
@@ -132,6 +133,7 @@ def test_move_media_preserves_mapping_relative_folder_structure(
     assert (expected_dir / "Movie One (2024).srt").read_bytes() == b"subtitle"
     assert not media_file.exists()
     assert not subtitle_file.exists()
+    assert not movie_dir.exists()
 
 
 def test_move_media_without_mapping_preserves_immediate_media_folder(
@@ -148,6 +150,22 @@ def test_move_media_without_mapping_preserves_immediate_media_folder(
     assert moved_to == destination_root / "Movie Two (2025)" / "Movie Two (2025).mkv"
     assert moved_to.read_bytes() == b"movie"
     assert not media_file.exists()
+    assert not movie_dir.exists()
+
+
+def test_remove_empty_directory_removes_only_empty_directory(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "empty-movie"
+    empty_dir.mkdir()
+    non_empty_dir = tmp_path / "non-empty-movie"
+    non_empty_dir.mkdir()
+    (non_empty_dir / "leftover.nfo").write_text("metadata")
+    missing_dir = tmp_path / "missing-movie"
+
+    assert remove_empty_directory(empty_dir, log_context="test") is True
+    assert not empty_dir.exists()
+    assert remove_empty_directory(non_empty_dir, log_context="test") is False
+    assert non_empty_dir.exists()
+    assert remove_empty_directory(missing_dir, log_context="test") is False
 
 
 def test_move_media_does_not_overwrite_existing_destination(tmp_path: Path) -> None:

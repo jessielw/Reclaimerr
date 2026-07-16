@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.2.4"
+version = "0.2.5"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -12,7 +12,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "authlib>=1.7.2",
     "cryptography>=49.0.0",
-    "fastapi[standard]>=0.139.0",
+    "fastapi[standard]>=0.139.2",
     "granian>=2.7.9",
     "itsdangerous>=2.2.0",
     "niquests[speedups]>=3.20.1",

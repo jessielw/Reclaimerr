@@ -546,6 +546,25 @@ def move_season_files(
     return dest_dir
 
 
+def remove_empty_directory(path: Path, *, log_context: str) -> bool:
+    """Remove *path* only when it exists as an empty directory.
+
+    This intentionally does not recurse into parent directories. It is safe to
+    call after move/delete flows that may have already removed the directory.
+    """
+    try:
+        if not path.is_dir():
+            return False
+        if any(path.iterdir()):
+            return False
+        path.rmdir()
+        LOG.info(f"{log_context}: removed empty source directory {path}")
+        return True
+    except OSError as exc:
+        LOG.debug(f"{log_context}: could not remove source directory {path}: {exc}")
+        return False
+
+
 def move_directory(
     src: Path,
     destination_root: Path,
@@ -595,14 +614,7 @@ def move_directory(
         shutil.rmtree(str(src))
 
     if cleanup_empty_parent:
-        try:
-            if source_parent.is_dir() and not any(source_parent.iterdir()):
-                source_parent.rmdir()
-                LOG.info(f"move_directory: removed empty source parent {source_parent}")
-        except OSError as exc:
-            LOG.debug(
-                f"move_directory: could not remove source parent {source_parent}: {exc}"
-            )
+        remove_empty_directory(source_parent, log_context="move_directory")
 
     return dest
 
@@ -745,11 +757,6 @@ def move_media(
                     LOG.warning(f"move_media: could not move sibling {sibling}: {e}")
 
     # remove source directory if now empty
-    try:
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-            LOG.info(f"move_media: removed empty source directory {parent}")
-    except OSError as e:
-        LOG.debug(f"move_media: could not remove source directory {parent}: {e}")
+    remove_empty_directory(parent, log_context="move_media")
 
     return dest
