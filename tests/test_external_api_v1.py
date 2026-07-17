@@ -7,9 +7,13 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.api.routes.v1 import discover_api
+from backend.api.routes.v1 import router as external_api_router
+from backend.api.routes.v1.docs import build_external_openapi_schema
 from backend.api.routes.v1.events import list_events
 from backend.api.routes.v1.media import get_movie, list_movies, list_series
 from backend.api.routes.v1.protections import (
@@ -103,6 +107,8 @@ def test_external_api_domain_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
             discovery = await discover_api(principal)
             assert discovery.api_version == "v1"
             assert discovery.resources["events"] == "/api/v1/events"
+            assert discovery.resources["docs"] == "/api/v1/docs"
+            assert discovery.resources["openapi"] == "/api/v1/openapi.json"
 
             movies = await list_movies(
                 principal,
@@ -227,6 +233,57 @@ def test_external_api_domain_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_external_openapi_schema_only_contains_supported_v1_routes() -> None:
+    schema = build_external_openapi_schema(external_api_router)
+
+    assert schema["info"]["title"] == "Reclaimerr External API"
+    assert schema["info"]["x-api-version"] == "v1"
+    assert schema["paths"]
+    assert (
+        sum(
+            method in {"get", "post", "put", "patch", "delete"}
+            for operations in schema["paths"].values()
+            for method in operations
+        )
+        == 21
+    )
+    assert all(path.startswith("/api/v1") for path in schema["paths"])
+    assert "/api/settings/general" not in schema["paths"]
+    assert "/api/v1/docs" not in schema["paths"]
+    assert "/api/v1/openapi.json" not in schema["paths"]
+    assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+
+
+def test_external_api_documentation_routes() -> None:
+    app = FastAPI()
+    app.include_router(external_api_router)
+    client = TestClient(app)
+
+    openapi_response = client.get("/api/v1/openapi.json")
+    assert openapi_response.status_code == 200
+    schema = openapi_response.json()
+    assert all(path.startswith("/api/v1") for path in schema["paths"])
+    assert (
+        sum(
+            method in {"get", "post", "put", "patch", "delete"}
+            for operations in schema["paths"].values()
+            for method in operations
+        )
+        == 21
+    )
+
+    swagger_response = client.get("/api/v1/docs")
+    assert swagger_response.status_code == 200
+    assert "/api/v1/openapi.json" in swagger_response.text
+
+    redoc_response = client.get("/api/v1/redoc")
+    assert redoc_response.status_code == 200
+    assert "/api/v1/openapi.json" in redoc_response.text
 
 
 def test_api_scope_implications_are_domain_specific() -> None:

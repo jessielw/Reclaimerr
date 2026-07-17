@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Jellyfin and Emby playback rules now use persisted native completed-watch snapshots after Sync Media; Playback Reporting remains optional enrichment for durable event and duration data
 - Added a versioned, scoped-token automation API for candidates, lifecycle events, movies, series, protections, task schedules/history/runs, and system status
+- Added dedicated Swagger, ReDoc, and OpenAPI documentation containing only the supported external API
 - Added durable candidate lifecycle webhooks with encrypted credentials, automatic retries, restart recovery, and delivery history in the new Integrations settings page
 
 ### Changed

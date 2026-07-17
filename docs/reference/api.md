@@ -15,6 +15,16 @@ The supported external API is versioned under `/api/v1` and uses scoped bearer
 tokens. Administrators create and revoke tokens from **Settings > Integrations**.
 The token secret is displayed once and cannot be recovered later.
 
+Interactive documentation containing only the supported external API is
+generated automatically at:
+
+- `GET /api/v1/docs` for Swagger UI
+- `GET /api/v1/redoc` for ReDoc
+- `GET /api/v1/openapi.json` for the OpenAPI document
+
+Use Swagger UI's **Authorize** button to provide a bearer token and try requests
+directly from the browser.
+
 ```http
 Authorization: Bearer rcl_prefix_secret
 ```
