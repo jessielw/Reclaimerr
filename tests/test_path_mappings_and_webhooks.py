@@ -195,6 +195,66 @@ def test_move_media_does_not_overwrite_existing_destination(tmp_path: Path) -> N
     assert destination_file.read_bytes() == b"existing"
 
 
+def test_move_media_deduplicates_identical_destination_file(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Duplicate (2026)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Duplicate (2026).mkv"
+    media_file.write_bytes(b"same movie")
+    destination_file = (
+        tmp_path
+        / "reclaimed"
+        / "movies"
+        / "Movie Duplicate (2026)"
+        / "Movie Duplicate (2026).mkv"
+    )
+    destination_file.parent.mkdir(parents=True)
+    destination_file.write_bytes(b"same movie")
+
+    moved_to = move_media(
+        media_file,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == destination_file
+    assert destination_file.read_bytes() == b"same movie"
+    assert not media_file.exists()
+    assert not movie_dir.exists()
+
+
+def test_move_media_preflights_sidecar_conflicts_before_moving_primary(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Conflict (2026)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Conflict (2026).mkv"
+    subtitle_file = movie_dir / "Movie Conflict (2026).en.srt"
+    media_file.write_bytes(b"movie")
+    subtitle_file.write_bytes(b"source subtitle")
+    destination_file = (
+        tmp_path
+        / "reclaimed"
+        / "movies"
+        / "Movie Conflict (2026)"
+        / "Movie Conflict (2026).en.srt"
+    )
+    destination_file.parent.mkdir(parents=True)
+    destination_file.write_bytes(b"different subtitle")
+
+    with pytest.raises(FileExistsError, match="different content"):
+        move_media(
+            media_file,
+            tmp_path / "reclaimed",
+            [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+        )
+
+    assert media_file.read_bytes() == b"movie"
+    assert subtitle_file.read_bytes() == b"source subtitle"
+    assert destination_file.read_bytes() == b"different subtitle"
+
+
 def test_move_media_moves_item_scoped_folder_assets(tmp_path: Path) -> None:
     local_root = tmp_path / "library"
     movie_dir = local_root / "movies" / "Movie With Assets (2026)"
@@ -331,6 +391,32 @@ def test_move_directory_preserves_mapping_relative_folder_structure(
 
     assert moved_to == tmp_path / "reclaimed" / "tv" / "Show One"
     assert (moved_to / "Season 01" / "Show One - S01E01.mkv").read_bytes() == b"episode"
+    assert not series_dir.exists()
+
+
+def test_move_directory_merges_existing_destination_folder(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Show Merge"
+    season_two = series_dir / "Season 02"
+    season_two.mkdir(parents=True)
+    (season_two / "Show Merge - S02E01.mkv").write_bytes(b"episode two")
+    existing_season = tmp_path / "reclaimed" / "tv" / "Show Merge" / "Season 01"
+    existing_season.mkdir(parents=True)
+    (existing_season / "Show Merge - S01E01.mkv").write_bytes(b"episode one")
+
+    moved_to = move_directory(
+        series_dir,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == tmp_path / "reclaimed" / "tv" / "Show Merge"
+    assert (
+        moved_to / "Season 01" / "Show Merge - S01E01.mkv"
+    ).read_bytes() == b"episode one"
+    assert (
+        moved_to / "Season 02" / "Show Merge - S02E01.mkv"
+    ).read_bytes() == b"episode two"
     assert not series_dir.exists()
 
 
