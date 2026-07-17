@@ -1546,6 +1546,10 @@ class EmbyServiceBase:
                     "includeItemTypes": include_item_types,
                     "recursive": "true",
                     "Filters": "IsPlayed",
+                    # Virtual entries are unaired/place-holder items rather than
+                    # available media. Excluding them keeps series/season watcher
+                    # aggregates tied to the library copies Reclaimerr can act on.
+                    "ExcludeLocationTypes": "Virtual",
                     "Fields": "UserData,UserDataLastPlayedDate,UserDataPlayCount",
                     "EnableUserData": "true",
                     "EnableTotalRecordCount": "true",

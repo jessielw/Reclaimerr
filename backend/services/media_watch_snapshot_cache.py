@@ -122,7 +122,7 @@ class MediaWatchSnapshotCache:
     _NATIVE_PLAYBACK_LAST_SUCCESS_AT_KEY = "last_success_at"
     _NATIVE_PLAYBACK_LAST_ATTEMPT_AT_KEY = "last_attempt_at"
     _NATIVE_PLAYBACK_LAST_ERROR_KEY = "last_error"
-    _NATIVE_PLAYBACK_FORMAT_VERSION = 1
+    _NATIVE_PLAYBACK_FORMAT_VERSION = 2
 
     def __init__(self) -> None:
         self._refresh_lock = Lock()

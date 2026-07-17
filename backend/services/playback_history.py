@@ -43,7 +43,7 @@ PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
 PLAYBACK_EVENT_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
-NATIVE_PLAYBACK_FORMAT_VERSION = 1
+NATIVE_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_FIELDS = frozenset(
     {
         "playback.has_activity",
@@ -54,6 +54,7 @@ NATIVE_PLAYBACK_FIELDS = frozenset(
         "playback.days_since_last_activity",
     }
 )
+PLAYBACK_USER_FIELDS = frozenset({"playback.unique_user_count", "playback.usernames"})
 
 _playback_refresh_lock = Lock()
 
@@ -1141,18 +1142,19 @@ def _native_aggregate_values(aggregate: NativePlaybackAggregate) -> dict[str, ob
     return values
 
 
-def _merge_playback_values(
+def _playback_count_value(raw: object) -> int:
+    return max(0, _parse_int(raw) or 0)
+
+
+def _merge_playback_source_values(
     plugin_values: Mapping[str, object] | None,
     native_values: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    """Merge durable event and native current-state evidence for one target."""
+    """Merge like-for-like values from multiple observations of one source."""
 
     plugin_values = plugin_values or {}
     native_values = native_values or {}
     values: dict[str, object] = dict(plugin_values)
-
-    def count_value(raw: object) -> int:
-        return max(0, _parse_int(raw) or 0)
 
     for field in NATIVE_PLAYBACK_FIELDS:
         if field not in native_values:
@@ -1171,8 +1173,8 @@ def _merge_playback_values(
 
     if "playback.play_count" in plugin_values or "playback.play_count" in native_values:
         values["playback.play_count"] = max(
-            count_value(plugin_values.get("playback.play_count", 0)),
-            count_value(native_values.get("playback.play_count", 0)),
+            _playback_count_value(plugin_values.get("playback.play_count", 0)),
+            _playback_count_value(native_values.get("playback.play_count", 0)),
         )
 
     plugin_users = plugin_values.get("playback.usernames")
@@ -1195,8 +1197,8 @@ def _merge_playback_values(
         resolved_users = values.get("playback.usernames")
         resolved_count = len(resolved_users) if isinstance(resolved_users, list) else 0
         values["playback.unique_user_count"] = max(
-            count_value(plugin_values.get("playback.unique_user_count", 0)),
-            count_value(native_values.get("playback.unique_user_count", 0)),
+            _playback_count_value(plugin_values.get("playback.unique_user_count", 0)),
+            _playback_count_value(native_values.get("playback.unique_user_count", 0)),
             resolved_count,
         )
 
@@ -1218,6 +1220,80 @@ def _merge_playback_values(
         )
 
     return values
+
+
+def _merge_playback_metric_values(
+    plugin_values: Mapping[str, object] | None,
+    native_values: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Merge historical activity metrics without deciding current user state."""
+
+    plugin_values = plugin_values or {}
+    native_values = native_values or {}
+    values = {
+        field: value
+        for field, value in plugin_values.items()
+        if field not in PLAYBACK_USER_FIELDS
+    }
+
+    for field in NATIVE_PLAYBACK_FIELDS - PLAYBACK_USER_FIELDS:
+        if field in native_values and field not in values:
+            values[field] = native_values[field]
+
+    if (
+        "playback.has_activity" in plugin_values
+        or "playback.has_activity" in native_values
+    ):
+        values["playback.has_activity"] = bool(
+            plugin_values.get("playback.has_activity", False)
+            or native_values.get("playback.has_activity", False)
+        )
+
+    if "playback.play_count" in plugin_values or "playback.play_count" in native_values:
+        values["playback.play_count"] = max(
+            _playback_count_value(plugin_values.get("playback.play_count", 0)),
+            _playback_count_value(native_values.get("playback.play_count", 0)),
+        )
+
+    plugin_last = plugin_values.get("playback.last_activity_at")
+    native_last = native_values.get("playback.last_activity_at")
+    latest_values = [
+        value for value in (plugin_last, native_last) if isinstance(value, datetime)
+    ]
+    if latest_values or (
+        "playback.last_activity_at" in plugin_values
+        or "playback.last_activity_at" in native_values
+    ):
+        latest = max(latest_values) if latest_values else None
+        values["playback.last_activity_at"] = latest
+        values["playback.days_since_last_activity"] = (
+            (datetime.now(UTC).replace(tzinfo=None) - latest).days
+            if latest is not None
+            else None
+        )
+
+    return values
+
+
+def _resolve_playback_user_values(
+    plugin_values: Mapping[str, object] | None,
+    native_values: Mapping[str, object] | None,
+    *,
+    native_current_state_available: bool,
+    native_current_state_unknown: bool,
+) -> dict[str, object]:
+    """Return user fields from the one source authoritative for this target."""
+
+    if native_current_state_unknown:
+        return {}
+    source_values = native_values if native_current_state_available else plugin_values
+    if source_values is None:
+        return {}
+    return {
+        field: source_values[field]
+        for field in PLAYBACK_USER_FIELDS
+        if field in source_values
+    }
 
 
 def _native_status_from_config(config: ServiceConfig) -> NativePlaybackStatus:
@@ -1588,12 +1664,13 @@ async def load_playback_rule_snapshot(
     plugin_values_by_target = {
         (row.target_scope, row.target_id): _aggregate_values(row) for row in plugin_rows
     }
-    incomplete_username_targets: set[PlaybackTargetKey] = {
+    incomplete_plugin_username_targets: set[PlaybackTargetKey] = {
         (row.target_scope, row.target_id)
         for row in plugin_rows
         if not row.usernames_complete
     }
     incomplete_timestamp_targets: set[PlaybackTargetKey] = set()
+    incomplete_native_username_targets: set[PlaybackTargetKey] = set()
     native_values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
     if native_available_config_ids:
         native_rows = (
@@ -1612,10 +1689,10 @@ async def load_playback_rule_snapshot(
         for row in native_rows:
             key = (row.target_scope, row.target_id)
             if not row.usernames_complete:
-                incomplete_username_targets.add(key)
+                incomplete_native_username_targets.add(key)
             if row.has_activity and row.last_activity_at is None:
                 incomplete_timestamp_targets.add(key)
-            native_values_by_target[key] = _merge_playback_values(
+            native_values_by_target[key] = _merge_playback_source_values(
                 native_values_by_target.get(key),
                 _native_aggregate_values(row),
             )
@@ -1661,15 +1738,51 @@ async def load_playback_rule_snapshot(
             native_values_by_target[key] = dict(native_zero_values)
             available_fields_by_target.setdefault(key, set()).update(native_zero_values)
 
-    values_by_target = {
-        key: _merge_playback_values(
+    # A failed or out-of-date Jellyfin/Emby snapshot cannot safely be replaced
+    # with imported event users: those are historical activity, not current
+    # watched state. Keep other playback metrics available, but make user
+    # conditions unknown until the next successful media sync.
+    native_user_unknown_targets: set[PlaybackTargetKey] = set()
+    for scope, services_by_target in target_services.items():
+        for target_id, services in services_by_target.items():
+            relevant_native_statuses = [
+                status for status in native_statuses if status.service in services
+            ]
+            if relevant_native_statuses and not any(
+                status.available for status in relevant_native_statuses
+            ):
+                native_user_unknown_targets.add((scope, target_id))
+
+    values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
+    for key in plugin_values_by_target.keys() | native_values_by_target.keys():
+        values = _merge_playback_metric_values(
             plugin_values_by_target.get(key), native_values_by_target.get(key)
         )
-        for key in plugin_values_by_target.keys() | native_values_by_target.keys()
-    }
+        values.update(
+            _resolve_playback_user_values(
+                plugin_values_by_target.get(key),
+                native_values_by_target.get(key),
+                native_current_state_available=key in native_covered_targets,
+                native_current_state_unknown=key in native_user_unknown_targets,
+            )
+        )
+        values_by_target[key] = values
+
+    # Usernames require complete identity resolution from whichever source is
+    # authoritative for that target. A count can remain available without every
+    # display name, so only the username list is made unknown here.
+    incomplete_username_targets = (
+        incomplete_plugin_username_targets - native_covered_targets
+    ) | (incomplete_native_username_targets & native_covered_targets)
     for key in incomplete_username_targets:
         values_by_target.get(key, {}).pop("playback.usernames", None)
         available_fields_by_target.get(key, set()).discard("playback.usernames")
+    for key in native_user_unknown_targets:
+        values_by_target.get(key, {}).pop("playback.usernames", None)
+        values_by_target.get(key, {}).pop("playback.unique_user_count", None)
+        available_fields = available_fields_by_target.get(key, set())
+        available_fields.discard("playback.usernames")
+        available_fields.discard("playback.unique_user_count")
     for key in incomplete_timestamp_targets:
         values = values_by_target.get(key, {})
         values.pop("playback.last_activity_at", None)

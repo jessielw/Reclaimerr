@@ -462,16 +462,16 @@ rules. Reclaimerr stores current completed watch state directly from Jellyfin
 and Emby during Sync Media, then supplements it with compact events imported
 from the Jellyfin/Emby Playback Reporting plugin and Tautulli:
 
-| Field                        | Meaning                                            |
-| ---------------------------- | -------------------------------------------------- |
-| Playback activity            | Native completed watch state or a qualifying event |
-| Playback plays               | Highest native or imported play count              |
-| Playback duration            | Total qualifying imported playback minutes         |
-| Longest playback             | Longest qualifying imported playback in minutes    |
-| Playback user count          | Distinct native and/or imported source users       |
-| Playback users               | Resolved native and/or imported usernames          |
-| Last playback activity       | Most recent native or imported timestamp           |
-| Days since playback activity | Whole days since the most recent timestamp         |
+| Field                        | Meaning                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| Playback activity            | Native completed watch state or a qualifying event                          |
+| Playback plays               | Highest native or imported play count                                       |
+| Playback duration            | Total qualifying imported playback minutes                                  |
+| Longest playback             | Longest qualifying imported playback in minutes                             |
+| Playback user count          | Current native watched users, or imported users when no native state exists |
+| Playback users               | Current native watched users, or imported users when no native state exists |
+| Last playback activity       | Most recent native or imported timestamp                                    |
+| Days since playback activity | Whole days since the most recent timestamp                                  |
 
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds
 are ignored. These thresholds prevent brief scrubs from counting as activity.
@@ -485,7 +485,13 @@ is never used.
 The existing `watch.*` fields continue to describe the current library copy.
 Native Jellyfin/Emby playback is current completed state and is refreshed by
 Sync Media. Imported plugin/Tautulli events are durable history and may include
-activity from before the current copy was added.
+activity from before the current copy was added. For Jellyfin and Emby, native
+state is authoritative for **Playback users** and **Playback user count**: old
+Playback Reporting events do not keep a user matched after the media server no
+longer marks that user as watched. For a movie version or episode this is the
+exact item; for a season or series it means the user has completed at least one
+available local episode. This is not a per-user full-season/series completion
+check.
 
 `Playback activity` is either true or false when an applicable native snapshot
 or imported-history provider can observe the media target. Targets outside that
@@ -501,9 +507,11 @@ duplicate events during incremental refreshes.
 
 Playback-user rules match usernames case-insensitively and can require any,
 none, or all selected users. Jellyfin and Emby resolve names from their native
-user APIs; Tautulli resolves only the Plex history it supplies. If any user on
-an item cannot be resolved, username conditions remain unavailable for that
-item while the other playback metrics remain usable.
+user APIs; Tautulli resolves only the Plex history it supplies. If a native
+Jellyfin/Emby snapshot is unavailable, user conditions are unknown rather than
+falling back to stale imported events. If any user on an item cannot be
+resolved, username conditions remain unavailable for that item while the other
+playback metrics remain usable.
 
 If a native watched item has no usable last-played timestamp, activity and
 count remain available while the last-activity fields stay unknown.
