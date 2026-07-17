@@ -29,6 +29,7 @@ from backend.api.routes.settings import router as settings_router
 from backend.api.routes.setup import router as setup_router
 from backend.api.routes.system import router as system_router
 from backend.api.routes.tasks import router as tasks_router
+from backend.api.routes.v1 import router as external_api_router
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
     cors_middleware,
@@ -46,6 +47,7 @@ from backend.database import close_db, init_db
 from backend.enums import BackgroundJobType
 from backend.jobs.queue import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
+from backend.services.lifecycle_webhooks import recover_pending_webhook_deliveries
 from backend.utils.create_admin import create_initial_admin
 
 limiter = Limiter(key_func=get_remote_address)
@@ -98,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # reset any jobs left in RUNNING state from a previous process
         await reset_stale_jobs()
+        await recover_pending_webhook_deliveries()
 
         # background workers (in process)
         host_pid = f"{socket.gethostname()}:{os.getpid()}"
@@ -108,6 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     allowed_job_types={
                         BackgroundJobType.SERVICE_TOGGLE,
                         BackgroundJobType.TASK_RUN,
+                        BackgroundJobType.WEBHOOK_DELIVERY,
                     },
                 ),
                 name="background-worker-default",
@@ -184,6 +188,7 @@ fastapi_app.include_router(requests_router)
 fastapi_app.include_router(delete_requests_router)
 fastapi_app.include_router(protected_router)
 fastapi_app.include_router(system_router)
+fastapi_app.include_router(external_api_router)
 
 
 # mount static files LAST

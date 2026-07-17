@@ -513,6 +513,7 @@ class CandidateDisplayGroup:
     sort_title: str
     sort_created_at: datetime
     sort_deletion_at: datetime
+    sort_deletion_active: bool
     sort_size: int
     candidate_ids: list[int]
 
@@ -635,6 +636,13 @@ class CandidateEntry(CandidateEntryBase):
     auto_delete_eligible_at: str
     auto_delete_is_eligible: bool
     auto_delete_is_active: bool
+    auto_delete_state: Literal[
+        "disabled", "scheduled", "eligible", "postponed", "canceled"
+    ]
+    auto_delete_cancelled_at: str | None = None
+    auto_delete_postponed_until: str | None = None
+    auto_delete_timer_started_at: str | None = None
+    lifecycle_reason: str | None = None
     delete_operation: Literal["delete", "move"] = "delete"
 
 

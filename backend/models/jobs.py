@@ -23,6 +23,10 @@ class TaskRunJobPayload(BaseModel):
     task: Task
 
 
+class WebhookDeliveryJobPayload(BaseModel):
+    delivery_id: int
+
+
 class CandidateFileOpJobPayload(BaseModel):
     operation: CandidateFileOpOperation
     candidate_ids: list[int]

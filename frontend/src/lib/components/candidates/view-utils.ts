@@ -38,9 +38,10 @@ export const newestCandidateCreatedAt = (
 export const earliestAutoDeleteEntry = (
   entries: ReclaimCandidateEntry[],
 ): ReclaimCandidateEntry | null => {
-  if (entries.length === 0) return null;
+  const activeEntries = entries.filter((entry) => entry.auto_delete_is_active);
+  if (activeEntries.length === 0) return entries[0] ?? null;
 
-  return entries.reduce((earliest, entry) =>
+  return activeEntries.reduce((earliest, entry) =>
     candidateDateEpoch(entry.auto_delete_eligible_at) <
     candidateDateEpoch(earliest.auto_delete_eligible_at)
       ? entry
@@ -55,8 +56,14 @@ export const candidateAutoDeleteLabel = (
   entry: ReclaimCandidateEntry,
   formatDate: (value: string) => string,
 ): string => {
+  if (entry.auto_delete_state === "canceled") {
+    return "Auto-delete canceled";
+  }
   if (!entry.auto_delete_is_active) {
     return "Not enabled for matched rule(s)";
+  }
+  if (entry.auto_delete_state === "postponed") {
+    return `Postponed until ${formatDate(entry.auto_delete_eligible_at)}`;
   }
   const eligibleAt = candidateDateEpoch(entry.auto_delete_eligible_at);
   const remainingMs = eligibleAt - Date.now();

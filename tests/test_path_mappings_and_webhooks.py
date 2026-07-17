@@ -13,8 +13,7 @@ from backend.core.utils.filesystem import (
     resolve_path,
 )
 from backend.enums import MediaType, Service
-from backend.models.post_action_webhooks import PostActionWebhookEvent
-from backend.services.post_action_webhooks import send_post_action_webhook
+from backend.services.webhook_transport import send_webhook_payload
 
 
 def test_resolve_path_prefers_scoped_mappings(tmp_path: Path) -> None:
@@ -494,7 +493,7 @@ def test_move_season_files_preserves_series_folder_for_flat_series(
     assert season_two.read_bytes() == b"s2"
 
 
-def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
+def test_send_webhook_payload_renders_urlencoded_path(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
     class FakeResponse:
@@ -512,12 +511,12 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
             return FakeResponse()
 
     monkeypatch.setattr(
-        "backend.services.post_action_webhooks.niquests.AsyncSession",
+        "backend.services.webhook_transport.niquests.AsyncSession",
         lambda: FakeSession(),
     )
 
     result = asyncio.run(
-        send_post_action_webhook(
+        send_webhook_payload(
             {
                 "enabled": True,
                 "name": "Autopulse",
@@ -528,13 +527,13 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
                 "media_types": ["movie"],
                 "timeout_seconds": 15,
             },
-            PostActionWebhookEvent(
-                action="deleted",
-                media_type=MediaType.MOVIE,
-                title="Movie",
-                path="/media/Movie Name/file.mkv",
-                service_type=Service.PLEX,
-            ),
+            {
+                "action": "deleted",
+                "media_type": "movie",
+                "title": "Movie",
+                "path": "/media/Movie Name/file.mkv",
+                "service_type": "plex",
+            },
         )
     )
 
@@ -542,7 +541,7 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
     assert captured["url"].endswith("path=%2Fmedia%2FMovie%20Name%2Ffile.mkv")
 
 
-def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -> None:
+def test_send_webhook_payload_includes_sanitized_failure_body(monkeypatch) -> None:
     class FakeResponse:
         status_code = 500
         text = '{"error":"boom","token":"keep-me-out"}'
@@ -558,12 +557,12 @@ def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -
             return FakeResponse()
 
     monkeypatch.setattr(
-        "backend.services.post_action_webhooks.niquests.AsyncSession",
+        "backend.services.webhook_transport.niquests.AsyncSession",
         lambda: FakeSession(),
     )
 
     result = asyncio.run(
-        send_post_action_webhook(
+        send_webhook_payload(
             {
                 "enabled": True,
                 "name": "Autopulse",
@@ -574,13 +573,13 @@ def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -
                 "media_types": ["movie"],
                 "timeout_seconds": 15,
             },
-            PostActionWebhookEvent(
-                action="deleted",
-                media_type=MediaType.MOVIE,
-                title="Movie",
-                path="/media/Movie Name/file.mkv",
-                service_type=Service.PLEX,
-            ),
+            {
+                "action": "deleted",
+                "media_type": "movie",
+                "title": "Movie",
+                "path": "/media/Movie Name/file.mkv",
+                "service_type": "plex",
+            },
         )
     )
 

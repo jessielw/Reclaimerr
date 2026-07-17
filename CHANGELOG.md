@@ -10,9 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Jellyfin and Emby playback rules now use persisted native completed-watch snapshots after Sync Media; Playback Reporting remains optional enrichment for durable event and duration data
+- Added a versioned, scoped-token automation API for candidates, lifecycle events, movies, series, protections, task schedules/history/runs, and system status
+- Added durable candidate lifecycle webhooks with encrypted credentials, automatic retries, restart recovery, and delivery history in the new Integrations settings page
+
+### Changed
+
+- Existing delete/move webhooks are migrated to durable lifecycle endpoints, and their legacy editor/configuration is removed so Integrations is the single source of truth
+- Organized the external API into stable v1 domain modules with granular least-privilege scopes, discovery links, consistent pagination, and cursor-based event polling
 
 ### Fixed
 
+- External movie and series API responses now normalize TMDB genre objects instead of failing to serialize media lists
 - Docker build importing a desktop module it does not need that could sometimes result in a crash at startup
 - Jellyfin/Emby **Playback users** rules now use the media server's current watched state, preventing stale Playback Reporting events from matching the wrong users
 - Candidates now recovers from invalid saved sort preferences instead of failing to load
