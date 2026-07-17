@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from os import PathLike
 from os import rename as os_rename
 from pathlib import Path
@@ -73,6 +74,14 @@ _KNOWN_ASSET_DIRECTORY_NAMES = {
     "trailer",
     "trailers",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaMovePlan:
+    """The safe strategy for moving one media file."""
+
+    move_parent_directory: bool
+    reason: str
 
 
 def _compact_name(value: str) -> str:
@@ -513,7 +522,7 @@ def move_season_files(
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    episode_stems: set[str] = set()
+    episode_sources: dict[str, Path | None] = {}
     for raw_path in episode_paths:
         local = resolve_path(
             raw_path,
@@ -522,31 +531,44 @@ def move_season_files(
             service_config_id=service_config_id,
         )
         if local and local.is_file():
-            episode_stems.add(local.stem)
+            episode_sources[local.stem] = local
         else:
-            episode_stems.add(Path(raw_path).stem)
+            episode_sources.setdefault(Path(raw_path).stem, None)
 
-    # move each matched episode and any same stem siblings (subs, NFOs, images)
-    for stem in episode_stems:
+    # Move each matched episode and its direct or language-tagged sidecars
+    # (for example ``Episode.en.srt``).  Other media files remain in place.
+    for stem, selected_episode in episode_sources.items():
         for f in list(series_path.iterdir()):
-            if f.is_file() and f.stem == stem:
+            is_selected_episode = selected_episode is not None and f == selected_episode
+            is_unresolved_primary = (
+                selected_episode is None and _is_media_file(f) and f.stem == stem
+            )
+            if f.is_file() and (
+                is_selected_episode
+                or is_unresolved_primary
+                or _is_related_sidecar(f, stem)
+            ):
                 try:
                     moved_to = _move_single_file(f, dest_dir)
                     LOG.info(f"move_season_files: moved {f} -> {moved_to}")
                 except OSError as e:
                     LOG.warning(f"move_season_files: could not move {f}: {e}")
 
-    # remove the source directory only if completely empty
-    try:
-        series_path.rmdir()  # raises OSError if anything remains
-        LOG.info(f"move_season_files: removed empty series directory {series_path}")
-    except OSError:
-        pass  # other seasons still present (leave the directory alone)
+    remove_empty_directory(
+        series_path,
+        log_context="move_season_files",
+        log_remaining=True,
+    )
 
     return dest_dir
 
 
-def remove_empty_directory(path: Path, *, log_context: str) -> bool:
+def remove_empty_directory(
+    path: Path,
+    *,
+    log_context: str,
+    log_remaining: bool = False,
+) -> bool:
     """Remove *path* only when it exists as an empty directory.
 
     This intentionally does not recurse into parent directories. It is safe to
@@ -555,7 +577,17 @@ def remove_empty_directory(path: Path, *, log_context: str) -> bool:
     try:
         if not path.is_dir():
             return False
-        if any(path.iterdir()):
+        remaining_entries = list(path.iterdir())
+        if remaining_entries:
+            if log_remaining:
+                displayed_entries = ", ".join(
+                    entry.name for entry in remaining_entries[:5]
+                )
+                suffix = "" if len(remaining_entries) <= 5 else ", ..."
+                LOG.info(
+                    f"{log_context}: retained non-empty source directory {path}; "
+                    f"remaining entries: {displayed_entries}{suffix}"
+                )
             return False
         path.rmdir()
         LOG.info(f"{log_context}: removed empty source directory {path}")
@@ -614,7 +646,11 @@ def move_directory(
         shutil.rmtree(str(src))
 
     if cleanup_empty_parent:
-        remove_empty_directory(source_parent, log_context="move_directory")
+        remove_empty_directory(
+            source_parent,
+            log_context="move_directory",
+            log_remaining=True,
+        )
 
     return dest
 
@@ -639,8 +675,24 @@ def _is_primary_media_candidate(path: Path, primary: Path) -> bool:
     return not (bool(stem_tokens) and stem_tokens[-1] in _NON_PRIMARY_MEDIA_STEM_TOKENS)
 
 
-def _should_move_parent_directory_for_media(src: Path) -> bool:
-    """Return True when a media file's parent folder appears item-scoped.
+def _is_related_sidecar(
+    path: Path,
+    primary_stem: str,
+) -> bool:
+    """Return whether *path* belongs to one primary media stem.
+
+    Exact-stem files cover NFOs, posters, and conventional subtitles. Files
+    with a dot suffix cover language and subtitle tags such as ``.en`` and
+    ``.en.forced``. Other media files are never considered sidecars so a
+    sibling movie version or episode stays untouched.
+    """
+    if _is_media_file(path):
+        return False
+    return path.stem == primary_stem or path.stem.startswith(f"{primary_stem}.")
+
+
+def _plan_media_move(src: Path) -> _MediaMovePlan:
+    """Return the safe move strategy for a media file's parent folder.
 
     Moving a whole parent folder is desirable for movie folders because it keeps
     poster images, trailers, extras, and arbitrary sidecars together. It is not
@@ -649,13 +701,12 @@ def _should_move_parent_directory_for_media(src: Path) -> bool:
     """
     parent = src.parent
     if not parent.is_dir():
-        return False
+        return _MediaMovePlan(False, "source parent is not a directory")
 
     try:
         entries = list(parent.iterdir())
     except OSError as exc:
-        LOG.debug(f"move_media: could not inspect source directory {parent}: {exc}")
-        return False
+        return _MediaMovePlan(False, f"could not inspect source directory: {exc}")
 
     unknown_directories = [
         entry
@@ -663,12 +714,11 @@ def _should_move_parent_directory_for_media(src: Path) -> bool:
         if entry.is_dir() and not _is_known_asset_directory(entry)
     ]
     if unknown_directories:
-        LOG.debug(
-            "move_media: not moving source folder "
-            f"{parent}; contains non-asset subdirectories: "
-            f"{', '.join(entry.name for entry in unknown_directories)}"
+        return _MediaMovePlan(
+            False,
+            "contains non-asset subdirectories: "
+            + ", ".join(entry.name for entry in unknown_directories[:5]),
         )
-        return False
 
     primary_media_files = [
         entry
@@ -676,16 +726,18 @@ def _should_move_parent_directory_for_media(src: Path) -> bool:
         if entry.is_file() and _is_primary_media_candidate(entry, src)
     ]
     if len(primary_media_files) != 1:
-        LOG.debug(
-            "move_media: not moving source folder "
-            f"{parent}; found {len(primary_media_files)} primary media candidate(s)"
+        return _MediaMovePlan(
+            False,
+            f"contains {len(primary_media_files)} primary media files",
         )
-        return False
 
     try:
-        return primary_media_files[0].resolve() == src.resolve()
+        is_selected_file = primary_media_files[0].resolve() == src.resolve()
     except OSError:
-        return primary_media_files[0] == src
+        is_selected_file = primary_media_files[0] == src
+    if not is_selected_file:
+        return _MediaMovePlan(False, "selected file is not the primary media file")
+    return _MediaMovePlan(True, "item-scoped source directory")
 
 
 def move_media(
@@ -700,7 +752,8 @@ def move_media(
 
     If the source folder appears scoped to this one media item, the whole folder
     is moved so arbitrary sidecars, posters, trailers, and extras are preserved.
-    Mixed folders fall back to moving the primary file plus same-stem siblings.
+    Mixed folders fall back to moving the primary file plus direct and
+    language-tagged sidecars.
     The source directory is removed afterward if it becomes empty.
 
     Args:
@@ -716,7 +769,8 @@ def move_media(
         OSError: If the primary file move fails.
     """
     parent = src.parent
-    if _should_move_parent_directory_for_media(src):
+    move_plan = _plan_media_move(src)
+    if move_plan.move_parent_directory:
         moved_parent = move_directory(
             parent,
             destination_root,
@@ -725,12 +779,15 @@ def move_media(
             service_config_id=service_config_id,
         )
         dest = moved_parent / src.name
-        LOG.info(f"move_media: moved source folder {parent} -> {moved_parent}")
+        LOG.info(
+            "move_media: strategy=directory "
+            f"reason={move_plan.reason}; moved {parent} -> {moved_parent}"
+        )
         return dest
 
     LOG.info(
-        "move_media: source folder is not item-scoped; moving primary file "
-        f"and same-stem siblings only for {src}"
+        "move_media: strategy=file-and-sidecars "
+        f"reason={move_plan.reason}; moving {src}"
     )
 
     relative_parent = _destination_relative_parent(
@@ -745,11 +802,16 @@ def move_media(
     dest = _move_single_file(src, dest_dir)
     LOG.info(f"move_media: moved {src} -> {dest}")
 
-    # move same stem siblings (subtitles, NFOs, images, or whatever we find)
+    # Move direct and language-tagged sidecars. Other media files are excluded
+    # so a shared season folder or alternate movie version remains untouched.
     stem = src.stem
     if parent.is_dir():
         for sibling in list(parent.iterdir()):
-            if sibling.is_file() and sibling.stem == stem:
+            if (
+                sibling.is_file()
+                and sibling != src
+                and _is_related_sidecar(sibling, stem)
+            ):
                 try:
                     sibling_dest = _move_single_file(sibling, dest_dir)
                     LOG.info(f"move_media: moved sibling {sibling} -> {sibling_dest}")
@@ -757,6 +819,10 @@ def move_media(
                     LOG.warning(f"move_media: could not move sibling {sibling}: {e}")
 
     # remove source directory if now empty
-    remove_empty_directory(parent, log_context="move_media")
+    remove_empty_directory(
+        parent,
+        log_context="move_media",
+        log_remaining=True,
+    )
 
     return dest

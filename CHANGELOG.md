@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker build importing a desktop module it does not need that could sometimes result in a crash at startup
 - Jellyfin/Emby **Playback users** rules now use the media server's current watched state, preventing stale Playback Reporting events from matching the wrong users
 - Candidates now recovers from invalid saved sort preferences instead of failing to load
+- Move instead of delete now carries language-tagged sidecars and logs why a shared source folder was safely retained
 
 ## [0.2.5] - 2026-07-16
 

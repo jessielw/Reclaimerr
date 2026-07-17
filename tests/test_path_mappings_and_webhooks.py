@@ -232,10 +232,12 @@ def test_move_media_keeps_multi_version_folder_conservative(tmp_path: Path) -> N
     movie_dir.mkdir(parents=True)
     selected_file = movie_dir / "Movie Multi Version (2026) - 1080p.mkv"
     selected_subtitle = movie_dir / "Movie Multi Version (2026) - 1080p.srt"
+    selected_language_subtitle = movie_dir / "Movie Multi Version (2026) - 1080p.en.srt"
     other_version = movie_dir / "Movie Multi Version (2026) - 2160p.mkv"
     poster_file = movie_dir / "poster.jpg"
     selected_file.write_bytes(b"1080p")
     selected_subtitle.write_bytes(b"subtitle")
+    selected_language_subtitle.write_bytes(b"language subtitle")
     other_version.write_bytes(b"2160p")
     poster_file.write_bytes(b"poster")
 
@@ -251,10 +253,14 @@ def test_move_media_keeps_multi_version_folder_conservative(tmp_path: Path) -> N
     assert (
         expected_dir / "Movie Multi Version (2026) - 1080p.srt"
     ).read_bytes() == b"subtitle"
+    assert (
+        expected_dir / "Movie Multi Version (2026) - 1080p.en.srt"
+    ).read_bytes() == b"language subtitle"
     assert other_version.read_bytes() == b"2160p"
     assert poster_file.read_bytes() == b"poster"
     assert not selected_file.exists()
     assert not selected_subtitle.exists()
+    assert not selected_language_subtitle.exists()
 
 
 def test_move_media_does_not_treat_title_words_as_trailer_assets(
@@ -285,9 +291,11 @@ def test_move_media_keeps_episode_folder_conservative(tmp_path: Path) -> None:
     season_dir.mkdir(parents=True)
     selected_episode = season_dir / "Show One - S01E01.mkv"
     selected_subtitle = season_dir / "Show One - S01E01.srt"
+    selected_language_subtitle = season_dir / "Show One - S01E01.en.srt"
     other_episode = season_dir / "Show One - S01E02.mkv"
     selected_episode.write_bytes(b"e1")
     selected_subtitle.write_bytes(b"sub")
+    selected_language_subtitle.write_bytes(b"language sub")
     other_episode.write_bytes(b"e2")
 
     moved_to = move_media(
@@ -300,6 +308,7 @@ def test_move_media_keeps_episode_folder_conservative(tmp_path: Path) -> None:
     assert moved_to == expected_dir / "Show One - S01E01.mkv"
     assert moved_to.read_bytes() == b"e1"
     assert (expected_dir / "Show One - S01E01.srt").read_bytes() == b"sub"
+    assert (expected_dir / "Show One - S01E01.en.srt").read_bytes() == b"language sub"
     assert other_episode.read_bytes() == b"e2"
     assert season_dir.exists()
 
@@ -371,10 +380,14 @@ def test_move_season_files_preserves_series_folder_for_flat_series(
     series_dir = local_root / "tv" / "Flat Show"
     series_dir.mkdir(parents=True)
     season_one = series_dir / "Flat Show - S01E01.mkv"
+    season_one_alternate = series_dir / "Flat Show - S01E01.mp4"
     season_one_sub = series_dir / "Flat Show - S01E01.srt"
+    season_one_language_sub = series_dir / "Flat Show - S01E01.en.srt"
     season_two = series_dir / "Flat Show - S02E01.mkv"
     season_one.write_bytes(b"s1")
+    season_one_alternate.write_bytes(b"alternate")
     season_one_sub.write_bytes(b"sub")
+    season_one_language_sub.write_bytes(b"language sub")
     season_two.write_bytes(b"s2")
 
     moved_to = move_season_files(
@@ -387,8 +400,11 @@ def test_move_season_files_preserves_series_folder_for_flat_series(
     assert moved_to == tmp_path / "reclaimed" / "tv" / "Flat Show"
     assert (moved_to / "Flat Show - S01E01.mkv").read_bytes() == b"s1"
     assert (moved_to / "Flat Show - S01E01.srt").read_bytes() == b"sub"
+    assert (moved_to / "Flat Show - S01E01.en.srt").read_bytes() == b"language sub"
     assert not season_one.exists()
     assert not season_one_sub.exists()
+    assert not season_one_language_sub.exists()
+    assert season_one_alternate.read_bytes() == b"alternate"
     assert season_two.read_bytes() == b"s2"
 
 
