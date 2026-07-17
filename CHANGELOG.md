@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move instead of delete now carries language-tagged sidecars and logs why a shared source folder was safely retained
 - Move instead of delete now safely merges existing destination folders and deduplicates identical files without overwriting conflicts
 
+## [0.2.6] - 2026-07-16
+
+### Fixed
+
+- Hotfix for 0.2.5 failure to launch importing utils from the excluded Desktop module
+
 ## [0.2.5] - 2026-07-16
 
 ### Changed
