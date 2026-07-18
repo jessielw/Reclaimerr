@@ -13,6 +13,14 @@ Cleanup-candidate rules can also enable **Move Instead of Delete**. When a
 delete action runs for one of those candidates, Reclaimerr moves the file or
 folder to the configured destination and removes the source record instead of
 deleting the file. If multiple matched rules disagree, move wins over delete.
+Item-scoped movie folders move as a unit, including artwork, trailers, and all
+sidecars. Shared folders stay conservative: Reclaimerr moves only the selected
+media plus its matching sidecars (including language-tagged subtitles such as
+`.en.srt`) and removes the source folder only when it is empty.
+Existing destination folders are merged safely. When the same relative file is
+already present, Reclaimerr verifies matching size and SHA-256 content before
+discarding the redundant source copy; different files are never overwritten and
+leave the candidate available for review.
 
 When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 movie or series from its managed Plex, Jellyfin, and Emby collections. This

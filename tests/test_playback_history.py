@@ -21,12 +21,15 @@ from backend.core.rule_engine import (
 )
 from backend.database import Base
 from backend.database.models import (
+    Episode,
     Movie,
     MovieVersion,
+    NativePlaybackAggregate,
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
     Season,
     Series,
+    SeriesServiceRef,
     ServiceConfig,
     User,
 )
@@ -298,6 +301,194 @@ class TautulliHistoryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlaybackReportingQueryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_playback_uses_completed_per_user_item_state(self) -> None:
+        client = JellyfinService(api_key="key", base_url="http://jellyfin")
+
+        async def request(
+            endpoint: str, *, params: dict[str, object], timeout: int
+        ) -> dict[str, object]:
+            self.assertEqual(endpoint, "Items")
+            self.assertEqual(params["Filters"], "IsPlayed")
+            self.assertEqual(params["ExcludeLocationTypes"], "Virtual")
+            self.assertEqual(params["EnableUserData"], "true")
+            self.assertEqual(params["EnableTotalRecordCount"], "true")
+            self.assertEqual(timeout, 60)
+            item_type = params["includeItemTypes"]
+            return {
+                "Items": [
+                    {
+                        "Id": f"{item_type}-1",
+                        "UserData": {
+                            "Played": True,
+                            "PlayCount": 3,
+                            "LastPlayedDate": "2026-07-15T12:00:00Z",
+                        },
+                    }
+                ],
+                "TotalRecordCount": 1,
+            }
+
+        with (
+            patch.object(
+                JellyfinService,
+                "get_users",
+                new=AsyncMock(return_value=[SimpleNamespace(id="u1", name="Alice")]),
+            ),
+            patch.object(JellyfinService, "_make_request", side_effect=request),
+        ):
+            snapshots = await client.get_native_playback_user_snapshots()
+        await client.session.close()
+
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(
+            {snapshot.provider_media_type for snapshot in snapshots},
+            {"movie", "episode"},
+        )
+        self.assertTrue(all(snapshot.completed for snapshot in snapshots))
+        self.assertTrue(all(snapshot.play_count == 3 for snapshot in snapshots))
+
+    async def test_native_playback_paginates_without_total_count(self) -> None:
+        client = JellyfinService(api_key="key", base_url="http://jellyfin")
+        starts: list[str] = []
+
+        async def request(
+            endpoint: str, *, params: dict[str, object], timeout: int
+        ) -> dict[str, object]:
+            self.assertEqual(endpoint, "Items")
+            self.assertEqual(timeout, 60)
+            start = str(params["StartIndex"])
+            starts.append(start)
+            if start == "0":
+                return {
+                    "Items": [
+                        {"Id": "movie-1"},
+                        {
+                            "Id": "movie-2",
+                            "UserData": {"Played": True, "PlayCount": 1},
+                        },
+                    ]
+                }
+            return {"Items": [{"Id": "movie-3"}]}
+
+        with (
+            patch(
+                "backend.services.emby_base._NATIVE_PLAYBACK_PAGE_SIZE",
+                2,
+            ),
+            patch.object(JellyfinService, "_make_request", side_effect=request),
+        ):
+            snapshots = await client._get_native_playback_for_user(
+                user_id="u1",
+                username="Alice",
+                include_item_types="Movie",
+            )
+        await client.session.close()
+
+        self.assertEqual(starts, ["0", "2"])
+        self.assertEqual(
+            [snapshot.source_item_id for snapshot in snapshots],
+            ["movie-1", "movie-2", "movie-3"],
+        )
+        self.assertTrue(all(snapshot.completed for snapshot in snapshots))
+        self.assertEqual(snapshots[0].play_count, 0)
+
+    async def test_watched_episode_snapshots_paginate_without_total_count(
+        self,
+    ) -> None:
+        client = JellyfinService(api_key="key", base_url="http://jellyfin")
+        starts: list[str] = []
+
+        async def request(
+            endpoint: str, *, params: dict[str, object], timeout: int
+        ) -> dict[str, object]:
+            self.assertEqual(endpoint, "Items")
+            self.assertEqual(timeout, 60)
+            start = str(params["StartIndex"])
+            starts.append(start)
+            if start == "0":
+                return {
+                    "Items": [
+                        {
+                            "Id": "episode-1",
+                            "SeriesId": "series-1",
+                            "UserData": {"LastPlayedDate": "2026-07-14T12:00:00Z"},
+                        },
+                        {
+                            "Id": "episode-2",
+                            "SeriesId": "series-1",
+                            "UserData": {"LastPlayedDate": "2026-07-15T12:00:00Z"},
+                        },
+                    ]
+                }
+            return {
+                "Items": [
+                    {
+                        "Id": "episode-3",
+                        "SeriesId": "series-1",
+                        "UserData": {"LastPlayedDate": "2026-07-16T12:00:00Z"},
+                    }
+                ]
+            }
+
+        with (
+            patch(
+                "backend.services.emby_base._NATIVE_PLAYBACK_PAGE_SIZE",
+                2,
+            ),
+            patch.object(JellyfinService, "_make_request", side_effect=request),
+        ):
+            snapshots = await client.get_watched_episode_snapshots_for_user("u1")
+        await client.session.close()
+
+        self.assertEqual(starts, ["0", "2"])
+        self.assertEqual(
+            [(series_id, episode_id) for series_id, episode_id, _ in snapshots],
+            [
+                ("series-1", "episode-1"),
+                ("series-1", "episode-2"),
+                ("series-1", "episode-3"),
+            ],
+        )
+
+    async def test_native_playback_limits_concurrency_to_user_batch(self) -> None:
+        client = JellyfinService(api_key="key", base_url="http://jellyfin")
+        active = 0
+        maximum_active = 0
+
+        async def fetch(
+            *,
+            user_id: str,
+            username: str | None,
+            include_item_types: str,
+        ) -> list[object]:
+            nonlocal active, maximum_active
+            self.assertTrue(user_id)
+            self.assertTrue(username)
+            self.assertIn(include_item_types, {"Movie", "Episode"})
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return []
+
+        users = [
+            SimpleNamespace(id=f"u{index}", name=f"User {index}") for index in range(6)
+        ]
+        with (
+            patch.object(client, "get_users", new=AsyncMock(return_value=users)),
+            patch.object(
+                client,
+                "_get_native_playback_for_user",
+                new=AsyncMock(side_effect=fetch),
+            ) as request,
+        ):
+            snapshots = await client.get_native_playback_user_snapshots()
+        await client.session.close()
+
+        self.assertEqual(snapshots, [])
+        self.assertEqual(request.await_count, 12)
+        self.assertLessEqual(maximum_active, 5)
+
     async def test_history_query_avoids_sqlite_datetime_function(self) -> None:
         client = JellyfinService(api_key="key", base_url="http://jellyfin")
         with patch.object(
@@ -508,6 +699,397 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("movie_version", version_id), snapshot.available_targets)
         self.assertEqual(snapshot.unavailable_count({"movie_version"}), 0)
         self.assertEqual(snapshot.unavailable_reasons["movie_version"], {})
+
+    async def test_native_jellyfin_snapshot_evaluates_without_plugin(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            movie = Movie(title="Native Only", tmdb_id=401)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                NativePlaybackAggregate(
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=config.id,
+                    target_scope="movie_version",
+                    target_id=version.id,
+                    media_type=MediaType.MOVIE,
+                    has_activity=True,
+                    play_count=5,
+                    unique_user_count=1,
+                    usernames=["Alice"],
+                    usernames_complete=True,
+                    last_activity_at=datetime(2026, 7, 10),
+                )
+            )
+            await db.commit()
+
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        key = ("movie_version", version.id)
+        self.assertEqual(snapshot.values_by_target[key]["playback.play_count"], 5)
+        self.assertTrue(snapshot.values_by_target[key]["playback.has_activity"])
+        self.assertEqual(
+            snapshot.values_by_target[key]["playback.usernames"], ["Alice"]
+        )
+        self.assertNotIn(
+            "playback.total_duration_minutes", snapshot.values_by_target[key]
+        )
+        self.assertEqual(
+            snapshot.unavailable_count({"movie_version"}, {"playback.has_activity"}),
+            0,
+        )
+        self.assertEqual(
+            snapshot.unavailable_count(
+                {"movie_version"}, {"playback.total_duration_minutes"}
+            ),
+            1,
+        )
+
+    async def test_native_incomplete_metadata_keeps_only_affected_fields_unknown(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            movie = Movie(title="Incomplete Native", tmdb_id=405)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                NativePlaybackAggregate(
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=config.id,
+                    target_scope="movie_version",
+                    target_id=version.id,
+                    media_type=MediaType.MOVIE,
+                    has_activity=True,
+                    play_count=1,
+                    unique_user_count=2,
+                    usernames=["Alice"],
+                    usernames_complete=False,
+                    last_activity_at=None,
+                )
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        key = ("movie_version", version.id)
+        values = snapshot.values_by_target[key]
+        self.assertTrue(values["playback.has_activity"])
+        self.assertEqual(values["playback.play_count"], 1)
+        self.assertNotIn("playback.usernames", values)
+        self.assertNotIn("playback.last_activity_at", values)
+        self.assertNotIn("playback.days_since_last_activity", values)
+        self.assertEqual(
+            snapshot.unavailable_count({"movie_version"}, {"playback.has_activity"}),
+            0,
+        )
+        self.assertEqual(
+            snapshot.unavailable_count({"movie_version"}, {"playback.usernames"}),
+            1,
+        )
+        self.assertEqual(
+            snapshot.unavailable_count(
+                {"movie_version"}, {"playback.last_activity_at"}
+            ),
+            1,
+        )
+
+    async def test_native_current_users_override_imported_event_users(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            movie = Movie(title="Merged", tmdb_id=402)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryAggregate(
+                        target_scope="movie_version",
+                        target_id=version.id,
+                        media_type=MediaType.MOVIE,
+                        play_count=2,
+                        total_duration_seconds=120,
+                        longest_duration_seconds=90,
+                        unique_user_count=1,
+                        usernames=["Alice"],
+                        usernames_complete=False,
+                        first_activity_at=datetime(2026, 7, 1),
+                        last_activity_at=datetime(2026, 7, 1),
+                    ),
+                    NativePlaybackAggregate(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=config.id,
+                        target_scope="movie_version",
+                        target_id=version.id,
+                        media_type=MediaType.MOVIE,
+                        has_activity=True,
+                        play_count=5,
+                        unique_user_count=2,
+                        usernames=["alice", "Bob"],
+                        usernames_complete=True,
+                        last_activity_at=datetime(2026, 7, 10),
+                    ),
+                ]
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        values = snapshot.values_by_target[("movie_version", version.id)]
+        self.assertEqual(values["playback.play_count"], 5)
+        self.assertEqual(values["playback.usernames"], ["alice", "Bob"])
+        self.assertEqual(values["playback.unique_user_count"], 2)
+        self.assertEqual(values["playback.last_activity_at"], datetime(2026, 7, 10))
+        self.assertEqual(values["playback.total_duration_minutes"], 2.0)
+
+    async def test_native_zero_users_override_imported_event_users(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            movie = Movie(title="Current State Wins", tmdb_id=406)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                PlaybackHistoryAggregate(
+                    target_scope="movie_version",
+                    target_id=version.id,
+                    media_type=MediaType.MOVIE,
+                    play_count=1,
+                    total_duration_seconds=120,
+                    longest_duration_seconds=120,
+                    unique_user_count=1,
+                    usernames=["StaleUser"],
+                    usernames_complete=True,
+                    first_activity_at=datetime(2026, 7, 1),
+                    last_activity_at=datetime(2026, 7, 1),
+                )
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        values = snapshot.values_by_target[("movie_version", version.id)]
+        self.assertEqual(values["playback.usernames"], [])
+        self.assertEqual(values["playback.unique_user_count"], 0)
+        self.assertEqual(values["playback.play_count"], 1)
+
+    async def test_native_tv_users_are_any_completed_descendant_watcher(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            series = Series(title="Current TV", tmdb_id=407)
+            db.add_all([config, series])
+            await db.flush()
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                jellyfin_season_id="season-item",
+            )
+            db.add(season)
+            await db.flush()
+            episode = Episode(
+                season_id=season.id,
+                episode_number=1,
+                jellyfin_episode_id="episode-item",
+            )
+            db.add_all(
+                [
+                    episode,
+                    SeriesServiceRef(
+                        series_id=series.id,
+                        service=Service.JELLYFIN,
+                        service_id="series-item",
+                        library_id="library",
+                        library_name="TV",
+                    ),
+                ]
+            )
+            await db.flush()
+            db.add_all(
+                [
+                    NativePlaybackAggregate(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=config.id,
+                        target_scope="series",
+                        target_id=series.id,
+                        media_type=MediaType.SERIES,
+                        has_activity=True,
+                        play_count=1,
+                        unique_user_count=1,
+                        usernames=["PartialViewer"],
+                        usernames_complete=True,
+                        last_activity_at=None,
+                    ),
+                    NativePlaybackAggregate(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=config.id,
+                        target_scope="season",
+                        target_id=season.id,
+                        media_type=MediaType.SERIES,
+                        has_activity=True,
+                        play_count=1,
+                        unique_user_count=1,
+                        usernames=["PartialViewer"],
+                        usernames_complete=True,
+                        last_activity_at=None,
+                    ),
+                ]
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        self.assertEqual(
+            snapshot.values_by_target[("series", series.id)]["playback.usernames"],
+            ["PartialViewer"],
+        )
+        self.assertEqual(
+            snapshot.values_by_target[("season", season.id)]["playback.usernames"],
+            ["PartialViewer"],
+        )
+
+    async def test_unsynced_native_playback_state_remains_unknown(self) -> None:
+        async with self.sessionmaker() as db:
+            config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            movie = Movie(title="Unsynced", tmdb_id=403)
+            db.add_all([config, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jellyfin-item",
+                service_media_id="jellyfin-media",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add(
+                PlaybackHistoryAggregate(
+                    target_scope="movie_version",
+                    target_id=version.id,
+                    media_type=MediaType.MOVIE,
+                    play_count=1,
+                    total_duration_seconds=60,
+                    longest_duration_seconds=60,
+                    unique_user_count=1,
+                    usernames=["StaleUser"],
+                    usernames_complete=True,
+                    first_activity_at=datetime(2026, 7, 1),
+                    last_activity_at=datetime(2026, 7, 1),
+                )
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(db, PlaybackRefreshResult())
+
+        key = ("movie_version", version.id)
+        self.assertEqual(snapshot.values_by_target[key]["playback.play_count"], 1)
+        self.assertNotIn("playback.usernames", snapshot.values_by_target[key])
+        self.assertNotIn("playback.unique_user_count", snapshot.values_by_target[key])
+        self.assertEqual(
+            snapshot.unavailable_count({"movie_version"}, {"playback.has_activity"}),
+            0,
+        )
+        self.assertEqual(
+            snapshot.unavailable_count({"movie_version"}, {"playback.usernames"}),
+            1,
+        )
+        self.assertIn("native playback state has not been synced yet", snapshot.errors)
 
     async def test_upsert_events_deduplicates_reporting_batch(self) -> None:
         reporting_row = {
@@ -845,7 +1427,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["playback.play_count"], 1)
         self.assertNotIn("playback.usernames", values)
 
-    async def test_partial_username_resolution_keeps_resolved_usernames_available(
+    async def test_partial_username_resolution_keeps_username_field_unavailable(
         self,
     ) -> None:
         async with self.sessionmaker() as db:
@@ -914,7 +1496,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
 
         values = _aggregate_values(aggregate)
         self.assertFalse(aggregate.usernames_complete)
-        self.assertEqual(values["playback.usernames"], ["norirara"])
+        self.assertNotIn("playback.usernames", values)
 
     async def test_backfills_retained_event_usernames(self) -> None:
         async with self.sessionmaker() as db:

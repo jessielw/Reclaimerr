@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # API configuration
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    command_workers: int = Field(
+        default=2,
+        validation_alias="RECLAIMERR_COMMAND_WORKERS",
+        description="Number of internal durable command executors (1-8).",
+    )
     cors_origins: str = Field(
         default="*",
         description=(
@@ -143,6 +148,28 @@ class Settings(BaseSettings):
     def validate_log_retention_days(cls, v: int) -> int:
         """Clamp log retention to a safe minimum."""
         return max(1, v)
+
+    @field_validator("command_workers", mode="before")
+    @classmethod
+    def validate_command_workers(cls, v: object) -> int:
+        """Parse and clamp the advanced command executor count."""
+        try:
+            parsed = int(str(v).strip())
+        except (TypeError, ValueError):
+            logging.getLogger("reclaimerr").warning(
+                "Invalid RECLAIMERR_COMMAND_WORKERS value %r. Falling back to 3.",
+                v,
+            )
+            return 3
+        clamped = min(8, max(1, parsed))
+        if clamped != parsed:
+            logging.getLogger("reclaimerr").warning(
+                "RECLAIMERR_COMMAND_WORKERS=%s is outside the supported range "
+                "1-8; using %s.",
+                parsed,
+                clamped,
+            )
+        return clamped
 
     @field_validator("jwt_secret", mode="before")
     @classmethod

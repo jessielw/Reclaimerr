@@ -39,14 +39,23 @@ export const createPerPageState = (
 export const createFilterState = <T>(
   storageKey: string,
   defaultValue: T,
+  isValid?: (value: unknown) => value is T,
 ): { getInitial: () => T; save: (value: T) => void } => {
   return {
     getInitial(): T {
       try {
         const stored = localStorage.getItem(storageKey);
         if (stored === null) return defaultValue;
-        return JSON.parse(stored) as T;
+        const value: unknown = JSON.parse(stored);
+        if (!isValid || isValid(value)) return value as T;
+        localStorage.setItem(storageKey, JSON.stringify(defaultValue));
+        return defaultValue;
       } catch {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(defaultValue));
+        } catch {
+          // storage can be unavailable in restricted browser contexts
+        }
         return defaultValue;
       }
     },

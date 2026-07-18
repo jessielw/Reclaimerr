@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy import update as sql_update
 
 from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import BackgroundJob
-from backend.enums import BackgroundJobStatus, BackgroundJobType
+from backend.enums import (
+    BackgroundJobPriority,
+    BackgroundJobStatus,
+    BackgroundJobType,
+)
+from backend.jobs.policy import background_job_resources
+
+_job_claim_lock = asyncio.Lock()
 
 
 async def enqueue_background_job(
@@ -22,6 +30,7 @@ async def enqueue_background_job(
     replace_pending: bool = False,
     skip_if_active: bool = False,
     max_attempts: int = 3,
+    priority: BackgroundJobPriority = BackgroundJobPriority.NORMAL,
 ) -> BackgroundJob | None:
     """Enqueue a background job with optional deduplication and scheduling."""
     run_at = scheduled_at or datetime.now(UTC)
@@ -65,6 +74,7 @@ async def enqueue_background_job(
             status=BackgroundJobStatus.PENDING,
             payload=payload,
             dedupe_key=dedupe_key,
+            priority=priority,
             scheduled_at=run_at,
             max_attempts=max_attempts,
         )
@@ -113,54 +123,93 @@ async def claim_next_background_job(
     *,
     allowed_job_types: Collection[BackgroundJobType] | None = None,
 ) -> BackgroundJob | None:
-    """Claim the next available background job for processing, marking it as RUNNING."""
-    now = datetime.now(UTC)
-    async with async_db() as session:
-        query = (
-            select(BackgroundJob.id)
-            .where(
-                BackgroundJob.status == BackgroundJobStatus.PENDING,
-                BackgroundJob.scheduled_at <= now,
+    """Claim the highest priority due job compatible with running work."""
+    async with _job_claim_lock:
+        now = datetime.now(UTC)
+        async with async_db() as session:
+            running_jobs = (
+                (
+                    await session.execute(
+                        select(BackgroundJob).where(
+                            BackgroundJob.status == BackgroundJobStatus.RUNNING
+                        )
+                    )
+                )
+                .scalars()
+                .all()
             )
-            .order_by(BackgroundJob.scheduled_at.asc(), BackgroundJob.id.asc())
-            .limit(1)
-        )
-        if allowed_job_types is not None:
-            allowed_values = tuple(allowed_job_types)
-            if not allowed_values:
+            busy_resources = {
+                resource
+                for running_job in running_jobs
+                for resource in background_job_resources(running_job)
+            }
+
+            priority_rank = case(
+                (BackgroundJob.priority == BackgroundJobPriority.HIGH, 3),
+                (BackgroundJob.priority == BackgroundJobPriority.NORMAL, 2),
+                (BackgroundJob.priority == BackgroundJobPriority.LOW, 1),
+                else_=0,
+            )
+            query = (
+                select(BackgroundJob)
+                .where(
+                    BackgroundJob.status == BackgroundJobStatus.PENDING,
+                    BackgroundJob.scheduled_at <= now,
+                )
+                .order_by(
+                    priority_rank.desc(),
+                    BackgroundJob.scheduled_at.asc(),
+                    BackgroundJob.id.asc(),
+                )
+            )
+            if allowed_job_types is not None:
+                allowed_values = tuple(allowed_job_types)
+                if not allowed_values:
+                    return None
+                query = query.where(BackgroundJob.job_type.in_(allowed_values))
+
+            pending_jobs = (await session.execute(query)).scalars().all()
+            job = next(
+                (
+                    pending_job
+                    for pending_job in pending_jobs
+                    if not (background_job_resources(pending_job) & busy_resources)
+                ),
+                None,
+            )
+            if job is None:
+                if pending_jobs and busy_resources:
+                    LOG.debug(
+                        "Due background jobs are waiting for resources held by "
+                        f"running work: {sorted(busy_resources)}"
+                    )
                 return None
-            query = query.where(BackgroundJob.job_type.in_(allowed_values))
 
-        result = await session.execute(query)
-        job_id = result.scalar_one_or_none()
-        if job_id is None:
-            return None
-
-        claim_result = await session.execute(
-            sql_update(BackgroundJob)
-            .where(
-                BackgroundJob.id == job_id,
-                BackgroundJob.status == BackgroundJobStatus.PENDING,
+            claim_result = await session.execute(
+                sql_update(BackgroundJob)
+                .where(
+                    BackgroundJob.id == job.id,
+                    BackgroundJob.status == BackgroundJobStatus.PENDING,
+                )
+                .values(
+                    status=BackgroundJobStatus.RUNNING,
+                    claimed_by=worker_id,
+                    claimed_at=now,
+                    started_at=now,
+                    attempts=BackgroundJob.attempts + 1,
+                )
+                .returning(BackgroundJob.id)
             )
-            .values(
-                status=BackgroundJobStatus.RUNNING,
-                claimed_by=worker_id,
-                claimed_at=now,
-                started_at=now,
-                attempts=BackgroundJob.attempts + 1,
-            )
-            .returning(BackgroundJob.id)
-        )
-        claimed_id = claim_result.scalar_one_or_none()
-        if claimed_id is None:
-            await session.rollback()
-            return None
+            claimed_id = claim_result.scalar_one_or_none()
+            if claimed_id is None:
+                await session.rollback()
+                return None
 
-        await session.commit()
-        claimed = await session.execute(
-            select(BackgroundJob).where(BackgroundJob.id == claimed_id)
-        )
-        return claimed.scalar_one_or_none()
+            await session.commit()
+            claimed = await session.execute(
+                select(BackgroundJob).where(BackgroundJob.id == claimed_id)
+            )
+            return claimed.scalar_one_or_none()
 
 
 async def complete_background_job(

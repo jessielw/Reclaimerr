@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +36,7 @@ from backend.models.media import (
     ExternalIDs,
     MediaWatchSnapshot,
     MovieVersionData,
+    NativePlaybackSnapshot,
 )
 from backend.models.services.emby_base import (
     EmbyMovieBase,
@@ -51,6 +53,8 @@ JsonPayload: TypeAlias = JsonDict | JsonList
 
 _COLLECTION_MUTATION_BATCH_SIZE = 100
 _COLLECTION_PAGE_SIZE = 1000
+_NATIVE_PLAYBACK_PAGE_SIZE = 500
+_NATIVE_PLAYBACK_USER_BATCH_SIZE = 5
 
 
 @dataclass(slots=True)
@@ -1451,52 +1455,202 @@ class EmbyServiceBase:
         """Return watched series ID, episode ID, and latest play date for a user."""
         snapshots: list[tuple[str, str, datetime]] = []
 
-        try:
-            # fetch in paginated batches to avoid timeout on large libraries
-            start_index = 0
-            limit = 500
+        # Fetch in paginated batches to avoid timeouts on large libraries. Errors
+        # deliberately propagate: an empty list would incorrectly mean a user's
+        # watched state is known to be empty.
+        start_index = 0
+        limit = _NATIVE_PLAYBACK_PAGE_SIZE
 
-            while True:
-                params = {
+        while True:
+            params = {
+                "userId": user_id,
+                "includeItemTypes": "Episode",
+                "recursive": "true",
+                "Filters": "IsPlayed",
+                "Fields": "SeriesId,UserData,UserDataLastPlayedDate,UserDataPlayCount",
+                "EnableUserData": "true",
+                "EnableTotalRecordCount": "true",
+                "SortBy": "DatePlayed",
+                "SortOrder": "Descending",
+                "StartIndex": str(start_index),
+                "Limit": str(limit),
+            }
+            get_data = await self._make_request("Items", params=params, timeout=60)
+            if not isinstance(get_data, dict):
+                raise RuntimeError(
+                    f"{self.service_type.value} returned invalid watched episode data"
+                )
+
+            raw_items_data = get_data.get("Items", [])
+            if not isinstance(raw_items_data, list):
+                raise RuntimeError(
+                    f"{self.service_type.value} returned invalid watched episode rows"
+                )
+            if not raw_items_data:
+                break
+            items_data = [item for item in raw_items_data if isinstance(item, dict)]
+
+            for item in items_data:
+                series_id = item.get("SeriesId")
+                episode_id = item.get("Id")
+                user_data = item.get("UserData", {})
+                last_played = (
+                    user_data.get("LastPlayedDate")
+                    if isinstance(user_data, dict)
+                    else None
+                )
+
+                if series_id and episode_id and last_played:
+                    watch_date = datetime.fromisoformat(str(last_played))
+                    snapshots.append((str(series_id), str(episode_id), watch_date))
+
+            total_record_count = self._safe_play_count(
+                get_data.get("TotalRecordCount", 0)
+            )
+            start_index += len(raw_items_data)
+            if (total_record_count > 0 and start_index >= total_record_count) or (
+                total_record_count <= 0 and len(raw_items_data) < limit
+            ):
+                break
+
+        return snapshots
+
+    @staticmethod
+    def _safe_play_count(raw: object) -> int:
+        if not isinstance(raw, (int, float, str)):
+            return 0
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    async def _get_native_playback_for_user(
+        self,
+        *,
+        user_id: str,
+        username: str | None,
+        include_item_types: Literal["Movie", "Episode"],
+    ) -> list[NativePlaybackSnapshot]:
+        """Return completed current playback state for one user and item type."""
+
+        snapshots: list[NativePlaybackSnapshot] = []
+        start_index = 0
+        provider_media_type: Literal["movie", "episode"] = (
+            "movie" if include_item_types == "Movie" else "episode"
+        )
+        while True:
+            data = await self._make_request(
+                "Items",
+                params={
                     "userId": user_id,
-                    "includeItemTypes": "Episode",
+                    "includeItemTypes": include_item_types,
                     "recursive": "true",
                     "Filters": "IsPlayed",
-                    "Fields": "SeriesId,UserData,UserDataLastPlayedDate,UserDataPlayCount",
-                    "SortBy": "DatePlayed",
-                    "SortOrder": "Descending",
+                    # Virtual entries are unaired/place-holder items rather than
+                    # available media. Excluding them keeps series/season watcher
+                    # aggregates tied to the library copies Reclaimerr can act on.
+                    "ExcludeLocationTypes": "Virtual",
+                    "Fields": "UserData,UserDataLastPlayedDate,UserDataPlayCount",
+                    "EnableUserData": "true",
+                    "EnableTotalRecordCount": "true",
                     "StartIndex": str(start_index),
-                    "Limit": str(limit),
-                }
-                get_data = await self._make_request("Items", params=params, timeout=60)
-                if not isinstance(get_data, dict):
-                    break
+                    "Limit": str(_NATIVE_PLAYBACK_PAGE_SIZE),
+                },
+                timeout=60,
+            )
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"{self.service_type.value} returned invalid native playback data"
+                )
+            raw_items = data.get("Items", [])
+            if not isinstance(raw_items, list):
+                raise RuntimeError(
+                    f"{self.service_type.value} returned invalid native playback rows"
+                )
+            if not raw_items:
+                break
 
-                raw_items_data = get_data.get("Items", [])
-                if not isinstance(raw_items_data, list) or not raw_items_data:
-                    break
-                items_data = [item for item in raw_items_data if isinstance(item, dict)]
-                if not items_data:
-                    break
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("Id") or "").strip()
+                if not item_id:
+                    continue
+                user_data = item.get("UserData")
+                if not isinstance(user_data, dict):
+                    user_data = {}
+                play_count = self._safe_play_count(user_data.get("PlayCount"))
+                last_activity_at = self._safe_iso_datetime(
+                    user_data.get("LastPlayedDate")
+                )
+                # The IsPlayed filter is authoritative for this native fallback;
+                # keep a row even when Jellyfin omits a timestamp or play count.
+                snapshots.append(
+                    NativePlaybackSnapshot(
+                        source_item_id=item_id,
+                        provider_media_type=provider_media_type,
+                        source_user_id=user_id,
+                        source_username=username,
+                        play_count=play_count,
+                        completed=True,
+                        last_activity_at=last_activity_at,
+                    )
+                )
 
-                for item in items_data:
-                    series_id = item.get("SeriesId")
-                    episode_id = item.get("Id")
-                    last_played = item.get("UserData", {}).get("LastPlayedDate")
+            total_record_count = self._safe_play_count(data.get("TotalRecordCount", 0))
+            start_index += len(raw_items)
+            if (total_record_count > 0 and start_index >= total_record_count) or (
+                total_record_count <= 0 and len(raw_items) < _NATIVE_PLAYBACK_PAGE_SIZE
+            ):
+                break
 
-                    if series_id and episode_id and last_played:
-                        watch_date = datetime.fromisoformat(last_played)
-                        snapshots.append((str(series_id), str(episode_id), watch_date))
+        return snapshots
 
-                # check if we've fetched all episodes
-                total_record_count = int(get_data.get("TotalRecordCount", 0) or 0)
-                start_index += len(items_data)
-                if start_index >= total_record_count:
-                    break
+    async def _get_all_native_playback_for_user(
+        self,
+        *,
+        user_id: str,
+        username: str | None,
+    ) -> list[NativePlaybackSnapshot]:
+        """Fetch movie and episode state sequentially for one media-server user."""
 
-            return snapshots
-        except Exception:
-            return []
+        snapshots: list[NativePlaybackSnapshot] = []
+        for item_type in ("Movie", "Episode"):
+            snapshots.extend(
+                await self._get_native_playback_for_user(
+                    user_id=user_id,
+                    username=username,
+                    include_item_types=item_type,
+                )
+            )
+        return snapshots
+
+    async def get_native_playback_user_snapshots(
+        self,
+    ) -> list[NativePlaybackSnapshot]:
+        """Fetch current completed playback state for all users.
+
+        Jellyfin and Emby do not expose a central durable history endpoint. This
+        uses their authoritative per-user ``UserData`` instead, with a bounded
+        concurrency level matching Maintainerr's conservative user batching.
+        """
+
+        users = await self.get_users()
+        snapshots: list[NativePlaybackSnapshot] = []
+        for start in range(0, len(users), _NATIVE_PLAYBACK_USER_BATCH_SIZE):
+            batch = users[start : start + _NATIVE_PLAYBACK_USER_BATCH_SIZE]
+            results = await asyncio.gather(
+                *(
+                    self._get_all_native_playback_for_user(
+                        user_id=user.id,
+                        username=self._normalized_user_key(user.name),
+                    )
+                    for user in batch
+                )
+            )
+            for result in results:
+                snapshots.extend(result)
+        return snapshots
 
     @staticmethod
     def _normalized_user_key(user_name: str | None) -> str | None:

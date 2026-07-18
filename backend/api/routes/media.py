@@ -318,6 +318,13 @@ async def _get_candidate_page_groups(
             ReclaimCandidate.episode_id.label("episode_id"),
             ReclaimCandidate.created_at.label("created_at"),
             ReclaimCandidate.matched_rule_ids.label("matched_rule_ids"),
+            ReclaimCandidate.auto_delete_cancelled_at.label("auto_delete_cancelled_at"),
+            ReclaimCandidate.auto_delete_timer_started_at.label(
+                "auto_delete_timer_started_at"
+            ),
+            ReclaimCandidate.auto_delete_postponed_until.label(
+                "auto_delete_postponed_until"
+            ),
             _candidate_effective_size_expr().label("effective_size_bytes"),
             Movie.title.label("movie_title"),
             Series.title.label("series_title"),
@@ -394,6 +401,9 @@ async def _get_candidate_page_groups(
             media_type=row.media_type,
             matched_rule_ids=row.matched_rule_ids or [],
             created_at=created_at,
+            timer_started_at=row.auto_delete_timer_started_at,
+            postponed_until=row.auto_delete_postponed_until,
+            cancelled_at=row.auto_delete_cancelled_at,
             rule_actions_by_id=deletion_rule_actions,
             movie_delay_days=deletion_movie_delay_days,
             series_delay_days=deletion_series_delay_days,
@@ -411,6 +421,7 @@ async def _get_candidate_page_groups(
                 sort_title=title or "",
                 sort_created_at=created_at,
                 sort_deletion_at=deletion_at,
+                sort_deletion_active=deletion_policy.is_enabled,
                 sort_size=size_bytes,
                 candidate_ids=[row.candidate_id],
             )
@@ -419,11 +430,16 @@ async def _get_candidate_page_groups(
         group.candidate_ids.append(row.candidate_id)
         group.sort_created_at = max(group.sort_created_at, created_at)
         group.sort_deletion_at = min(group.sort_deletion_at, deletion_at)
+        group.sort_deletion_active = (
+            group.sort_deletion_active or deletion_policy.is_enabled
+        )
         group.sort_size += size_bytes
 
     groups = list(groups_by_key.values())
     if sort_by == "auto_delete_eligible_at":
-        groups.sort(
+        active_groups = [group for group in groups if group.sort_deletion_active]
+        inactive_groups = [group for group in groups if not group.sort_deletion_active]
+        active_groups.sort(
             key=lambda group: (
                 group.sort_deletion_at,
                 group.sort_title.lower(),
@@ -431,6 +447,13 @@ async def _get_candidate_page_groups(
             ),
             reverse=sort_order == "desc",
         )
+        inactive_groups.sort(
+            key=lambda group: (
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            )
+        )
+        groups = active_groups + inactive_groups
     elif sort_by == "media_title":
         groups.sort(
             key=lambda group: (
@@ -1655,6 +1678,9 @@ async def get_candidates(
             media_type=cast(MediaType, c.media_type),
             matched_rule_ids=cast(list[int], c.matched_rule_ids),
             created_at=cast(datetime, c.created_at),
+            timer_started_at=c.auto_delete_timer_started_at,
+            postponed_until=c.auto_delete_postponed_until,
+            cancelled_at=c.auto_delete_cancelled_at,
             rule_actions_by_id=candidate_rule_actions_by_id,
             movie_delay_days=auto_delete_movie_delay_days,
             series_delay_days=auto_delete_series_delay_days,
@@ -1926,6 +1952,15 @@ async def get_candidates(
                 ),
                 auto_delete_is_eligible=auto_delete_policy.is_eligible,
                 auto_delete_is_active=auto_delete_policy.is_enabled,
+                auto_delete_state=auto_delete_policy.state,
+                auto_delete_cancelled_at=to_utc_isoformat(c.auto_delete_cancelled_at),
+                auto_delete_postponed_until=to_utc_isoformat(
+                    c.auto_delete_postponed_until
+                ),
+                auto_delete_timer_started_at=to_utc_isoformat(
+                    c.auto_delete_timer_started_at
+                ),
+                lifecycle_reason=c.lifecycle_reason,
                 delete_operation=_candidate_delete_operation(
                     cast(list[int], c.matched_rule_ids),
                     candidate_rule_actions_by_id,

@@ -455,22 +455,23 @@ season is incomplete or its finale metadata has not been updated. Combine it
 with status, age, watch-history, or library conditions and inspect the preview
 before enabling the rule.
 
-### Durable Playback History
+### Playback Activity and History
 
-Playback history fields are available to movie-version, series, season, and
-episode rules. Reclaimerr imports compact events from the Jellyfin/Emby
-Playback Reporting plugin and Tautulli, then evaluates provider-neutral fields:
+Playback fields are available to movie-version, series, season, and episode
+rules. Reclaimerr stores current completed watch state directly from Jellyfin
+and Emby during Sync Media, then supplements it with compact events imported
+from the Jellyfin/Emby Playback Reporting plugin and Tautulli:
 
-| Field                        | Meaning                                                |
-| ---------------------------- | ------------------------------------------------------ |
-| Imported playback activity   | At least one qualifying imported playback event        |
-| Playback plays               | Number of qualifying playback events                   |
-| Playback duration            | Total qualifying playback minutes                      |
-| Longest playback             | Longest qualifying playback in minutes                 |
-| Playback user count          | Number of distinct source users with qualifying events |
-| Playback users               | Resolved usernames with qualifying events              |
-| Last playback activity       | Most recent qualifying event timestamp                 |
-| Days since playback activity | Whole days since the most recent event                 |
+| Field                        | Meaning                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| Playback activity            | Native completed watch state or a qualifying event                          |
+| Playback plays               | Highest native or imported play count                                       |
+| Playback duration            | Total qualifying imported playback minutes                                  |
+| Longest playback             | Longest qualifying imported playback in minutes                             |
+| Playback user count          | Current native watched users, or imported users when no native state exists |
+| Playback users               | Current native watched users, or imported users when no native state exists |
+| Last playback activity       | Most recent native or imported timestamp                                    |
+| Days since playback activity | Whole days since the most recent timestamp                                  |
 
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds
 are ignored. These thresholds prevent brief scrubs from counting as activity.
@@ -482,32 +483,48 @@ provider retention cleanup and media deletion/re-addition. Title-only matching
 is never used.
 
 The existing `watch.*` fields continue to describe the current library copy.
-The `playback.*` fields describe durable imported history and may therefore
-include activity from before the current copy was added.
+Native Jellyfin/Emby playback is current completed state and is refreshed by
+Sync Media. Imported plugin/Tautulli events are durable history and may include
+activity from before the current copy was added. For Jellyfin and Emby, native
+state is authoritative for **Playback users** and **Playback user count**: old
+Playback Reporting events do not keep a user matched after the media server no
+longer marks that user as watched. For a movie version or episode this is the
+exact item; for a season or series it means the user has completed at least one
+available local episode. This is not a per-user full-season/series completion
+check.
 
-`Imported playback activity` is either true or false when a configured
-provider can observe the media target. Targets outside provider coverage are
-unknown and match neither value. Marking an item watched without playing it
-updates the current `watch.*` state but does not create an imported playback
-event.
+`Playback activity` is either true or false when an applicable native snapshot
+or imported-history provider can observe the media target. Targets outside that
+coverage are unknown and match neither value. Marking an item watched without
+playing it is captured by Jellyfin/Emby's native current state after the next
+Sync Media, but it does not create an imported playback event.
 
 Playback data is loaded only when an enabled rule uses a `playback.*` field.
-Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting
-and Tautulli imports use an overlap window and event keys to avoid duplicate
-events during incremental refreshes.
+Native snapshots are read from the database; previews do not recrawl media
+servers. Tautulli history is fetched in one ungrouped paginated pass. Playback
+Reporting and Tautulli imports use an overlap window and event keys to avoid
+duplicate events during incremental refreshes.
 
 Playback-user rules match usernames case-insensitively and can require any,
 none, or all selected users. Jellyfin and Emby resolve names from their native
-user APIs; Tautulli resolves only the Plex history it supplies. If any user on
-an item cannot be resolved, username conditions remain unavailable for that
-item while the other playback metrics remain usable.
+user APIs; Tautulli resolves only the Plex history it supplies. If a native
+Jellyfin/Emby snapshot is unavailable, user conditions are unknown rather than
+falling back to stale imported events. If any user on an item cannot be
+resolved, username conditions remain unavailable for that item while the other
+playback metrics remain usable.
 
-Plex durable playback history, including playback-user rules, requires
-Tautulli. Reclaimerr does not currently import durable playback events directly
-from Plex.
+If a native watched item has no usable last-played timestamp, activity and
+count remain available while the last-activity fields stay unknown.
 
-If no applicable provider is configured, a provider request fails, or an item
-cannot be observed through an available provider, playback values are unknown.
+Plex playback fields, including playback-user rules, require Tautulli.
+Jellyfin/Emby activity, count, users, and latest-watch fields work without the
+Playback Reporting plugin after Sync Media; duration fields still require
+imported plugin history. Reclaimerr does not currently import playback events
+directly from Plex.
+
+If no applicable source is configured, a native snapshot refresh fails, an
+import request fails, or an item cannot be observed through an available source,
+playback values are unknown.
 Unknown values cannot create cleanup candidates. Existing automated
 protections are preserved until the affected playback rule can be evaluated
 again.

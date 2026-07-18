@@ -22,6 +22,7 @@ from backend.database.models import (
     User,
 )
 from backend.enums import (
+    BackgroundJobPriority,
     BackgroundJobStatus,
     BackgroundJobType,
     CandidateFileOpOperation,
@@ -149,6 +150,7 @@ def test_delete_candidates_queues_background_job(monkeypatch) -> None:
                 )
             ).scalar_one()
             assert queued_job.job_type is BackgroundJobType.CANDIDATE_FILE_OP
+            assert queued_job.priority is BackgroundJobPriority.HIGH
             assert queued_job.payload["operation"] == "delete"
             assert queued_job.payload["candidate_ids"] == [candidate.id]
             assert queued_job.payload["requested_by_username"] == "manager"
@@ -233,6 +235,13 @@ def test_list_candidate_file_op_jobs_only_returns_visible_jobs(monkeypatch) -> N
                 job["payload"]["requested_by_username"]
                 for job in visible_to_viewer["jobs"]
             ] == ["viewer"]
+            assert (
+                visible_to_viewer["jobs"][0]["priority"] is BackgroundJobPriority.NORMAL
+            )
+            assert visible_to_viewer["jobs"][0]["concurrency_resources"] == [
+                "candidate-workflow",
+                "service-runtime",
+            ]
             assert "Viewer Movie" in visible_to_viewer["jobs"][0]["summary"]
 
             visible_to_admin = await list_candidate_file_op_jobs(admin, db_session, 10)

@@ -27,6 +27,8 @@ API_PORT=8000
 TZ=America/New_York
 UMASK=022
 PROXY_TRUSTED_HOSTS=127.0.0.1,::1
+# Advanced; default 2, supported range 1-8
+RECLAIMERR_COMMAND_WORKERS=2
 ```
 
 ## Volume Guidance

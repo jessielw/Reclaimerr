@@ -12,6 +12,7 @@
   import About from "$lib/components/settings/about.svelte";
   import General from "$lib/components/settings/general.svelte";
   import Authentication from "$lib/components/settings/authentication.svelte";
+  import Integrations from "$lib/components/settings/integrations.svelte";
   import UserSignals from "$lib/components/settings/user-signals.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -33,6 +34,7 @@
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import KeyRound from "@lucide/svelte/icons/key-round";
+  import Webhook from "@lucide/svelte/icons/webhook";
   import { toast } from "svelte-sonner";
   import { toTitleCase } from "$lib/utils/strings";
   import {
@@ -210,6 +212,12 @@
           adminOnly: true,
         },
         {
+          id: SettingsTab.Integrations,
+          label: "Integrations",
+          icon: Webhook,
+          adminOnly: true,
+        },
+        {
           id: SettingsTab.General,
           label: "General",
           icon: Wrench,
@@ -290,6 +298,7 @@
     [SettingsTab.Plex]: "idle",
     [SettingsTab.General]: "idle",
     [SettingsTab.Authentication]: "idle",
+    [SettingsTab.Integrations]: "idle",
     [SettingsTab.UserSignals]: "idle",
     [SettingsTab.Tasks]: "idle",
     [SettingsTab.Notifications]: "idle",
@@ -1012,6 +1021,8 @@
             <!-- authentication settings -->
           {:else if activeTab === SettingsTab.Authentication}
             <Authentication svgIcon={getTabIcon(activeTab)} />
+          {:else if activeTab === SettingsTab.Integrations}
+            <Integrations svgIcon={getTabIcon(activeTab)} />
 
             <!-- tasks -->
           {:else if activeTab === SettingsTab.Tasks}

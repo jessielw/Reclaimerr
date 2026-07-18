@@ -15,14 +15,11 @@
   import { Checkbox } from "$lib/components/ui/checkbox/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import {
-    MediaType,
     PageAccess,
     type GeneralSettings,
     type PathMapping,
-    type PostActionWebhookConfig,
     type RequesterWatchUserMapping,
   } from "$lib/types/shared";
-  import TestButton from "$lib/components/test-button.svelte";
   import Notice from "$lib/components/notice.svelte";
   import { auth } from "$lib/stores/auth";
   import {
@@ -54,7 +51,6 @@
   };
 
   let pathMappings = $state<PathMapping[]>([]);
-  let postActionWebhooks = $state<PostActionWebhookConfig[]>([]);
   let moveDestinationMovies = $state("");
   let moveDestinationSeries = $state("");
   let mediaServerFallbackEnabled = $state(true);
@@ -76,25 +72,7 @@
   );
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
-  let testingWebhookIndex = $state<number | null>(null);
-
-  // default settings for webhook
   const serviceTypeOptions = ["plex", "jellyfin", "emby", "radarr", "sonarr"];
-  const defaultWebhookBodyTemplate = '{"path":"{path}","action":"{action}"}';
-  const emptyWebhook = (): PostActionWebhookConfig => ({
-    enabled: true,
-    name: "Post action webhook",
-    method: "GET",
-    url_template: "",
-    headers: [],
-    auth_username: null,
-    auth_password: null,
-    actions: ["deleted", "moved"],
-    media_types: [MediaType.Movie, MediaType.Series],
-    path_mode: "original",
-    body_template: null,
-    timeout_seconds: 15,
-  });
 
   const parseOptionalSeconds = (value: string): number | null => {
     if (!value.trim()) return null;
@@ -156,18 +134,6 @@
         path_mappings: pathMappings.filter(
           (m) => m.source_prefix.trim() && m.local_prefix.trim(),
         ),
-        post_action_webhooks: postActionWebhooks
-          .filter((w) => w.name.trim() && w.url_template.trim())
-          .map((w) => ({
-            ...w,
-            name: w.name.trim(),
-            url_template: w.url_template.trim(),
-            auth_username: w.auth_username?.trim() || null,
-            auth_password: w.auth_password?.trim() || null,
-            body_template: w.body_template?.trim() || null,
-            headers: w.headers.filter((h) => h.name.trim()),
-            timeout_seconds: Number(w.timeout_seconds) || 15,
-          })),
         move_destination_movies: moveDestinationMovies,
         move_destination_series: moveDestinationSeries,
         media_server_fallback_enabled: mediaServerFallbackEnabled,
@@ -285,68 +251,6 @@
     }
   };
 
-  const addWebhook = () => {
-    postActionWebhooks = [...postActionWebhooks, emptyWebhook()];
-  };
-
-  const removeWebhook = (index: number) => {
-    postActionWebhooks = postActionWebhooks.filter((_, i) => i !== index);
-  };
-
-  const addWebhookHeader = (webhook: PostActionWebhookConfig) => {
-    webhook.headers = [...webhook.headers, { name: "", value: "" }];
-  };
-
-  const removeWebhookHeader = (
-    webhook: PostActionWebhookConfig,
-    index: number,
-  ) => {
-    webhook.headers = webhook.headers.filter((_, i) => i !== index);
-  };
-
-  const toggleWebhookValue = <T extends string>(values: T[], value: T): T[] => {
-    return values.includes(value)
-      ? values.filter((item) => item !== value)
-      : [...values, value];
-  };
-
-  const applyAutopulsePreset = (webhook: PostActionWebhookConfig) => {
-    webhook.name = webhook.name?.trim() || "Autopulse";
-    webhook.method = "GET";
-    webhook.url_template =
-      "http://autopulse:2875/triggers/manual?path={urlencoded_path}";
-    webhook.path_mode = "original";
-    webhook.actions = ["deleted", "moved"];
-    webhook.media_types = [MediaType.Movie, MediaType.Series];
-    webhook.headers = [];
-    webhook.body_template = null;
-  };
-
-  const testWebhook = async (
-    webhook: PostActionWebhookConfig,
-    index: number,
-  ) => {
-    testingWebhookIndex = index;
-    try {
-      const result = await post_api<{
-        success: boolean;
-        status_code: number | null;
-        error: string | null;
-      }>("/api/settings/general/webhooks/test", { webhook });
-      if (result.success) {
-        toast.success(`Webhook test succeeded (${result.status_code})`);
-      } else {
-        toast.error(`Webhook test failed: ${result.error ?? "unknown error"}`);
-      }
-    } catch (error) {
-      toast.error(
-        `Webhook test failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      testingWebhookIndex = null;
-    }
-  };
-
   // shutdown app (desktop mode ONLY and requires admin)
   const shutdownApp = async () => {
     if (shuttingDown || shutdownDone) return;
@@ -381,7 +285,6 @@
             settings.worker_poll_max_seconds?.toString() ?? "",
         };
         pathMappings = settings.path_mappings ?? [];
-        postActionWebhooks = settings.post_action_webhooks ?? [];
         moveDestinationMovies = settings.move_destination_movies ?? "";
         moveDestinationSeries = settings.move_destination_series ?? "";
         mediaServerFallbackEnabled =
@@ -682,328 +585,6 @@
           placeholder="https://app.example.com"
           bind:value={applicationUrl}
         />
-      </div>
-    </div>
-
-    <!-- post action webhooks -->
-    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
-      <div class="flex items-center justify-between gap-3 mb-1">
-        <div>
-          <h3 class="font-semibold text-foreground">Post Action Webhooks</h3>
-          <p class="text-muted-foreground text-sm">
-            Notify Autopulse or a custom endpoint after Reclaimerr successfully
-            deletes or moves media. Failures are logged but do not roll back the
-            reclaim action.
-          </p>
-        </div>
-        <Button size="sm" class="cursor-pointer gap-2" onclick={addWebhook}>
-          <Plus class="size-4" />
-          Add webhook
-        </Button>
-      </div>
-
-      {#if postActionWebhooks.length === 0}
-        <p class="text-xs text-muted-foreground mt-3">
-          No webhooks configured. Add one or use the Autopulse preset to call
-          <code class="font-mono">/triggers/manual</code> with the affected path.
-        </p>
-      {/if}
-
-      <div class="space-y-4 mt-4">
-        {#each postActionWebhooks as webhook, i}
-          <div class="rounded-lg border bg-background/40 p-3 space-y-3">
-            <div class="flex items-center flex-wrap justify-between gap-3">
-              <!-- toggle -->
-              <div class="flex items-center gap-2">
-                <Switch bind:checked={webhook.enabled} />
-                <span class="text-sm font-medium text-foreground">
-                  {webhook.name || `Webhook ${i + 1}`}
-                </span>
-              </div>
-              <div class="flex items-center gap-2">
-                <!-- autopulse preset button -->
-                <Button
-                  size="sm"
-                  type="button"
-                  class="cursor-pointer"
-                  onclick={() => applyAutopulsePreset(webhook)}
-                >
-                  Autopulse preset
-                </Button>
-
-                <!-- test button -->
-                <TestButton
-                  onclick={() => testWebhook(webhook, i)}
-                  disabled={testingWebhookIndex === i}
-                  loading={testingWebhookIndex === i}
-                  size="sm">Test</TestButton
-                >
-
-                <!-- delete button -->
-                <Button
-                  size="icon-sm"
-                  class="bg-destructive/70 hover:bg-destructive/80 cursor-pointer"
-                  onclick={() => removeWebhook(i)}
-                  aria-label="Remove webhook"
-                >
-                  <Trash2 class="size-4" />
-                </Button>
-              </div>
-            </div>
-
-            <div class="grid gap-3 md:grid-cols-[1fr_7rem_9rem]">
-              <!-- name input -->
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground">Name</span>
-                </Label>
-                <Input
-                  class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                  placeholder="Autopulse"
-                  bind:value={webhook.name}
-                />
-              </div>
-
-              <!-- method input -->
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground">Method</span>
-                </Label>
-                <Select.Root type="single" bind:value={webhook.method}>
-                  <Select.Trigger class="w-full cursor-pointer text-foreground">
-                    {webhook.method}
-                  </Select.Trigger>
-                  <Select.Content>
-                    <Select.Item value="GET" class="cursor-pointer"
-                      >GET</Select.Item
-                    >
-                    <Select.Item value="POST" class="cursor-pointer"
-                      >POST</Select.Item
-                    >
-                  </Select.Content>
-                </Select.Root>
-              </div>
-
-              <!-- path mode input -->
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground">Path sent as</span>
-                </Label>
-                <Select.Root type="single" bind:value={webhook.path_mode}>
-                  <Select.Trigger class="w-full cursor-pointer text-foreground">
-                    {webhook.path_mode === "original"
-                      ? "Original"
-                      : webhook.path_mode === "local"
-                        ? "Local mapped"
-                        : "Destination"}
-                  </Select.Trigger>
-                  <Select.Content>
-                    <Select.Item value="original" class="cursor-pointer"
-                      >Original</Select.Item
-                    >
-                    <Select.Item value="local" class="cursor-pointer"
-                      >Local mapped</Select.Item
-                    >
-                    <Select.Item value="destination" class="cursor-pointer"
-                      >Destination</Select.Item
-                    >
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <!-- URL template input -->
-            <div>
-              <Label class="mb-2">
-                <span class="text-sm text-foreground">URL template</span>
-              </Label>
-              <Input
-                class="input-hover-el text-foreground placeholder:text-muted-foreground font-mono text-sm"
-                placeholder="http://autopulse:2875/triggers/manual?path={'{'}urlencoded_path{'}'}"
-                bind:value={webhook.url_template}
-              />
-              <p class="text-xs text-muted-foreground mt-1">
-                Template variables include
-                <code class="font-mono">{`{path}`}</code>,
-                <code class="font-mono">{`{urlencoded_path}`}</code>,
-                <code class="font-mono">{`{title}`}</code>,
-                <code class="font-mono">{`{action}`}</code>, and
-                <code class="font-mono">{`{media_type}`}</code>.
-              </p>
-            </div>
-
-            <!-- actions input -->
-            <div class="grid gap-3 md:grid-cols-3">
-              <div class="text-foreground">
-                <Label class="mb-2">
-                  <span class="text-sm">Actions</span>
-                </Label>
-                <div class="flex flex-wrap gap-3 text-sm">
-                  <Label class="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="cursor-pointer"
-                      checked={webhook.actions.includes("deleted")}
-                      onchange={() =>
-                        (webhook.actions = toggleWebhookValue(
-                          webhook.actions,
-                          "deleted",
-                        ))}
-                    />
-                    Deleted
-                  </Label>
-                  <Label class="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="cursor-pointer"
-                      checked={webhook.actions.includes("moved")}
-                      onchange={() =>
-                        (webhook.actions = toggleWebhookValue(
-                          webhook.actions,
-                          "moved",
-                        ))}
-                    />
-                    Moved
-                  </Label>
-                </div>
-              </div>
-
-              <!-- media types input -->
-              <div class="text-foreground">
-                <Label class="mb-2">
-                  <span class="text-sm">Media types</span>
-                </Label>
-                <div class="flex flex-wrap gap-3 text-sm">
-                  <Label class="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="cursor-pointer"
-                      checked={webhook.media_types.includes(MediaType.Movie)}
-                      onchange={() =>
-                        (webhook.media_types = toggleWebhookValue(
-                          webhook.media_types,
-                          MediaType.Movie,
-                        ))}
-                    />
-                    Movies
-                  </Label>
-                  <Label class="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="cursor-pointer"
-                      checked={webhook.media_types.includes(MediaType.Series)}
-                      onchange={() =>
-                        (webhook.media_types = toggleWebhookValue(
-                          webhook.media_types,
-                          MediaType.Series,
-                        ))}
-                    />
-                    Series
-                  </Label>
-                </div>
-              </div>
-
-              <!-- timeout input -->
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground">Timeout seconds</span>
-                </Label>
-                <Input
-                  type="number"
-                  min="1"
-                  max="120"
-                  class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                  bind:value={webhook.timeout_seconds}
-                />
-              </div>
-            </div>
-
-            <!-- basic auth inputs -->
-            <div class="grid gap-3 md:grid-cols-2">
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground"
-                    >Basic auth username</span
-                  >
-                </Label>
-                <Input
-                  class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                  placeholder="Optional"
-                  bind:value={webhook.auth_username}
-                />
-              </div>
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground"
-                    >Basic auth password</span
-                  >
-                </Label>
-                <Input
-                  type="password"
-                  class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                  placeholder="Optional"
-                  bind:value={webhook.auth_password}
-                />
-              </div>
-            </div>
-
-            <!-- body template input -->
-            {#if webhook.method === "POST"}
-              <div>
-                <Label class="mb-2">
-                  <span class="text-sm text-foreground">Body template</span>
-                </Label>
-                <textarea
-                  class="input-hover-el min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground"
-                  placeholder={defaultWebhookBodyTemplate}
-                  bind:value={webhook.body_template}
-                ></textarea>
-                <p class="text-xs text-muted-foreground mt-1">
-                  Leave empty to send the full event as JSON.
-                </p>
-              </div>
-            {/if}
-
-            <!-- headers input -->
-            <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <Label>
-                  <span class="text-sm text-foreground">Headers</span>
-                </Label>
-                <Button
-                  size="sm"
-                  type="button"
-                  class="cursor-pointer"
-                  onclick={() => addWebhookHeader(webhook)}
-                >
-                  Add header
-                </Button>
-              </div>
-              {#each webhook.headers as header, headerIndex}
-                <div class="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
-                  <Input
-                    class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                    placeholder="Header name"
-                    bind:value={header.name}
-                  />
-                  <Input
-                    class="input-hover-el text-foreground placeholder:text-muted-foreground"
-                    placeholder="Header value"
-                    bind:value={header.value}
-                  />
-                  <Button
-                    size="icon-sm"
-                    class="bg-destructive/70 hover:bg-destructive/80 cursor-pointer"
-                    onclick={() => removeWebhookHeader(webhook, headerIndex)}
-                    aria-label="Remove header"
-                  >
-                    <Trash2 class="size-4" />
-                  </Button>
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/each}
       </div>
     </div>
 

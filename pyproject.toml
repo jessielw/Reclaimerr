@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.2.6"
+version = "0.3.0"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -32,19 +32,19 @@ dev = [
     "mypy",
     "basedpyright>=1.39.9",
     "pytest>=9.1.1",
-    "ruff>=0.15.20",
-    "uvicorn>=0.49.0",
+    "ruff>=0.15.22",
+    "uvicorn>=0.51.0",
 ]
 
 [project.optional-dependencies]
 desktop = [
     "pyinstaller>=6.21.0",
     "pystray>=0.19.5",
-    "platformdirs>=4.10.0",
-    "filelock>=3.29.4",
-    "uvicorn>=0.49.0",
+    "platformdirs>=4.10.1",
+    "filelock>=3.30.3",
+    "uvicorn>=0.51.0",
 ]
-docs = ["zensical>=0.0.46", "pymdown-extensions>=11.0"]
+docs = ["zensical>=0.0.51", "pymdown-extensions>=11.0.1"]
 
 [project.urls]
 Homepage = "https://github.com/jessielw/Reclaimerr"

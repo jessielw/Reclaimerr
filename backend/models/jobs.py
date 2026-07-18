@@ -21,6 +21,12 @@ class ServiceToggleJobPayload(BaseModel):
 
 class TaskRunJobPayload(BaseModel):
     task: Task
+    trigger: Literal["manual", "scheduled", "system"] = "manual"
+
+
+class WebhookDeliveryJobPayload(BaseModel):
+    delivery_id: int
+    endpoint_id: int | None = None
 
 
 class CandidateFileOpJobPayload(BaseModel):

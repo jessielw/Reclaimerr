@@ -13,8 +13,7 @@ from backend.core.utils.filesystem import (
     resolve_path,
 )
 from backend.enums import MediaType, Service
-from backend.models.post_action_webhooks import PostActionWebhookEvent
-from backend.services.post_action_webhooks import send_post_action_webhook
+from backend.services.webhook_transport import send_webhook_payload
 
 
 def test_resolve_path_prefers_scoped_mappings(tmp_path: Path) -> None:
@@ -195,6 +194,66 @@ def test_move_media_does_not_overwrite_existing_destination(tmp_path: Path) -> N
     assert destination_file.read_bytes() == b"existing"
 
 
+def test_move_media_deduplicates_identical_destination_file(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Duplicate (2026)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Duplicate (2026).mkv"
+    media_file.write_bytes(b"same movie")
+    destination_file = (
+        tmp_path
+        / "reclaimed"
+        / "movies"
+        / "Movie Duplicate (2026)"
+        / "Movie Duplicate (2026).mkv"
+    )
+    destination_file.parent.mkdir(parents=True)
+    destination_file.write_bytes(b"same movie")
+
+    moved_to = move_media(
+        media_file,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == destination_file
+    assert destination_file.read_bytes() == b"same movie"
+    assert not media_file.exists()
+    assert not movie_dir.exists()
+
+
+def test_move_media_preflights_sidecar_conflicts_before_moving_primary(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "library"
+    movie_dir = local_root / "movies" / "Movie Conflict (2026)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "Movie Conflict (2026).mkv"
+    subtitle_file = movie_dir / "Movie Conflict (2026).en.srt"
+    media_file.write_bytes(b"movie")
+    subtitle_file.write_bytes(b"source subtitle")
+    destination_file = (
+        tmp_path
+        / "reclaimed"
+        / "movies"
+        / "Movie Conflict (2026)"
+        / "Movie Conflict (2026).en.srt"
+    )
+    destination_file.parent.mkdir(parents=True)
+    destination_file.write_bytes(b"different subtitle")
+
+    with pytest.raises(FileExistsError, match="different content"):
+        move_media(
+            media_file,
+            tmp_path / "reclaimed",
+            [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+        )
+
+    assert media_file.read_bytes() == b"movie"
+    assert subtitle_file.read_bytes() == b"source subtitle"
+    assert destination_file.read_bytes() == b"different subtitle"
+
+
 def test_move_media_moves_item_scoped_folder_assets(tmp_path: Path) -> None:
     local_root = tmp_path / "library"
     movie_dir = local_root / "movies" / "Movie With Assets (2026)"
@@ -232,10 +291,12 @@ def test_move_media_keeps_multi_version_folder_conservative(tmp_path: Path) -> N
     movie_dir.mkdir(parents=True)
     selected_file = movie_dir / "Movie Multi Version (2026) - 1080p.mkv"
     selected_subtitle = movie_dir / "Movie Multi Version (2026) - 1080p.srt"
+    selected_language_subtitle = movie_dir / "Movie Multi Version (2026) - 1080p.en.srt"
     other_version = movie_dir / "Movie Multi Version (2026) - 2160p.mkv"
     poster_file = movie_dir / "poster.jpg"
     selected_file.write_bytes(b"1080p")
     selected_subtitle.write_bytes(b"subtitle")
+    selected_language_subtitle.write_bytes(b"language subtitle")
     other_version.write_bytes(b"2160p")
     poster_file.write_bytes(b"poster")
 
@@ -251,10 +312,14 @@ def test_move_media_keeps_multi_version_folder_conservative(tmp_path: Path) -> N
     assert (
         expected_dir / "Movie Multi Version (2026) - 1080p.srt"
     ).read_bytes() == b"subtitle"
+    assert (
+        expected_dir / "Movie Multi Version (2026) - 1080p.en.srt"
+    ).read_bytes() == b"language subtitle"
     assert other_version.read_bytes() == b"2160p"
     assert poster_file.read_bytes() == b"poster"
     assert not selected_file.exists()
     assert not selected_subtitle.exists()
+    assert not selected_language_subtitle.exists()
 
 
 def test_move_media_does_not_treat_title_words_as_trailer_assets(
@@ -285,9 +350,11 @@ def test_move_media_keeps_episode_folder_conservative(tmp_path: Path) -> None:
     season_dir.mkdir(parents=True)
     selected_episode = season_dir / "Show One - S01E01.mkv"
     selected_subtitle = season_dir / "Show One - S01E01.srt"
+    selected_language_subtitle = season_dir / "Show One - S01E01.en.srt"
     other_episode = season_dir / "Show One - S01E02.mkv"
     selected_episode.write_bytes(b"e1")
     selected_subtitle.write_bytes(b"sub")
+    selected_language_subtitle.write_bytes(b"language sub")
     other_episode.write_bytes(b"e2")
 
     moved_to = move_media(
@@ -300,6 +367,7 @@ def test_move_media_keeps_episode_folder_conservative(tmp_path: Path) -> None:
     assert moved_to == expected_dir / "Show One - S01E01.mkv"
     assert moved_to.read_bytes() == b"e1"
     assert (expected_dir / "Show One - S01E01.srt").read_bytes() == b"sub"
+    assert (expected_dir / "Show One - S01E01.en.srt").read_bytes() == b"language sub"
     assert other_episode.read_bytes() == b"e2"
     assert season_dir.exists()
 
@@ -322,6 +390,32 @@ def test_move_directory_preserves_mapping_relative_folder_structure(
 
     assert moved_to == tmp_path / "reclaimed" / "tv" / "Show One"
     assert (moved_to / "Season 01" / "Show One - S01E01.mkv").read_bytes() == b"episode"
+    assert not series_dir.exists()
+
+
+def test_move_directory_merges_existing_destination_folder(tmp_path: Path) -> None:
+    local_root = tmp_path / "library"
+    series_dir = local_root / "tv" / "Show Merge"
+    season_two = series_dir / "Season 02"
+    season_two.mkdir(parents=True)
+    (season_two / "Show Merge - S02E01.mkv").write_bytes(b"episode two")
+    existing_season = tmp_path / "reclaimed" / "tv" / "Show Merge" / "Season 01"
+    existing_season.mkdir(parents=True)
+    (existing_season / "Show Merge - S01E01.mkv").write_bytes(b"episode one")
+
+    moved_to = move_directory(
+        series_dir,
+        tmp_path / "reclaimed",
+        [{"source_prefix": "/remote", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == tmp_path / "reclaimed" / "tv" / "Show Merge"
+    assert (
+        moved_to / "Season 01" / "Show Merge - S01E01.mkv"
+    ).read_bytes() == b"episode one"
+    assert (
+        moved_to / "Season 02" / "Show Merge - S02E01.mkv"
+    ).read_bytes() == b"episode two"
     assert not series_dir.exists()
 
 
@@ -371,10 +465,14 @@ def test_move_season_files_preserves_series_folder_for_flat_series(
     series_dir = local_root / "tv" / "Flat Show"
     series_dir.mkdir(parents=True)
     season_one = series_dir / "Flat Show - S01E01.mkv"
+    season_one_alternate = series_dir / "Flat Show - S01E01.mp4"
     season_one_sub = series_dir / "Flat Show - S01E01.srt"
+    season_one_language_sub = series_dir / "Flat Show - S01E01.en.srt"
     season_two = series_dir / "Flat Show - S02E01.mkv"
     season_one.write_bytes(b"s1")
+    season_one_alternate.write_bytes(b"alternate")
     season_one_sub.write_bytes(b"sub")
+    season_one_language_sub.write_bytes(b"language sub")
     season_two.write_bytes(b"s2")
 
     moved_to = move_season_files(
@@ -387,12 +485,15 @@ def test_move_season_files_preserves_series_folder_for_flat_series(
     assert moved_to == tmp_path / "reclaimed" / "tv" / "Flat Show"
     assert (moved_to / "Flat Show - S01E01.mkv").read_bytes() == b"s1"
     assert (moved_to / "Flat Show - S01E01.srt").read_bytes() == b"sub"
+    assert (moved_to / "Flat Show - S01E01.en.srt").read_bytes() == b"language sub"
     assert not season_one.exists()
     assert not season_one_sub.exists()
+    assert not season_one_language_sub.exists()
+    assert season_one_alternate.read_bytes() == b"alternate"
     assert season_two.read_bytes() == b"s2"
 
 
-def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
+def test_send_webhook_payload_renders_urlencoded_path(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
     class FakeResponse:
@@ -410,12 +511,12 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
             return FakeResponse()
 
     monkeypatch.setattr(
-        "backend.services.post_action_webhooks.niquests.AsyncSession",
+        "backend.services.webhook_transport.niquests.AsyncSession",
         lambda: FakeSession(),
     )
 
     result = asyncio.run(
-        send_post_action_webhook(
+        send_webhook_payload(
             {
                 "enabled": True,
                 "name": "Autopulse",
@@ -426,13 +527,13 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
                 "media_types": ["movie"],
                 "timeout_seconds": 15,
             },
-            PostActionWebhookEvent(
-                action="deleted",
-                media_type=MediaType.MOVIE,
-                title="Movie",
-                path="/media/Movie Name/file.mkv",
-                service_type=Service.PLEX,
-            ),
+            {
+                "action": "deleted",
+                "media_type": "movie",
+                "title": "Movie",
+                "path": "/media/Movie Name/file.mkv",
+                "service_type": "plex",
+            },
         )
     )
 
@@ -440,7 +541,7 @@ def test_send_post_action_webhook_renders_urlencoded_path(monkeypatch) -> None:
     assert captured["url"].endswith("path=%2Fmedia%2FMovie%20Name%2Ffile.mkv")
 
 
-def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -> None:
+def test_send_webhook_payload_includes_sanitized_failure_body(monkeypatch) -> None:
     class FakeResponse:
         status_code = 500
         text = '{"error":"boom","token":"keep-me-out"}'
@@ -456,12 +557,12 @@ def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -
             return FakeResponse()
 
     monkeypatch.setattr(
-        "backend.services.post_action_webhooks.niquests.AsyncSession",
+        "backend.services.webhook_transport.niquests.AsyncSession",
         lambda: FakeSession(),
     )
 
     result = asyncio.run(
-        send_post_action_webhook(
+        send_webhook_payload(
             {
                 "enabled": True,
                 "name": "Autopulse",
@@ -472,13 +573,13 @@ def test_send_post_action_webhook_includes_sanitized_failure_body(monkeypatch) -
                 "media_types": ["movie"],
                 "timeout_seconds": 15,
             },
-            PostActionWebhookEvent(
-                action="deleted",
-                media_type=MediaType.MOVIE,
-                title="Movie",
-                path="/media/Movie Name/file.mkv",
-                service_type=Service.PLEX,
-            ),
+            {
+                "action": "deleted",
+                "media_type": "movie",
+                "title": "Movie",
+                "path": "/media/Movie Name/file.mkv",
+                "service_type": "plex",
+            },
         )
     )
 

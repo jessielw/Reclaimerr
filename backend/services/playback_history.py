@@ -21,6 +21,7 @@ from backend.database.models import (
     Episode,
     Movie,
     MovieVersion,
+    NativePlaybackAggregate,
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
     Season,
@@ -41,6 +42,19 @@ PLAYBACK_TARGET_SCOPES = ("movie_version", "series", "season", "episode")
 PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
 PLAYBACK_EVENT_FORMAT_VERSION = 2
+NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
+NATIVE_PLAYBACK_FORMAT_VERSION = 2
+NATIVE_PLAYBACK_FIELDS = frozenset(
+    {
+        "playback.has_activity",
+        "playback.play_count",
+        "playback.unique_user_count",
+        "playback.usernames",
+        "playback.last_activity_at",
+        "playback.days_since_last_activity",
+    }
+)
+PLAYBACK_USER_FIELDS = frozenset({"playback.unique_user_count", "playback.usernames"})
 
 _playback_refresh_lock = Lock()
 
@@ -64,6 +78,16 @@ class PlaybackProviderStatus:
     available: bool
     error: str | None = None
     imported_events: int = 0
+
+
+@dataclass(slots=True)
+class NativePlaybackStatus:
+    """Availability of a persisted current-state media-server snapshot."""
+
+    config_id: int
+    service: Service
+    available: bool
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -97,16 +121,37 @@ class PlaybackRuleSnapshot:
     provider_statuses: list[PlaybackProviderStatus]
     unavailable_reasons: dict[str, dict[str, int]]
     unavailable_target_samples: dict[str, list[int]]
+    available_fields_by_target: dict[PlaybackTargetKey, set[str]] = field(
+        default_factory=dict
+    )
+    native_statuses: list[NativePlaybackStatus] = field(default_factory=list)
+    target_ids_by_scope: dict[str, set[int]] = field(default_factory=dict)
 
-    def unavailable_count(self, scopes: Iterable[str]) -> int:
+    def unavailable_count(
+        self,
+        scopes: Iterable[str],
+        fields: Iterable[str] | None = None,
+    ) -> int:
         """Return the number of targets in the given scopes without data."""
 
         scope_set = set(scopes)
-        available = sum(
-            1 for scope, _target_id in self.available_targets if scope in scope_set
+        requested_fields = set(fields or ())
+        if not requested_fields:
+            available = sum(
+                1 for scope, _target_id in self.available_targets if scope in scope_set
+            )
+            total = sum(self.target_counts.get(scope, 0) for scope in scope_set)
+            return max(0, total - available)
+
+        return sum(
+            1
+            for scope, targets in self.target_ids_by_scope.items()
+            if scope in scope_set
+            for target_id in targets
+            if not requested_fields.issubset(
+                self.available_fields_by_target.get((scope, target_id), set())
+            )
         )
-        total = sum(self.target_counts.get(scope, 0) for scope in scope_set)
-        return max(0, total - available)
 
 
 def _playback_unavailable_reason(
@@ -150,11 +195,14 @@ def _playback_unavailable_reason(
 
 
 def log_playback_rule_coverage(
-    snapshot: PlaybackRuleSnapshot, scopes: Iterable[str]
+    snapshot: PlaybackRuleSnapshot,
+    scopes: Iterable[str],
+    fields: Iterable[str] | None = None,
 ) -> None:
     """Log observable and unknown playback-rule targets with diagnostic reasons."""
 
     selected_scopes = sorted(set(scopes))
+    selected_fields = set(fields or ())
     provider_summary = (
         ", ".join(
             f"{status.provider.value}#{status.config_id}->{status.observed_service.value}="
@@ -163,14 +211,29 @@ def log_playback_rule_coverage(
         )
         or "none configured"
     )
+    native_summary = (
+        ", ".join(
+            f"{status.service.value}#{status.config_id}="
+            f"{'available' if status.available else 'unavailable'}"
+            for status in snapshot.native_statuses
+        )
+        or "none configured"
+    )
     coverage_parts: list[str] = []
     unknown_total = 0
     for scope in selected_scopes:
         total = snapshot.target_counts.get(scope, 0)
+        target_ids = snapshot.target_ids_by_scope.get(scope, set())
         evaluable = sum(
             1
-            for target_scope, _target_id in snapshot.available_targets
-            if target_scope == scope
+            for target_id in target_ids
+            if (
+                selected_fields.issubset(
+                    snapshot.available_fields_by_target.get((scope, target_id), set())
+                )
+                if selected_fields
+                else (scope, target_id) in snapshot.available_targets
+            )
         )
         unknown = max(0, total - evaluable)
         unknown_total += unknown
@@ -180,7 +243,7 @@ def log_playback_rule_coverage(
 
     LOG.debug(
         "Playback rule coverage: "
-        f"providers=[{provider_summary}]; "
+        f"providers=[{provider_summary}]; native=[{native_summary}]; "
         f"{'; '.join(coverage_parts) or 'no target scopes'}"
     )
     if unknown_total == 0:
@@ -206,8 +269,8 @@ def log_playback_rule_coverage(
     if sample_parts:
         LOG.debug("Playback unknown target ID samples: " + "; ".join(sample_parts))
     if classified_total != unknown_total:
-        LOG.warning(
-            "Playback coverage diagnostic mismatch: "
+        LOG.debug(
+            "Playback coverage reasons are aggregated across fields: "
             f"unknown={unknown_total}, classified={classified_total}"
         )
 
@@ -1053,9 +1116,240 @@ def _aggregate_values(aggregate: PlaybackHistoryAggregate) -> dict[str, object]:
             else None
         ),
     }
-    if aggregate.usernames_complete or aggregate.usernames:
+    if aggregate.usernames_complete:
         values["playback.usernames"] = list(aggregate.usernames or [])
     return values
+
+
+def _native_aggregate_values(aggregate: NativePlaybackAggregate) -> dict[str, object]:
+    """Convert persisted current media-server state into supported rule values."""
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    values: dict[str, object] = {
+        "playback.has_activity": aggregate.has_activity,
+        "playback.play_count": aggregate.play_count,
+        "playback.unique_user_count": aggregate.unique_user_count,
+    }
+    if aggregate.last_activity_at is not None or not aggregate.has_activity:
+        values["playback.last_activity_at"] = aggregate.last_activity_at
+        values["playback.days_since_last_activity"] = (
+            (now - aggregate.last_activity_at).days
+            if aggregate.last_activity_at is not None
+            else None
+        )
+    if aggregate.usernames_complete:
+        values["playback.usernames"] = list(aggregate.usernames or [])
+    return values
+
+
+def _playback_count_value(raw: object) -> int:
+    return max(0, _parse_int(raw) or 0)
+
+
+def _merge_playback_source_values(
+    plugin_values: Mapping[str, object] | None,
+    native_values: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Merge like-for-like values from multiple observations of one source."""
+
+    plugin_values = plugin_values or {}
+    native_values = native_values or {}
+    values: dict[str, object] = dict(plugin_values)
+
+    for field in NATIVE_PLAYBACK_FIELDS:
+        if field not in native_values:
+            continue
+        if field not in values:
+            values[field] = native_values[field]
+
+    if (
+        "playback.has_activity" in plugin_values
+        or "playback.has_activity" in native_values
+    ):
+        values["playback.has_activity"] = bool(
+            plugin_values.get("playback.has_activity", False)
+            or native_values.get("playback.has_activity", False)
+        )
+
+    if "playback.play_count" in plugin_values or "playback.play_count" in native_values:
+        values["playback.play_count"] = max(
+            _playback_count_value(plugin_values.get("playback.play_count", 0)),
+            _playback_count_value(native_values.get("playback.play_count", 0)),
+        )
+
+    plugin_users = plugin_values.get("playback.usernames")
+    native_users = native_values.get("playback.usernames")
+    if isinstance(plugin_users, list) or isinstance(native_users, list):
+        merged_users: dict[str, str] = {}
+        for users in (plugin_users, native_users):
+            if not isinstance(users, list):
+                continue
+            for raw_name in users:
+                name = str(raw_name).strip()
+                if name:
+                    merged_users.setdefault(name.casefold(), name)
+        values["playback.usernames"] = sorted(merged_users.values(), key=str.casefold)
+
+    if (
+        "playback.unique_user_count" in plugin_values
+        or "playback.unique_user_count" in native_values
+    ):
+        resolved_users = values.get("playback.usernames")
+        resolved_count = len(resolved_users) if isinstance(resolved_users, list) else 0
+        values["playback.unique_user_count"] = max(
+            _playback_count_value(plugin_values.get("playback.unique_user_count", 0)),
+            _playback_count_value(native_values.get("playback.unique_user_count", 0)),
+            resolved_count,
+        )
+
+    plugin_last = plugin_values.get("playback.last_activity_at")
+    native_last = native_values.get("playback.last_activity_at")
+    latest_values = [
+        value for value in (plugin_last, native_last) if isinstance(value, datetime)
+    ]
+    if latest_values or (
+        "playback.last_activity_at" in plugin_values
+        or "playback.last_activity_at" in native_values
+    ):
+        latest = max(latest_values) if latest_values else None
+        values["playback.last_activity_at"] = latest
+        values["playback.days_since_last_activity"] = (
+            (datetime.now(UTC).replace(tzinfo=None) - latest).days
+            if latest is not None
+            else None
+        )
+
+    return values
+
+
+def _merge_playback_metric_values(
+    plugin_values: Mapping[str, object] | None,
+    native_values: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Merge historical activity metrics without deciding current user state."""
+
+    plugin_values = plugin_values or {}
+    native_values = native_values or {}
+    values = {
+        field: value
+        for field, value in plugin_values.items()
+        if field not in PLAYBACK_USER_FIELDS
+    }
+
+    for field in NATIVE_PLAYBACK_FIELDS - PLAYBACK_USER_FIELDS:
+        if field in native_values and field not in values:
+            values[field] = native_values[field]
+
+    if (
+        "playback.has_activity" in plugin_values
+        or "playback.has_activity" in native_values
+    ):
+        values["playback.has_activity"] = bool(
+            plugin_values.get("playback.has_activity", False)
+            or native_values.get("playback.has_activity", False)
+        )
+
+    if "playback.play_count" in plugin_values or "playback.play_count" in native_values:
+        values["playback.play_count"] = max(
+            _playback_count_value(plugin_values.get("playback.play_count", 0)),
+            _playback_count_value(native_values.get("playback.play_count", 0)),
+        )
+
+    plugin_last = plugin_values.get("playback.last_activity_at")
+    native_last = native_values.get("playback.last_activity_at")
+    latest_values = [
+        value for value in (plugin_last, native_last) if isinstance(value, datetime)
+    ]
+    if latest_values or (
+        "playback.last_activity_at" in plugin_values
+        or "playback.last_activity_at" in native_values
+    ):
+        latest = max(latest_values) if latest_values else None
+        values["playback.last_activity_at"] = latest
+        values["playback.days_since_last_activity"] = (
+            (datetime.now(UTC).replace(tzinfo=None) - latest).days
+            if latest is not None
+            else None
+        )
+
+    return values
+
+
+def _resolve_playback_user_values(
+    plugin_values: Mapping[str, object] | None,
+    native_values: Mapping[str, object] | None,
+    *,
+    native_current_state_available: bool,
+    native_current_state_unknown: bool,
+) -> dict[str, object]:
+    """Return user fields from the one source authoritative for this target."""
+
+    if native_current_state_unknown:
+        return {}
+    source_values = native_values if native_current_state_available else plugin_values
+    if source_values is None:
+        return {}
+    return {
+        field: source_values[field]
+        for field in PLAYBACK_USER_FIELDS
+        if field in source_values
+    }
+
+
+def _native_status_from_config(config: ServiceConfig) -> NativePlaybackStatus:
+    """Read the availability state written by the native snapshot refresh."""
+
+    extra_settings = config.extra_settings
+    state = (
+        extra_settings.get(NATIVE_PLAYBACK_STATE_KEY)
+        if isinstance(extra_settings, dict)
+        else None
+    )
+    if not isinstance(state, dict):
+        return NativePlaybackStatus(
+            config_id=config.id,
+            service=config.service_type,
+            available=False,
+            error="native playback state has not been synced yet",
+        )
+    if state.get("format_version") != NATIVE_PLAYBACK_FORMAT_VERSION:
+        return NativePlaybackStatus(
+            config_id=config.id,
+            service=config.service_type,
+            available=False,
+            error="native playback state requires a media sync",
+        )
+    if state.get("available") is True:
+        return NativePlaybackStatus(
+            config_id=config.id,
+            service=config.service_type,
+            available=True,
+        )
+    error = state.get("last_error")
+    return NativePlaybackStatus(
+        config_id=config.id,
+        service=config.service_type,
+        available=False,
+        error=str(error) if error else "native playback snapshot is unavailable",
+    )
+
+
+async def _load_native_playback_statuses(
+    db: AsyncSession,
+) -> list[NativePlaybackStatus]:
+    configs = (
+        (
+            await db.execute(
+                select(ServiceConfig).where(
+                    ServiceConfig.enabled.is_(True),
+                    ServiceConfig.service_type.in_({Service.JELLYFIN, Service.EMBY}),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_native_status_from_config(config) for config in configs]
 
 
 async def rebuild_playback_history_aggregates() -> None:
@@ -1239,124 +1533,7 @@ async def load_playback_rule_snapshot(
     db: AsyncSession,
     refresh_result: PlaybackRefreshResult,
 ) -> PlaybackRuleSnapshot:
-    """Load aggregate values and determine which current targets were observable."""
-    available_services = refresh_result.available_services
-    available_targets: set[PlaybackTargetKey] = set()
-    if available_services:
-        movie_rows = (
-            await db.execute(
-                select(MovieVersion.id, MovieVersion.service)
-                .join(Movie, MovieVersion.movie_id == Movie.id)
-                .where(
-                    MovieVersion.service.in_(available_services),
-                    Movie.removed_at.is_(None),
-                )
-            )
-        ).all()
-        available_targets.update(
-            ("movie_version", version_id) for version_id, _service in movie_rows
-        )
-
-        series_rows = (
-            await db.execute(
-                select(SeriesServiceRef.series_id)
-                .join(Series, SeriesServiceRef.series_id == Series.id)
-                .where(
-                    SeriesServiceRef.service.in_(available_services),
-                    Series.removed_at.is_(None),
-                )
-            )
-        ).all()
-        available_series_ids = {series_id for (series_id,) in series_rows}
-        available_targets.update(
-            ("series", series_id) for series_id in available_series_ids
-        )
-
-        season_conditions = []
-        episode_conditions = []
-        if Service.PLEX in available_services:
-            season_conditions.append(Season.plex_season_rating_key.is_not(None))
-            episode_conditions.append(Episode.plex_rating_key.is_not(None))
-        if Service.JELLYFIN in available_services:
-            season_conditions.append(Season.jellyfin_season_id.is_not(None))
-            episode_conditions.append(Episode.jellyfin_episode_id.is_not(None))
-        if Service.EMBY in available_services:
-            season_conditions.append(Season.emby_season_id.is_not(None))
-            episode_conditions.append(Episode.emby_episode_id.is_not(None))
-        if season_conditions:
-            rows = (
-                await db.execute(
-                    select(Season.id)
-                    .join(Series, Season.series_id == Series.id)
-                    .where(or_(*season_conditions), Series.removed_at.is_(None))
-                )
-            ).all()
-            available_targets.update(("season", season_id) for (season_id,) in rows)
-        if episode_conditions:
-            rows = (
-                await db.execute(
-                    select(Episode.id)
-                    .join(Season, Episode.season_id == Season.id)
-                    .join(Series, Season.series_id == Series.id)
-                    .where(or_(*episode_conditions), Series.removed_at.is_(None))
-                )
-            ).all()
-            available_targets.update(("episode", episode_id) for (episode_id,) in rows)
-
-        mapped_rows = (
-            await db.execute(
-                select(
-                    SupplementalMediaMatch.source_service,
-                    SupplementalMediaMatch.movie_id,
-                    SupplementalMediaMatch.series_id,
-                    SupplementalMediaMatch.season_id,
-                ).where(SupplementalMediaMatch.source_service.in_(available_services))
-            )
-        ).all()
-        mapped_movie_ids: set[int] = set()
-        for _service, movie_id, series_id, season_id in mapped_rows:
-            if movie_id is not None:
-                mapped_movie_ids.add(movie_id)
-            if series_id is not None:
-                available_targets.add(("series", series_id))
-            if season_id is not None:
-                available_targets.add(("season", season_id))
-        if mapped_movie_ids:
-            version_ids = (
-                await db.execute(
-                    select(MovieVersion.id)
-                    .join(Movie, MovieVersion.movie_id == Movie.id)
-                    .where(
-                        MovieVersion.movie_id.in_(mapped_movie_ids),
-                        Movie.removed_at.is_(None),
-                    )
-                )
-            ).all()
-            available_targets.update(
-                ("movie_version", version_id) for (version_id,) in version_ids
-            )
-
-    values_by_target = {
-        (row.target_scope, row.target_id): _aggregate_values(row)
-        for row in (await db.execute(select(PlaybackHistoryAggregate))).scalars().all()
-    }
-
-    # retained durable history remains evaluable even if its provider is currently
-    # unavailable. Live coverage is only required to prove the zero event case.
-    available_targets.update(values_by_target)
-    zero_values: dict[str, object] = {
-        "playback.has_activity": False,
-        "playback.play_count": 0,
-        "playback.total_duration_minutes": 0.0,
-        "playback.longest_duration_minutes": 0.0,
-        "playback.unique_user_count": 0,
-        "playback.usernames": [],
-        "playback.last_activity_at": None,
-        "playback.days_since_last_activity": None,
-    }
-    for key in available_targets:
-        values_by_target.setdefault(key, dict(zero_values))
-
+    """Merge durable events with persisted native current media-server state."""
     target_services: dict[str, dict[int, set[Service]]] = {
         scope: {} for scope in PLAYBACK_TARGET_SCOPES
     }
@@ -1442,6 +1619,179 @@ async def load_playback_rule_snapshot(
         for episode_id, plex_id, jellyfin_id, emby_id in episode_identity_rows
     }
 
+    supplemental_rows = (
+        await db.execute(
+            select(
+                SupplementalMediaMatch.source_service,
+                SupplementalMediaMatch.movie_id,
+                SupplementalMediaMatch.series_id,
+                SupplementalMediaMatch.season_id,
+            )
+        )
+    ).all()
+    supplemental_movie_ids: dict[Service, set[int]] = defaultdict(set)
+    for service, movie_id, series_id, season_id in supplemental_rows:
+        if movie_id is not None:
+            supplemental_movie_ids[service].add(movie_id)
+        if series_id is not None:
+            target_services["series"].setdefault(series_id, set()).add(service)
+        if season_id is not None:
+            target_services["season"].setdefault(season_id, set()).add(service)
+    for service, movie_ids in supplemental_movie_ids.items():
+        version_rows = (
+            await db.execute(
+                select(MovieVersion.id)
+                .join(Movie, MovieVersion.movie_id == Movie.id)
+                .where(
+                    MovieVersion.movie_id.in_(movie_ids),
+                    Movie.removed_at.is_(None),
+                )
+            )
+        ).all()
+        for (version_id,) in version_rows:
+            target_services["movie_version"].setdefault(version_id, set()).add(service)
+
+    native_statuses = await _load_native_playback_statuses(db)
+    native_available_config_ids = {
+        status.config_id for status in native_statuses if status.available
+    }
+    native_available_services = {
+        status.service for status in native_statuses if status.available
+    }
+    plugin_available_services = refresh_result.available_services
+
+    plugin_rows = (await db.execute(select(PlaybackHistoryAggregate))).scalars().all()
+    plugin_values_by_target = {
+        (row.target_scope, row.target_id): _aggregate_values(row) for row in plugin_rows
+    }
+    incomplete_plugin_username_targets: set[PlaybackTargetKey] = {
+        (row.target_scope, row.target_id)
+        for row in plugin_rows
+        if not row.usernames_complete
+    }
+    incomplete_timestamp_targets: set[PlaybackTargetKey] = set()
+    incomplete_native_username_targets: set[PlaybackTargetKey] = set()
+    native_values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
+    if native_available_config_ids:
+        native_rows = (
+            (
+                await db.execute(
+                    select(NativePlaybackAggregate).where(
+                        NativePlaybackAggregate.source_service_config_id.in_(
+                            native_available_config_ids
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in native_rows:
+            key = (row.target_scope, row.target_id)
+            if not row.usernames_complete:
+                incomplete_native_username_targets.add(key)
+            if row.has_activity and row.last_activity_at is None:
+                incomplete_timestamp_targets.add(key)
+            native_values_by_target[key] = _merge_playback_source_values(
+                native_values_by_target.get(key),
+                _native_aggregate_values(row),
+            )
+
+    plugin_zero_values: dict[str, object] = {
+        "playback.has_activity": False,
+        "playback.play_count": 0,
+        "playback.total_duration_minutes": 0.0,
+        "playback.longest_duration_minutes": 0.0,
+        "playback.unique_user_count": 0,
+        "playback.usernames": [],
+        "playback.last_activity_at": None,
+        "playback.days_since_last_activity": None,
+    }
+    native_zero_values = {
+        field: value
+        for field, value in plugin_zero_values.items()
+        if field in NATIVE_PLAYBACK_FIELDS
+    }
+    plugin_covered_targets: set[PlaybackTargetKey] = set(plugin_values_by_target)
+    native_covered_targets: set[PlaybackTargetKey] = set(native_values_by_target)
+    for scope, services_by_target in target_services.items():
+        for target_id, services in services_by_target.items():
+            key = (scope, target_id)
+            if services & plugin_available_services:
+                plugin_covered_targets.add(key)
+            if services & native_available_services:
+                native_covered_targets.add(key)
+
+    available_fields_by_target: dict[PlaybackTargetKey, set[str]] = {}
+    for key, values in plugin_values_by_target.items():
+        available_fields_by_target.setdefault(key, set()).update(values)
+    for key in plugin_covered_targets:
+        if key not in plugin_values_by_target:
+            plugin_values_by_target[key] = dict(plugin_zero_values)
+            available_fields_by_target.setdefault(key, set()).update(plugin_zero_values)
+    for key, values in native_values_by_target.items():
+        available_fields_by_target.setdefault(key, set()).update(
+            field for field in values if field in NATIVE_PLAYBACK_FIELDS
+        )
+    for key in native_covered_targets:
+        if key not in native_values_by_target:
+            native_values_by_target[key] = dict(native_zero_values)
+            available_fields_by_target.setdefault(key, set()).update(native_zero_values)
+
+    # A failed or out-of-date Jellyfin/Emby snapshot cannot safely be replaced
+    # with imported event users: those are historical activity, not current
+    # watched state. Keep other playback metrics available, but make user
+    # conditions unknown until the next successful media sync.
+    native_user_unknown_targets: set[PlaybackTargetKey] = set()
+    for scope, services_by_target in target_services.items():
+        for target_id, services in services_by_target.items():
+            relevant_native_statuses = [
+                status for status in native_statuses if status.service in services
+            ]
+            if relevant_native_statuses and not any(
+                status.available for status in relevant_native_statuses
+            ):
+                native_user_unknown_targets.add((scope, target_id))
+
+    values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
+    for key in plugin_values_by_target.keys() | native_values_by_target.keys():
+        values = _merge_playback_metric_values(
+            plugin_values_by_target.get(key), native_values_by_target.get(key)
+        )
+        values.update(
+            _resolve_playback_user_values(
+                plugin_values_by_target.get(key),
+                native_values_by_target.get(key),
+                native_current_state_available=key in native_covered_targets,
+                native_current_state_unknown=key in native_user_unknown_targets,
+            )
+        )
+        values_by_target[key] = values
+
+    # Usernames require complete identity resolution from whichever source is
+    # authoritative for that target. A count can remain available without every
+    # display name, so only the username list is made unknown here.
+    incomplete_username_targets = (
+        incomplete_plugin_username_targets - native_covered_targets
+    ) | (incomplete_native_username_targets & native_covered_targets)
+    for key in incomplete_username_targets:
+        values_by_target.get(key, {}).pop("playback.usernames", None)
+        available_fields_by_target.get(key, set()).discard("playback.usernames")
+    for key in native_user_unknown_targets:
+        values_by_target.get(key, {}).pop("playback.usernames", None)
+        values_by_target.get(key, {}).pop("playback.unique_user_count", None)
+        available_fields = available_fields_by_target.get(key, set())
+        available_fields.discard("playback.usernames")
+        available_fields.discard("playback.unique_user_count")
+    for key in incomplete_timestamp_targets:
+        values = values_by_target.get(key, {})
+        values.pop("playback.last_activity_at", None)
+        values.pop("playback.days_since_last_activity", None)
+        available_fields = available_fields_by_target.get(key, set())
+        available_fields.discard("playback.last_activity_at")
+        available_fields.discard("playback.days_since_last_activity")
+    available_targets = set(values_by_target)
+
     unavailable_reasons: dict[str, dict[str, int]] = {}
     unavailable_target_samples: dict[str, list[int]] = {}
     for scope, services_by_target in target_services.items():
@@ -1450,7 +1800,21 @@ async def load_playback_rule_snapshot(
         for target_id, services in services_by_target.items():
             if (scope, target_id) in available_targets:
                 continue
-            reason_counts[_playback_unavailable_reason(services, refresh_result)] += 1
+            native_failures = [
+                status
+                for status in native_statuses
+                if status.service in services and not status.available
+            ]
+            if native_failures:
+                reason = "; ".join(
+                    sorted(
+                        status.error or "native playback snapshot unavailable"
+                        for status in native_failures
+                    )
+                )
+            else:
+                reason = _playback_unavailable_reason(services, refresh_result)
+            reason_counts[reason] += 1
             unknown_ids.append(target_id)
         unavailable_reasons[scope] = dict(reason_counts)
         unavailable_target_samples[scope] = sorted(unknown_ids)[:10]
@@ -1459,13 +1823,27 @@ async def load_playback_rule_snapshot(
         scope: len(services_by_target)
         for scope, services_by_target in target_services.items()
     }
+    target_ids_by_scope = {
+        scope: set(services_by_target)
+        for scope, services_by_target in target_services.items()
+    }
+    native_errors = [
+        status.error
+        for status in native_statuses
+        if not status.available and status.error
+    ]
     return PlaybackRuleSnapshot(
         values_by_target=values_by_target,
         available_targets=available_targets,
         target_counts=target_counts,
-        errors=refresh_result.errors,
-        has_configured_provider=refresh_result.has_configured_provider,
+        errors=[*refresh_result.errors, *native_errors],
+        has_configured_provider=(
+            refresh_result.has_configured_provider or bool(native_statuses)
+        ),
         provider_statuses=list(refresh_result.statuses),
         unavailable_reasons=unavailable_reasons,
         unavailable_target_samples=unavailable_target_samples,
+        available_fields_by_target=available_fields_by_target,
+        native_statuses=native_statuses,
+        target_ids_by_scope=target_ids_by_scope,
     )

@@ -62,20 +62,46 @@
     failed?: number;
   }
 
+  const sortByOptions = [
+    { value: "created_at", label: "Flagged" },
+    { value: "auto_delete_eligible_at", label: "Deletion date" },
+    { value: "media_title", label: "Title" },
+    { value: "estimated_space_bytes", label: "Size" },
+  ] as const;
+  type CandidateSortBy = (typeof sortByOptions)[number]["value"];
+  type CandidateMediaFilter = "all" | MediaType.Movie | MediaType.Series;
+
+  const isCandidateSortBy = (value: unknown): value is CandidateSortBy =>
+    sortByOptions.some((option) => option.value === value);
+  const isCandidateSortOrder = (value: unknown): value is "asc" | "desc" =>
+    value === "asc" || value === "desc";
+  const isCandidateMediaFilter = (
+    value: unknown,
+  ): value is CandidateMediaFilter =>
+    value === "all" || value === MediaType.Movie || value === MediaType.Series;
+
   // state
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
   let searchQuery = $state("");
-  const _mediaFilterStore = createFilterState("candidates_media_filter", "all");
-  const _sortByStore = createFilterState("candidates_sort_by", "created_at");
-  const _sortOrderStore = createFilterState("candidates_sort_order", "desc");
-  let mediaFilter = $state<"all" | MediaType.Movie | MediaType.Series>(
-    _mediaFilterStore.getInitial() === MediaType.Movie
-      ? MediaType.Movie
-      : _mediaFilterStore.getInitial() === MediaType.Series
-        ? MediaType.Series
-        : "all",
+  const _mediaFilterStore = createFilterState<CandidateMediaFilter>(
+    "candidates_media_filter",
+    "all",
+    isCandidateMediaFilter,
+  );
+  const _sortByStore = createFilterState<CandidateSortBy>(
+    "candidates_sort_by",
+    "created_at",
+    isCandidateSortBy,
+  );
+  const _sortOrderStore = createFilterState<"asc" | "desc">(
+    "candidates_sort_order",
+    "desc",
+    isCandidateSortOrder,
+  );
+  let mediaFilter = $state<CandidateMediaFilter>(
+    _mediaFilterStore.getInitial(),
   );
   let sortBy = $state(_sortByStore.getInitial());
   let sortOrder = $state(_sortOrderStore.getInitial());
@@ -124,13 +150,6 @@
   // bulk delete confirmation
   let bulkDeleteDialogOpen = $state(false);
   let bulkDeleteSubmitting = $state(false);
-
-  const sortByOptions = [
-    { value: "created_at", label: "Flagged" },
-    { value: "auto_delete_eligible_at", label: "Deletion date" },
-    { value: "media_title", label: "Title" },
-    { value: "estimated_space_bytes", label: "Size" },
-  ];
 
   const durationOptions = [
     { value: "30", label: "30 days" },

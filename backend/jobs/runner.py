@@ -11,8 +11,10 @@ from backend.models.jobs import (
     CandidateFileOpJobPayload,
     ServiceToggleJobPayload,
     TaskRunJobPayload,
+    WebhookDeliveryJobPayload,
 )
 from backend.models.settings import ServiceConfigUpdate
+from backend.services.lifecycle_webhooks import run_webhook_delivery_job
 
 
 async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
@@ -40,5 +42,9 @@ async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
     if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
         file_op_payload = CandidateFileOpJobPayload.model_validate(job.payload)
         return await run_candidate_file_op_job(job.id, file_op_payload)
+
+    if job.job_type is BackgroundJobType.WEBHOOK_DELIVERY:
+        delivery_payload = WebhookDeliveryJobPayload.model_validate(job.payload)
+        return await run_webhook_delivery_job(delivery_payload.delivery_id)
 
     raise ValueError(f"Unsupported background job type: {job.job_type}")

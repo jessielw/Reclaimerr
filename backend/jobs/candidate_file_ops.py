@@ -17,6 +17,7 @@ from backend.database.models import (
     Series,
 )
 from backend.enums import (
+    BackgroundJobPriority,
     BackgroundJobType,
     CandidateFileOpOperation,
     NotificationType,
@@ -28,6 +29,7 @@ from backend.models.jobs import (
     CandidateFileOpJobProgress,
     CandidateFileOpJobResult,
 )
+from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.notifications import (
     notify_admins,
     notify_user,
@@ -64,6 +66,7 @@ async def queue_candidate_file_op_job(
     job = await enqueue_background_job(
         job_type=BackgroundJobType.CANDIDATE_FILE_OP,
         payload=payload,
+        priority=BackgroundJobPriority.HIGH,
     )
     if job is None:
         raise RuntimeError("Failed to queue candidate file operation")
@@ -221,6 +224,27 @@ async def _run_candidate_file_op_job_unlocked(
                 completed=completed_items,
                 failed_count=failed,
             )
+
+            async with async_db() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                blockers = (
+                    await candidate_deletion_blockers(db, candidate)
+                    if candidate is not None
+                    else []
+                )
+            if "protected" in blockers:
+                LOG.warning(
+                    f"Skipping protected candidate {candidate_id} during manual "
+                    f"{payload.operation.value} operation"
+                )
+                failed += 1
+                completed_items += 1
+                await _persist_progress(
+                    current_item_label=current_item_label,
+                    completed=completed_items,
+                    failed_count=failed,
+                )
+                continue
 
             if payload.operation is CandidateFileOpOperation.DELETE:
                 item_succeeded, item_failed = await delete_specific_candidates(

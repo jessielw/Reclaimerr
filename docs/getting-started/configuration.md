@@ -13,18 +13,19 @@ set of environment variables for the runtime container or desktop process.
 
 ## Important Environment Variables
 
-| Variable                    | Purpose                                                                    |
-| --------------------------- | -------------------------------------------------------------------------- |
-| `API_HOST`                  | Bind address for the API server                                            |
-| `API_PORT`                  | HTTP port for the API server                                               |
-| `DATA_DIR`                  | Persistent application data location                                       |
-| `TZ`                        | Local timezone for cron-style schedules                                    |
-| `UMASK`                     | Default permissions for created files                                      |
-| `PROXY_TRUSTED_HOSTS`       | Trusted reverse proxy IPs or CIDRs                                         |
-| `JWT_SECRET`                | Session signing secret                                                     |
-| `ENCRYPTION_KEY`            | Secrets encryption key                                                     |
-| `ADMIN_PASSWORD`            | Initial admin password or admin password reset on startup                  |
-| `RECLAIMERR_TASK_ISOLATION` | Set to `off` to run heavy tasks inline instead of isolated child processes |
+| Variable                     | Purpose                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `API_HOST`                   | Bind address for the API server                                            |
+| `API_PORT`                   | HTTP port for the API server                                               |
+| `DATA_DIR`                   | Persistent application data location                                       |
+| `TZ`                         | Local timezone for cron-style schedules                                    |
+| `UMASK`                      | Default permissions for created files                                      |
+| `PROXY_TRUSTED_HOSTS`        | Trusted reverse proxy IPs or CIDRs                                         |
+| `JWT_SECRET`                 | Session signing secret                                                     |
+| `ENCRYPTION_KEY`             | Secrets encryption key                                                     |
+| `ADMIN_PASSWORD`             | Initial admin password or admin password reset on startup                  |
+| `RECLAIMERR_TASK_ISOLATION`  | Set to `off` to run heavy tasks inline instead of isolated child processes |
+| `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2)             |
 
 Application URL is configured in General Settings. It is used for Plex and OIDC
 callback generation behind a reverse proxy.

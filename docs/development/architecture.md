@@ -5,7 +5,7 @@ components:
 
 - the API server
 - the APScheduler schedule runner
-- the in-process background worker
+- the in-process command executor pool
 - the database and service layer
 
 ## Process Model
@@ -18,15 +18,17 @@ The app starts as one process and then initializes the main subsystems:
 4. Start the background worker loops.
 5. Serve the API and frontend assets.
 
-This keeps deployment constrained to one app process that manages both scheduled work and
-queued background jobs.
+This keeps deployment constrained to one HTTP process that manages both scheduled work
+and queued background jobs. Docker explicitly starts one Granian worker so scheduler and
+queue ownership cannot be duplicated across server processes.
 
 ## Request Flow
 
 - The frontend talks to the FastAPI backend.
 - Routes validate input, read or update the database, and call service helpers.
 - Long-running or retryable work is placed onto the background job queue.
-- The worker claims queued jobs and runs them in-process.
+- A command executor claims each queued job. Memory-heavy tasks may launch a short-lived
+  child process while the parent remains responsible for durable job state.
 
 ## Scheduler
 
@@ -38,14 +40,22 @@ into APScheduler jobs.
 - Main-server-dependent tasks stay disabled until a main media server exists.
 - Task changes are persisted first, then reflected in the live scheduler.
 
-## Background Worker
+## Background Command Pool
 
-The worker polls for queued jobs and executes them one at a time per worker
-loop.
+The API process starts three command executors by default. The count can be adjusted from
+1 through 8 with `RECLAIMERR_COMMAND_WORKERS`, although the default is intended for most
+installations.
 
 - Idle polling backs off to reduce churn.
-- Job claims are durable so stale jobs can be reset on startup.
-- The worker handles service toggles, task runs, and file-ops jobs.
+- Job claims and priority are durable so stale jobs can be reset on startup and manual
+  work is not trapped behind routine scheduled work.
+- Compatibility-aware claiming serializes all task runs, prevents candidate file changes
+  from racing candidate scan/tag/delete or media sync work, and prevents service changes
+  from racing active service consumers.
+- Lifecycle webhooks may run alongside unrelated work, but deliveries to the same endpoint
+  stay ordered.
+- The admin background-job API exposes each job's priority and exclusive resources for
+  troubleshooting.
 
 ## Data Flow
 
@@ -75,4 +85,3 @@ scanning, deletion routing, and UI indicators.
 - Candidate state must remain auditable.
 - Deletion should route through the most specific service available.
 - Main-server-dependent workflows must fail closed when the main server is absent.
-

@@ -22,6 +22,13 @@ class BackgroundJobType(StrEnum):
     SERVICE_TOGGLE = auto()
     TASK_RUN = auto()
     CANDIDATE_FILE_OP = auto()
+    WEBHOOK_DELIVERY = auto()
+
+
+class BackgroundJobPriority(StrEnum):
+    LOW = auto()
+    NORMAL = auto()
+    HIGH = auto()
 
 
 class CandidateFileOpOperation(StrEnum):
