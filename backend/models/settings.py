@@ -133,10 +133,6 @@ def normalize_notification_preferences(
     return normalized
 
 
-def default_post_action_webhook_actions() -> list[Literal["deleted", "moved"]]:
-    return ["deleted", "moved"]
-
-
 class NotificationSettingItem(BaseModel):
     """Model for creating or updating notification settings."""
 
@@ -218,70 +214,6 @@ class RequesterWatchUserMapping(BaseModel):
         return self
 
 
-class PostActionWebhookHeader(BaseModel):
-    name: str
-    value: str
-
-    @model_validator(mode="after")
-    def sanitize_fields(self) -> PostActionWebhookHeader:
-        self.name = self.name.strip()
-        self.value = self.value.strip()
-        if not self.name:
-            raise PydanticCustomError("webhook_header", "Header name is required")
-        return self
-
-
-class PostActionWebhookConfig(BaseModel):
-    enabled: bool = True
-    name: str
-    method: Literal["GET", "POST"] = "GET"
-    url_template: str
-    headers: list[PostActionWebhookHeader] = Field(default_factory=list)
-    auth_username: str | None = None
-    auth_password: str | None = None
-    actions: list[Literal["deleted", "moved"]] = Field(
-        default_factory=default_post_action_webhook_actions
-    )
-    media_types: list[MediaType] = Field(
-        default_factory=lambda: [MediaType.MOVIE, MediaType.SERIES]
-    )
-    path_mode: Literal["original", "local", "destination"] = "original"
-    body_template: str | None = None
-    timeout_seconds: int = Field(default=15, ge=1, le=120)
-
-    @model_validator(mode="after")
-    def sanitize_fields(self) -> PostActionWebhookConfig:
-        self.name = self.name.strip() or "Post-action webhook"
-        self.method = self.method.upper()  # type: ignore[assignment]
-        self.url_template = self.url_template.strip()
-        if not self.url_template:
-            raise PydanticCustomError("webhook_url", "Webhook URL is required")
-        if not (
-            self.url_template.startswith("http://")
-            or self.url_template.startswith("https://")
-        ):
-            raise PydanticCustomError(
-                "webhook_url", "Webhook URL must start with http:// or https://"
-            )
-        if self.auth_username is not None:
-            self.auth_username = self.auth_username.strip() or None
-        if self.auth_password is not None:
-            self.auth_password = self.auth_password.strip() or None
-        if self.body_template is not None:
-            self.body_template = self.body_template.strip() or None
-        return self
-
-
-class PostActionWebhookTestRequest(BaseModel):
-    webhook: PostActionWebhookConfig
-
-
-class PostActionWebhookTestResponse(BaseModel):
-    success: bool
-    status_code: int | None = None
-    error: str | None = None
-
-
 class FavoritesUserLookupResponse(BaseModel):
     username: str
     has_favorites: bool
@@ -321,9 +253,6 @@ class GeneralSettingsResponse(BaseModel):
 
     # path mappings for resolving media-server paths to local paths
     path_mappings: list[PathMappingItem] = Field(default_factory=list)
-
-    # post action webhooks for delete/move integrations (Autopulse, scripts, etc.)
-    post_action_webhooks: list[PostActionWebhookConfig] = Field(default_factory=list)
 
     # move destinations
     move_destination_movies: str | None = None

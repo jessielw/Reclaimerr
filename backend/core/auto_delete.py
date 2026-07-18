@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from backend.enums import MediaType
 
@@ -12,10 +12,12 @@ MAX_AUTO_DELETE_DELAY_DAYS = 3650
 
 @dataclass(slots=True, frozen=True)
 class AutoDeletePolicy:
+    is_configured: bool
     is_enabled: bool
     delay_days: int
     eligible_at: datetime
     is_eligible: bool
+    state: Literal["disabled", "scheduled", "eligible", "postponed", "canceled"]
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -37,6 +39,9 @@ def resolve_auto_delete_policy(
     media_type: MediaType,
     matched_rule_ids: Sequence[int],
     created_at: datetime,
+    timer_started_at: datetime | None = None,
+    postponed_until: datetime | None = None,
+    cancelled_at: datetime | None = None,
     rule_actions_by_id: Mapping[int, Mapping[str, Any] | None],
     movie_delay_days: int,
     series_delay_days: int,
@@ -56,13 +61,31 @@ def resolve_auto_delete_policy(
         override = _valid_override(action.get("auto_delete_delay_days"))
         matched_delays.append(override if override is not None else global_delay)
 
-    is_enabled = bool(matched_delays)
+    is_configured = bool(matched_delays)
     delay_days = max(matched_delays, default=global_delay)
-    eligible_at = _as_utc(created_at) + timedelta(days=delay_days)
+    timer_origin = timer_started_at or created_at
+    eligible_at = _as_utc(timer_origin) + timedelta(days=delay_days)
+    if postponed_until is not None:
+        eligible_at = max(eligible_at, _as_utc(postponed_until))
     effective_now = _as_utc(now) if now is not None else datetime.now(UTC)
+    is_cancelled = cancelled_at is not None
+    is_enabled = is_configured and not is_cancelled
+    state: Literal["disabled", "scheduled", "eligible", "postponed", "canceled"]
+    if not is_configured:
+        state = "disabled"
+    elif is_cancelled:
+        state = "canceled"
+    elif postponed_until is not None and effective_now < eligible_at:
+        state = "postponed"
+    elif effective_now >= eligible_at:
+        state = "eligible"
+    else:
+        state = "scheduled"
     return AutoDeletePolicy(
+        is_configured=is_configured,
         is_enabled=is_enabled,
         delay_days=delay_days,
         eligible_at=eligible_at,
         is_eligible=is_enabled and effective_now >= eligible_at,
+        state=state,
     )

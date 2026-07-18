@@ -26,22 +26,15 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, Service
-from backend.models.post_action_webhooks import PostActionWebhookEvent
 from backend.models.settings import (
     FavoritesMediaEntryResponse,
     FavoritesUserLookupResponse,
     GeneralSettingsResponse,
     PaginatedFavoritesMediaResponse,
-    PostActionWebhookTestRequest,
-    PostActionWebhookTestResponse,
     WatchUserLookupResponse,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
-from backend.services.post_action_webhooks import (
-    invalidate_webhook_config_cache,
-    send_post_action_webhook,
-)
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 router = APIRouter(tags=["settings", "general"])
@@ -171,9 +164,6 @@ async def update_general_settings(
     settings.worker_poll_min_seconds = request.worker_poll_min_seconds
     settings.worker_poll_max_seconds = request.worker_poll_max_seconds
     settings.path_mappings = [m.model_dump() for m in request.path_mappings]
-    settings.post_action_webhooks = [
-        w.model_dump(mode="json") for w in request.post_action_webhooks
-    ]
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
@@ -206,7 +196,6 @@ async def update_general_settings(
     db.add(settings)
     await db.commit()
     await db.refresh(settings)
-    invalidate_webhook_config_cache()
     return GeneralSettingsResponse.model_validate(settings)
 
 
@@ -440,32 +429,6 @@ async def get_favorites_media(
         per_page=per_page,
         total_pages=total_pages,
     )
-
-
-@router.post(
-    "/general/webhooks/test",
-    response_model=PostActionWebhookTestResponse,
-)
-async def test_post_action_webhook(
-    request: PostActionWebhookTestRequest,
-    _admin: Annotated[User, Depends(require_admin)],
-) -> PostActionWebhookTestResponse:
-    """Send a sample post action webhook without saving it."""
-    result = await send_post_action_webhook(
-        request.webhook.model_dump(mode="json"),
-        PostActionWebhookEvent(
-            action="deleted",
-            media_type=MediaType.MOVIE,
-            title="Reclaimerr Test Movie",
-            tmdb_id=550,
-            candidate_id=0,
-            path="/media/movies/Reclaimerr Test Movie (1999)/movie.mkv",
-            local_path="/mnt/media/movies/Reclaimerr Test Movie (1999)/movie.mkv",
-            service_type="plex",
-            movie_version_id=0,
-        ),
-    )
-    return PostActionWebhookTestResponse(**result)
 
 
 def _library_root(path: str) -> str | None:

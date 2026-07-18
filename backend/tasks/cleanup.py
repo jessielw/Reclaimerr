@@ -94,7 +94,7 @@ from backend.models.cleanup import (
     RulePreviewMatchMetadata,
     RulePreviewMatchResult,
 )
-from backend.models.post_action_webhooks import PostActionWebhookEvent
+from backend.models.lifecycle_events import CandidateFileEvent
 from backend.services.admin_notices import (
     clear_playback_rule_data_notice,
     clear_seerr_rule_skip_notice,
@@ -102,6 +102,11 @@ from backend.services.admin_notices import (
     set_playback_rule_data_notice,
     set_seerr_rule_skip_notice,
     set_sonarr_rule_data_notice,
+)
+from backend.services.candidate_lifecycle import reconcile_candidate_schedule_events
+from backend.services.lifecycle_webhooks import (
+    dispatch_candidate_file_event,
+    enqueue_event_deliveries,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.notifications import (
@@ -114,9 +119,6 @@ from backend.services.playback_history import (
     load_playback_rule_snapshot,
     log_playback_rule_coverage,
     refresh_playback_history,
-)
-from backend.services.post_action_webhooks import (
-    dispatch_configured_post_action_webhooks,
 )
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 from backend.utils.helpers import normalize_leaving_soon_collection_title
@@ -411,6 +413,9 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 media_type=candidate.media_type,
                 matched_rule_ids=candidate.matched_rule_ids,
                 created_at=candidate.created_at,
+                timer_started_at=candidate.auto_delete_timer_started_at,
+                postponed_until=candidate.auto_delete_postponed_until,
+                cancelled_at=candidate.auto_delete_cancelled_at,
                 rule_actions_by_id=rule_actions_by_id,
                 movie_delay_days=movie_delay_days,
                 series_delay_days=series_delay_days,
@@ -3378,7 +3383,10 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             candidates_removed += del_result.rowcount or 0
 
+        lifecycle_event_ids = await reconcile_candidate_schedule_events(db)
         await db.commit()
+        for lifecycle_event_id in lifecycle_event_ids:
+            await enqueue_event_deliveries(lifecycle_event_id)
 
         if seerr_skipped_rules:
             try:
@@ -5202,8 +5210,8 @@ async def _dispatch_reclaim_event(
     local_path: str | None = None,
 ) -> None:
     try:
-        await dispatch_configured_post_action_webhooks(
-            PostActionWebhookEvent(
+        await dispatch_candidate_file_event(
+            CandidateFileEvent(
                 action=action,
                 media_type=media_type,
                 title=title,

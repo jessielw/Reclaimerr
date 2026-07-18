@@ -108,6 +108,7 @@ export enum SettingsTab {
   OMDb = "omdb",
   General = "general",
   Authentication = "authentication",
+  Integrations = "integrations",
   UserSignals = "user_signals",
   Tasks = "tasks",
   Notifications = "notifications",
@@ -180,26 +181,6 @@ export interface PathMapping {
   local_prefix: string;
   service_type?: string | null;
   service_config_id?: number | null;
-}
-
-export interface PostActionWebhookHeader {
-  name: string;
-  value: string;
-}
-
-export interface PostActionWebhookConfig {
-  enabled: boolean;
-  name: string;
-  method: "GET" | "POST";
-  url_template: string;
-  headers: PostActionWebhookHeader[];
-  auth_username: string | null;
-  auth_password: string | null;
-  actions: ("deleted" | "moved")[];
-  media_types: MediaType[];
-  path_mode: "original" | "local" | "destination";
-  body_template: string | null;
-  timeout_seconds: number;
 }
 
 export interface RequesterWatchUserMapping {
@@ -278,7 +259,6 @@ export interface GeneralSettings {
   worker_poll_min_seconds: number | null;
   worker_poll_max_seconds: number | null;
   path_mappings: PathMapping[];
-  post_action_webhooks: PostActionWebhookConfig[];
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
@@ -294,6 +274,77 @@ export interface GeneralSettings {
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
+}
+
+export type ApiTokenScope =
+  | "candidates:read"
+  | "candidates:manage"
+  | "events:read"
+  | "media:read"
+  | "protections:read"
+  | "protections:manage"
+  | "system:read"
+  | "tasks:read"
+  | "tasks:run";
+
+export interface ApiTokenInfo {
+  id: number;
+  name: string;
+  token_prefix: string;
+  scopes: ApiTokenScope[];
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface ApiTokenCreated extends ApiTokenInfo {
+  token: string;
+}
+
+export type LifecycleEventType =
+  | "candidate.scheduled"
+  | "candidate.canceled"
+  | "candidate.postponed"
+  | "candidate.timer_reset"
+  | "candidate.protected"
+  | "candidate.deleted"
+  | "candidate.moved"
+  | "protection.created"
+  | "protection.removed";
+
+export interface LifecycleWebhookEndpoint {
+  id: number;
+  name: string;
+  enabled: boolean;
+  method: "GET" | "POST";
+  url_template: string;
+  event_types: LifecycleEventType[];
+  media_types: MediaType[];
+  path_mode: "original" | "local" | "destination";
+  body_template: string | null;
+  timeout_seconds: number;
+  auth_username: string | null;
+  auth_password?: string | null;
+  auth_password_is_set: boolean;
+  headers: { name: string; value: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookDeliveryInfo {
+  id: number;
+  event_id: string;
+  event_type: LifecycleEventType;
+  endpoint_id: number;
+  endpoint_name: string;
+  status: "pending" | "delivered" | "failed" | "canceled";
+  attempts: number;
+  next_attempt_at: string;
+  last_status_code: number | null;
+  last_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
 }
 
 export interface MetadataProviderCoverageBucket {
@@ -1010,6 +1061,16 @@ export interface ReclaimCandidateEntry {
   auto_delete_eligible_at: string;
   auto_delete_is_eligible: boolean;
   auto_delete_is_active: boolean;
+  auto_delete_state:
+    | "disabled"
+    | "scheduled"
+    | "eligible"
+    | "postponed"
+    | "canceled";
+  auto_delete_cancelled_at: string | null;
+  auto_delete_postponed_until: string | null;
+  auto_delete_timer_started_at: string | null;
+  lifecycle_reason: string | null;
   delete_operation: "delete" | "move";
   // populated for season level candidates
   season_id: number | null;

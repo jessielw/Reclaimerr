@@ -28,6 +28,7 @@ from backend.models.jobs import (
     CandidateFileOpJobProgress,
     CandidateFileOpJobResult,
 )
+from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.notifications import (
     notify_admins,
     notify_user,
@@ -221,6 +222,27 @@ async def _run_candidate_file_op_job_unlocked(
                 completed=completed_items,
                 failed_count=failed,
             )
+
+            async with async_db() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                blockers = (
+                    await candidate_deletion_blockers(db, candidate)
+                    if candidate is not None
+                    else []
+                )
+            if "protected" in blockers:
+                LOG.warning(
+                    f"Skipping protected candidate {candidate_id} during manual "
+                    f"{payload.operation.value} operation"
+                )
+                failed += 1
+                completed_items += 1
+                await _persist_progress(
+                    current_item_label=current_item_label,
+                    completed=completed_items,
+                    failed_count=failed,
+                )
+                continue
 
             if payload.operation is CandidateFileOpOperation.DELETE:
                 item_succeeded, item_failed = await delete_specific_candidates(

@@ -6,7 +6,7 @@ from backend.enums import MediaType, Service
 
 
 @dataclass(slots=True)
-class PostActionWebhookEvent:
+class CandidateFileEvent:
     action: str
     media_type: MediaType
     title: str | None = None
