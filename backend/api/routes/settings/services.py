@@ -29,7 +29,12 @@ from backend.database.models import (
     ServiceMediaLibrary,
     User,
 )
-from backend.enums import BackgroundJobStatus, BackgroundJobType, Service
+from backend.enums import (
+    BackgroundJobPriority,
+    BackgroundJobStatus,
+    BackgroundJobType,
+    Service,
+)
 from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import ServiceToggleJobPayload
 from backend.models.settings import (
@@ -404,6 +409,7 @@ async def set_service_settings(
         ).model_dump(mode="json"),
         dedupe_key=f"service-toggle-{saved_config.id}",
         replace_pending=True,
+        priority=BackgroundJobPriority.HIGH,
     )
     if queued_job is None:
         LOG.error(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 
@@ -14,7 +14,12 @@ from backend.database.models import (
     ServiceConfig,
     TaskSchedule,
 )
-from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
+from backend.enums import (
+    BackgroundJobPriority,
+    BackgroundJobStatus,
+    BackgroundJobType,
+    Task,
+)
 from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
 from backend.tasks.anilist import refresh_anilist_ratings
@@ -106,16 +111,25 @@ async def _get_active_task_job(task: Task) -> BackgroundJob | None:
         return result.scalar_one_or_none()
 
 
-async def request_task_run(task: Task) -> tuple[BackgroundJob | None, bool]:
+async def request_task_run(
+    task: Task,
+    *,
+    trigger: Literal["manual", "scheduled", "system"] = "manual",
+) -> tuple[BackgroundJob | None, bool]:
     if not await is_task_enabled(task):
         raise ValueError(f"Task '{task.value}' is disabled")
 
     queued_job = await enqueue_background_job(
         job_type=BackgroundJobType.TASK_RUN,
-        payload=TaskRunJobPayload(task=task).model_dump(mode="json"),
+        payload=TaskRunJobPayload(task=task, trigger=trigger).model_dump(mode="json"),
         scheduled_at=datetime.now(UTC),
         dedupe_key=f"task-run-{task}",
         skip_if_active=True,
+        priority=(
+            BackgroundJobPriority.LOW
+            if trigger == "scheduled"
+            else BackgroundJobPriority.NORMAL
+        ),
     )
     if queued_job is not None:
         return queued_job, True
@@ -124,7 +138,7 @@ async def request_task_run(task: Task) -> tuple[BackgroundJob | None, bool]:
 
 
 async def enqueue_task_run(task: Task) -> bool:
-    _, queued = await request_task_run(task)
+    _, queued = await request_task_run(task, trigger="system")
     return queued
 
 
@@ -135,7 +149,7 @@ async def enqueue_scheduled_task(task: Task) -> None:
         )
         return
 
-    queued = await enqueue_task_run(task)
+    _, queued = await request_task_run(task, trigger="scheduled")
     if queued:
         LOG.info(f"Queued scheduled task: {task.friendly_name()}")
     else:

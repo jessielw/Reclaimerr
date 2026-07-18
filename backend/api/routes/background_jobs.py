@@ -17,6 +17,7 @@ from backend.enums import (
     Permission,
     UserRole,
 )
+from backend.jobs.policy import background_job_resources
 
 router = APIRouter(prefix="/api/tasks", tags=["background-jobs"])
 
@@ -138,6 +139,8 @@ def _serialize_background_job(job: BackgroundJob) -> dict[str, Any]:
         "id": job.id,
         "job_type": job.job_type,
         "status": job.status,
+        "priority": job.priority,
+        "concurrency_resources": sorted(background_job_resources(job)),
         "summary": summary,
         "dedupe_key": job.dedupe_key,
         "attempts": job.attempts,

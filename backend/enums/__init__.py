@@ -3,6 +3,7 @@ from .logging import LogLevel, LogSource
 from .media import MediaType, ProtectionRequestStatus, Service
 from .services import SeerrRequestStatus
 from .tasks import (
+    BackgroundJobPriority,
     BackgroundJobStatus,
     BackgroundJobType,
     CandidateFileOpOperation,
@@ -27,6 +28,7 @@ __all__ = [
     # tasks
     "TaskStatus",
     "BackgroundJobStatus",
+    "BackgroundJobPriority",
     "BackgroundJobType",
     "CandidateFileOpOperation",
     "ScheduleType",

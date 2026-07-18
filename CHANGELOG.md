@@ -18,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Existing delete/move webhooks are migrated to durable lifecycle endpoints, and their legacy editor/configuration is removed so Integrations is the single source of truth
 - Organized the external API into stable v1 domain modules with granular least-privilege scopes, discovery links, consistent pagination, and cursor-based event polling
+- Background jobs now use a bounded, priority-aware command pool so safe work can proceed concurrently while task runs
 
 ### Fixed
 
-- External movie and series API responses now normalize TMDB genre objects instead of failing to serialize media lists
 - Docker build importing a desktop module it does not need that could sometimes result in a crash at startup
 - Jellyfin/Emby **Playback users** rules now use the media server's current watched state, preventing stale Playback Reporting events from matching the wrong users
 - Candidates now recovers from invalid saved sort preferences instead of failing to load

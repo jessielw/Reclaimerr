@@ -34,4 +34,4 @@ FROM backend-base AS api
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["sh", "-c", \
-	"exec granian --interface asgi --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000} backend.api.main:app"]
+	"exec granian --interface asgi --workers 1 --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000} backend.api.main:app"]

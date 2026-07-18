@@ -42,9 +42,8 @@ from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
-from backend.core.worker import worker_loop
+from backend.core.worker import start_worker_pool
 from backend.database import close_db, init_db
-from backend.enums import BackgroundJobType
 from backend.jobs.queue import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.services.lifecycle_webhooks import recover_pending_webhook_deliveries
@@ -102,28 +101,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await reset_stale_jobs()
         await recover_pending_webhook_deliveries()
 
-        # background workers (in process)
+        # Durable command executors run as lightweight asyncio tasks in this one
+        # API process. Compatibility aware claiming prevents conflicting work
         host_pid = f"{socket.gethostname()}:{os.getpid()}"
-        worker_tasks = [
-            asyncio.create_task(
-                worker_loop(
-                    f"{host_pid}:default",
-                    allowed_job_types={
-                        BackgroundJobType.SERVICE_TOGGLE,
-                        BackgroundJobType.TASK_RUN,
-                        BackgroundJobType.WEBHOOK_DELIVERY,
-                    },
-                ),
-                name="background-worker-default",
-            ),
-            asyncio.create_task(
-                worker_loop(
-                    f"{host_pid}:file-ops",
-                    allowed_job_types={BackgroundJobType.CANDIDATE_FILE_OP},
-                ),
-                name="background-worker-file-ops",
-            ),
-        ]
+        worker_tasks = start_worker_pool(host_pid, settings.command_workers)
+        LOG.info(
+            f"Started {settings.command_workers} durable background command executor(s)"
+        )
 
         LOG.info("reclaimerr API ready")
 
@@ -137,11 +121,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         for worker_task in worker_tasks:
             worker_task.cancel()
-        for worker_task in worker_tasks:
-            try:
-                await worker_task
-            except asyncio.CancelledError:
-                pass
+        worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+        for worker_result in worker_results:
+            if isinstance(worker_result, Exception) and not isinstance(
+                worker_result, asyncio.CancelledError
+            ):
+                LOG.error(
+                    f"Background command executor exited unexpectedly: {worker_result}",
+                )
 
         if scheduler_started:
             await shutdown_scheduler()

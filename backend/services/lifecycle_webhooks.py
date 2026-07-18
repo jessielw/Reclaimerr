@@ -18,8 +18,9 @@ from backend.database.models import (
     WebhookDelivery,
     WebhookEndpoint,
 )
-from backend.enums import BackgroundJobType
+from backend.enums import BackgroundJobPriority, BackgroundJobType
 from backend.jobs.queue import enqueue_background_job
+from backend.models.jobs import WebhookDeliveryJobPayload
 from backend.models.lifecycle_events import CandidateFileEvent
 from backend.services.webhook_transport import send_webhook_payload
 
@@ -179,14 +180,32 @@ def endpoint_config(endpoint: WebhookEndpoint) -> dict[str, Any]:
     }
 
 
-async def enqueue_delivery(delivery_id: int, *, scheduled_at: datetime) -> None:
+async def enqueue_delivery(
+    delivery_id: int,
+    *,
+    scheduled_at: datetime,
+    endpoint_id: int | None = None,
+) -> None:
+    if endpoint_id is None:
+        async with async_db() as db:
+            endpoint_id = (
+                await db.execute(
+                    select(WebhookDelivery.endpoint_id).where(
+                        WebhookDelivery.id == delivery_id
+                    )
+                )
+            ).scalar_one_or_none()
     await enqueue_background_job(
         BackgroundJobType.WEBHOOK_DELIVERY,
-        {"delivery_id": delivery_id},
+        WebhookDeliveryJobPayload(
+            delivery_id=delivery_id,
+            endpoint_id=endpoint_id,
+        ).model_dump(mode="json"),
         scheduled_at=scheduled_at,
         dedupe_key=f"webhook-delivery:{delivery_id}",
         replace_pending=True,
         max_attempts=1,
+        priority=BackgroundJobPriority.HIGH,
     )
 
 
@@ -206,7 +225,11 @@ async def enqueue_event_deliveries(event_id: int) -> None:
         )
     for delivery in deliveries:
         try:
-            await enqueue_delivery(delivery.id, scheduled_at=delivery.next_attempt_at)
+            await enqueue_delivery(
+                delivery.id,
+                scheduled_at=delivery.next_attempt_at,
+                endpoint_id=delivery.endpoint_id,
+            )
         except Exception as exc:
             # The delivery row is the durable source of truth and startup
             # recovery can enqueue it later.
@@ -229,7 +252,11 @@ async def recover_pending_webhook_deliveries() -> int:
         )
     for delivery in deliveries:
         try:
-            await enqueue_delivery(delivery.id, scheduled_at=delivery.next_attempt_at)
+            await enqueue_delivery(
+                delivery.id,
+                scheduled_at=delivery.next_attempt_at,
+                endpoint_id=delivery.endpoint_id,
+            )
         except Exception as exc:
             LOG.warning(f"Could not recover webhook delivery {delivery.id}: {exc}")
     if deliveries:
@@ -325,7 +352,11 @@ async def run_webhook_delivery_job(delivery_id: int) -> dict[str, Any]:
         next_attempt_at = delivery.next_attempt_at
         await db.commit()
 
-    await enqueue_delivery(delivery_id, scheduled_at=next_attempt_at)
+    await enqueue_delivery(
+        delivery_id,
+        scheduled_at=next_attempt_at,
+        endpoint_id=delivery.endpoint_id,
+    )
     LOG.warning(
         f"Lifecycle webhook delivery {delivery_id} failed; retrying at "
         f"{next_attempt_at.isoformat()}: {error}"

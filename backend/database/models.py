@@ -11,6 +11,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     SmallInteger,
     String,
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 from backend.enums import (
+    BackgroundJobPriority,
     BackgroundJobStatus,
     BackgroundJobType,
     MediaType,
@@ -1874,9 +1876,10 @@ class TaskSchedule(Base):
 
 
 class BackgroundJob(Base):
-    """Durable background work item executed by the standalone worker."""
+    """Durable background work item executed by the internal command pool."""
 
     __tablename__ = "background_jobs"
+    __table_args__ = (Index("ix_background_jobs_claimable", "status", "scheduled_at"),)
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -1885,6 +1888,9 @@ class BackgroundJob(Base):
     scheduled_at: Mapped[datetime] = mapped_column(DateTime)
     status: Mapped[BackgroundJobStatus] = mapped_column(
         Enum(BackgroundJobStatus), default=BackgroundJobStatus.PENDING
+    )
+    priority: Mapped[BackgroundJobPriority] = mapped_column(
+        Enum(BackgroundJobPriority), default=BackgroundJobPriority.NORMAL
     )
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default_factory=dict)
     dedupe_key: Mapped[str | None] = mapped_column(

@@ -372,7 +372,11 @@ async def retry_webhook_delivery(
     delivery.last_status_code = None
     delivery.delivered_at = None
     await db.commit()
-    await enqueue_delivery(delivery.id, scheduled_at=delivery.next_attempt_at)
+    await enqueue_delivery(
+        delivery.id,
+        scheduled_at=delivery.next_attempt_at,
+        endpoint_id=endpoint.id,
+    )
     return WebhookDeliveryResponse(
         id=delivery.id,
         event_id=event.event_id,

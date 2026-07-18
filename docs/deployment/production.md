@@ -12,15 +12,16 @@ For production deployments, use this guide.
 
 ## Environment Variables
 
-| Variable              | Why It Matters                                                                    |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `DATA_DIR`            | Keeps the database, logs, cache, and generated secrets in one persistent location |
-| `API_HOST`            | Bind address for the backend process                                              |
-| `API_PORT`            | Port exposed by the backend process                                               |
-| `TZ`                  | Keeps cron schedules and timestamps aligned with your locale                      |
-| `PROXY_TRUSTED_HOSTS` | Ensures forwarded headers are only accepted from trusted proxies                  |
-| `CORS_ORIGINS`        | Restricts the UI origins that can talk to the API                                 |
-| `COOKIE_SECURE`       | Marks auth cookies secure when served over HTTPS                                  |
+| Variable                     | Why It Matters                                                                    |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| `DATA_DIR`                   | Keeps the database, logs, cache, and generated secrets in one persistent location |
+| `API_HOST`                   | Bind address for the backend process                                              |
+| `API_PORT`                   | Port exposed by the backend process                                               |
+| `TZ`                         | Keeps cron schedules and timestamps aligned with your locale                      |
+| `PROXY_TRUSTED_HOSTS`        | Ensures forwarded headers are only accepted from trusted proxies                  |
+| `CORS_ORIGINS`               | Restricts the UI origins that can talk to the API                                 |
+| `COOKIE_SECURE`              | Marks auth cookies secure when served over HTTPS                                  |
+| `RECLAIMERR_COMMAND_WORKERS` | Advanced internal command executor count (default `2`, range `1`-`8`)             |
 
 ## Secrets and Persistence
 
@@ -42,7 +43,9 @@ For production deployments, use this guide.
 ## Operational Notes
 
 - Run exactly one Reclaimerr process or replica against a SQLite database. The
-  in-process workflow locks do not coordinate multiple application processes.
+  in-process workflow locks and command claim coordinator do not coordinate
+  multiple application processes. Reclaimerr handles concurrency with its internal
+  command executors instead.
 - Keep `DATA_DIR` on local storage. SQLite is not supported on NFS or other
   network filesystems; use host-local storage with a persistent volume mapping.
 - Keep the main media server configured if you use tasks that require it.
