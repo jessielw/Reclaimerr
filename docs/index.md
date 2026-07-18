@@ -28,7 +28,7 @@ Documentation for setup, usage, deployment, and development.
 
 - [README](https://github.com/jessielw/Reclaimerr/blob/main/README.md)
 - [Features](features.md)
-- [API Reference](reference/api.md)
+- [External API](reference/api.md)
 - [Changelog](reference/changelog.md)
 - [Contributing](development/contributing.md)
 - [Architecture](development/architecture.md)

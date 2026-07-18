@@ -554,4 +554,5 @@ again.
 
 - [How It Works](how-it-works.md)
 - [Tasks](tasks.md)
-- [API Reference](../reference/api.md)
+- [External API](../reference/api.md)
+- [Internal UI API](../reference/internal-api.md)

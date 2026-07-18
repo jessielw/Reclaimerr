@@ -35,5 +35,6 @@ releases as a deliberate maintainer action with a short checklist.
 ## Related Pages
 
 - [Changelog](../reference/changelog.md)
-- [API Reference](../reference/api.md)
+- [External API](../reference/api.md)
+- [Internal UI API](../reference/internal-api.md)
 - [Contributing](contributing.md)
