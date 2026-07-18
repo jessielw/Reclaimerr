@@ -16,6 +16,7 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
+    SeriesServiceRef,
     ServiceConfig,
 )
 from backend.enums import MediaType, Service
@@ -39,6 +40,7 @@ class FakeSonarr:
         self.season_monitoring_updates: list[tuple[int, int, bool]] = []
         self.deleted_seasons: list[tuple[int, int]] = []
         self.deleted_series: list[int] = []
+        self.deleted_series_requests: list[tuple[int, bool, bool]] = []
         self.refreshed: list[list[int]] = []
 
     async def get_episodes(self, series_id: int) -> list[dict[str, Any]]:
@@ -71,6 +73,9 @@ class FakeSonarr:
         add_import_exclusion: bool = False,
     ) -> None:
         self.deleted_series.append(series_id)
+        self.deleted_series_requests.append(
+            (series_id, delete_files, add_import_exclusion)
+        )
 
     async def refresh_series(self, series_ids: list[int]) -> None:
         self.refreshed.append(series_ids)
@@ -123,6 +128,9 @@ async def _seed_series_case(
     season_path: str = "/data/Show/Season 01",
     episode_path: str = "/data/Show/Season 01/Show - S01E01.mkv",
     path_mappings: list[dict] | None = None,
+    arr_action: str = "delete",
+    move_destination_series: str | None = None,
+    series_service_path: str | None = None,
 ) -> tuple[int, list[int], list[int]]:
     arr_series_paths = arr_series_paths or ["/data/Show"]
     arr_series_ids = arr_series_ids or [
@@ -133,6 +141,7 @@ async def _seed_series_case(
         GeneralSettings(
             media_server_fallback_enabled=media_server_fallback_enabled,
             path_mappings=path_mappings or [],
+            move_destination_series=move_destination_series,
         )
     )
     service_configs: list[ServiceConfig] = []
@@ -157,10 +166,22 @@ async def _seed_series_case(
             "version": 1,
             "root": {"type": "group", "op": "and", "children": []},
         },
-        action={"candidate": True, "arr_action": "delete"},
+        action={"candidate": True, "arr_action": arr_action},
     )
     db.add_all([series, rule])
     await db.flush()
+
+    if series_service_path is not None:
+        db.add(
+            SeriesServiceRef(
+                series_id=series.id,
+                service=Service.PLEX,
+                service_id="series-key",
+                library_id="library-key",
+                library_name="TV",
+                path=series_service_path,
+            )
+        )
 
     season = Season(
         series_id=series.id,
@@ -248,6 +269,61 @@ def test_whole_series_without_active_ref_records_failure_when_fallback_disabled(
                     candidate.last_delete_error
                 )
             assert config_ids
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_whole_series_move_removes_sonarr_entry_without_deleting_archive(
+    monkeypatch, tmp_path
+) -> None:
+    async def run() -> None:
+        local_root = tmp_path / "data"
+        series_dir = local_root / "Show"
+        season_dir = series_dir / "Season 01"
+        season_dir.mkdir(parents=True)
+        episode_file = season_dir / "Show - S01E01.mkv"
+        subtitle_file = season_dir / "Show - S01E01.eng.srt"
+        episode_file.write_bytes(b"episode")
+        subtitle_file.write_bytes(b"subtitle")
+        destination_root = tmp_path / "archive"
+
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="series",
+                    path_mappings=[
+                        {
+                            "source_prefix": "/data",
+                            "local_prefix": str(local_root).replace("\\", "/"),
+                        }
+                    ],
+                    move_destination_series=str(destination_root),
+                    series_service_path="/data/Show",
+                )
+
+            sonarr = FakeSonarr({})
+            _patch_services(monkeypatch, {config_ids[0]: sonarr})
+
+            moved, failed = await cleanup._move_specific_candidates_impl(
+                [candidate_id],
+                approved_by="tester",
+            )
+
+            assert (moved, failed) == (1, 0)
+            assert sonarr.deleted_series_requests == [(arr_ids[0], False, True)]
+            assert sonarr.refreshed == []
+            assert not series_dir.exists()
+            destination_series = destination_root / "Show"
+            assert (
+                destination_series / "Season 01" / episode_file.name
+            ).read_bytes() == b"episode"
+            assert (
+                destination_series / "Season 01" / subtitle_file.name
+            ).read_bytes() == b"subtitle"
         finally:
             await engine.dispose()
 

@@ -771,8 +771,10 @@ def remove_empty_directory(
         path.rmdir()
         LOG.info(f"{log_context}: removed empty source directory {path}")
         return True
+    except FileNotFoundError:
+        return False
     except OSError as exc:
-        LOG.debug(f"{log_context}: could not remove source directory {path}: {exc}")
+        LOG.warning(f"{log_context}: could not remove source directory {path}: {exc}")
         return False
 
 

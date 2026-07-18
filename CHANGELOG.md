@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Automatic deletion now revalidates playback-sensitive candidates against fresh watch state before removing them
+- Move instead of delete now honors the configured Arr action and verifies source-folder cleanup immediately after moving
 
 ## [0.3.0] - 2026-07-18
 

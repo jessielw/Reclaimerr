@@ -5511,6 +5511,24 @@ async def _best_effort_sonarr_refresh(
             LOG.warning(f"{context}: Sonarr refresh failed for config {config_id}: {e}")
 
 
+def _cleanup_moved_source_directories(
+    paths: Iterable[Path],
+    *,
+    context: str,
+) -> None:
+    """Remove exact moved source directories when empty, deepest paths first."""
+    unique_paths = set(paths)
+    for path in sorted(unique_paths, key=lambda item: len(item.parts), reverse=True):
+        if not path.exists():
+            LOG.debug(f"{context}: verified source directory was removed: {path}")
+            continue
+        remove_empty_directory(
+            path,
+            log_context=context,
+            log_remaining=True,
+        )
+
+
 def _service_value(service: Service | str | None) -> str | None:
     if service is None:
         return None
@@ -8578,6 +8596,12 @@ async def _move_specific_candidates_impl(
         gen_settings.move_destination_series if gen_settings else None
     ) or ""
     path_mappings = (gen_settings.path_mappings if gen_settings else None) or []
+    default_arr_delete_behavior = _coerce_arr_delete_fallback(
+        gen_settings.default_arr_delete_behavior if gen_settings else None
+    )
+    add_arr_import_exclusions_on_delete = bool(
+        gen_settings.add_arr_import_exclusions_on_delete if gen_settings else True
+    )
     favorites_ignore_enabled = bool(
         gen_settings.favorites_ignore_enabled if gen_settings else False
     )
@@ -8652,10 +8676,49 @@ async def _move_specific_candidates_impl(
             v.id: v for v in ver_result.scalars().all()
         }
 
+        all_rule_ids = {
+            rule_id
+            for candidate in candidates
+            for rule_id in (candidate.matched_rule_ids or [])
+        }
+        rules_by_id: dict[int, ReclaimRule] = {}
+        if all_rule_ids:
+            rules_by_id = {
+                rule.id: rule
+                for rule in (
+                    await db.execute(
+                        select(ReclaimRule).where(ReclaimRule.id.in_(all_rule_ids))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+    movie_arr_actions: dict[int, ArrDeleteAction] = {}
+    series_arr_actions: dict[int, ArrDeleteAction] = {}
+    for candidate in candidates:
+        action = _get_arr_action(
+            candidate,
+            rules_by_id,
+            default_arr_delete_behavior,
+        )
+        if candidate.movie_id is not None:
+            movie_arr_actions[candidate.movie_id] = _merge_arr_action(
+                movie_arr_actions.get(candidate.movie_id),
+                action,
+            )
+        if candidate.series_id is not None:
+            series_arr_actions[candidate.series_id] = _merge_arr_action(
+                series_arr_actions.get(candidate.series_id),
+                action,
+            )
+
     moved = 0
     failed = 0
     move_radarr_refresh: dict[int, set[int]] = {}
     move_sonarr_refresh: dict[int, set[int]] = {}
+    finalized_radarr_refs: set[tuple[int, int]] = set()
+    finalized_sonarr_refs: set[tuple[int, int]] = set()
 
     #### movie candidates ####
     movie_candidates = [c for c in candidates if c.media_type == MediaType.MOVIE]
@@ -8713,8 +8776,15 @@ async def _move_specific_candidates_impl(
                 path_mappings,
                 service_type=version.service.value,
             )
+            _cleanup_moved_source_directories(
+                {source_movie_folder},
+                context="move local cleanup",
+            )
+            source_movie_folder_cleared = not source_movie_folder.exists()
 
-            # unmonitor in Radarr so it doesn't re-queue a download
+            # Honor the configured Arr action after the files are safely moved.
+            # A Radarr entry is only removable when its complete source folder
+            # is gone; otherwise deleting the entry could affect another version.
             radarr_clients = service_manager.radarr_clients()
             if not radarr_clients and service_manager.radarr:
                 radarr_clients = {0: service_manager.radarr}
@@ -8730,31 +8800,63 @@ async def _move_specific_candidates_impl(
                                 ).where(MovieArrRef.movie_id == movie.id)
                             )
                         ).all()
-                    norm_ver = version.path.rstrip("/") if version.path else None
-                    unmonitored: set[tuple[int, int]] = set()
+                    arr_action = movie_arr_actions.get(movie.id, "unmonitor")
                     for config_id, arr_movie_id, arr_movie_path in arr_refs:
                         if config_id not in radarr_clients or arr_movie_id is None:
                             continue
-                        if norm_ver and arr_movie_path:
-                            if not norm_ver.startswith(
-                                arr_movie_path.rstrip("/") + "/"
-                            ):
-                                continue
+                        if (
+                            version.path
+                            and arr_movie_path
+                            and not _path_matches_arr_folder(
+                                version.path,
+                                arr_movie_path,
+                                path_mappings,
+                                path_service_type=version.service.value,
+                                arr_service_type=Service.RADARR.value,
+                                arr_service_config_id=config_id,
+                            )
+                        ):
+                            continue
                         pair = (config_id, arr_movie_id)
-                        if pair not in unmonitored:
+                        if pair in finalized_radarr_refs:
+                            continue
+                        finalized_radarr_refs.add(pair)
+                        if (
+                            arr_action in {"delete", "remove_if_empty"}
+                            and source_movie_folder_cleared
+                        ):
+                            await radarr_clients[config_id].delete_movies(
+                                [arr_movie_id],
+                                delete_files=False,
+                                add_import_exclusion=(
+                                    add_arr_import_exclusions_on_delete
+                                ),
+                            )
+                            LOG.info(
+                                f"move: removed '{movie.title}' from Radarr without "
+                                f"deleting moved files (config_id={config_id}, "
+                                f"arr_id={arr_movie_id})"
+                            )
+                        else:
+                            if arr_action != "unmonitor":
+                                LOG.info(
+                                    f"move: retained '{movie.title}' in Radarr because "
+                                    "the source folder still contains other content; "
+                                    "falling back to unmonitor"
+                                )
                             await radarr_clients[config_id].unmonitor_movies(
                                 [arr_movie_id]
                             )
-                            unmonitored.add(pair)
                             LOG.info(
                                 f"move: unmonitored '{movie.title}' in Radarr "
                                 f"(config_id={config_id}, arr_id={arr_movie_id})"
                             )
-                    for c_id, a_id in unmonitored:
-                        move_radarr_refresh.setdefault(c_id, set()).add(a_id)
+                            move_radarr_refresh.setdefault(config_id, set()).add(
+                                arr_movie_id
+                            )
                 except Exception as arr_err:
                     LOG.warning(
-                        f"move_specific_candidates: Radarr unmonitor failed for "
+                        f"move_specific_candidates: Radarr finalization failed for "
                         f"'{movie.title}' after files were moved; no delete fallback "
                         f"will be attempted: {arr_err}"
                     )
@@ -8774,11 +8876,6 @@ async def _move_specific_candidates_impl(
                     f"for '{movie.title}' after files were moved; no delete fallback "
                     f"will be attempted: {svc_err}"
                 )
-
-            remove_empty_directory(
-                source_movie_folder,
-                log_context="move_specific_candidates",
-            )
 
             # update DB
             async with async_db() as db:
@@ -8959,6 +9056,7 @@ async def _move_specific_candidates_impl(
                     else None
                 )
                 season_folder: Path | None = None
+                candidate_source_paths: set[Path] = set()
 
                 local_episode_path = None
                 if is_episode:
@@ -8987,6 +9085,7 @@ async def _move_specific_candidates_impl(
                         path_mappings,
                         service_type=series_ref.service.value,
                     )
+                    candidate_source_paths.add(local_episode_path.parent)
 
                 elif is_season:
                     if season is None:
@@ -9028,6 +9127,7 @@ async def _move_specific_candidates_impl(
                             path_mappings=path_mappings,
                             service_type=series_ref.service.value,
                         )
+                        candidate_source_paths.add(local_series_path)
                     else:
                         dest = move_directory(
                             season_folder,
@@ -9036,6 +9136,9 @@ async def _move_specific_candidates_impl(
                             service_type=series_ref.service.value,
                             cleanup_empty_parent=True,
                         )
+                        candidate_source_paths.update(
+                            {season_folder, local_series_path}
+                        )
                 else:
                     dest = move_directory(
                         local_series_path,
@@ -9043,8 +9146,16 @@ async def _move_specific_candidates_impl(
                         path_mappings,
                         service_type=series_ref.service.value,
                     )
+                    candidate_source_paths.add(local_series_path)
 
-                # unmonitor in Sonarr so it doesn't re-queue a download
+                _cleanup_moved_source_directories(
+                    candidate_source_paths,
+                    context="move local cleanup",
+                )
+                whole_series_source_cleared = not local_series_path.exists()
+
+                # Whole-series moves honor Delete versus Unmonitor. Partial TV
+                # scopes remain in Sonarr and only adjust their monitoring/file state.
                 sonarr_clients = service_manager.sonarr_clients()
                 if not sonarr_clients and service_manager.sonarr:
                     sonarr_clients = {0: service_manager.sonarr}
@@ -9055,6 +9166,9 @@ async def _move_specific_candidates_impl(
                             if config_id not in sonarr_clients or arr_s_id is None:
                                 continue
                             if is_episode:
+                                move_sonarr_refresh.setdefault(config_id, set()).add(
+                                    arr_s_id
+                                )
                                 continue
                             if is_season and season:
                                 await sonarr_clients[
@@ -9071,19 +9185,51 @@ async def _move_specific_candidates_impl(
                                     arr_s_id
                                 )
                             else:
-                                await sonarr_clients[config_id].unmonitor_series(
-                                    [arr_s_id]
+                                pair = (config_id, arr_s_id)
+                                if pair in finalized_sonarr_refs:
+                                    continue
+                                finalized_sonarr_refs.add(pair)
+                                arr_action = series_arr_actions.get(
+                                    candidate.series_id, "unmonitor"
                                 )
-                                LOG.info(
-                                    f"move: unmonitored '{series_obj.title}' in Sonarr "
-                                    f"(config_id={config_id}, arr_id={arr_s_id})"
-                                )
-                                move_sonarr_refresh.setdefault(config_id, set()).add(
-                                    arr_s_id
-                                )
+                                if (
+                                    arr_action in {"delete", "remove_if_empty"}
+                                    and whole_series_source_cleared
+                                ):
+                                    await sonarr_clients[config_id].delete_series(
+                                        arr_s_id,
+                                        delete_files=False,
+                                        add_import_exclusion=(
+                                            add_arr_import_exclusions_on_delete
+                                        ),
+                                    )
+                                    LOG.info(
+                                        f"move: removed '{series_obj.title}' from "
+                                        "Sonarr without deleting moved files "
+                                        f"(config_id={config_id}, arr_id={arr_s_id})"
+                                    )
+                                else:
+                                    if arr_action != "unmonitor":
+                                        LOG.info(
+                                            f"move: retained '{series_obj.title}' in "
+                                            "Sonarr because its source folder still "
+                                            "contains other content; falling back to "
+                                            "unmonitor"
+                                        )
+                                    await sonarr_clients[config_id].unmonitor_series(
+                                        [arr_s_id]
+                                    )
+                                    LOG.info(
+                                        f"move: unmonitored '{series_obj.title}' in "
+                                        f"Sonarr (config_id={config_id}, "
+                                        f"arr_id={arr_s_id})"
+                                    )
+                                    move_sonarr_refresh.setdefault(
+                                        config_id, set()
+                                    ).add(arr_s_id)
                     except Exception as arr_err:
                         LOG.warning(
-                            f"move_specific_candidates: Sonarr unmonitor failed for "
+                            f"move_specific_candidates: Sonarr finalization failed for "
                             f"'{series_obj.title}' after files were moved; no delete "
                             f"fallback will be attempted: {arr_err}"
                         )

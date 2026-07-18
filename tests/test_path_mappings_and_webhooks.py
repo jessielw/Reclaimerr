@@ -222,6 +222,39 @@ def test_move_media_deduplicates_identical_destination_file(tmp_path: Path) -> N
     assert not movie_dir.exists()
 
 
+def test_move_media_merges_existing_destination_and_removes_source_folder(
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "data"
+    movie_dir = local_root / "media" / "movies" / "The Mule (2018)"
+    movie_dir.mkdir(parents=True)
+    media_file = movie_dir / "The Mule (2018).mp4"
+    subtitle_file = movie_dir / "The Mule (2018).eng.srt"
+    extra_file = movie_dir / "other_file.txt"
+    media_file.write_bytes(b"movie")
+    subtitle_file.write_bytes(b"subtitle")
+    extra_file.write_bytes(b"")
+
+    destination_root = tmp_path / "archive"
+    destination_dir = destination_root / "media" / "movies" / "The Mule (2018)"
+    destination_dir.mkdir(parents=True)
+    existing_file = destination_dir / "im_already_here.txt"
+    existing_file.write_bytes(b"")
+
+    moved_to = move_media(
+        media_file,
+        destination_root,
+        [{"source_prefix": "/mnt/data", "local_prefix": str(local_root)}],
+    )
+
+    assert moved_to == destination_dir / media_file.name
+    assert moved_to.read_bytes() == b"movie"
+    assert (destination_dir / subtitle_file.name).read_bytes() == b"subtitle"
+    assert (destination_dir / extra_file.name).read_bytes() == b""
+    assert existing_file.read_bytes() == b""
+    assert not movie_dir.exists()
+
+
 def test_move_media_preflights_sidecar_conflicts_before_moving_primary(
     tmp_path: Path,
 ) -> None:
