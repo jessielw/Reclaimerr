@@ -25,6 +25,12 @@ class BackgroundJobType(StrEnum):
     WEBHOOK_DELIVERY = auto()
 
 
+class BackgroundJobPriority(StrEnum):
+    LOW = auto()
+    NORMAL = auto()
+    HIGH = auto()
+
+
 class CandidateFileOpOperation(StrEnum):
     DELETE = auto()
     MOVE = auto()

@@ -17,6 +17,7 @@ from backend.database.models import (
     Series,
 )
 from backend.enums import (
+    BackgroundJobPriority,
     BackgroundJobType,
     CandidateFileOpOperation,
     NotificationType,
@@ -65,6 +66,7 @@ async def queue_candidate_file_op_job(
     job = await enqueue_background_job(
         job_type=BackgroundJobType.CANDIDATE_FILE_OP,
         payload=payload,
+        priority=BackgroundJobPriority.HIGH,
     )
     if job is None:
         raise RuntimeError("Failed to queue candidate file operation")

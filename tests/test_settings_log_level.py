@@ -100,3 +100,39 @@ def test_proxy_trusted_hosts_list_parses_env(monkeypatch, tmp_path: Path) -> Non
         "10.10.10.0/24",
         "*",
     ]
+
+
+def test_command_workers_defaults_to_three(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("RECLAIMERR_COMMAND_WORKERS", raising=False)
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.command_workers == 3
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("1", 1), ("5", 5), ("8", 8), ("0", 1), ("12", 8)],
+)
+def test_command_workers_parses_and_clamps_environment(
+    monkeypatch,
+    tmp_path: Path,
+    configured: str,
+    expected: int,
+) -> None:
+    monkeypatch.setenv("RECLAIMERR_COMMAND_WORKERS", configured)
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.command_workers == expected
+
+
+def test_invalid_command_workers_falls_back_to_three(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RECLAIMERR_COMMAND_WORKERS", "many")
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.command_workers == 3

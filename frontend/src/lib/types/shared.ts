@@ -521,6 +521,13 @@ export enum BackgroundJobType {
   ServiceToggle = "service_toggle",
   TaskRun = "task_run",
   CandidateFileOp = "candidate_file_op",
+  WebhookDelivery = "webhook_delivery",
+}
+
+export enum BackgroundJobPriority {
+  Low = "low",
+  Normal = "normal",
+  High = "high",
 }
 
 export type CandidateFileOpScope =
@@ -578,6 +585,8 @@ export interface BackgroundJobRecord {
   id: number;
   job_type: BackgroundJobType;
   status: BackgroundJobStatus;
+  priority: BackgroundJobPriority;
+  concurrency_resources: string[];
   summary: string | null;
   dedupe_key: string | null;
   attempts: number;
