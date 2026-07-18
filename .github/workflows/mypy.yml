@@ -8,6 +8,9 @@ on:
       - "**"
   # workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   mypy_check:
     runs-on: ubuntu-latest
