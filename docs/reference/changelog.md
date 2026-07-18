@@ -36,6 +36,7 @@ If the changelog file is missing, the endpoint returns `404`.
 
 ## Related Pages
 
-- [API Reference](api.md)
+- [External API](api.md)
+- [Internal UI API](internal-api.md)
 - [Troubleshooting](troubleshooting.md)
 - [Release Process](../development/release-process.md)

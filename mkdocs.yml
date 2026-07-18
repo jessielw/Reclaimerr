@@ -82,6 +82,7 @@ nav:
       - Database Migrations: development/migrations.md
   - Reference:
       - Changelog: reference/changelog.md
-      - API Reference: reference/api.md
+      - External API: reference/api.md
+      - Internal UI API: reference/internal-api.md
       - FAQ: reference/faq.md
       - Troubleshooting: reference/troubleshooting.md
