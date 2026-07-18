@@ -94,11 +94,13 @@ async def _seed_movie_version_case(
     path_mappings: list[dict] | None = None,
     arr_movie_path: str | None = "/data/movies/Movie1",
     arr_movie_id: int = 55,
+    move_destination_movies: str | None = None,
 ) -> tuple[int, list[int], int]:
     db.add(
         GeneralSettings(
             media_server_fallback_enabled=media_server_fallback_enabled,
             path_mappings=path_mappings or [],
+            move_destination_movies=move_destination_movies,
         )
     )
     service_config = ServiceConfig(
@@ -637,6 +639,70 @@ def test_unmonitor_action_still_deletes_selected_file_locally(
                 movie = await db.get(Movie, movie_id)
                 assert movie is not None
                 assert movie.removed_at is not None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_move_delete_action_removes_radarr_entry_without_deleting_archive(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def run() -> None:
+        local_root = tmp_path / "data"
+        movie_dir = local_root / "movies" / "Movie1"
+        movie_dir.mkdir(parents=True)
+        media_file = movie_dir / "Movie1.mkv"
+        subtitle_file = movie_dir / "Movie1.eng.srt"
+        extra_file = movie_dir / "other_file.txt"
+        media_file.write_bytes(b"movie")
+        subtitle_file.write_bytes(b"subtitle")
+        extra_file.write_bytes(b"")
+        destination_root = tmp_path / "archive"
+        destination_dir = destination_root / "movies" / "Movie1"
+        destination_dir.mkdir(parents=True)
+        (destination_dir / "im_already_here.txt").write_bytes(b"")
+
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                _movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/data/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                    arr_action="delete",
+                    path_mappings=[
+                        {
+                            "source_prefix": "/data",
+                            "local_prefix": str(local_root).replace("\\", "/"),
+                        }
+                    ],
+                    arr_movie_path="/data/movies/Movie1",
+                    move_destination_movies=str(destination_root),
+                )
+
+            radarr = FakeRadarr()
+            _patch_services(monkeypatch, radarr, config_id)
+
+            moved, failed = await cleanup._move_specific_candidates_impl(
+                candidate_ids,
+                approved_by="tester",
+            )
+
+            assert (moved, failed) == (1, 0)
+            assert radarr.deleted == [
+                {
+                    "movie_ids": [55],
+                    "delete_files": False,
+                    "add_import_exclusion": True,
+                }
+            ]
+            assert radarr.unmonitored == []
+            assert radarr.refreshed == []
+            assert not movie_dir.exists()
+            assert (destination_dir / media_file.name).read_bytes() == b"movie"
+            assert (destination_dir / subtitle_file.name).read_bytes() == b"subtitle"
+            assert (destination_dir / extra_file.name).read_bytes() == b""
         finally:
             await engine.dispose()
 

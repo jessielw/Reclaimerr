@@ -1317,7 +1317,7 @@ def _native_status_from_config(config: ServiceConfig) -> NativePlaybackStatus:
             config_id=config.id,
             service=config.service_type,
             available=False,
-            error="native playback state requires a media sync",
+            error="native playback state requires a playback data refresh",
         )
     if state.get("available") is True:
         return NativePlaybackStatus(
@@ -1741,7 +1741,7 @@ async def load_playback_rule_snapshot(
     # A failed or out-of-date Jellyfin/Emby snapshot cannot safely be replaced
     # with imported event users: those are historical activity, not current
     # watched state. Keep other playback metrics available, but make user
-    # conditions unknown until the next successful media sync.
+    # conditions unknown until the next successful playback data refresh.
     native_user_unknown_targets: set[PlaybackTargetKey] = set()
     for scope, services_by_target in target_services.items():
         for target_id, services in services_by_target.items():

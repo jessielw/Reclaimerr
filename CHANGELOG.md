@@ -5,11 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-18
+
+### Added
+
+- Jellyfin and Emby playback rules now use persisted native completed-watch snapshots; Playback Reporting remains optional enrichment for durable event and duration data
+
+### Changed
+
+- Playback data now refreshes every 15 minutes by default, and stale rule previews refresh it on demand without requiring a full media sync
+
+### Fixed
+
+- Automatic deletion now revalidates playback-sensitive candidates against fresh watch state before removing them
+- Move instead of delete now honors the configured Arr action and verifies source-folder cleanup immediately after moving
+
 ## [0.3.0] - 2026-07-18
 
 ### Added
 
-- Jellyfin and Emby playback rules now use persisted native completed-watch snapshots after Sync Media; Playback Reporting remains optional enrichment for durable event and duration data
 - Added a versioned, scoped-token automation API for candidates, lifecycle events, movies, series, protections, task schedules/history/runs, and system status
 - Added dedicated Swagger, ReDoc, and OpenAPI documentation containing only the supported external API
 - Added durable candidate lifecycle webhooks with encrypted credentials, automatic retries, restart recovery, and delivery history in the new Integrations settings page

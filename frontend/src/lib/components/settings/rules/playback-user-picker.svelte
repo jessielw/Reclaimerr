@@ -124,7 +124,7 @@
           <div class="p-3 space-y-1 text-muted-foreground">
             <p class="text-sm">No resolved playback users found.</p>
             <p class="text-xs">
-              Refresh playback history or enter usernames manually in the rule.
+              Refresh playback data or enter usernames manually in the rule.
             </p>
           </div>
         {:else if filteredUsers.length === 0}

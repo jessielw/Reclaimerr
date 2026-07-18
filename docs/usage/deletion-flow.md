@@ -22,6 +22,14 @@ already present, Reclaimerr verifies matching size and SHA-256 content before
 discarding the redundant source copy; different files are never overwritten and
 leave the candidate available for review.
 
+Move operations also honor the rule's Arr action. **Delete** removes a complete
+movie or series entry from Radarr/Sonarr without deleting the files that were
+already moved. **Unmonitor** keeps the Arr entry and refreshes its file state.
+Partial season and episode moves never remove the parent series entry. If Radarr
+or Sonarr is configured to create missing media folders, a retained unmonitored
+entry may recreate its empty source folder during that or a later scan; Reclaimerr
+does not repeatedly remove folders managed by another application.
+
 When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 movie or series from its managed Plex, Jellyfin, and Emby collections. This
 prevents media-server collections from retaining links to files that are about

@@ -459,8 +459,8 @@ before enabling the rule.
 
 Playback fields are available to movie-version, series, season, and episode
 rules. Reclaimerr stores current completed watch state directly from Jellyfin
-and Emby during Sync Media, then supplements it with compact events imported
-from the Jellyfin/Emby Playback Reporting plugin and Tautulli:
+and Emby, then supplements it with compact events imported from the
+Jellyfin/Emby Playback Reporting plugin and Tautulli:
 
 | Field                        | Meaning                                                                     |
 | ---------------------------- | --------------------------------------------------------------------------- |
@@ -484,6 +484,7 @@ is never used.
 
 The existing `watch.*` fields continue to describe the current library copy.
 Native Jellyfin/Emby playback is current completed state and is refreshed by
+the **Refresh Playback Data** task every 15 minutes by default as well as by
 Sync Media. Imported plugin/Tautulli events are durable history and may include
 activity from before the current copy was added. For Jellyfin and Emby, native
 state is authoritative for **Playback users** and **Playback user count**: old
@@ -497,13 +498,14 @@ check.
 or imported-history provider can observe the media target. Targets outside that
 coverage are unknown and match neither value. Marking an item watched without
 playing it is captured by Jellyfin/Emby's native current state after the next
-Sync Media, but it does not create an imported playback event.
+playback data refresh, but it does not create an imported playback event.
 
 Playback data is loaded only when an enabled rule uses a `playback.*` field.
-Native snapshots are read from the database; previews do not recrawl media
-servers. Tautulli history is fetched in one ungrouped paginated pass. Playback
-Reporting and Tautulli imports use an overlap window and event keys to avoid
-duplicate events during incremental refreshes.
+Native snapshots are read from the database. A preview refreshes them when they
+are more than 15 minutes old, while cleanup scans require a current snapshot.
+Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting
+and Tautulli imports use an overlap window and event keys to avoid duplicate
+events during incremental refreshes.
 
 Playback-user rules match usernames case-insensitively and can require any,
 none, or all selected users. Jellyfin and Emby resolve names from their native
@@ -518,7 +520,7 @@ count remain available while the last-activity fields stay unknown.
 
 Plex playback fields, including playback-user rules, require Tautulli.
 Jellyfin/Emby activity, count, users, and latest-watch fields work without the
-Playback Reporting plugin after Sync Media; duration fields still require
+Playback Reporting plugin after a playback data refresh; duration fields still require
 imported plugin history. Reclaimerr does not currently import playback events
 directly from Plex.
 
@@ -528,6 +530,11 @@ playback values are unknown.
 Unknown values cannot create cleanup candidates. Existing automated
 protections are preserved until the affected playback rule can be evaluated
 again.
+
+Immediately before automatic deletion, eligible candidates whose matched rules
+use playback fields are checked again against freshly refreshed data. An item
+that was watched after becoming a candidate, or whose playback state cannot be
+observed safely, is not authorized for deletion by that playback rule.
 
 ## Validation and Editing
 

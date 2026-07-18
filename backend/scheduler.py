@@ -62,13 +62,13 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
     {
         "task": Task.REFRESH_PLAYBACK_HISTORY,
         "description": (
-            "Refreshes durable playback history from Playback Reporting and "
-            "Tautulli without running a full media sync"
+            "Refreshes native media-server watch state plus durable history "
+            "from Playback Reporting and Tautulli"
         ),
-        "schedule_type": ScheduleType.MANUAL,
-        "schedule_value": "",
-        "default_schedule_type": ScheduleType.MANUAL,
-        "default_schedule_value": "",
+        "schedule_type": ScheduleType.INTERVAL,
+        "schedule_value": "900",
+        "default_schedule_type": ScheduleType.INTERVAL,
+        "default_schedule_value": "900",
         "enabled": True,
     },
     {
@@ -187,11 +187,22 @@ async def ensure_default_schedules(db: AsyncSession) -> None:
         existing = schedule_map.get(task)
         if existing:
             updated = False
+            used_previous_default = (
+                existing.schedule_type is existing.default_schedule_type
+                and existing.schedule_value == existing.default_schedule_value
+            )
             if existing.description != default["description"]:
                 existing.description = default["description"]
                 updated = True
-            # keep user-edited active schedule settings stable across restarts;
-            # update only the reset-to-default metadata.
+            # Follow changed defaults only when the active schedule still matches
+            # the previous default. User customized schedules remain untouched.
+            if used_previous_default and (
+                existing.default_schedule_type != default["default_schedule_type"]
+                or existing.default_schedule_value != default["default_schedule_value"]
+            ):
+                existing.schedule_type = default["schedule_type"]
+                existing.schedule_value = default["schedule_value"]
+                updated = True
             if existing.default_schedule_type != default["default_schedule_type"]:
                 existing.default_schedule_type = default["default_schedule_type"]
                 updated = True
