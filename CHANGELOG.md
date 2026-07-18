@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Existing delete/move webhooks are migrated to durable lifecycle endpoints, and their legacy editor/configuration is removed so Integrations is the single source of truth
 - Organized the external API into stable v1 domain modules with granular least-privilege scopes, discovery links, consistent pagination, and cursor-based event polling
 - Background jobs now use a bounded, priority-aware command pool so safe work can proceed concurrently while task runs
+- Updated dependencies:
+  - ruff to 0.15.22
+  - uvicorn to 0.51.0
+  - platformdirs to 4.10.1
+  - zensical to 0.0.51
+  - filelock 3.30.3
 
 ### Fixed
 
