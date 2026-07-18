@@ -101,6 +101,7 @@ class Task(StrEnum):
             Task.ANILIST_RATINGS_REFRESH: "Refresh AniList Ratings",
             Task.MDBLIST_RATINGS_REFRESH: "Refresh MDBList Ratings",
             Task.OMDB_RATINGS_REFRESH: "Refresh OMDb Ratings",
+            Task.REFRESH_PLAYBACK_HISTORY: "Refresh Playback Data",
         }
         if self in branded_names:
             return branded_names[self]

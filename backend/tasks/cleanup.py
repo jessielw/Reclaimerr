@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,7 +52,6 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
-    normalize_fpath,
     remove_empty_directory,
     resolve_path,
     sibling_cleanup,
@@ -109,12 +109,14 @@ from backend.services.lifecycle_webhooks import (
     enqueue_event_deliveries,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
+from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.notifications import (
     build_cleanup_notification_context,
     notify_admins,
     notify_all_users,
 )
 from backend.services.playback_history import (
+    NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
     load_playback_rule_snapshot,
     log_playback_rule_coverage,
@@ -155,6 +157,13 @@ class _PlaybackRuleDataResult:
     snapshot: PlaybackRuleSnapshot | None
     unavailable_count: int = 0
     error: str | None = None
+
+
+@dataclass(slots=True)
+class _AutoDeleteRevalidationResult:
+    candidate_ids: list[int]
+    revalidated_out: int = 0
+    playback_unavailable: int = 0
 
 
 @dataclass(slots=True)
@@ -256,7 +265,10 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             for rule in (
                 (
                     await db.execute(
-                        select(ReclaimRule).where(ReclaimRule.id.in_(rule_ids))
+                        select(ReclaimRule).where(
+                            ReclaimRule.id.in_(rule_ids),
+                            ReclaimRule.enabled.is_(True),
+                        )
                     )
                 )
                 .scalars()
@@ -430,6 +442,196 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 waiting_count += 1
 
         return eligible_ids, blocked_count, waiting_count
+
+
+def _candidate_target_key(candidate: ReclaimCandidate) -> tuple[str, int] | None:
+    if candidate.media_type is MediaType.MOVIE:
+        return (
+            (TARGET_MOVIE_VERSION, candidate.movie_version_id)
+            if candidate.movie_version_id is not None
+            else None
+        )
+    if candidate.episode_id is not None:
+        return TARGET_EPISODE, candidate.episode_id
+    if candidate.season_id is not None:
+        return TARGET_SEASON, candidate.season_id
+    if candidate.series_id is not None:
+        return TARGET_SERIES, candidate.series_id
+    return None
+
+
+def _record_target_key(record: MatchedCandidateRecord) -> tuple[str, int] | None:
+    if record.media_type is MediaType.MOVIE:
+        return (
+            (TARGET_MOVIE_VERSION, record.movie_version_id)
+            if record.movie_version_id is not None
+            else None
+        )
+    if record.episode_id is not None:
+        return TARGET_EPISODE, record.episode_id
+    if record.season_id is not None:
+        return TARGET_SEASON, record.season_id
+    if record.series_id is not None:
+        return TARGET_SERIES, record.series_id
+    return None
+
+
+async def _revalidate_auto_delete_candidate_ids(
+    candidate_ids: Sequence[int],
+) -> _AutoDeleteRevalidationResult:
+    """Re-check playback-sensitive automatic rules against eligible targets."""
+
+    if not candidate_ids:
+        return _AutoDeleteRevalidationResult(candidate_ids=[])
+
+    async with async_db() as db:
+        candidates = list(
+            (
+                await db.execute(
+                    select(ReclaimCandidate).where(
+                        ReclaimCandidate.id.in_(candidate_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rule_ids = {
+            rule_id
+            for candidate in candidates
+            for rule_id in (candidate.matched_rule_ids or [])
+        }
+        rules = (
+            list(
+                (
+                    await db.execute(
+                        select(ReclaimRule).where(
+                            ReclaimRule.id.in_(rule_ids),
+                            ReclaimRule.enabled.is_(True),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if rule_ids
+            else []
+        )
+        rules_by_id = {rule.id: rule for rule in rules}
+
+        applicable_by_candidate: dict[int, set[int]] = {}
+        affected: list[ReclaimCandidate] = []
+        passthrough_ids: set[int] = set()
+        for candidate in candidates:
+            applicable = {
+                rule_id
+                for rule_id in (candidate.matched_rule_ids or [])
+                if (
+                    (rule := rules_by_id.get(rule_id)) is not None
+                    and isinstance(rule.action, dict)
+                    and rule.action.get("auto_delete_enabled") is True
+                )
+            }
+            applicable_by_candidate[candidate.id] = applicable
+            if any(
+                _rule_uses_playback_fields(rules_by_id[rule_id])
+                for rule_id in applicable
+            ):
+                affected.append(candidate)
+            else:
+                passthrough_ids.add(candidate.id)
+
+        if not affected:
+            existing_ids = {candidate.id for candidate in candidates}
+            return _AutoDeleteRevalidationResult(
+                candidate_ids=[
+                    candidate_id
+                    for candidate_id in candidate_ids
+                    if candidate_id in existing_ids
+                ]
+            )
+
+        affected_rule_ids = {
+            rule_id
+            for candidate in affected
+            for rule_id in applicable_by_candidate[candidate.id]
+        }
+        target_ids_by_scope: dict[str, set[int]] = defaultdict(set)
+        for candidate in affected:
+            target_key = _candidate_target_key(candidate)
+            if target_key is not None:
+                target_ids_by_scope[target_key[0]].add(target_key[1])
+
+        try:
+            preview = await collect_rule_preview_matches_with_metadata(
+                db,
+                [rules_by_id[rule_id] for rule_id in affected_rule_ids],
+                target_ids_by_scope=target_ids_by_scope,
+                require_fresh=True,
+            )
+        except Exception as exc:
+            LOG.error(
+                "Auto-delete playback revalidation failed; affected candidates "
+                f"will be skipped: {exc}",
+                exc_info=True,
+            )
+            return _AutoDeleteRevalidationResult(
+                candidate_ids=[
+                    candidate_id
+                    for candidate_id in candidate_ids
+                    if candidate_id in passthrough_ids
+                ],
+                revalidated_out=len(affected),
+                playback_unavailable=len(affected),
+            )
+
+        if preview.metadata.playback_error:
+            LOG.warning(
+                "Auto-delete playback revalidation could not establish complete "
+                f"provider coverage: {preview.metadata.playback_error}"
+            )
+            return _AutoDeleteRevalidationResult(
+                candidate_ids=[
+                    candidate_id
+                    for candidate_id in candidate_ids
+                    if candidate_id in passthrough_ids
+                ],
+                revalidated_out=len(affected),
+                playback_unavailable=len(affected),
+            )
+
+        matched_rule_ids_by_target: dict[tuple[str, int], set[int]] = defaultdict(set)
+        for record in preview.matches:
+            target_key = _record_target_key(record)
+            if target_key is not None:
+                matched_rule_ids_by_target[target_key].update(record.matched_rule_ids)
+
+        retained_ids = set(passthrough_ids)
+        revalidated_out = 0
+        for candidate in affected:
+            target_key = _candidate_target_key(candidate)
+            matched_rule_ids = (
+                matched_rule_ids_by_target.get(target_key, set())
+                if target_key is not None
+                else set()
+            )
+            if matched_rule_ids & applicable_by_candidate[candidate.id]:
+                retained_ids.add(candidate.id)
+            else:
+                revalidated_out += 1
+
+        return _AutoDeleteRevalidationResult(
+            candidate_ids=[
+                candidate_id
+                for candidate_id in candidate_ids
+                if candidate_id in retained_ids
+            ],
+            revalidated_out=revalidated_out,
+            playback_unavailable=min(
+                preview.metadata.playback_unavailable_count,
+                len(affected),
+            ),
+        )
 
 
 def _normalize_favorites_username(value: str) -> str:
@@ -615,6 +817,7 @@ async def _collect_rule_match_records(
     preview_metadata: RulePreviewMatchMetadata | None = None,
     exclude_favorites: bool = True,
     exclude_protected: bool = True,
+    target_ids_by_scope: Mapping[str, set[int]] | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Collect candidates that match the given rules."""
     movie_rules = [r for r in rules if normalize_rule_target(r) == TARGET_MOVIE_VERSION]
@@ -631,6 +834,7 @@ async def _collect_rule_match_records(
                 preview_metadata=preview_metadata,
                 exclude_favorites=exclude_favorites,
                 exclude_protected=exclude_protected,
+                target_ids=(target_ids_by_scope or {}).get(TARGET_MOVIE_VERSION),
             )
         )
     if series_rules:
@@ -641,6 +845,7 @@ async def _collect_rule_match_records(
                 preview_metadata=preview_metadata,
                 exclude_favorites=exclude_favorites,
                 exclude_protected=exclude_protected,
+                target_ids=(target_ids_by_scope or {}).get(TARGET_SERIES),
             )
         )
     if season_rules:
@@ -651,6 +856,7 @@ async def _collect_rule_match_records(
                 preview_metadata=preview_metadata,
                 exclude_favorites=exclude_favorites,
                 exclude_protected=exclude_protected,
+                target_ids=(target_ids_by_scope or {}).get(TARGET_SEASON),
             )
         )
     if episode_rules:
@@ -661,6 +867,7 @@ async def _collect_rule_match_records(
                 preview_metadata=preview_metadata,
                 exclude_favorites=exclude_favorites,
                 exclude_protected=exclude_protected,
+                target_ids=(target_ids_by_scope or {}).get(TARGET_EPISODE),
             )
         )
     return matches
@@ -669,6 +876,9 @@ async def _collect_rule_match_records(
 async def collect_rule_preview_matches_with_metadata(
     db: AsyncSession,
     rules: list[ReclaimRule],
+    *,
+    target_ids_by_scope: Mapping[str, set[int]] | None = None,
+    require_fresh: bool = False,
 ) -> RulePreviewMatchResult:
     """Evaluate rules without mutating persisted candidates and return counters."""
     favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(db)
@@ -699,15 +909,15 @@ async def collect_rule_preview_matches_with_metadata(
     await _activate_favorites_rule_data_for_rules(
         db,
         list(rules),
-        require_fresh=False,
+        require_fresh=require_fresh,
     )
     await _activate_rank_rule_data_for_rules(db, list(rules))
     await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
     await _activate_seerr_request_resolver_for_rules(
         db,
         list(rules),
-        require_fresh=False,
-        allow_stale_on_failure=True,
+        require_fresh=require_fresh,
+        allow_stale_on_failure=not require_fresh,
     )
 
     metadata = RulePreviewMatchMetadata()
@@ -718,8 +928,31 @@ async def collect_rule_preview_matches_with_metadata(
     )
     metadata.sonarr_unavailable_count = len(sonarr_result.unavailable_series_ids)
     metadata.sonarr_error = sonarr_result.error
-    playback_result = await _activate_playback_history_for_rules(db, list(rules))
-    metadata.playback_unavailable_count = playback_result.unavailable_count
+    playback_result = await _activate_playback_history_for_rules(
+        db,
+        list(rules),
+        require_fresh=require_fresh,
+    )
+    if target_ids_by_scope and playback_result.snapshot is not None:
+        requested_fields_by_scope: dict[str, set[str]] = defaultdict(set)
+        for rule in rules:
+            scope = normalize_rule_target(rule)
+            for field in PLAYBACK_RULE_FIELDS:
+                if collect_rule_conditions(rule.definition, field=field):
+                    requested_fields_by_scope.setdefault(scope, set()).add(field)
+        metadata.playback_unavailable_count = sum(
+            1
+            for scope, target_ids in target_ids_by_scope.items()
+            for target_id in target_ids
+            if requested_fields_by_scope.get(scope)
+            and not requested_fields_by_scope[scope].issubset(
+                playback_result.snapshot.available_fields_by_target.get(
+                    (scope, target_id), set()
+                )
+            )
+        )
+    else:
+        metadata.playback_unavailable_count = playback_result.unavailable_count
     metadata.playback_error = playback_result.error
     is_protection_preview = bool(rules) and all(
         normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT for rule in rules
@@ -730,6 +963,7 @@ async def collect_rule_preview_matches_with_metadata(
         preview_metadata=metadata,
         exclude_favorites=not is_protection_preview,
         exclude_protected=not is_protection_preview,
+        target_ids_by_scope=target_ids_by_scope,
     )
     metadata.matched_count = len(matches)
     return RulePreviewMatchResult(matches=matches, metadata=metadata)
@@ -1263,9 +1497,6 @@ async def _activate_playback_history_for_rules(
         PlaybackHistoryResolver({}).activate()
         return _PlaybackRuleDataResult(snapshot=None)
 
-    refresh_result = await refresh_playback_history(force=require_fresh)
-    snapshot = await load_playback_rule_snapshot(db, refresh_result)
-    PlaybackHistoryResolver(snapshot.values_by_target).activate()
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
     fields = {
         field
@@ -1273,13 +1504,45 @@ async def _activate_playback_history_for_rules(
         for field in PLAYBACK_RULE_FIELDS
         if collect_rule_conditions(rule.definition, field=field)
     }
+
+    # Provider refreshes use their own sessions. Release this evaluator's read
+    # transaction before they update persisted snapshots.
+    await db.commit()
+    native_error: str | None = None
+    if fields & NATIVE_PLAYBACK_FIELDS:
+        (
+            native_ok,
+            native_error,
+        ) = await media_watch_snapshot_cache.ensure_fresh_snapshot(
+            force=require_fresh,
+            allow_stale_on_failure=not require_fresh,
+        )
+        if not native_ok and native_error:
+            LOG.warning(
+                "Native playback snapshot refresh failed; affected rule values "
+                f"will remain unknown: {native_error}"
+            )
+        elif native_error:
+            LOG.debug(
+                "Using stale native playback snapshot during rule preview: "
+                f"{native_error}"
+            )
+
+    refresh_result = await refresh_playback_history(force=require_fresh)
+    snapshot = await load_playback_rule_snapshot(db, refresh_result)
+    PlaybackHistoryResolver(snapshot.values_by_target).activate()
     log_playback_rule_coverage(snapshot, scopes, fields)
     unavailable_count = snapshot.unavailable_count(scopes, fields)
-    if unavailable_count == 0:
+    if unavailable_count == 0 and not (
+        require_fresh and (snapshot.errors or native_error)
+    ):
         return _PlaybackRuleDataResult(snapshot=snapshot)
 
-    if snapshot.errors:
-        error = "; ".join(snapshot.errors)
+    errors = [*snapshot.errors]
+    if native_error and native_error not in errors:
+        errors.append(native_error)
+    if errors:
+        error = "; ".join(errors)
     elif not snapshot.has_configured_provider:
         error = "No playback source is configured"
     elif fields & {
@@ -3223,6 +3486,22 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             db, list(rules), require_fresh=True
         )
 
+        playback_dependent_rules = [
+            rule for rule in rules if _rule_uses_playback_fields(rule)
+        ]
+        if playback_rule_result.error:
+            preserved_protection_rule_ids.update(
+                rule.id
+                for rule in playback_dependent_rules
+                if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT
+            )
+            rules = [rule for rule in rules if not _rule_uses_playback_fields(rule)]
+            LOG.warning(
+                f"Skipping {len(playback_dependent_rules)} playback-dependent "
+                "cleanup rule(s) because current provider data could not be "
+                f"verified: {playback_rule_result.error}"
+            )
+
         if seerr_skipped_rules:
             await set_seerr_rule_skip_notice(
                 db,
@@ -3241,17 +3520,16 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         else:
             await clear_sonarr_rule_data_notice(db)
 
-        if playback_rule_result.unavailable_count:
+        if playback_rule_result.unavailable_count or playback_rule_result.error:
             playback_dependent_protection_rules = {
                 rule.id
-                for rule in rules
+                for rule in playback_dependent_rules
                 if normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT
-                and _rule_uses_playback_fields(rule)
             }
             preserved_protection_rule_ids.update(playback_dependent_protection_rules)
             await set_playback_rule_data_notice(
                 db,
-                unavailable_targets=playback_rule_result.unavailable_count,
+                unavailable_targets=max(1, playback_rule_result.unavailable_count),
                 reason=playback_rule_result.error
                 or "unknown playback history provider error",
             )
@@ -3447,6 +3725,7 @@ async def _collect_series_candidate_records(
     preview_metadata: RulePreviewMatchMetadata | None = None,
     exclude_favorites: bool = True,
     exclude_protected: bool = True,
+    target_ids: set[int] | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate whole series rules without mutating persisted candidates."""
     (
@@ -3470,6 +3749,10 @@ async def _collect_series_candidate_records(
     if _rules_use_field(rules, "series.library_season_count"):
         query_options.append(selectinload(Series.seasons))
     query = select(Series).where(Series.removed_at.is_(None)).options(*query_options)
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query = query.where(Series.id.in_(target_ids))
     result = await db.execute(query)
     media_items = result.scalars().all()
     if preview_metadata is not None:
@@ -3628,6 +3911,7 @@ async def _collect_movie_version_candidate_records(
     preview_metadata: RulePreviewMatchMetadata | None = None,
     exclude_favorites: bool = True,
     exclude_protected: bool = True,
+    target_ids: set[int] | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate movie-version rules without mutating persisted candidates."""
     (
@@ -3650,6 +3934,14 @@ async def _collect_movie_version_candidate_records(
         .where(Movie.removed_at.is_(None))
         .options(selectinload(Movie.versions))
     )
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query = query.where(
+            Movie.id.in_(
+                select(MovieVersion.movie_id).where(MovieVersion.id.in_(target_ids))
+            )
+        )
     result = await db.execute(query)
     movies = result.scalars().all()
     if preview_metadata is not None:
@@ -3702,6 +3994,8 @@ async def _collect_movie_version_candidate_records(
             continue
 
         for version in movie.versions:
+            if target_ids is not None and version.id not in target_ids:
+                continue
             if version.id in protected_version_ids:
                 continue
 
@@ -3850,6 +4144,7 @@ async def _collect_season_candidate_records(
     preview_metadata: RulePreviewMatchMetadata | None = None,
     exclude_favorites: bool = True,
     exclude_protected: bool = True,
+    target_ids: set[int] | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate season rules without mutating persisted candidates."""
     include_episodes = _rules_use_season_episode_watch_fields(rules)
@@ -3878,6 +4173,12 @@ async def _collect_season_candidate_records(
         .where(Series.removed_at.is_(None))
         .options(selectinload(Series.service_refs), season_loader)
     )
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query = query.where(
+            Series.id.in_(select(Season.series_id).where(Season.id.in_(target_ids)))
+        )
     result = await db.execute(query)
     all_series = result.scalars().all()
     if preview_metadata is not None:
@@ -3940,6 +4241,8 @@ async def _collect_season_candidate_records(
             continue
 
         for season in series.seasons:
+            if target_ids is not None and season.id not in target_ids:
+                continue
             if season.id in protected_season_ids:
                 continue
 
@@ -4065,6 +4368,7 @@ async def _collect_episode_candidate_records(
     preview_metadata: RulePreviewMatchMetadata | None = None,
     exclude_favorites: bool = True,
     exclude_protected: bool = True,
+    target_ids: set[int] | None = None,
 ) -> list[MatchedCandidateRecord]:
     """Evaluate episode rules without mutating persisted candidates."""
     (
@@ -4091,6 +4395,16 @@ async def _collect_episode_candidate_records(
             selectinload(Series.seasons).selectinload(Season.episodes),
         )
     )
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query = query.where(
+            Series.id.in_(
+                select(Season.series_id)
+                .join(Episode, Episode.season_id == Season.id)
+                .where(Episode.id.in_(target_ids))
+            )
+        )
     result = await db.execute(query)
     all_series = result.scalars().all()
     if preview_metadata is not None:
@@ -4174,6 +4488,8 @@ async def _collect_episode_candidate_records(
                 continue
 
             for episode in season.episodes:
+                if target_ids is not None and episode.id not in target_ids:
+                    continue
                 if episode.id in protected_episode_ids:
                     continue
 
@@ -4902,6 +5218,34 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
                 "eligible": 0,
                 "waiting": waiting_count,
                 "skipped": skipped_count,
+                "revalidated_out": 0,
+                "playback_unavailable": 0,
+                "deleted": 0,
+                "failed": 0,
+            }
+
+        revalidation = await _revalidate_auto_delete_candidate_ids(eligible_ids)
+        eligible_ids = revalidation.candidate_ids
+        skipped_count += revalidation.revalidated_out
+        if revalidation.revalidated_out:
+            LOG.info(
+                "Auto-delete revalidation skipped "
+                f"{revalidation.revalidated_out} candidate(s) that no longer "
+                "matched an active automatic-deletion rule"
+            )
+        if revalidation.playback_unavailable:
+            LOG.warning(
+                "Auto-delete revalidation found unavailable playback data for "
+                f"{revalidation.playback_unavailable} target(s); affected "
+                "playback rules did not authorize deletion"
+            )
+        if not eligible_ids:
+            return {
+                "eligible": 0,
+                "waiting": waiting_count,
+                "skipped": skipped_count,
+                "revalidated_out": revalidation.revalidated_out,
+                "playback_unavailable": revalidation.playback_unavailable,
                 "deleted": 0,
                 "failed": 0,
             }
@@ -4914,6 +5258,8 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
             "eligible": len(eligible_ids),
             "waiting": waiting_count,
             "skipped": skipped_count,
+            "revalidated_out": revalidation.revalidated_out,
+            "playback_unavailable": revalidation.playback_unavailable,
             "deleted": deleted_count,
             "failed": failed_count,
         }
@@ -4922,6 +5268,8 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
             f"eligible={summary['eligible']}, "
             f"waiting={summary['waiting']}, "
             f"skipped={summary['skipped']}, "
+            f"revalidated_out={summary['revalidated_out']}, "
+            f"playback_unavailable={summary['playback_unavailable']}, "
             f"deleted={summary['deleted']}, "
             f"failed={summary['failed']}"
         )

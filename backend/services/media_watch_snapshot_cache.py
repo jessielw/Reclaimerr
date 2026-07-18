@@ -113,9 +113,15 @@ class MediaWatchSnapshotCache:
     _PLEX_LAST_VIEWED_AT_KEY = "plex_last_viewed_at"
     _PLEX_LAST_FULL_SYNC_AT_KEY = "plex_last_full_sync_at"
     _PLEX_FORMAT_VERSION_KEY = "format_version"
+    _SYNC_AVAILABLE_KEY = "available"
+    _SYNC_LAST_SUCCESS_AT_KEY = "last_success_at"
+    _SYNC_LAST_ATTEMPT_AT_KEY = "last_attempt_at"
+    _SYNC_LAST_ERROR_KEY = "last_error"
     _PLEX_FORMAT_VERSION = 3
     _PLEX_OVERLAP_WINDOW = timedelta(days=1)
     _PLEX_FULL_REBUILD_INTERVAL = timedelta(days=7)
+    _SNAPSHOT_REFRESH_INTERVAL = timedelta(minutes=15)
+    _SNAPSHOT_RETRY_INTERVAL = timedelta(minutes=5)
     _NATIVE_PLAYBACK_SYNC_STATE_KEY = "native_playback_sync"
     _NATIVE_PLAYBACK_FORMAT_VERSION_KEY = "format_version"
     _NATIVE_PLAYBACK_AVAILABLE_KEY = "available"
@@ -194,6 +200,118 @@ class MediaWatchSnapshotCache:
             state[cls._NATIVE_PLAYBACK_LAST_SUCCESS_AT_KEY] = now
         extra_settings[cls._NATIVE_PLAYBACK_SYNC_STATE_KEY] = state
         config.extra_settings = extra_settings
+
+    @classmethod
+    def _set_plex_sync_state(
+        cls,
+        config: ServiceConfig,
+        *,
+        available: bool,
+        error: str | None = None,
+    ) -> None:
+        """Persist Plex snapshot health alongside its incremental cursor."""
+
+        extra_settings = (
+            dict(config.extra_settings)
+            if isinstance(config.extra_settings, dict)
+            else {}
+        )
+        previous = extra_settings.get(cls._PLEX_SYNC_STATE_KEY)
+        state = dict(previous) if isinstance(previous, dict) else {}
+        now = cls._to_utc_iso(datetime.now(UTC))
+        state[cls._SYNC_AVAILABLE_KEY] = available
+        state[cls._SYNC_LAST_ATTEMPT_AT_KEY] = now
+        state[cls._SYNC_LAST_ERROR_KEY] = error
+        if available:
+            state[cls._SYNC_LAST_SUCCESS_AT_KEY] = now
+        extra_settings[cls._PLEX_SYNC_STATE_KEY] = state
+        config.extra_settings = extra_settings
+
+    @classmethod
+    def _last_success_for_config(cls, config: ServiceConfig) -> datetime | None:
+        state = cls._sync_state_for_config(config)
+        return cls._parse_utc_datetime(state.get(cls._SYNC_LAST_SUCCESS_AT_KEY))
+
+    @classmethod
+    def _sync_state_for_config(cls, config: ServiceConfig) -> dict[str, Any]:
+        extra_settings = config.extra_settings
+        if not isinstance(extra_settings, dict):
+            return {}
+        state_key = (
+            cls._PLEX_SYNC_STATE_KEY
+            if config.service_type is Service.PLEX
+            else cls._NATIVE_PLAYBACK_SYNC_STATE_KEY
+        )
+        state = extra_settings.get(state_key)
+        return dict(state) if isinstance(state, dict) else {}
+
+    @classmethod
+    def _config_snapshot_requires_refresh(
+        cls,
+        config: ServiceConfig,
+        now: datetime,
+    ) -> bool:
+        state = cls._sync_state_for_config(config)
+        expected_version = (
+            cls._PLEX_FORMAT_VERSION
+            if config.service_type is Service.PLEX
+            else cls._NATIVE_PLAYBACK_FORMAT_VERSION
+        )
+        if (
+            state.get(cls._PLEX_FORMAT_VERSION_KEY) == expected_version
+            and state.get(cls._SYNC_AVAILABLE_KEY) is True
+        ):
+            last_success = cls._parse_utc_datetime(
+                state.get(cls._SYNC_LAST_SUCCESS_AT_KEY)
+            )
+            return (
+                last_success is None
+                or now >= last_success + cls._SNAPSHOT_REFRESH_INTERVAL
+            )
+
+        last_attempt = cls._parse_utc_datetime(state.get(cls._SYNC_LAST_ATTEMPT_AT_KEY))
+        return (
+            last_attempt is None or now >= last_attempt + cls._SNAPSHOT_RETRY_INTERVAL
+        )
+
+    async def ensure_fresh_snapshot(
+        self,
+        *,
+        force: bool = False,
+        allow_stale_on_failure: bool = True,
+    ) -> tuple[bool, str | None]:
+        """Refresh persisted watch state when any configured source is stale.
+
+        Preview callers may continue with an older snapshot after a transient
+        provider failure. Destructive callers disable that fallback and use the
+        per-source availability state to make affected rule values unknown.
+        """
+
+        async with async_db() as session:
+            servers = list(await self._get_configured_media_servers(session))
+        supported = [
+            config
+            for config in servers
+            if config.service_type in {Service.PLEX, Service.JELLYFIN, Service.EMBY}
+        ]
+        if not supported:
+            return True, None
+
+        now = datetime.now(UTC)
+        last_successes = [self._last_success_for_config(config) for config in supported]
+        needs_refresh = force or any(
+            self._config_snapshot_requires_refresh(config, now) for config in supported
+        )
+        if not needs_refresh:
+            return True, None
+
+        had_snapshot = all(last_success is not None for last_success in last_successes)
+        ok, error = await self.refresh_snapshot(all_servers=supported)
+        if ok:
+            return True, None
+        if allow_stale_on_failure and had_snapshot:
+            return True, error
+        return False, error
 
     @classmethod
     def _build_native_playback_rows(
@@ -702,6 +820,7 @@ class MediaWatchSnapshotCache:
                         return True, None
 
                     refreshed_servers = 0
+                    refresh_errors: list[str] = []
                     for config in supported:
                         service_instance = await service_manager.return_service(
                             config.service_type
@@ -710,14 +829,24 @@ class MediaWatchSnapshotCache:
                             service_instance,
                             (PlexService, JellyfinService, EmbyService),
                         ):
+                            error = "media-server client is not initialized"
                             if config.service_type in {Service.JELLYFIN, Service.EMBY}:
                                 self._set_native_playback_sync_state(
                                     config,
                                     available=False,
-                                    error="media-server client is not initialized",
+                                    error=error,
                                 )
-                                session.add(config)
-                                await session.commit()
+                            else:
+                                self._set_plex_sync_state(
+                                    config,
+                                    available=False,
+                                    error=error,
+                                )
+                            session.add(config)
+                            await session.commit()
+                            refresh_errors.append(
+                                f"{config.service_type.value}: {error}"
+                            )
                             LOG.warning(
                                 f"Watch snapshot skip for {config.service_type} "
                                 f"(config_id={config.id}): client not initialized"
@@ -809,8 +938,15 @@ class MediaWatchSnapshotCache:
                                     available=False,
                                     error=str(exc),
                                 )
-                                session.add(config)
-                                await session.commit()
+                            else:
+                                self._set_plex_sync_state(
+                                    config,
+                                    available=False,
+                                    error=str(exc),
+                                )
+                            session.add(config)
+                            await session.commit()
+                            refresh_errors.append(f"{config.service_type.value}: {exc}")
                             LOG.warning(
                                 f"Watch snapshot fetch failed for {config.service_type} "
                                 f"(config_id={config.id}): {exc}"
@@ -1054,6 +1190,12 @@ class MediaWatchSnapshotCache:
                                 available=True,
                             )
                             session.add(config)
+                        else:
+                            self._set_plex_sync_state(
+                                config,
+                                available=True,
+                            )
+                            session.add(config)
                         await session.commit()
                         refreshed_servers += 1
                         LOG.info(
@@ -1072,8 +1214,12 @@ class MediaWatchSnapshotCache:
                     if refreshed_servers == 0:
                         return (
                             False,
-                            "Failed to refresh requester watch snapshot from supported servers",
+                            "; ".join(refresh_errors)
+                            or "Failed to refresh requester watch snapshot from supported servers",
                         )
+
+                    if refresh_errors:
+                        return False, "; ".join(refresh_errors)
 
                 return True, None
             except Exception as exc:

@@ -2148,11 +2148,28 @@ async def _run_supplemental_syncs() -> PlaybackRefreshResult:
     return await refresh_playback_history(force=True)
 
 
+async def _run_playback_data_refresh(
+    *,
+    all_servers: list[ServiceConfig] | None = None,
+) -> tuple[bool, str | None, PlaybackRefreshResult]:
+    """Refresh native media-server state and imported playback history."""
+
+    watch_ok, watch_error = await media_watch_snapshot_cache.refresh_snapshot(
+        all_servers=all_servers
+    )
+    history_result = await _run_supplemental_syncs()
+    return watch_ok, watch_error, history_result
+
+
 async def refresh_playback_history_task() -> dict[str, Any]:
-    """Refresh durable playback-history providers without a full media sync."""
+    """Refresh native watch state and durable playback-history providers."""
     async with track_task_execution(Task.REFRESH_PLAYBACK_HISTORY):
-        result = await _run_supplemental_syncs()
+        watch_ok, watch_error, result = await _run_playback_data_refresh()
+        errors = [*result.errors]
+        if watch_error:
+            errors.append(watch_error)
         return {
+            "native_snapshot_available": watch_ok,
             "providers": len(result.statuses),
             "available_services": sorted(
                 service.value for service in result.available_services
@@ -2160,7 +2177,7 @@ async def refresh_playback_history_task() -> dict[str, Any]:
             "imported_events": sum(
                 status.imported_events for status in result.statuses
             ),
-            "errors": result.errors,
+            "errors": errors,
         }
 
 
@@ -2897,14 +2914,11 @@ async def sync_media() -> dict[str, Any] | None:
         if not ok and error:
             LOG.warning(f"Favorites snapshot refresh failed during sync: {error}")
 
-        watch_ok, watch_error = await media_watch_snapshot_cache.refresh_snapshot(
+        watch_ok, watch_error, _playback_result = await _run_playback_data_refresh(
             all_servers=all_servers
         )
         if not watch_ok and watch_error:
             LOG.warning(f"Watch snapshot refresh failed during sync: {watch_error}")
-
-        # gather supplemental sync data
-        await _run_supplemental_syncs()
 
         return {"library_sync": library_sync_result}
 

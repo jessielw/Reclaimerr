@@ -29,6 +29,10 @@ def test_task_execution_modes_are_explicit() -> None:
         task_process.get_task_execution_mode(Task.CHECK_APP_UPDATES)
         is task_process.TaskExecutionMode.INLINE
     )
+    assert (
+        task_process.get_task_execution_mode(Task.DELETE_CLEANUP_CANDIDATES)
+        is task_process.TaskExecutionMode.ISOLATED
+    )
 
 
 def test_task_isolation_can_be_disabled(monkeypatch) -> None:

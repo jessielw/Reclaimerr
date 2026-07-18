@@ -33,13 +33,22 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, ScheduleType, Task, UserRole
+from backend.models.cleanup import (
+    RulePreviewMatchMetadata,
+    RulePreviewMatchResult,
+)
 from backend.models.settings import GeneralSettingsResponse
 from backend.scheduler import (
     DEFAULT_SCHEDULES,
     ensure_default_schedules,
     update_task_schedule,
 )
-from backend.tasks.cleanup import delete_cleanup_candidates
+from backend.services.playback_history import PlaybackRefreshResult
+from backend.tasks.cleanup import (
+    _revalidate_auto_delete_candidate_ids,
+    delete_cleanup_candidates,
+)
+from backend.tasks.sync import _run_playback_data_refresh
 
 
 def _admin_user() -> User:
@@ -93,8 +102,8 @@ def test_auto_delete_defaults_and_metadata():
         )
         assert Task.REFRESH_PLAYBACK_HISTORY in MAIN_SERVER_REQUIRED_TASKS
         assert Task.REFRESH_PLAYBACK_HISTORY not in DISABLE_ABLE_TASKS
-        assert playback_schedule["schedule_type"] is ScheduleType.MANUAL
-        assert playback_schedule["schedule_value"] == ""
+        assert playback_schedule["schedule_type"] is ScheduleType.INTERVAL
+        assert playback_schedule["schedule_value"] == "900"
         assert playback_schedule["enabled"] is True
 
         mdblist_schedule = next(
@@ -115,6 +124,7 @@ def test_auto_delete_defaults_and_metadata():
         assert Task.ANILIST_RATINGS_REFRESH.friendly_name() == "Refresh AniList Ratings"
         assert Task.MDBLIST_RATINGS_REFRESH.friendly_name() == "Refresh MDBList Ratings"
         assert Task.OMDB_RATINGS_REFRESH.friendly_name() == "Refresh OMDb Ratings"
+        assert Task.REFRESH_PLAYBACK_HISTORY.friendly_name() == "Refresh Playback Data"
 
         await engine.dispose()
 
@@ -537,6 +547,8 @@ def test_delete_cleanup_candidates_skips_overlapping_entries(monkeypatch):
                 "eligible": 1,
                 "waiting": 0,
                 "skipped": 5,
+                "revalidated_out": 0,
+                "playback_unavailable": 0,
                 "deleted": 1,
                 "failed": 0,
             }
@@ -576,6 +588,137 @@ def test_default_schedule_update_preserves_existing_auto_delete_schedule():
             assert existing.default_schedule_value == "0 2 * * *"
             assert existing.enabled is True
 
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_playback_data_refresh_combines_native_and_history(monkeypatch):
+    async def run() -> None:
+        native_refresh = AsyncMock(return_value=(True, None))
+        history_result = PlaybackRefreshResult()
+        history_refresh = AsyncMock(return_value=history_result)
+        monkeypatch.setattr(
+            "backend.services.media_watch_snapshot_cache.MediaWatchSnapshotCache.refresh_snapshot",
+            native_refresh,
+        )
+        monkeypatch.setattr(
+            "backend.tasks.sync._run_supplemental_syncs",
+            history_refresh,
+        )
+
+        result = await _run_playback_data_refresh()
+
+        assert result == (True, None, history_result)
+        native_refresh.assert_awaited_once_with(all_servers=None)
+        history_refresh.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_default_schedule_update_migrates_untouched_playback_schedule():
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            existing = TaskSchedule(
+                task=Task.REFRESH_PLAYBACK_HISTORY,
+                description="old description",
+                schedule_type=ScheduleType.MANUAL,
+                schedule_value="",
+                default_schedule_type=ScheduleType.MANUAL,
+                default_schedule_value="",
+                enabled=True,
+            )
+            db_session.add(existing)
+            await db_session.commit()
+
+            await ensure_default_schedules(db_session)
+            await db_session.refresh(existing)
+
+            assert existing.schedule_type is ScheduleType.INTERVAL
+            assert existing.schedule_value == "900"
+            assert existing.default_schedule_type is ScheduleType.INTERVAL
+            assert existing.default_schedule_value == "900"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_auto_delete_revalidation_drops_stale_playback_match(monkeypatch):
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            rule = ReclaimRule(
+                name="Delete after playback",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition={
+                    "version": 1,
+                    "root": {
+                        "type": "group",
+                        "op": "and",
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "playback.has_activity",
+                                "operator": "is_false",
+                            }
+                        ],
+                    },
+                },
+                action={"auto_delete_enabled": True, "auto_delete_delay_days": 0},
+            )
+            db_session.add(rule)
+            await db_session.flush()
+            candidate = ReclaimCandidate(
+                media_type=MediaType.MOVIE,
+                movie_version_id=123,
+                matched_rule_ids=[rule.id],
+                matched_criteria={},
+                reason="previously unwatched",
+            )
+            db_session.add(candidate)
+            await db_session.commit()
+            candidate_id = candidate.id
+
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.async_db",
+            _async_db_override(session_maker),
+        )
+        preview = AsyncMock(
+            return_value=RulePreviewMatchResult(
+                matches=[],
+                metadata=RulePreviewMatchMetadata(),
+            )
+        )
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.collect_rule_preview_matches_with_metadata",
+            preview,
+        )
+
+        result = await _revalidate_auto_delete_candidate_ids([candidate_id])
+
+        assert result.candidate_ids == []
+        assert result.revalidated_out == 1
+        preview.assert_awaited_once()
+        assert preview.await_args.kwargs["require_fresh"] is True
+        assert preview.await_args.kwargs["target_ids_by_scope"] == {
+            "movie_version": {123}
+        }
         await engine.dispose()
 
     asyncio.run(run())
@@ -651,6 +794,8 @@ def test_delete_cleanup_candidates_waits_for_review_period(monkeypatch):
             "eligible": 1,
             "waiting": 1,
             "skipped": 0,
+            "revalidated_out": 0,
+            "playback_unavailable": 0,
             "deleted": 1,
             "failed": 0,
         }

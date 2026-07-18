@@ -157,10 +157,10 @@ class Settings(BaseSettings):
             parsed = int(str(v).strip())
         except (TypeError, ValueError):
             logging.getLogger("reclaimerr").warning(
-                "Invalid RECLAIMERR_COMMAND_WORKERS value %r. Falling back to 3.",
+                "Invalid RECLAIMERR_COMMAND_WORKERS value %r. Falling back to 2.",
                 v,
             )
-            return 3
+            return 2
         clamped = min(8, max(1, parsed))
         if clamped != parsed:
             logging.getLogger("reclaimerr").warning(
