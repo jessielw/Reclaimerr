@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Consolidated Python type checking on BasedPyright coverage for backend and desktop code
 - Updated dependencies:
   - platformdirs to 4.11.0
 

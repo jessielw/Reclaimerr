@@ -29,7 +29,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy",
     "basedpyright>=1.39.9",
     "pytest>=9.1.1",
     "ruff>=0.15.22",
@@ -74,32 +73,10 @@ exclude = ["backend/alembic/**/versions/*.py"]
 select = ["I", "UP"]
 
 [tool.basedpyright]
-include = ["backend"]
+include = ["backend", "desktop"]
+exclude = ["backend/alembic/versions"]
 typeCheckingMode = "standard"
+pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-namespace_packages = true
-explicit_package_bases = true
-files = ["backend", "desktop"]
-exclude = '''
-(?x)(
-    ^backend/alembic/|
-    ^backend/types/|
-    ^scripts/build_desktop\.py$
-)
-'''
-
-[[tool.mypy.overrides]]
-module = [
-    "authlib.*",
-    "apscheduler.*",
-    "pystray.*",
-    "platformdirs.*",
-    "filelock.*",
-]
-ignore_missing_imports = true
