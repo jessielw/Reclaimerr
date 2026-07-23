@@ -40,7 +40,7 @@ dev = [
 desktop = [
     "pyinstaller>=6.21.0",
     "pystray>=0.19.5",
-    "platformdirs>=4.10.1",
+    "platformdirs>=4.11.0",
     "filelock>=3.30.3",
     "uvicorn>=0.51.0",
 ]

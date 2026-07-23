@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated dependencies:
+  - platformdirs to 4.11.0
+
 ### Fixed
 
 - Candidate thumbnails stretched on Safari browsers
