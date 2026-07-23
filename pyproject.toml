@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.3.1"
+version = "0.3.2"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -29,7 +29,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy",
     "basedpyright>=1.39.9",
     "pytest>=9.1.1",
     "ruff>=0.15.22",
@@ -40,7 +39,7 @@ dev = [
 desktop = [
     "pyinstaller>=6.21.0",
     "pystray>=0.19.5",
-    "platformdirs>=4.10.1",
+    "platformdirs>=4.11.0",
     "filelock>=3.30.3",
     "uvicorn>=0.51.0",
 ]
@@ -74,32 +73,10 @@ exclude = ["backend/alembic/**/versions/*.py"]
 select = ["I", "UP"]
 
 [tool.basedpyright]
-include = ["backend"]
+include = ["backend", "desktop"]
+exclude = ["backend/alembic/versions"]
 typeCheckingMode = "standard"
+pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-namespace_packages = true
-explicit_package_bases = true
-files = ["backend", "desktop"]
-exclude = '''
-(?x)(
-    ^backend/alembic/|
-    ^backend/types/|
-    ^scripts/build_desktop\.py$
-)
-'''
-
-[[tool.mypy.overrides]]
-module = [
-    "authlib.*",
-    "apscheduler.*",
-    "pystray.*",
-    "platformdirs.*",
-    "filelock.*",
-]
-ignore_missing_imports = true

@@ -20,6 +20,7 @@ SERVICE_BOOTSTRAP_TASKS: frozenset[Task] = frozenset(
         Task.SYNC_LINKED_DATA,
         Task.REFRESH_PLAYBACK_HISTORY,
         Task.SCAN_CLEANUP_CANDIDATES,
+        Task.DELETE_CLEANUP_CANDIDATES,
     }
 )
 

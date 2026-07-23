@@ -43,14 +43,15 @@
 </script>
 
 <div
-  class="{tailWindElSize} shrink-0 self-start rounded-md bg-muted/40 flex items-center justify-center
-    aspect-2/3 transition-transform duration-150 {borderColor} hover:scale-105 cursor-default"
+  class="{tailWindElSize} relative shrink-0 self-start overflow-hidden rounded-md bg-muted/40 flex items-center justify-center
+    transition-transform duration-150 {borderColor} hover:scale-105 cursor-default"
+  style="aspect-ratio: 2 / 3"
 >
   {#if normalizedPosterUrl}
     <img
       src={`http://image.tmdb.org/t/p/w${posterSize}${normalizedPosterUrl}`}
       alt="Poster"
-      class="h-full w-full object-cover rounded-md"
+      class="absolute inset-0 h-full w-full object-cover"
     />
   {:else if mediaType === MediaType.Movie}
     <Film class="w-4 h-4 text-muted-foreground" />

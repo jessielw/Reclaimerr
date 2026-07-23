@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -240,6 +240,11 @@ def _is_season_scope(model: Any) -> Any:
 
 def _is_episode_scope(model: Any) -> Any:
     return model.episode_id.isnot(None)
+
+
+def _has_media_path(path: str | None) -> bool:
+    """Return whether a synchronized item points to physical media."""
+    return bool(path and path.strip())
 
 
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
@@ -3748,7 +3753,16 @@ async def _collect_series_candidate_records(
     query_options = [selectinload(Series.service_refs)]
     if _rules_use_field(rules, "series.library_season_count"):
         query_options.append(selectinload(Series.seasons))
-    query = select(Series).where(Series.removed_at.is_(None)).options(*query_options)
+    query = (
+        select(Series)
+        .where(
+            Series.removed_at.is_(None),
+            Series.seasons.any(
+                and_(Season.path.is_not(None), func.trim(Season.path) != "")
+            ),
+        )
+        .options(*query_options)
+    )
     if target_ids is not None:
         if not target_ids:
             return []
@@ -4243,6 +4257,8 @@ async def _collect_season_candidate_records(
         for season in series.seasons:
             if target_ids is not None and season.id not in target_ids:
                 continue
+            if not _has_media_path(season.path):
+                continue
             if season.id in protected_season_ids:
                 continue
 
@@ -4489,6 +4505,8 @@ async def _collect_episode_candidate_records(
 
             for episode in season.episodes:
                 if target_ids is not None and episode.id not in target_ids:
+                    continue
+                if not _has_media_path(episode.path):
                     continue
                 if episode.id in protected_episode_ids:
                     continue

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 
-from backend.core import task_process
+from backend.core import task_child, task_process
 from backend.enums import Task
 
 
@@ -47,6 +48,43 @@ def test_task_child_guard_prevents_recursive_isolation(monkeypatch) -> None:
     monkeypatch.delenv(task_process.TASK_ISOLATION_ENV, raising=False)
 
     assert task_process.should_isolate_task(Task.IMDB_RATINGS_REFRESH) is False
+
+
+def test_delete_task_child_bootstraps_services_before_execution(monkeypatch) -> None:
+    events: list[str] = []
+    written_results: list[dict[str, object]] = []
+
+    async def load_services() -> None:
+        events.append("bootstrap")
+
+    async def run_task(task: Task) -> dict[str, int]:
+        assert task is Task.DELETE_CLEANUP_CANDIDATES
+        events.append("execute")
+        return {"deleted": 1}
+
+    async def clear_services() -> None:
+        events.append("clear")
+
+    async def close_database() -> None:
+        events.append("close_db")
+
+    monkeypatch.setattr(
+        task_child.sys,
+        "stdin",
+        StringIO(f'{{"task":"{Task.DELETE_CLEANUP_CANDIDATES.value}"}}\n'),
+    )
+    monkeypatch.setattr(task_child, "load_enabled_services", load_services)
+    monkeypatch.setattr(task_child, "run_task_with_memory_cleanup", run_task)
+    monkeypatch.setattr(task_child.service_manager, "clear_all", clear_services)
+    monkeypatch.setattr(task_child, "close_db", close_database)
+    monkeypatch.setattr(task_child.LOG, "stop", lambda: None)
+    monkeypatch.setattr(task_child, "_write_result", written_results.append)
+
+    exit_code = asyncio.run(task_child.run_task_child())
+
+    assert exit_code == 0
+    assert events == ["bootstrap", "execute", "clear", "close_db"]
+    assert written_results == [{"ok": True, "result": {"deleted": 1}}]
 
 
 def test_parse_child_result_uses_last_valid_json() -> None:
