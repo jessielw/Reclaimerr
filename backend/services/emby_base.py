@@ -57,6 +57,29 @@ _NATIVE_PLAYBACK_PAGE_SIZE = 500
 _NATIVE_PLAYBACK_USER_BATCH_SIZE = 5
 
 
+def _is_virtual_media_item(item: Mapping[str, Any]) -> bool:
+    """Return whether an Emby-family item is a virtual library placeholder."""
+    if str(item.get("LocationType") or "").strip().casefold() == "virtual":
+        return True
+
+    is_virtual = item.get("IsVirtualItem")
+    if isinstance(is_virtual, str):
+        return is_virtual.strip().casefold() in {"1", "true", "yes"}
+    return is_virtual is True
+
+
+def _path_backed_media_sources(item: Mapping[str, Any]) -> list[JsonDict]:
+    """Return media sources that represent a physical, addressable file."""
+    raw_sources = item.get("MediaSources")
+    if not isinstance(raw_sources, list):
+        return []
+    return [
+        source
+        for source in raw_sources
+        if isinstance(source, dict) and str(source.get("Path") or "").strip()
+    ]
+
+
 @dataclass(slots=True)
 class _MovieAggregate:
     name: str
@@ -1144,9 +1167,11 @@ class EmbyServiceBase:
                 "userId": user_id,
                 "includeItemTypes": "Episode",
                 "recursive": "true",
+                "ExcludeLocationTypes": "Virtual",
+                "enableTotalRecordCount": "true",
                 "Fields": (
                     "MediaSources,MediaStreams,SeriesId,DateCreated,PremiereDate,ParentIndexNumber,SeasonId,UserData,"
-                    "UserDataLastPlayedDate,UserDataPlayCount"
+                    "UserDataLastPlayedDate,UserDataPlayCount,LocationType,IsVirtualItem"
                 ),
                 "ParentId": library_id,
                 "StartIndex": str(start_index),
@@ -1155,30 +1180,44 @@ class EmbyServiceBase:
 
             get_data = await self._make_request("Items", params=params, timeout=60)
             if not isinstance(get_data, dict):
-                break
+                raise RuntimeError(
+                    "Media server returned an invalid episode inventory response"
+                )
 
-            raw_episodes = get_data.get("Items", [])
-            if not isinstance(raw_episodes, list) or not raw_episodes:
+            raw_episodes = get_data.get("Items")
+            if not isinstance(raw_episodes, list):
+                raise RuntimeError(
+                    "Media server episode inventory response did not contain an item list"
+                )
+            if not raw_episodes:
                 break
+            if any(not isinstance(episode, dict) for episode in raw_episodes):
+                raise RuntimeError(
+                    "Media server episode inventory contained an invalid item"
+                )
             episodes = [
                 episode for episode in raw_episodes if isinstance(episode, dict)
             ]
-            if not episodes:
-                break
 
             LOG.debug(
                 f"Processing episodes {start_index} to {start_index + len(episodes)}"
             )
 
             for episode in episodes:
+                if _is_virtual_media_item(episode):
+                    continue
+                media_sources = _path_backed_media_sources(episode)
+                if not media_sources:
+                    continue
+
                 series_id = episode.get("SeriesId")
                 if not series_id:
                     continue
 
                 # sum sizes
                 episode_size = 0
-                for source in episode.get("MediaSources", []):
-                    episode_size += source.get("Size", 0)
+                for source in media_sources:
+                    episode_size += as_int(source.get("Size")) or 0
 
                 series_sizes[series_id] = series_sizes.get(series_id, 0) + episode_size
 
@@ -1225,7 +1264,7 @@ class EmbyServiceBase:
 
                 # season path (first episode of each season)
                 if sk not in season_paths:
-                    for _source in episode.get("MediaSources", []):
+                    for _source in media_sources:
                         _ep_path = _source.get("Path")
                         if _ep_path:
                             season_paths[sk] = str(
@@ -1234,7 +1273,7 @@ class EmbyServiceBase:
                             break
 
                 # episode paths for this season
-                for _source in episode.get("MediaSources", []):
+                for _source in media_sources:
                     _ep_path = _source.get("Path")
                     if _ep_path:
                         season_episode_paths.setdefault(sk, []).append(
@@ -1279,11 +1318,11 @@ class EmbyServiceBase:
                     if ep_num is not None:
                         ep_path: str | None = None
                         ep_size_ep: int | None = None
-                        for _src in episode.get("MediaSources", []):
+                        for _src in media_sources:
                             _p = _src.get("Path")
                             if _p:
                                 ep_path = normalize_fpath(_p)
-                                ep_size_ep = _src.get("Size") or None
+                                ep_size_ep = as_int(_src.get("Size"))
                                 break
                         ep_air_ep: datetime | None = season_air_date.get(sk)
                         _ep_premiere = episode.get("PremiereDate")
@@ -1315,7 +1354,7 @@ class EmbyServiceBase:
                         )
 
                 # media aggregate signals per season
-                for source in episode.get("MediaSources", []):
+                for source in media_sources:
                     media_width = as_int(source.get("Width"))
                     if media_width is not None:
                         season_max_width[sk] = max(
@@ -1390,9 +1429,11 @@ class EmbyServiceBase:
                                     normalized_lang
                                 )
 
-            total_record_count = int(get_data.get("TotalRecordCount", 0) or 0)
-            start_index += len(episodes)
-            if start_index >= total_record_count:
+            total_record_count = as_int(get_data.get("TotalRecordCount"))
+            start_index += len(raw_episodes)
+            if total_record_count is not None and start_index >= total_record_count:
+                break
+            if total_record_count is None and len(raw_episodes) < limit:
                 break
 
         # build AggregatedSeasonData objects

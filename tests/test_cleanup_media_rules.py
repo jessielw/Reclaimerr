@@ -267,6 +267,15 @@ def _make_series_ref(
     return ref
 
 
+def _make_physical_season(series_id: int, season_number: int = 1) -> Season:
+    return Season(
+        series_id=series_id,
+        season_number=season_number,
+        size=1024,
+        path=f"/media/series-{series_id}/Season {season_number:02d}",
+    )
+
+
 def _make_single_condition_rule(
     *,
     name: str,
@@ -2828,8 +2837,18 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         library_id="kids",
                         library_name="Kids",
                     ),
-                    Season(series_id=scoped.id, season_number=1, size=512),
-                    Season(series_id=out_of_scope.id, season_number=1, size=512),
+                    Season(
+                        series_id=scoped.id,
+                        season_number=1,
+                        size=512,
+                        path="/media/scoped/Season 01",
+                    ),
+                    Season(
+                        series_id=out_of_scope.id,
+                        season_number=1,
+                        size=512,
+                        path="/media/kids/Season 01",
+                    ),
                 ]
             )
             await db.commit()
@@ -3162,14 +3181,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Protected Series", tmdb_id=10002, size=1024)
             db.add_all([user, rule, series])
             await db.flush()
-            db.add(
-                ProtectedMedia(
-                    media_type=MediaType.SERIES,
-                    series_id=series.id,
-                    protected_by_user_id=user.id,
-                    source="manual",
-                    reason="Keep manually",
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    ProtectedMedia(
+                        media_type=MediaType.SERIES,
+                        series_id=series.id,
+                        protected_by_user_id=user.id,
+                        source="manual",
+                        reason="Keep manually",
+                    ),
+                ]
             )
             await db.commit()
             series_id = series.id
@@ -3223,6 +3245,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             second_rule.action = {"outcome": "protect"}
             series = Series(title="Twice Protected", tmdb_id=10003, size=1024)
             db.add_all([first_rule, second_rule, series])
+            await db.flush()
+            db.add(_make_physical_season(series.id))
             await db.commit()
 
         async with self._sessionmaker() as db:
@@ -3288,13 +3312,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Preview Protected", tmdb_id=10005, size=1024)
             db.add_all([user, rule, series])
             await db.flush()
-            db.add(
-                ProtectedMedia(
-                    media_type=MediaType.SERIES,
-                    series_id=series.id,
-                    protected_by_user_id=user.id,
-                    reason="Manual protection",
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    ProtectedMedia(
+                        media_type=MediaType.SERIES,
+                        series_id=series.id,
+                        protected_by_user_id=user.id,
+                        reason="Manual protection",
+                    ),
+                ]
             )
             await db.commit()
             series_id = series.id
@@ -3334,13 +3361,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Latest Season", tmdb_id=11001, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
-            db.add(
-                SeriesArrRef(
-                    series_id=series.id,
-                    service_config_id=config.id,
-                    arr_series_id=501,
-                    tmdb_id=series.tmdb_id,
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    SeriesArrRef(
+                        series_id=series.id,
+                        service_config_id=config.id,
+                        arr_series_id=501,
+                        tmdb_id=series.tmdb_id,
+                    ),
+                ]
             )
             await db.commit()
             config_id = config.id
@@ -3409,13 +3439,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Ended Series", tmdb_id=11101, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
-            db.add(
-                SeriesArrRef(
-                    series_id=series.id,
-                    service_config_id=config.id,
-                    arr_series_id=601,
-                    tmdb_id=series.tmdb_id,
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    SeriesArrRef(
+                        series_id=series.id,
+                        service_config_id=config.id,
+                        arr_series_id=601,
+                        tmdb_id=series.tmdb_id,
+                    ),
+                ]
             )
             await db.commit()
             config_id = config.id
@@ -3521,13 +3554,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Next Airing", tmdb_id=11002, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
-            db.add(
-                SeriesArrRef(
-                    series_id=series.id,
-                    service_config_id=config.id,
-                    arr_series_id=502,
-                    tmdb_id=series.tmdb_id,
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    SeriesArrRef(
+                        series_id=series.id,
+                        service_config_id=config.id,
+                        arr_series_id=502,
+                        tmdb_id=series.tmdb_id,
+                    ),
+                ]
             )
             await db.commit()
             config_id = config.id
@@ -3603,13 +3639,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Shared Snapshot", tmdb_id=11005, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
-            db.add(
-                SeriesArrRef(
-                    series_id=series.id,
-                    service_config_id=config.id,
-                    arr_series_id=505,
-                    tmdb_id=series.tmdb_id,
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    SeriesArrRef(
+                        series_id=series.id,
+                        service_config_id=config.id,
+                        arr_series_id=505,
+                        tmdb_id=series.tmdb_id,
+                    ),
+                ]
             )
             await db.commit()
             config_id = config.id
@@ -3696,13 +3735,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series = Series(title="Local Match", tmdb_id=11003, size=1024)
             db.add_all([config, rule, series])
             await db.flush()
-            db.add(
-                SeriesArrRef(
-                    series_id=series.id,
-                    service_config_id=config.id,
-                    arr_series_id=503,
-                    tmdb_id=series.tmdb_id,
-                )
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    SeriesArrRef(
+                        series_id=series.id,
+                        service_config_id=config.id,
+                        arr_series_id=503,
+                        tmdb_id=series.tmdb_id,
+                    ),
+                ]
             )
             await db.commit()
             config_id = config.id
@@ -3897,7 +3939,12 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             series_ref.series_id = series.id
             db.add(series_ref)
 
-            season = Season(series_id=series.id, season_number=1, size=3 * 1024**3)
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                size=3 * 1024**3,
+                path="/media/series/Season 01",
+            )
             db.add(season)
             await db.commit()
             season_id = season.id
@@ -3985,7 +4032,12 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([rule, user, series])
             await db.flush()
 
-            season = Season(series_id=series.id, season_number=1, size=4 * 1024**3)
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                size=4 * 1024**3,
+                path="/media/series/Season 01",
+            )
             db.add(season)
             await db.flush()
 
@@ -3993,11 +4045,13 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 season_id=season.id,
                 episode_number=1,
                 size=2 * 1024**3,
+                path="/media/series/Season 01/S01E01.mkv",
             )
             unprotected_episode = Episode(
                 season_id=season.id,
                 episode_number=2,
                 size=2 * 1024**3,
+                path="/media/series/Season 01/S01E02.mkv",
             )
             db.add_all([protected_episode, unprotected_episode])
             await db.flush()
@@ -4055,7 +4109,12 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([rule, user, series])
             await db.flush()
 
-            season = Season(series_id=series.id, season_number=1, size=4 * 1024**3)
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                size=4 * 1024**3,
+                path="/media/series/Season 01",
+            )
             db.add(season)
             await db.flush()
 
@@ -4063,11 +4122,13 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 season_id=season.id,
                 episode_number=1,
                 size=2 * 1024**3,
+                path="/media/series/Season 01/S01E01.mkv",
             )
             episode_two = Episode(
                 season_id=season.id,
                 episode_number=2,
                 size=2 * 1024**3,
+                path="/media/series/Season 01/S01E02.mkv",
             )
             db.add_all([episode_one, episode_two])
             await db.commit()
@@ -4236,6 +4297,13 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             db.add_all([rule, untagged, other_tag, missing_size, garbage])
             await db.flush()
+            db.add_all(
+                [
+                    _make_physical_season(series.id)
+                    for series in (untagged, other_tag, missing_size, garbage)
+                ]
+            )
+            await db.flush()
 
             matches = await collect_rule_preview_matches(db, [rule])
 
@@ -4293,23 +4361,27 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
             await db.flush()
-            db.add(
-                MediaFavorite(
-                    media_type=MediaType.SERIES,
-                    tmdb_id=favorite.tmdb_id,
-                    username="mason",
-                    username_normalized="mason",
-                    source_service=Service.PLEX,
-                    source_service_config_id=plex_config.id,
-                )
-            )
-            db.add(
-                ProtectedMedia(
-                    media_type=MediaType.SERIES,
-                    series_id=protected.id,
-                    protected_by_user_id=user.id,
-                    reason="protected",
-                )
+            db.add_all(
+                [
+                    *[
+                        _make_physical_season(series.id)
+                        for series in (matched, favorite, protected, garbage)
+                    ],
+                    MediaFavorite(
+                        media_type=MediaType.SERIES,
+                        tmdb_id=favorite.tmdb_id,
+                        username="mason",
+                        username_normalized="mason",
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex_config.id,
+                    ),
+                    ProtectedMedia(
+                        media_type=MediaType.SERIES,
+                        series_id=protected.id,
+                        protected_by_user_id=user.id,
+                        reason="protected",
+                    ),
+                ]
             )
             await db.commit()
 
@@ -4815,6 +4887,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     series_id=series.id,
                     season_number=1,
                     size=2 * 1024**3,
+                    path="/media/series/Season 01",
                 )
             )
             await db.commit()

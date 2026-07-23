@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Candidate thumbnails stretched on Safari browsers
 - Automatic deletion tasks now initialize configured services before playback revalidation and deletion
+- Jellyfin and Emby virtual or pathless episodes no longer create empty TV cleanup candidates
 
 ## [0.3.1] - 2026-07-18
 

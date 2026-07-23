@@ -532,9 +532,6 @@ async def _sync_seasons(
     service_type: Service,
 ) -> None:
     """Upsert season rows for a series from freshly-fetched media server data."""
-    if not season_data:
-        return
-
     result = await session.execute(select(Season).where(Season.series_id == series_id))
     existing: dict[int, Season] = {s.season_number: s for s in result.scalars().all()}
 
@@ -652,9 +649,23 @@ async def _sync_seasons(
             )
             .values(season_id=None, episode_id=None)
         )
+        await session.execute(
+            sql_delete(Episode).where(Episode.season_id.in_(removed_season_ids))
+        )
         for season_number, season_obj in existing.items():
             if season_number not in incoming_season_numbers:
                 await session.delete(season_obj)
+
+    if not season_data:
+        # With no physical seasons left, a whole-series candidate is no longer
+        # actionable. Keep the Series catalog row and any series-level protection.
+        await session.execute(
+            sql_delete(ReclaimCandidate).where(
+                ReclaimCandidate.series_id == series_id,
+                ReclaimCandidate.season_id.is_(None),
+                ReclaimCandidate.episode_id.is_(None),
+            )
+        )
 
     # upsert episode rows for seasons that have episode_data
     # flush first so new Season rows get their IDs
