@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Candidate thumbnails stretched on Safari browsers
+- Automatic deletion tasks now initialize configured services before playback revalidation and deletion
 
 ## [0.3.1] - 2026-07-18
 
