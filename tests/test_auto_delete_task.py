@@ -95,6 +95,12 @@ def test_auto_delete_defaults_and_metadata():
         assert default_schedule["default_schedule_value"] == "0 2 * * *"
         assert default_schedule["enabled"] is False
 
+        resync_schedule = next(
+            item for item in DEFAULT_SCHEDULES if item["task"] is Task.RESYNC_MEDIA
+        )
+        assert resync_schedule["schedule_type"] is ScheduleType.MANUAL
+        assert resync_schedule["enabled"] is True
+
         playback_schedule = next(
             item
             for item in DEFAULT_SCHEDULES

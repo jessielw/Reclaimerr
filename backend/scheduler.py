@@ -81,7 +81,9 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "schedule_value": "",
         "default_schedule_type": ScheduleType.MANUAL,
         "default_schedule_value": "",
-        "enabled": False,
+        # A manual task is never scheduled by APScheduler, but it must remain
+        # enabled so server switches and the "run now" action can enqueue it.
+        "enabled": True,
     },
     {
         "task": Task.SCAN_CLEANUP_CANDIDATES,
