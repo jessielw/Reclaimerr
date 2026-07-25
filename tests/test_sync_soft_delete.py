@@ -20,9 +20,19 @@ from backend.tasks.sync import (
     MAX_SOFT_DELETE_RATIO,
     MIN_LIBRARY_FOR_RATIO_CHECK,
     _apply_soft_deletes,
+    _previous_large_delete_sets,
     _select_rows_to_soft_delete,
+    _soft_delete_blocked,
     _soft_delete_guard_tripped,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_remembered_delete_sets():
+    """The two-strikes memory is module state; do not leak it between tests."""
+    _previous_large_delete_sets.clear()
+    yield
+    _previous_large_delete_sets.clear()
 
 
 def _series(row_id: int, tmdb_id: int, removed: bool = False) -> Series:
@@ -105,6 +115,72 @@ def test_guard_floor_is_the_documented_constant() -> None:
 def test_ratio_constant_is_the_documented_value() -> None:
     assert MAX_SOFT_DELETE_RATIO == 0.5
     assert MIN_LIBRARY_FOR_RATIO_CHECK == 20
+
+
+def _large_delete_set(first_id: int = 1) -> list[Series]:
+    """Over-ratio against a live count of 100, and past the small-library floor."""
+    return [_series(row_id, 1000 + row_id) for row_id in range(first_id, first_id + 60)]
+
+
+def test_the_same_large_delete_set_is_allowed_on_the_second_run() -> None:
+    """Blocking on the ratio alone never relents after a main-server switch.
+
+    The phantom rows the pass wants gone are themselves counted as live, so the
+    delete set stays over the ratio every run and the pass is skipped forever.
+    A set proposed twice is a real reduction, not a flapping server.
+    """
+    rows = _large_delete_set()
+
+    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
+    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is False
+
+
+def test_a_different_large_delete_set_each_run_stays_blocked() -> None:
+    """The case the guard is actually for: a server answering inconsistently."""
+    assert (
+        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(1), live_count=100)
+        is True
+    )
+    assert (
+        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(500), live_count=100)
+        is True
+    )
+    assert (
+        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(900), live_count=100)
+        is True
+    )
+
+
+def test_a_healthy_run_clears_the_remembered_set() -> None:
+    """A sub-threshold run means the earlier set was never confirmed."""
+    rows = _large_delete_set()
+
+    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
+    assert _soft_delete_blocked(MediaType.SERIES, rows[:1], live_count=100) is False
+    assert _previous_large_delete_sets == {}
+    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
+
+
+def test_the_two_media_types_are_remembered_separately() -> None:
+    """A movie pass must not confirm a series pass, or vice versa."""
+    series_rows = _large_delete_set()
+    movie_rows = [_movie(row_id, 2000 + row_id) for row_id in range(1, 61)]
+
+    assert _soft_delete_blocked(MediaType.SERIES, series_rows, live_count=100) is True
+    assert _soft_delete_blocked(MediaType.MOVIE, movie_rows, live_count=100) is True
+    assert _soft_delete_blocked(MediaType.SERIES, series_rows, live_count=100) is False
+    assert _soft_delete_blocked(MediaType.MOVIE, movie_rows, live_count=100) is False
+
+
+def test_set_membership_not_ordering_decides_the_repeat() -> None:
+    """Row order comes from the media server and carries no meaning."""
+    rows = _large_delete_set()
+
+    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
+    assert (
+        _soft_delete_blocked(MediaType.SERIES, list(reversed(rows)), live_count=100)
+        is False
+    )
 
 
 async def _memory_session_maker() -> async_sessionmaker[AsyncSession]:

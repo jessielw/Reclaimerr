@@ -99,6 +99,40 @@ def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
     return delete_count > live_count * MAX_SOFT_DELETE_RATIO
 
 
+# A delete set larger than the ratio allows is usually a partial media-server
+# response, but it is also what a legitimate main-server switch looks like. A
+# flapping server proposes a DIFFERENT set each time; a real reduction proposes
+# the same one. So skip the first time and act if the same set comes back.
+_previous_large_delete_sets: dict[MediaType, frozenset[int]] = {}
+
+
+def _soft_delete_blocked(
+    media_type: MediaType,
+    rows_to_delete: Sequence[_RowT],
+    live_count: int,
+) -> bool:
+    """True when this delete set should be skipped this run.
+
+    Blocking on the ratio alone deadlocks: a main-server switch proposes the
+    same large set every run, and the phantom rows it wants gone inflate the
+    live count faster than the real library grows, so the pass never relents.
+    Remembering the previous over-ratio set turns the guard into one grace run
+    rather than a permanent block.
+
+    The memory is process-local by design; a restart just costs one more grace
+    run, which is not worth persisting for.
+    """
+    if not _soft_delete_guard_tripped(len(rows_to_delete), live_count):
+        _previous_large_delete_sets.pop(media_type, None)
+        return False
+    signature = frozenset(row.id for row in rows_to_delete)
+    if _previous_large_delete_sets.get(media_type) == signature:
+        _previous_large_delete_sets.pop(media_type, None)
+        return False
+    _previous_large_delete_sets[media_type] = signature
+    return True
+
+
 def _tvdb_sorts_first(a: str, b: str) -> bool:
     """True when tvdb id `a` orders before `b`.
 
@@ -1722,13 +1756,16 @@ async def sync_movies(
                 live_movie_count = sum(
                     1 for movie in existing_movies_list if not movie.removed_at
                 )
-                if _soft_delete_guard_tripped(len(movies_to_delete), live_movie_count):
+                if _soft_delete_blocked(
+                    MediaType.MOVIE, movies_to_delete, live_movie_count
+                ):
                     LOG.warning(
-                        f"Skipping movie soft-delete: {len(movies_to_delete)} of "
-                        f"{live_movie_count} live movies would be removed, which "
-                        f"suggests a partial response from "
-                        f"{effective_service.value} rather than real deletions. "
-                        f"Deletions will run on the next healthy sync."
+                        f"Skipping movie soft-delete this run: "
+                        f"{len(movies_to_delete)} of {live_movie_count} live movies "
+                        f"would be removed, which may be a partial response from "
+                        f"{effective_service.value} rather than real deletions. If "
+                        f"the next sync proposes the same movies they will be "
+                        f"removed then."
                     )
                     movies_to_delete = []
 
@@ -2265,13 +2302,15 @@ async def sync_series(
                 live_series_count = sum(
                     1 for s in existing_series_list if not s.removed_at
                 )
-                if _soft_delete_guard_tripped(len(series_to_delete), live_series_count):
+                if _soft_delete_blocked(
+                    MediaType.SERIES, series_to_delete, live_series_count
+                ):
                     LOG.warning(
-                        f"Skipping series soft-delete: {len(series_to_delete)} of "
-                        f"{live_series_count} live series would be removed, which "
-                        f"suggests a partial response from {source_label} rather "
-                        f"than real deletions. Deletions will run on the next "
-                        f"healthy sync."
+                        f"Skipping series soft-delete this run: "
+                        f"{len(series_to_delete)} of {live_series_count} live series "
+                        f"would be removed, which may be a partial response from "
+                        f"{source_label} rather than real deletions. If the next "
+                        f"sync proposes the same series they will be removed then."
                     )
                     series_to_delete = []
 
