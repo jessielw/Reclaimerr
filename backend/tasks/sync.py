@@ -1291,13 +1291,19 @@ def _dedupe_aggregated_series(
 ) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData]:
     """Reduce gathered series to one entry per TMDB id.
 
-    Two cases share this code path and must not be confused. The same series
-    reported by two services is a duplicate: keep one and stash the loser's
-    season data as supplemental so its episode ids still reach the episodes
-    table. Two different series that share a TMDB id, which happens where TMDB
-    carries an umbrella entry, are not duplicates: merging them would write the
-    loser's episode ids onto the winner's episode rows. Distinct tvdb ids on
-    both sides are what tells them apart.
+    Two cases share this code path and must not be confused. One series
+    reported more than once from the same server, typically because it sits in
+    two libraries, is a duplicate: keep one and stash the loser's season data as
+    supplemental so its service-specific episode ids (plex_rating_key,
+    jellyfin_episode_id, emby_episode_id) still reach the episodes table. Two
+    different series that share a TMDB id, which happens where TMDB carries an
+    umbrella entry, are not duplicates: merging them would write the loser's
+    episode ids onto the winner's episode rows. Distinct tvdb ids on both sides
+    are what tells them apart.
+
+    The merge branch also covers one series reported by two services, but
+    sync_series is the only caller of gather_series and always passes a single
+    resolved service, so that no longer arises from a gather.
     """
     unique_series: dict[int, AggregatedSeriesData] = {}
     supplemental: _SupplementalEpisodeData = {}
@@ -1862,9 +1868,11 @@ async def sync_series(
 ) -> set[int]:
     """Sync series from the main media server (or a specific service).
 
-    Mirrors sync_movies: a linked (non-main) server contributes watch data via
-    sync_linked_data, never series rows, and no argument means the main server
-    rather than every configured server.
+    Mirrors sync_movies: a linked (non-main) server contributes watch data
+    rather than series rows, and no argument means the main server rather than
+    every configured server. That watch data comes from sync_linked_data, which
+    sync_media calls in its own loop over the linked servers; unlike sync_movies
+    this function does not call it, it only declines to sync the linked server.
     """
     # resolve main server
     async with async_db() as _cfg:
@@ -2078,11 +2086,11 @@ async def sync_series(
             )
 
             #### supplemental episode ID pass ####
-            # For series that appeared in multiple services (e.g. Plex + Jellyfin/Emby),
-            # the losing service's episode data was discarded during deduplication.
-            # We re-run _upsert_episodes for those seasons here so that all
-            # service specific IDs (plex_rating_key, jellyfin_episode_id, etc.)
-            # are written to the episodes table
+            # For series reported more than once by the gather, the losing
+            # entry's episode data was discarded during deduplication. We re-run
+            # _upsert_episodes for those seasons here so that all service
+            # specific IDs (plex_rating_key, jellyfin_episode_id,
+            # emby_episode_id) are written to the episodes table
             if supplemental_episode_data:
                 LOG.debug(
                     f"Running supplemental episode ID upsert for "
