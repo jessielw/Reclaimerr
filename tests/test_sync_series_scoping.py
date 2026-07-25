@@ -72,6 +72,32 @@ async def test_linked_server_does_not_sync_series(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_the_main_server_passed_explicitly_syncs_normally(monkeypatch) -> None:
+    """sync_media passes the main server by name, so this is the normal path.
+
+    Every other test here asserts that gather is not reached, which a guard of
+    `if service is not None: return set()` would satisfy while disabling series
+    syncing across the whole application. This is the test that catches it.
+    """
+    session_maker = await _in_memory_session_maker()
+    monkeypatch.setattr(
+        "backend.tasks.sync.async_db", _async_db_override(session_maker)
+    )
+
+    gather = _RecordingGather()
+    monkeypatch.setattr(sync_module, "gather_series", gather)
+
+    async def _fake_main(_session: Any) -> _FakeServerConfig:
+        return _FakeServerConfig(service_type=Service.JELLYFIN)
+
+    monkeypatch.setattr(sync_module, "_get_main_media_server", _fake_main)
+
+    await sync_module.sync_series(Service.JELLYFIN)
+
+    assert gather.called_with == [Service.JELLYFIN]
+
+
+@pytest.mark.anyio
 async def test_no_service_resolves_to_the_main_server(monkeypatch) -> None:
     """resync_media calls sync_series() with no argument.
 
