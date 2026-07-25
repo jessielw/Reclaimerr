@@ -197,10 +197,10 @@ async def test_apply_soft_deletes_targets_movies_by_movie_id() -> None:
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_removes_protected_media_rows() -> None:
-    """Today both manual and rule-sourced protection go with the row.
+    """Only rule-sourced protection is removed; it regenerates from the rule task.
 
-    Task 5 changes this policy; this test is the before-picture it changes
-    against.
+    Manual protection is a person's decision and nothing can rebuild it, so it
+    must survive.
     """
     session_maker = await _memory_session_maker()
     async with session_maker() as db:
@@ -220,11 +220,13 @@ async def test_apply_soft_deletes_removes_protected_media_rows() -> None:
         await _apply_soft_deletes(db, [series], MediaType.SERIES)
         await db.commit()
 
-        assert (await db.execute(select(ProtectedMedia))).scalars().all() == []
+        remaining = (await db.execute(select(ProtectedMedia))).scalars().all()
+        assert [p.source for p in remaining] == ["manual"]
 
 
 @pytest.mark.anyio
-async def test_apply_soft_deletes_removes_protection_request_rows() -> None:
+async def test_apply_soft_deletes_leaves_protection_request_rows_alone() -> None:
+    """A protection request is a human decision that nothing can rebuild."""
     session_maker = await _memory_session_maker()
     async with session_maker() as db:
         user = User(username="someone", password_hash="x", role=UserRole.ADMIN)
@@ -242,7 +244,7 @@ async def test_apply_soft_deletes_removes_protection_request_rows() -> None:
         await _apply_soft_deletes(db, [series], MediaType.SERIES)
         await db.commit()
 
-        assert (await db.execute(select(ProtectionRequest))).scalars().all() == []
+        assert len((await db.execute(select(ProtectionRequest))).scalars().all()) == 1
 
 
 @pytest.mark.anyio
@@ -280,3 +282,78 @@ async def test_apply_soft_deletes_leaves_other_medium_protection_alone() -> None
         assert [p.series_id for p in remaining_protection] == [unrelated.id]
         assert [r.series_id for r in remaining_requests] == [unrelated.id]
         assert unrelated.removed_at is None
+
+
+def _protection(series_id: int, source: str) -> ProtectedMedia:
+    protection = ProtectedMedia(media_type=MediaType.SERIES)
+    protection.series_id = series_id
+    protection.source = source
+    return protection
+
+
+@pytest.mark.anyio
+async def test_manual_protection_survives_a_tombstone() -> None:
+    """A person's decision cannot be reconstructed, so it must not be deleted.
+
+    The medium is only soft-deleted and is restored if it reappears. Hard-deleting
+    the protection meant that restore came back silently unprotected.
+    """
+    session_maker = await _memory_session_maker()
+    async with session_maker() as db:
+        series = Series(title="Series A", tmdb_id=1001, size=1)
+        db.add(series)
+        await db.flush()
+        db.add_all([_protection(series.id, "manual"), _protection(series.id, "rule")])
+        await db.commit()
+
+        await _apply_soft_deletes(db, [series], MediaType.SERIES)
+        await db.commit()
+
+        remaining = (await db.execute(select(ProtectedMedia))).scalars().all()
+        assert [p.source for p in remaining] == ["manual"]
+
+
+@pytest.mark.anyio
+async def test_protection_request_survives_a_tombstone() -> None:
+    session_maker = await _memory_session_maker()
+    async with session_maker() as db:
+        user = User(username="someone", password_hash="x", role=UserRole.ADMIN)
+        series = Series(title="Series A", tmdb_id=1001, size=1)
+        db.add_all([user, series])
+        await db.flush()
+
+        request = ProtectionRequest(
+            media_type=MediaType.SERIES, requested_by_user_id=user.id
+        )
+        request.series_id = series.id
+        db.add(request)
+        await db.commit()
+
+        await _apply_soft_deletes(db, [series], MediaType.SERIES)
+        await db.commit()
+
+        assert len((await db.execute(select(ProtectionRequest))).scalars().all()) == 1
+
+
+@pytest.mark.anyio
+async def test_manual_protection_is_still_attached_after_a_restore() -> None:
+    """The point of preserving it: the protection must mean something again.
+
+    A restore is just clearing removed_at, which is what sync_series does when
+    the media reappears.
+    """
+    session_maker = await _memory_session_maker()
+    async with session_maker() as db:
+        series = Series(title="Series A", tmdb_id=1001, size=1)
+        db.add(series)
+        await db.flush()
+        db.add(_protection(series.id, "manual"))
+        await db.commit()
+
+        await _apply_soft_deletes(db, [series], MediaType.SERIES)
+        await db.commit()
+        series.removed_at = None
+        await db.commit()
+
+        protections = (await db.execute(select(ProtectedMedia))).scalars().all()
+        assert [p.series_id for p in protections] == [series.id]

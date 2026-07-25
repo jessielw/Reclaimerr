@@ -126,23 +126,26 @@ async def _apply_soft_deletes(
     if media_type is MediaType.MOVIE:
         candidate_col = ReclaimCandidate.movie_id
         protected_col = ProtectedMedia.movie_id
-        request_col = ProtectionRequest.movie_id
     else:
         candidate_col = ReclaimCandidate.series_id
         protected_col = ProtectedMedia.series_id
-        request_col = ProtectionRequest.series_id
 
+    # Delete only what the system can rebuild. Candidates come from the reclaim
+    # scan and rule-sourced protections from the rule task, so both regenerate.
+    # Manual protections and protection requests are user intent that nothing can
+    # reconstruct, and the medium itself is only soft-deleted, so they stay and are
+    # still attached if the row is restored.
     await session.execute(
         sql_delete(ReclaimCandidate).where(candidate_col.in_(deleted_ids))
     )
     await session.execute(
-        sql_delete(ProtectedMedia).where(protected_col.in_(deleted_ids))
-    )
-    await session.execute(
-        sql_delete(ProtectionRequest).where(request_col.in_(deleted_ids))
+        sql_delete(ProtectedMedia).where(
+            protected_col.in_(deleted_ids),
+            ProtectedMedia.source == "rule",
+        )
     )
     LOG.debug(
-        f"Cleaned up candidates and protection entries for {len(deleted_ids)} "
+        f"Cleaned up candidates and rule protections for {len(deleted_ids)} "
         f"soft-deleted {media_type.value} rows"
     )
     return deleted_ids
