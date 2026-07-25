@@ -1375,6 +1375,10 @@ async def sync_movies(
             existing_by_imdb = {m.imdb_id: m for m in existing_movies_list if m.imdb_id}
 
             parsed_tmdb_ids: set[int] = set()
+            # row primary keys touched this run. parsed_tmdb_ids cannot serve
+            # this purpose: a row matched by the imdb fallback keeps its own
+            # tmdb_id, which is not the id that was just parsed.
+            matched_row_ids: set[int] = set()
 
             # iterate through aggregated movies
             batch_count = 0
@@ -1392,6 +1396,7 @@ async def sync_movies(
                 # if movie already exists, update it
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
+                    matched_row_ids.add(existing_movie.id)
 
                     # update added_at if available
                     if earliest_added:
@@ -1431,6 +1436,7 @@ async def sync_movies(
                     imdb_id = movie.external_ids.imdb
                     if imdb_id and imdb_id in existing_by_imdb:
                         existing_movie = existing_by_imdb[imdb_id]
+                        matched_row_ids.add(existing_movie.id)
                         LOG.info(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
                             f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
@@ -1656,11 +1662,21 @@ async def sync_movies(
                 await session.commit()
 
             if allow_soft_delete:
-                movies_to_delete = [
-                    movie
-                    for movie in existing_movies.values()
-                    if movie.tmdb_id not in parsed_tmdb_ids and not movie.removed_at
-                ]
+                movies_to_delete = _select_rows_to_soft_delete(
+                    existing_movies_list, matched_row_ids
+                )
+                live_movie_count = sum(
+                    1 for movie in existing_movies_list if not movie.removed_at
+                )
+                if _soft_delete_guard_tripped(len(movies_to_delete), live_movie_count):
+                    LOG.warning(
+                        f"Skipping movie soft-delete: {len(movies_to_delete)} of "
+                        f"{live_movie_count} live movies would be removed, which "
+                        f"suggests a partial response from "
+                        f"{effective_service.value} rather than real deletions. "
+                        f"Deletions will run on the next healthy sync."
+                    )
+                    movies_to_delete = []
 
                 if movies_to_delete:
                     LOG.info(
