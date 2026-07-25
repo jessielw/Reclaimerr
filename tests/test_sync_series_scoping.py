@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from backend.database import Base
 from backend.enums import Service
@@ -37,11 +42,22 @@ def _async_db_override(session_maker: async_sessionmaker[AsyncSession]):
     return _override
 
 
-async def _in_memory_session_maker() -> async_sessionmaker[AsyncSession]:
+async def _in_memory_session_maker() -> tuple[
+    async_sessionmaker[AsyncSession], AsyncEngine
+]:
+    """Returns the session maker and the engine backing it.
+
+    The caller must dispose the engine, otherwise the aiosqlite worker thread
+    outlives the event loop and pytest reports an unhandled thread exception in
+    the warnings summary.
+    """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    session_maker = async_sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
+    return session_maker, engine
 
 
 @pytest.mark.anyio
@@ -52,7 +68,7 @@ async def test_linked_server_does_not_sync_series(monkeypatch) -> None:
     so a resync gathered series from every configured server and the table
     became the union of all of them.
     """
-    session_maker = await _in_memory_session_maker()
+    session_maker, engine = await _in_memory_session_maker()
     monkeypatch.setattr(
         "backend.tasks.sync.async_db", _async_db_override(session_maker)
     )
@@ -66,6 +82,7 @@ async def test_linked_server_does_not_sync_series(monkeypatch) -> None:
     monkeypatch.setattr(sync_module, "_get_main_media_server", _fake_main)
 
     result = await sync_module.sync_series(Service.PLEX)
+    await engine.dispose()
 
     assert result == set()
     assert gather.called_with == []
@@ -79,7 +96,7 @@ async def test_the_main_server_passed_explicitly_syncs_normally(monkeypatch) -> 
     `if service is not None: return set()` would satisfy while disabling series
     syncing across the whole application. This is the test that catches it.
     """
-    session_maker = await _in_memory_session_maker()
+    session_maker, engine = await _in_memory_session_maker()
     monkeypatch.setattr(
         "backend.tasks.sync.async_db", _async_db_override(session_maker)
     )
@@ -93,6 +110,7 @@ async def test_the_main_server_passed_explicitly_syncs_normally(monkeypatch) -> 
     monkeypatch.setattr(sync_module, "_get_main_media_server", _fake_main)
 
     await sync_module.sync_series(Service.JELLYFIN)
+    await engine.dispose()
 
     assert gather.called_with == [Service.JELLYFIN]
 
@@ -103,7 +121,7 @@ async def test_no_service_resolves_to_the_main_server(monkeypatch) -> None:
 
     That must mean the main server, matching sync_movies, not every server.
     """
-    session_maker = await _in_memory_session_maker()
+    session_maker, engine = await _in_memory_session_maker()
     monkeypatch.setattr(
         "backend.tasks.sync.async_db", _async_db_override(session_maker)
     )
@@ -117,13 +135,14 @@ async def test_no_service_resolves_to_the_main_server(monkeypatch) -> None:
     monkeypatch.setattr(sync_module, "_get_main_media_server", _fake_main)
 
     await sync_module.sync_series()
+    await engine.dispose()
 
     assert gather.called_with == [Service.JELLYFIN]
 
 
 @pytest.mark.anyio
 async def test_no_main_server_configured_returns_empty(monkeypatch) -> None:
-    session_maker = await _in_memory_session_maker()
+    session_maker, engine = await _in_memory_session_maker()
     monkeypatch.setattr(
         "backend.tasks.sync.async_db", _async_db_override(session_maker)
     )
@@ -137,6 +156,7 @@ async def test_no_main_server_configured_returns_empty(monkeypatch) -> None:
     monkeypatch.setattr(sync_module, "_get_main_media_server", _fake_main)
 
     result = await sync_module.sync_series()
+    await engine.dispose()
 
     assert result == set()
     assert gather.called_with == []

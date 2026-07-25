@@ -4,7 +4,12 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from backend.database import Base
 from backend.database.models import (
@@ -183,17 +188,28 @@ def test_set_membership_not_ordering_decides_the_repeat() -> None:
     )
 
 
-async def _memory_session_maker() -> async_sessionmaker[AsyncSession]:
+async def _memory_session_maker() -> tuple[
+    async_sessionmaker[AsyncSession], AsyncEngine
+]:
+    """Returns the session maker and the engine backing it.
+
+    The caller must dispose the engine, otherwise the aiosqlite worker thread
+    outlives the event loop and pytest reports an unhandled thread exception in
+    the warnings summary.
+    """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    session_maker = async_sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
+    return session_maker, engine
 
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_tombstones_without_hard_deleting_the_row() -> None:
     """The row survives so its metadata is reusable if the media comes back."""
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         series = Series(title="Series A", tmdb_id=1001, size=1)
         series.arr_added_at = datetime.now(UTC)
@@ -210,11 +226,12 @@ async def test_apply_soft_deletes_tombstones_without_hard_deleting_the_row() -> 
         assert stored[0].removed_at is not None
         assert stored[0].added_at is None
         assert stored[0].arr_added_at is None
+    await engine.dispose()
 
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_removes_derived_candidate_rows() -> None:
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         series = Series(title="Series A", tmdb_id=1001, size=1)
         db.add(series)
@@ -234,19 +251,21 @@ async def test_apply_soft_deletes_removes_derived_candidate_rows() -> None:
         await db.commit()
 
         assert (await db.execute(select(ReclaimCandidate))).scalars().all() == []
+    await engine.dispose()
 
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_on_an_empty_set_is_a_no_op() -> None:
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         assert await _apply_soft_deletes(db, [], MediaType.SERIES) == []
+    await engine.dispose()
 
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_targets_movies_by_movie_id() -> None:
     """The wrong foreign key would delete another medium's derived rows."""
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         movie = Movie(title="Movie A", tmdb_id=2001, size=1)
         unrelated = Series(title="Series A", tmdb_id=1001, size=1)
@@ -269,6 +288,7 @@ async def test_apply_soft_deletes_targets_movies_by_movie_id() -> None:
         remaining = (await db.execute(select(ReclaimCandidate))).scalars().all()
         assert [c.series_id for c in remaining] == [unrelated.id]
         assert unrelated.removed_at is None
+    await engine.dispose()
 
 
 @pytest.mark.anyio
@@ -278,7 +298,7 @@ async def test_apply_soft_deletes_removes_protected_media_rows() -> None:
     Manual protection is a person's decision and nothing can rebuild it, so it
     must survive.
     """
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         series = Series(title="Series A", tmdb_id=1001, size=1)
         db.add(series)
@@ -298,12 +318,13 @@ async def test_apply_soft_deletes_removes_protected_media_rows() -> None:
 
         remaining = (await db.execute(select(ProtectedMedia))).scalars().all()
         assert [p.source for p in remaining] == ["manual"]
+    await engine.dispose()
 
 
 @pytest.mark.anyio
 async def test_apply_soft_deletes_leaves_protection_request_rows_alone() -> None:
     """A protection request is a human decision that nothing can rebuild."""
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         user = User(username="someone", password_hash="x", role=UserRole.ADMIN)
         series = Series(title="Series A", tmdb_id=1001, size=1)
@@ -321,6 +342,7 @@ async def test_apply_soft_deletes_leaves_protection_request_rows_alone() -> None
         await db.commit()
 
         assert len((await db.execute(select(ProtectionRequest))).scalars().all()) == 1
+    await engine.dispose()
 
 
 @pytest.mark.anyio
@@ -328,7 +350,7 @@ async def test_apply_soft_deletes_leaves_other_medium_protection_alone() -> None
     """The same shape as targeting by foreign key: an unrelated medium's
     protection rows must survive a soft-delete of a different medium.
     """
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         user = User(username="someone", password_hash="x", role=UserRole.ADMIN)
         movie = Movie(title="Movie A", tmdb_id=2001, size=1)
@@ -358,6 +380,7 @@ async def test_apply_soft_deletes_leaves_other_medium_protection_alone() -> None
         assert [p.series_id for p in remaining_protection] == [unrelated.id]
         assert [r.series_id for r in remaining_requests] == [unrelated.id]
         assert unrelated.removed_at is None
+    await engine.dispose()
 
 
 def _protection(series_id: int, source: str) -> ProtectedMedia:
@@ -374,7 +397,7 @@ async def test_manual_protection_survives_a_tombstone() -> None:
     The medium is only soft-deleted and is restored if it reappears. Hard-deleting
     the protection meant that restore came back silently unprotected.
     """
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         series = Series(title="Series A", tmdb_id=1001, size=1)
         db.add(series)
@@ -387,11 +410,12 @@ async def test_manual_protection_survives_a_tombstone() -> None:
 
         remaining = (await db.execute(select(ProtectedMedia))).scalars().all()
         assert [p.source for p in remaining] == ["manual"]
+    await engine.dispose()
 
 
 @pytest.mark.anyio
 async def test_protection_request_survives_a_tombstone() -> None:
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         user = User(username="someone", password_hash="x", role=UserRole.ADMIN)
         series = Series(title="Series A", tmdb_id=1001, size=1)
@@ -409,6 +433,7 @@ async def test_protection_request_survives_a_tombstone() -> None:
         await db.commit()
 
         assert len((await db.execute(select(ProtectionRequest))).scalars().all()) == 1
+    await engine.dispose()
 
 
 @pytest.mark.anyio
@@ -418,7 +443,7 @@ async def test_manual_protection_is_still_attached_after_a_restore() -> None:
     A restore is just clearing removed_at, which is what sync_series does when
     the media reappears.
     """
-    session_maker = await _memory_session_maker()
+    session_maker, engine = await _memory_session_maker()
     async with session_maker() as db:
         series = Series(title="Series A", tmdb_id=1001, size=1)
         db.add(series)
@@ -433,3 +458,4 @@ async def test_manual_protection_is_still_attached_after_a_restore() -> None:
 
         protections = (await db.execute(select(ProtectedMedia))).scalars().all()
         assert [p.series_id for p in protections] == [series.id]
+    await engine.dispose()
