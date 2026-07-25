@@ -1801,6 +1801,10 @@ async def sync_series(
 
             # track all tmdb_ids seen in this sync
             parsed_tmdb_ids = set[int]()
+            # row primary keys touched this run. parsed_tmdb_ids cannot serve
+            # this purpose: a row matched by the tvdb/imdb fallback keeps its
+            # own tmdb_id, which is not the id that was just parsed.
+            matched_row_ids: set[int] = set()
 
             # iterate through aggregated series
             batch_count = 0
@@ -1821,6 +1825,18 @@ async def sync_series(
 
                 # if series already exists, update it
                 if existing_series_obj is not None:
+                    if existing_series_obj.id in matched_row_ids:
+                        # two incoming series resolved to one row. only one of
+                        # them can be represented while tmdb_id is unique, so
+                        # the other is silently unreachable without this line.
+                        LOG.warning(
+                            f"Series '{series.name}' resolved to a database row "
+                            f"already claimed by another series in this sync "
+                            f"(row {existing_series_obj.id}, "
+                            f"tmdb {existing_series_obj.tmdb_id}). Only one can "
+                            f"be stored; this one will not appear in Reclaimerr."
+                        )
+                    matched_row_ids.add(existing_series_obj.id)
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
                     media_rollup = _rollup_series_media_from_seasons(series.season_data)
@@ -2163,11 +2179,21 @@ async def sync_series(
                 await session.commit()
 
             if allow_soft_delete:
-                series_to_delete = [
-                    s
-                    for s in existing_series.values()
-                    if s.tmdb_id not in parsed_tmdb_ids and not s.removed_at
-                ]
+                series_to_delete = _select_rows_to_soft_delete(
+                    existing_series_list, matched_row_ids
+                )
+                live_series_count = sum(
+                    1 for s in existing_series_list if not s.removed_at
+                )
+                if _soft_delete_guard_tripped(len(series_to_delete), live_series_count):
+                    LOG.warning(
+                        f"Skipping series soft-delete: {len(series_to_delete)} of "
+                        f"{live_series_count} live series would be removed, which "
+                        f"suggests a partial response from {source_label} rather "
+                        f"than real deletions. Deletions will run on the next "
+                        f"healthy sync."
+                    )
+                    series_to_delete = []
 
                 if series_to_delete:
                     LOG.info(
