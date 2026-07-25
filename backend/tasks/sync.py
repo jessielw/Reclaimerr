@@ -1,7 +1,8 @@
 import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, TypeVar
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -65,6 +66,86 @@ __all__ = [
 # number of records to process before committing to the database during sync tasks
 COMMIT_BATCH_SIZE = 100
 SONARR_DATE_FETCH_CONCURRENCY = 5
+# refuse to tombstone more than half the library in one pass - a partial
+# media-server response should not look like a mass deletion
+MAX_SOFT_DELETE_RATIO = 0.5
+MIN_LIBRARY_FOR_RATIO_CHECK = 20
+
+_RowT = TypeVar("_RowT", Movie, Series)
+
+
+def _select_rows_to_soft_delete(
+    rows: Sequence[_RowT],
+    matched_row_ids: set[int],
+) -> list[_RowT]:
+    """Rows this sync did not touch, and that are not already tombstoned.
+
+    Identity here is the row primary key, not the TMDB id. A row can be matched
+    through the tvdb/imdb fallback while keeping a different tmdb_id, so testing
+    the tmdb_id would tombstone a row that was just updated from the main server.
+    """
+    return [row for row in rows if row.id not in matched_row_ids and not row.removed_at]
+
+
+def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
+    """True when a delete set is too large a share of the library to trust.
+
+    A partial media-server response makes the incoming set look small, and
+    everything missing from it look deleted. Small libraries are exempt: removing
+    three of four items there is legitimate.
+    """
+    if live_count < MIN_LIBRARY_FOR_RATIO_CHECK:
+        return False
+    return delete_count > live_count * MAX_SOFT_DELETE_RATIO
+
+
+async def _apply_soft_deletes(
+    session: AsyncSession,
+    rows: Sequence[_RowT],
+    media_type: MediaType,
+) -> list[int]:
+    """Tombstone rows and remove the derived rows hanging off them.
+
+    The medium itself is kept so its metadata can be reused if it reappears;
+    only `removed_at` marks it gone. Does not commit - the caller decides when.
+
+    Returns the tombstoned row ids.
+    """
+    if not rows:
+        return []
+
+    now = datetime.now(UTC)
+    deleted_ids: list[int] = []
+    for row in rows:
+        row.removed_at = now
+        row.added_at = None
+        row.arr_added_at = None
+        deleted_ids.append(row.id)
+        LOG.debug(f"Soft-deleted: {row.title} ({row.tmdb_id})")
+
+    if media_type is MediaType.MOVIE:
+        candidate_col = ReclaimCandidate.movie_id
+        protected_col = ProtectedMedia.movie_id
+        request_col = ProtectionRequest.movie_id
+    else:
+        candidate_col = ReclaimCandidate.series_id
+        protected_col = ProtectedMedia.series_id
+        request_col = ProtectionRequest.series_id
+
+    await session.execute(
+        sql_delete(ReclaimCandidate).where(candidate_col.in_(deleted_ids))
+    )
+    await session.execute(
+        sql_delete(ProtectedMedia).where(protected_col.in_(deleted_ids))
+    )
+    await session.execute(
+        sql_delete(ProtectionRequest).where(request_col.in_(deleted_ids))
+    )
+    LOG.debug(
+        f"Cleaned up candidates and protection entries for {len(deleted_ids)} "
+        f"soft-deleted {media_type.value} rows"
+    )
+    return deleted_ids
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -1585,38 +1666,9 @@ async def sync_movies(
                     LOG.info(
                         f"Soft-deleting {len(movies_to_delete)} movies no longer in {effective_service.value}"
                     )
-                    deleted_movie_ids = []
-                    for db_movie_to_delete in movies_to_delete:
-                        db_movie_to_delete.removed_at = datetime.now(UTC)
-                        db_movie_to_delete.added_at = None
-                        db_movie_to_delete.arr_added_at = None
-                        deleted_movie_ids.append(db_movie_to_delete.id)
-                        LOG.debug(
-                            f"Soft-deleted: {db_movie_to_delete.title} "
-                            f"({db_movie_to_delete.tmdb_id})"
-                        )
-
-                    # clean up orphaned candidates and protection entries
-                    if deleted_movie_ids:
-                        await session.execute(
-                            sql_delete(ReclaimCandidate).where(
-                                ReclaimCandidate.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectedMedia).where(
-                                ProtectedMedia.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectionRequest).where(
-                                ProtectionRequest.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        LOG.debug(
-                            f"Cleaned up candidates/protection entries for {len(deleted_movie_ids)} soft-deleted movies"
-                        )
-
+                    await _apply_soft_deletes(
+                        session, movies_to_delete, MediaType.MOVIE
+                    )
                     await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
@@ -2105,35 +2157,9 @@ async def sync_series(
                     LOG.info(
                         f"Soft-deleting {len(series_to_delete)} series no longer in {source_label}"
                     )
-                    deleted_series_ids = []
-                    for s in series_to_delete:
-                        s.removed_at = datetime.now(UTC)
-                        s.added_at = None
-                        s.arr_added_at = None
-                        deleted_series_ids.append(s.id)
-                        LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
-
-                    # clean up orphaned candidates and protection entries
-                    if deleted_series_ids:
-                        await session.execute(
-                            sql_delete(ReclaimCandidate).where(
-                                ReclaimCandidate.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectedMedia).where(
-                                ProtectedMedia.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectionRequest).where(
-                                ProtectionRequest.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        LOG.debug(
-                            f"Cleaned up candidates/protection entries for {len(deleted_series_ids)} soft-deleted series"
-                        )
-
+                    await _apply_soft_deletes(
+                        session, series_to_delete, MediaType.SERIES
+                    )
                     await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
