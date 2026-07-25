@@ -1769,12 +1769,38 @@ async def sync_series(
     service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    """Sync series from media servers to database."""
+    """Sync series from the main media server (or a specific service).
+
+    Mirrors sync_movies: a linked (non-main) server contributes watch data via
+    sync_linked_data, never series rows, and no argument means the main server
+    rather than every configured server.
+    """
+    # resolve main server
+    async with async_db() as _cfg:
+        main_server = await _get_main_media_server(_cfg)
+    main_service_type: MediaServerType | None = (
+        main_server.service_type if main_server else None  # type: ignore[assignment]
+    )
+
+    # a linked server never contributes series rows
+    if (
+        service is not None
+        and main_service_type is not None
+        and service != main_service_type
+    ):
+        LOG.info(f"{service} is a linked server - skipping series sync")
+        return set()
+
+    effective_service = service or main_service_type
+    if effective_service is None:
+        LOG.error("No main media server configured for series sync")
+        return set()
+
     start_time = datetime.now(UTC)
-    source_label = service.value if service else "all-media-services"
+    source_label = effective_service.value
     LOG.info(f"Starting series sync ({source_label})...")
 
-    gather_result = await gather_series(service)
+    gather_result = await gather_series(effective_service)
     if not gather_result:
         LOG.info(f"No series to sync from {source_label}")
         return set()
