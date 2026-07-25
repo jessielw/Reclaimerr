@@ -242,6 +242,16 @@ async def get_protected_entries(
         .outerjoin(ReclaimRule, ReclaimRule.id == ProtectedMedia.source_rule_id)
     )
 
+    # manual protections survive a soft-delete of their media, so a protected
+    # entry can outlive the row it points at. Hide those from both the page and
+    # its count, or the two disagree.
+    live_media_filter = (
+        or_(ProtectedMedia.movie_id.is_(None), Movie.removed_at.is_(None)),
+        or_(ProtectedMedia.series_id.is_(None), Series.removed_at.is_(None)),
+    )
+    base_query = base_query.where(*live_media_filter)
+    count_query = count_query.where(*live_media_filter)
+
     if media_type:
         count_query = count_query.where(ProtectedMedia.media_type == media_type)
 
