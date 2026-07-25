@@ -99,6 +99,18 @@ def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
     return delete_count > live_count * MAX_SOFT_DELETE_RATIO
 
 
+def _tvdb_sorts_first(a: str, b: str) -> bool:
+    """True when tvdb id `a` orders before `b`.
+
+    Numeric when both are numeric, which they are in practice, so that "9001"
+    sorts before "10001" rather than after it. The ordering only has to be
+    stable, not meaningful.
+    """
+    if a.isdigit() and b.isdigit():
+        return int(a) < int(b)
+    return a < b
+
+
 async def _apply_soft_deletes(
     session: AsyncSession,
     rows: Sequence[_RowT],
@@ -1240,6 +1252,94 @@ async def gather_movies(
 _SupplementalEpisodeData = dict[int, list[tuple[Service, list[AggregatedSeasonData]]]]
 
 
+def _dedupe_aggregated_series(
+    aggregated_series: list[AggregatedSeriesData],
+) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData]:
+    """Reduce gathered series to one entry per TMDB id.
+
+    Two cases share this code path and must not be confused. The same series
+    reported by two services is a duplicate: keep one and stash the loser's
+    season data as supplemental so its episode ids still reach the episodes
+    table. Two different series that share a TMDB id, which happens where TMDB
+    carries an umbrella entry, are not duplicates: merging them would write the
+    loser's episode ids onto the winner's episode rows. Distinct tvdb ids on
+    both sides are what tells them apart.
+    """
+    unique_series: dict[int, AggregatedSeriesData] = {}
+    supplemental: _SupplementalEpisodeData = {}
+    skipped_count = 0
+
+    for series in aggregated_series:
+        ext_ids = series.external_ids
+        if not ext_ids or not ext_ids.tmdb:
+            skipped_count += 1
+            continue
+
+        tmdb_id = ext_ids.tmdb
+        if tmdb_id not in unique_series:
+            unique_series[tmdb_id] = series
+            continue
+
+        existing = unique_series[tmdb_id]
+        existing_tvdb = existing.external_ids.tvdb if existing.external_ids else None
+        incoming_tvdb = ext_ids.tvdb
+
+        # genuine collision: two distinct series under one TMDB id
+        if existing_tvdb and incoming_tvdb and existing_tvdb != incoming_tvdb:
+            if _tvdb_sorts_first(existing_tvdb, incoming_tvdb):
+                winner, loser = existing, series
+            else:
+                winner, loser = series, existing
+            LOG.warning(
+                f"TMDB id {tmdb_id} is shared by two distinct series: "
+                f"'{winner.name}' (tvdb {winner.external_ids.tvdb}) and "
+                f"'{loser.name}' (tvdb {loser.external_ids.tvdb}). Only one can be "
+                f"stored, so '{loser.name}' will not appear in Reclaimerr. Its "
+                f"episode data is discarded rather than merged, which would "
+                f"otherwise attach it to the wrong series."
+            )
+            if winner is series:
+                # the displaced incumbent may have already stashed supplemental
+                # under this tmdb id from an earlier cross-service merge - that
+                # data belongs to the incumbent, not the winner, so drop it here
+                # or it grafts onto the winner's episode rows instead
+                supplemental.pop(tmdb_id, None)
+            unique_series[tmdb_id] = winner
+            continue
+
+        # keep series with most recent watch date
+        if series.last_viewed_at and (
+            not existing.last_viewed_at
+            or series.last_viewed_at > existing.last_viewed_at
+        ):
+            # existing loses - stash its season data as supplemental
+            supplemental.setdefault(tmdb_id, []).append(
+                (existing.service, existing.season_data)
+            )
+            unique_series[tmdb_id] = series
+        else:
+            # new series loses - stash its season data as supplemental
+            # (covers both the equal-date case and the "existing wins" case)
+            if series.last_viewed_at == existing.last_viewed_at:
+                if series.added_at and (
+                    not existing.added_at or series.added_at > existing.added_at
+                ):
+                    # new series wins on added_at - existing loses
+                    supplemental.setdefault(tmdb_id, []).append(
+                        (existing.service, existing.season_data)
+                    )
+                    unique_series[tmdb_id] = series
+                    continue
+            supplemental.setdefault(tmdb_id, []).append(
+                (series.service, series.season_data)
+            )
+
+    if skipped_count > 0:
+        LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
+
+    return unique_series, supplemental
+
+
 async def gather_series(
     service: MediaServerType | None = None,
 ) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData] | None:
@@ -1268,56 +1368,7 @@ async def gather_series(
                 aggregated_series.extend(get_series)
             LOG.debug(f"Fetched {len(get_series)} series from {server.service_type}")
 
-    # deduplicate series, keeping the one with most recent watch date.
-    # When a series appears in multiple services (e.g. Plex + Jellyfin), the losing
-    # service's season data is stored as supplemental so its episode IDs (plex_rating_key,
-    # jellyfin_episode_id, emby_episode_id) can still be written to the episodes table.
-    unique_series: dict[int, AggregatedSeriesData] = {}
-    supplemental: _SupplementalEpisodeData = {}
-    skipped_count = 0
-
-    for series in aggregated_series:
-        ext_ids = series.external_ids
-        if not ext_ids or not ext_ids.tmdb:
-            skipped_count += 1
-            continue
-
-        tmdb_id = ext_ids.tmdb
-        if tmdb_id not in unique_series:
-            unique_series[tmdb_id] = series
-        else:
-            existing = unique_series[tmdb_id]
-            # keep series with most recent watch date
-            if series.last_viewed_at and (
-                not existing.last_viewed_at
-                or series.last_viewed_at > existing.last_viewed_at
-            ):
-                # existing loses - stash its season data as supplemental
-                supplemental.setdefault(tmdb_id, []).append(
-                    (existing.service, existing.season_data)
-                )
-                unique_series[tmdb_id] = series
-            else:
-                # new series loses - stash its season data as supplemental
-                # (covers both the equal-date case and the "existing wins" case)
-                if series.last_viewed_at == existing.last_viewed_at:
-                    if series.added_at and (
-                        not existing.added_at or series.added_at > existing.added_at
-                    ):
-                        # new series wins on added_at - existing loses
-                        supplemental.setdefault(tmdb_id, []).append(
-                            (existing.service, existing.season_data)
-                        )
-                        unique_series[tmdb_id] = series
-                        continue
-                supplemental.setdefault(tmdb_id, []).append(
-                    (series.service, series.season_data)
-                )
-
-    if skipped_count > 0:
-        LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
-
-    return unique_series, supplemental
+    return _dedupe_aggregated_series(aggregated_series)
 
 
 async def sync_movies(
