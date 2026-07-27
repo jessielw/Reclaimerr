@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Support for Jellyfin's v12 (v12 stable release is set to deprecate 'X-Emby-Token' headers for API calls)
 
-### Fixed
-
-- Several issues for soft-delete and de-dup correctness in the media sync task (@code-boar)
-
 ### Changed
 
 - Updated dependencies:
   - FastAPI to 0.140.3
+
+### Fixed
+
+- Several issues for soft-delete and de-dup correctness in the media sync task (@code-boar)
 
 ## [0.3.3] - 2026-07-24
 
