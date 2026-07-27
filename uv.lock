@@ -1602,7 +1602,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "authlib", specifier = ">=1.7.2" },
     { name = "cryptography", specifier = ">=49.0.0" },
-    { name = "fastapi", extras = ["standard"], specifier = ">=0.140.3" },
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.140.7" },
     { name = "filelock", marker = "extra == 'desktop'", specifier = ">=3.30.3" },
     { name = "granian", specifier = ">=2.7.9" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
