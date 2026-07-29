@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
+from urllib.parse import quote
 
 import niquests
 from niquests.exceptions import HTTPError, ReadTimeout
@@ -55,6 +56,15 @@ _COLLECTION_MUTATION_BATCH_SIZE = 100
 _COLLECTION_PAGE_SIZE = 1000
 _NATIVE_PLAYBACK_PAGE_SIZE = 500
 _NATIVE_PLAYBACK_USER_BATCH_SIZE = 5
+
+
+def _authentication_headers(
+    service_type: Literal[Service.EMBY, Service.JELLYFIN], api_key: str
+) -> dict[str, str]:
+    """Return the current authentication header for an Emby-family server."""
+    if service_type is Service.JELLYFIN:
+        return {"Authorization": f'MediaBrowser Token="{quote(api_key, safe="")}"'}
+    return {"X-Emby-Token": api_key}
 
 
 def _is_virtual_media_item(item: Mapping[str, Any]) -> bool:
@@ -131,7 +141,7 @@ class EmbyServiceBase:
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
             {
-                "X-Emby-Token": self.api_key,
+                **_authentication_headers(self.service_type, self.api_key),
                 "accept": "application/json",
             }
         )
@@ -2415,10 +2425,17 @@ class EmbyServiceBase:
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         """Test Emby/Jellyfin service connection without full initialization."""
+        return await EmbyServiceBase._test_service(
+            url, _authentication_headers(Service.EMBY, api_key)
+        )
+
+    @staticmethod
+    async def _test_service(url: str, headers: dict[str, str]) -> bool:
+        """Test a service connection using its supplied authentication headers."""
         async with niquests.AsyncSession() as session:
             response = await session.get(
                 f"{url.rstrip('/')}/System/Info",
-                headers={"X-Emby-Token": api_key},
+                headers=headers,
             )
             response.raise_for_status()
             if response.status_code == 200:

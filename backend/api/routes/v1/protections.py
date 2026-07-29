@@ -241,6 +241,25 @@ async def list_protections(
         )
     if active_only:
         filters.append(_active_filter(datetime.now(UTC)))
+    # manual protections outlive a soft-delete of their media; exclude any whose
+    # movie or series is currently tombstoned. This query has no joins, so the
+    # membership test is expressed as a subquery.
+    filters.append(
+        or_(
+            ProtectedMedia.movie_id.is_(None),
+            ProtectedMedia.movie_id.in_(
+                select(Movie.id).where(Movie.removed_at.is_(None))
+            ),
+        )
+    )
+    filters.append(
+        or_(
+            ProtectedMedia.series_id.is_(None),
+            ProtectedMedia.series_id.in_(
+                select(Series.id).where(Series.removed_at.is_(None))
+            ),
+        )
+    )
     total = int(
         (
             await db.execute(

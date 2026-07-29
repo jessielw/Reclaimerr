@@ -590,6 +590,31 @@ async def create_protection_request(
     )
 
 
+def _live_media_filters() -> list[ColumnElement[bool]]:
+    """Restrict a ProtectionRequest query to requests whose media still exists.
+
+    Protection requests now outlive a soft-delete of their media, so a request
+    can point at a tombstone. The medium is still loadable, so the relationship
+    resolves and the request renders normally, for a title that appears nowhere
+    else in the app. These queries have no joins, so membership is expressed as
+    a subquery, matching the protected lists.
+    """
+    return [
+        or_(
+            ProtectionRequest.movie_id.is_(None),
+            ProtectionRequest.movie_id.in_(
+                select(Movie.id).where(Movie.removed_at.is_(None))
+            ),
+        ),
+        or_(
+            ProtectionRequest.series_id.is_(None),
+            ProtectionRequest.series_id.in_(
+                select(Series.id).where(Series.removed_at.is_(None))
+            ),
+        ),
+    ]
+
+
 @router.get("/protection-requests/my", response_model=list[ProtectionRequestResponse])
 async def get_my_requests(
     user: Annotated[User, Depends(require_page_access(PageAccess.REQUESTS))],
@@ -600,6 +625,7 @@ async def get_my_requests(
     query = (
         select(ProtectionRequest)
         .where(ProtectionRequest.requested_by_user_id == user.id)
+        .where(*_live_media_filters())
         .options(
             selectinload(ProtectionRequest.movie),
             selectinload(ProtectionRequest.series),
@@ -671,13 +697,17 @@ async def get_all_requests(
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[ProtectionRequestResponse]:
     """Get all exception requests (manage-requests permission)."""
-    query = select(ProtectionRequest).options(
-        selectinload(ProtectionRequest.movie),
-        selectinload(ProtectionRequest.series),
-        selectinload(ProtectionRequest.season),
-        selectinload(ProtectionRequest.episode),
-        selectinload(ProtectionRequest.requested_by),
-        selectinload(ProtectionRequest.reviewed_by),
+    query = (
+        select(ProtectionRequest)
+        .where(*_live_media_filters())
+        .options(
+            selectinload(ProtectionRequest.movie),
+            selectinload(ProtectionRequest.series),
+            selectinload(ProtectionRequest.season),
+            selectinload(ProtectionRequest.episode),
+            selectinload(ProtectionRequest.requested_by),
+            selectinload(ProtectionRequest.reviewed_by),
+        )
     )
 
     if status_filter:
@@ -762,10 +792,15 @@ async def approve_request(
             detail=f"Request has already been {request.status.value}",
         )
 
-    # get media
+    # get media. Soft-deleted media is treated as absent here, the same way
+    # create_request treats it: approving would add a protection that both
+    # protected lists then filter out, so the requester would be told it worked
+    # while nothing appeared anywhere.
     if request.media_type is MediaType.MOVIE:
         media_result = await db.execute(
-            select(Movie).where(Movie.id == request.movie_id)
+            select(Movie).where(
+                Movie.id == request.movie_id, Movie.removed_at.is_(None)
+            )
         )
         media = media_result.scalar_one_or_none()
         if media is None:
@@ -774,7 +809,9 @@ async def approve_request(
             )
     else:
         media_result = await db.execute(
-            select(Series).where(Series.id == request.series_id)
+            select(Series).where(
+                Series.id == request.series_id, Series.removed_at.is_(None)
+            )
         )
         media = media_result.scalar_one_or_none()
         if media is None:

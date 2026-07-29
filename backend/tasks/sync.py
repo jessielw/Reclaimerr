@@ -1,7 +1,8 @@
 import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, TypeVar
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -65,6 +66,135 @@ __all__ = [
 # number of records to process before committing to the database during sync tasks
 COMMIT_BATCH_SIZE = 100
 SONARR_DATE_FETCH_CONCURRENCY = 5
+# refuse to tombstone more than half the library in one pass - a partial
+# media-server response should not look like a mass deletion
+MAX_SOFT_DELETE_RATIO = 0.5
+MIN_LIBRARY_FOR_RATIO_CHECK = 20
+
+_RowT = TypeVar("_RowT", Movie, Series)
+
+
+def _select_rows_to_soft_delete(
+    rows: Sequence[_RowT],
+    matched_row_ids: set[int],
+) -> list[_RowT]:
+    """Rows this sync did not touch, and that are not already tombstoned.
+
+    Identity here is the row primary key, not the TMDB id. A row can be matched
+    through the tvdb/imdb fallback while keeping a different tmdb_id, so testing
+    the tmdb_id would tombstone a row that was just updated from the main server.
+    """
+    return [row for row in rows if row.id not in matched_row_ids and not row.removed_at]
+
+
+def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
+    """True when a delete set is too large a share of the library to trust.
+
+    A partial media-server response makes the incoming set look small, and
+    everything missing from it look deleted. Small libraries are exempt: removing
+    three of four items there is legitimate.
+    """
+    if live_count < MIN_LIBRARY_FOR_RATIO_CHECK:
+        return False
+    return delete_count > live_count * MAX_SOFT_DELETE_RATIO
+
+
+# A delete set larger than the ratio allows is usually a partial media-server
+# response, but it is also what a legitimate main-server switch looks like. A
+# flapping server proposes a DIFFERENT set each time; a real reduction proposes
+# the same one. So skip the first time and act if the same set comes back.
+_previous_large_delete_sets: dict[MediaType, frozenset[int]] = {}
+
+
+def _soft_delete_blocked(
+    media_type: MediaType,
+    rows_to_delete: Sequence[_RowT],
+    live_count: int,
+) -> bool:
+    """True when this delete set should be skipped this run.
+
+    Blocking on the ratio alone deadlocks: a main-server switch proposes the
+    same large set every run, and the phantom rows it wants gone inflate the
+    live count faster than the real library grows, so the pass never relents.
+    Remembering the previous over-ratio set turns the guard into one grace run
+    rather than a permanent block.
+
+    The memory is process-local by design; a restart just costs one more grace
+    run, which is not worth persisting for.
+    """
+    if not _soft_delete_guard_tripped(len(rows_to_delete), live_count):
+        _previous_large_delete_sets.pop(media_type, None)
+        return False
+    signature = frozenset(row.id for row in rows_to_delete)
+    if _previous_large_delete_sets.get(media_type) == signature:
+        _previous_large_delete_sets.pop(media_type, None)
+        return False
+    _previous_large_delete_sets[media_type] = signature
+    return True
+
+
+def _tvdb_sorts_first(a: str, b: str) -> bool:
+    """True when tvdb id `a` orders before `b`.
+
+    Numeric when both are numeric, which they are in practice, so that "9001"
+    sorts before "10001" rather than after it. The ordering only has to be
+    stable, not meaningful.
+    """
+    if a.isdigit() and b.isdigit():
+        return int(a) < int(b)
+    return a < b
+
+
+async def _apply_soft_deletes(
+    session: AsyncSession,
+    rows: Sequence[_RowT],
+    media_type: MediaType,
+) -> list[int]:
+    """Tombstone rows and remove the derived rows hanging off them.
+
+    The medium itself is kept so its metadata can be reused if it reappears;
+    only `removed_at` marks it gone. Does not commit - the caller decides when.
+
+    Returns the tombstoned row ids.
+    """
+    if not rows:
+        return []
+
+    now = datetime.now(UTC)
+    deleted_ids: list[int] = []
+    for row in rows:
+        row.removed_at = now
+        row.added_at = None
+        row.arr_added_at = None
+        deleted_ids.append(row.id)
+        LOG.debug(f"Soft-deleted: {row.title} ({row.tmdb_id})")
+
+    if media_type is MediaType.MOVIE:
+        candidate_col = ReclaimCandidate.movie_id
+        protected_col = ProtectedMedia.movie_id
+    else:
+        candidate_col = ReclaimCandidate.series_id
+        protected_col = ProtectedMedia.series_id
+
+    # Delete only what the system can rebuild. Candidates come from the reclaim
+    # scan and rule-sourced protections from the rule task, so both regenerate.
+    # Manual protections and protection requests are user intent that nothing can
+    # reconstruct, and the medium itself is only soft-deleted, so they stay and are
+    # still attached if the row is restored.
+    await session.execute(
+        sql_delete(ReclaimCandidate).where(candidate_col.in_(deleted_ids))
+    )
+    await session.execute(
+        sql_delete(ProtectedMedia).where(
+            protected_col.in_(deleted_ids),
+            ProtectedMedia.source == "rule",
+        )
+    )
+    LOG.debug(
+        f"Cleaned up candidates and rule protections for {len(deleted_ids)} "
+        f"soft-deleted {media_type.value} rows"
+    )
+    return deleted_ids
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -1156,6 +1286,100 @@ async def gather_movies(
 _SupplementalEpisodeData = dict[int, list[tuple[Service, list[AggregatedSeasonData]]]]
 
 
+def _dedupe_aggregated_series(
+    aggregated_series: list[AggregatedSeriesData],
+) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData]:
+    """Reduce gathered series to one entry per TMDB id.
+
+    Two cases share this code path and must not be confused. One series
+    reported more than once from the same server, typically because it sits in
+    two libraries, is a duplicate: keep one and stash the loser's season data as
+    supplemental so its service-specific episode ids (plex_rating_key,
+    jellyfin_episode_id, emby_episode_id) still reach the episodes table. Two
+    different series that share a TMDB id, which happens where TMDB carries an
+    umbrella entry, are not duplicates: merging them would write the loser's
+    episode ids onto the winner's episode rows. Distinct tvdb ids on both sides
+    are what tells them apart.
+
+    The merge branch also covers one series reported by two services, but
+    sync_series is the only caller of gather_series and always passes a single
+    resolved service, so that no longer arises from a gather.
+    """
+    unique_series: dict[int, AggregatedSeriesData] = {}
+    supplemental: _SupplementalEpisodeData = {}
+    skipped_count = 0
+
+    for series in aggregated_series:
+        ext_ids = series.external_ids
+        if not ext_ids or not ext_ids.tmdb:
+            skipped_count += 1
+            continue
+
+        tmdb_id = ext_ids.tmdb
+        if tmdb_id not in unique_series:
+            unique_series[tmdb_id] = series
+            continue
+
+        existing = unique_series[tmdb_id]
+        existing_tvdb = existing.external_ids.tvdb if existing.external_ids else None
+        incoming_tvdb = ext_ids.tvdb
+
+        # genuine collision: two distinct series under one TMDB id
+        if existing_tvdb and incoming_tvdb and existing_tvdb != incoming_tvdb:
+            if _tvdb_sorts_first(existing_tvdb, incoming_tvdb):
+                winner, loser = existing, series
+            else:
+                winner, loser = series, existing
+            LOG.warning(
+                f"TMDB id {tmdb_id} is shared by two distinct series: "
+                f"'{winner.name}' (tvdb {winner.external_ids.tvdb}) and "
+                f"'{loser.name}' (tvdb {loser.external_ids.tvdb}). Only one can be "
+                f"stored, so '{loser.name}' will not appear in Reclaimerr. Its "
+                f"episode data is discarded rather than merged, which would "
+                f"otherwise attach it to the wrong series."
+            )
+            if winner is series:
+                # the displaced incumbent may have already stashed supplemental
+                # under this tmdb id from an earlier cross-service merge - that
+                # data belongs to the incumbent, not the winner, so drop it here
+                # or it grafts onto the winner's episode rows instead
+                supplemental.pop(tmdb_id, None)
+            unique_series[tmdb_id] = winner
+            continue
+
+        # keep series with most recent watch date
+        if series.last_viewed_at and (
+            not existing.last_viewed_at
+            or series.last_viewed_at > existing.last_viewed_at
+        ):
+            # existing loses - stash its season data as supplemental
+            supplemental.setdefault(tmdb_id, []).append(
+                (existing.service, existing.season_data)
+            )
+            unique_series[tmdb_id] = series
+        else:
+            # new series loses - stash its season data as supplemental
+            # (covers both the equal-date case and the "existing wins" case)
+            if series.last_viewed_at == existing.last_viewed_at:
+                if series.added_at and (
+                    not existing.added_at or series.added_at > existing.added_at
+                ):
+                    # new series wins on added_at - existing loses
+                    supplemental.setdefault(tmdb_id, []).append(
+                        (existing.service, existing.season_data)
+                    )
+                    unique_series[tmdb_id] = series
+                    continue
+            supplemental.setdefault(tmdb_id, []).append(
+                (series.service, series.season_data)
+            )
+
+    if skipped_count > 0:
+        LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
+
+    return unique_series, supplemental
+
+
 async def gather_series(
     service: MediaServerType | None = None,
 ) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData] | None:
@@ -1184,56 +1408,7 @@ async def gather_series(
                 aggregated_series.extend(get_series)
             LOG.debug(f"Fetched {len(get_series)} series from {server.service_type}")
 
-    # deduplicate series, keeping the one with most recent watch date.
-    # When a series appears in multiple services (e.g. Plex + Jellyfin), the losing
-    # service's season data is stored as supplemental so its episode IDs (plex_rating_key,
-    # jellyfin_episode_id, emby_episode_id) can still be written to the episodes table.
-    unique_series: dict[int, AggregatedSeriesData] = {}
-    supplemental: _SupplementalEpisodeData = {}
-    skipped_count = 0
-
-    for series in aggregated_series:
-        ext_ids = series.external_ids
-        if not ext_ids or not ext_ids.tmdb:
-            skipped_count += 1
-            continue
-
-        tmdb_id = ext_ids.tmdb
-        if tmdb_id not in unique_series:
-            unique_series[tmdb_id] = series
-        else:
-            existing = unique_series[tmdb_id]
-            # keep series with most recent watch date
-            if series.last_viewed_at and (
-                not existing.last_viewed_at
-                or series.last_viewed_at > existing.last_viewed_at
-            ):
-                # existing loses - stash its season data as supplemental
-                supplemental.setdefault(tmdb_id, []).append(
-                    (existing.service, existing.season_data)
-                )
-                unique_series[tmdb_id] = series
-            else:
-                # new series loses - stash its season data as supplemental
-                # (covers both the equal-date case and the "existing wins" case)
-                if series.last_viewed_at == existing.last_viewed_at:
-                    if series.added_at and (
-                        not existing.added_at or series.added_at > existing.added_at
-                    ):
-                        # new series wins on added_at - existing loses
-                        supplemental.setdefault(tmdb_id, []).append(
-                            (existing.service, existing.season_data)
-                        )
-                        unique_series[tmdb_id] = series
-                        continue
-                supplemental.setdefault(tmdb_id, []).append(
-                    (series.service, series.season_data)
-                )
-
-    if skipped_count > 0:
-        LOG.warning(f"Skipped {skipped_count} series without TMDB IDs")
-
-    return unique_series, supplemental
+    return _dedupe_aggregated_series(aggregated_series)
 
 
 async def sync_movies(
@@ -1294,6 +1469,10 @@ async def sync_movies(
             existing_by_imdb = {m.imdb_id: m for m in existing_movies_list if m.imdb_id}
 
             parsed_tmdb_ids: set[int] = set()
+            # row primary keys touched this run. parsed_tmdb_ids cannot serve
+            # this purpose: a row matched by the imdb fallback keeps its own
+            # tmdb_id, which is not the id that was just parsed.
+            matched_row_ids: set[int] = set()
 
             # iterate through aggregated movies
             batch_count = 0
@@ -1311,6 +1490,7 @@ async def sync_movies(
                 # if movie already exists, update it
                 if tmdb_id in existing_movies:
                     existing_movie = existing_movies[tmdb_id]
+                    matched_row_ids.add(existing_movie.id)
 
                     # update added_at if available
                     if earliest_added:
@@ -1350,6 +1530,7 @@ async def sync_movies(
                     imdb_id = movie.external_ids.imdb
                     if imdb_id and imdb_id in existing_by_imdb:
                         existing_movie = existing_by_imdb[imdb_id]
+                        matched_row_ids.add(existing_movie.id)
                         LOG.info(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
                             f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
@@ -1575,48 +1756,32 @@ async def sync_movies(
                 await session.commit()
 
             if allow_soft_delete:
-                movies_to_delete = [
-                    movie
-                    for movie in existing_movies.values()
-                    if movie.tmdb_id not in parsed_tmdb_ids and not movie.removed_at
-                ]
+                movies_to_delete = _select_rows_to_soft_delete(
+                    existing_movies_list, matched_row_ids
+                )
+                live_movie_count = sum(
+                    1 for movie in existing_movies_list if not movie.removed_at
+                )
+                if _soft_delete_blocked(
+                    MediaType.MOVIE, movies_to_delete, live_movie_count
+                ):
+                    LOG.warning(
+                        f"Skipping movie soft-delete this run: "
+                        f"{len(movies_to_delete)} of {live_movie_count} live movies "
+                        f"would be removed, which may be a partial response from "
+                        f"{effective_service.value} rather than real deletions. If "
+                        f"the next sync proposes the same movies they will be "
+                        f"removed then."
+                    )
+                    movies_to_delete = []
 
                 if movies_to_delete:
                     LOG.info(
                         f"Soft-deleting {len(movies_to_delete)} movies no longer in {effective_service.value}"
                     )
-                    deleted_movie_ids = []
-                    for db_movie_to_delete in movies_to_delete:
-                        db_movie_to_delete.removed_at = datetime.now(UTC)
-                        db_movie_to_delete.added_at = None
-                        db_movie_to_delete.arr_added_at = None
-                        deleted_movie_ids.append(db_movie_to_delete.id)
-                        LOG.debug(
-                            f"Soft-deleted: {db_movie_to_delete.title} "
-                            f"({db_movie_to_delete.tmdb_id})"
-                        )
-
-                    # clean up orphaned candidates and protection entries
-                    if deleted_movie_ids:
-                        await session.execute(
-                            sql_delete(ReclaimCandidate).where(
-                                ReclaimCandidate.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectedMedia).where(
-                                ProtectedMedia.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectionRequest).where(
-                                ProtectionRequest.movie_id.in_(deleted_movie_ids)
-                            )
-                        )
-                        LOG.debug(
-                            f"Cleaned up candidates/protection entries for {len(deleted_movie_ids)} soft-deleted movies"
-                        )
-
+                    await _apply_soft_deletes(
+                        session, movies_to_delete, MediaType.MOVIE
+                    )
                     await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
@@ -1701,12 +1866,40 @@ async def sync_series(
     service: MediaServerType | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    """Sync series from media servers to database."""
+    """Sync series from the main media server (or a specific service).
+
+    Mirrors sync_movies: a linked (non-main) server contributes watch data
+    rather than series rows, and no argument means the main server rather than
+    every configured server. That watch data comes from sync_linked_data, which
+    sync_media calls in its own loop over the linked servers; unlike sync_movies
+    this function does not call it, it only declines to sync the linked server.
+    """
+    # resolve main server
+    async with async_db() as _cfg:
+        main_server = await _get_main_media_server(_cfg)
+    main_service_type: MediaServerType | None = (
+        main_server.service_type if main_server else None  # type: ignore[assignment]
+    )
+
+    # a linked server never contributes series rows
+    if (
+        service is not None
+        and main_service_type is not None
+        and service != main_service_type
+    ):
+        LOG.info(f"{service} is a linked server - skipping series sync")
+        return set()
+
+    effective_service = service or main_service_type
+    if effective_service is None:
+        LOG.error("No main media server configured for series sync")
+        return set()
+
     start_time = datetime.now(UTC)
-    source_label = service.value if service else "all-media-services"
+    source_label = effective_service.value
     LOG.info(f"Starting series sync ({source_label})...")
 
-    gather_result = await gather_series(service)
+    gather_result = await gather_series(effective_service)
     if not gather_result:
         LOG.info(f"No series to sync from {source_label}")
         return set()
@@ -1733,6 +1926,10 @@ async def sync_series(
 
             # track all tmdb_ids seen in this sync
             parsed_tmdb_ids = set[int]()
+            # row primary keys touched this run. parsed_tmdb_ids cannot serve
+            # this purpose: a row matched by the tvdb/imdb fallback keeps its
+            # own tmdb_id, which is not the id that was just parsed.
+            matched_row_ids: set[int] = set()
 
             # iterate through aggregated series
             batch_count = 0
@@ -1753,6 +1950,18 @@ async def sync_series(
 
                 # if series already exists, update it
                 if existing_series_obj is not None:
+                    if existing_series_obj.id in matched_row_ids:
+                        # two incoming series resolved to one row. only one of
+                        # them can be represented while tmdb_id is unique, so
+                        # the other is silently unreachable without this line.
+                        LOG.warning(
+                            f"Series '{series.name}' resolved to a database row "
+                            f"already claimed by another series in this sync "
+                            f"(row {existing_series_obj.id}, "
+                            f"tmdb {existing_series_obj.tmdb_id}). Only one can "
+                            f"be stored; this one will not appear in Reclaimerr."
+                        )
+                    matched_row_ids.add(existing_series_obj.id)
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
                     media_rollup = _rollup_series_media_from_seasons(series.season_data)
@@ -1877,11 +2086,11 @@ async def sync_series(
             )
 
             #### supplemental episode ID pass ####
-            # For series that appeared in multiple services (e.g. Plex + Jellyfin/Emby),
-            # the losing service's episode data was discarded during deduplication.
-            # We re-run _upsert_episodes for those seasons here so that all
-            # service specific IDs (plex_rating_key, jellyfin_episode_id, etc.)
-            # are written to the episodes table
+            # For series reported more than once by the gather, the losing
+            # entry's episode data was discarded during deduplication. We re-run
+            # _upsert_episodes for those seasons here so that all service
+            # specific IDs (plex_rating_key, jellyfin_episode_id,
+            # emby_episode_id) are written to the episodes table
             if supplemental_episode_data:
                 LOG.debug(
                     f"Running supplemental episode ID upsert for "
@@ -2095,45 +2304,31 @@ async def sync_series(
                 await session.commit()
 
             if allow_soft_delete:
-                series_to_delete = [
-                    s
-                    for s in existing_series.values()
-                    if s.tmdb_id not in parsed_tmdb_ids and not s.removed_at
-                ]
+                series_to_delete = _select_rows_to_soft_delete(
+                    existing_series_list, matched_row_ids
+                )
+                live_series_count = sum(
+                    1 for s in existing_series_list if not s.removed_at
+                )
+                if _soft_delete_blocked(
+                    MediaType.SERIES, series_to_delete, live_series_count
+                ):
+                    LOG.warning(
+                        f"Skipping series soft-delete this run: "
+                        f"{len(series_to_delete)} of {live_series_count} live series "
+                        f"would be removed, which may be a partial response from "
+                        f"{source_label} rather than real deletions. If the next "
+                        f"sync proposes the same series they will be removed then."
+                    )
+                    series_to_delete = []
 
                 if series_to_delete:
                     LOG.info(
                         f"Soft-deleting {len(series_to_delete)} series no longer in {source_label}"
                     )
-                    deleted_series_ids = []
-                    for s in series_to_delete:
-                        s.removed_at = datetime.now(UTC)
-                        s.added_at = None
-                        s.arr_added_at = None
-                        deleted_series_ids.append(s.id)
-                        LOG.debug(f"Soft-deleted: {s.title} ({s.tmdb_id})")
-
-                    # clean up orphaned candidates and protection entries
-                    if deleted_series_ids:
-                        await session.execute(
-                            sql_delete(ReclaimCandidate).where(
-                                ReclaimCandidate.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectedMedia).where(
-                                ProtectedMedia.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        await session.execute(
-                            sql_delete(ProtectionRequest).where(
-                                ProtectionRequest.series_id.in_(deleted_series_ids)
-                            )
-                        )
-                        LOG.debug(
-                            f"Cleaned up candidates/protection entries for {len(deleted_series_ids)} soft-deleted series"
-                        )
-
+                    await _apply_soft_deletes(
+                        session, series_to_delete, MediaType.SERIES
+                    )
                     await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()

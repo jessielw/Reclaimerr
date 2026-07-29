@@ -1102,6 +1102,39 @@ class PlaybackHistoryAggregate(Base):
     )
 
 
+class PlaybackHistoryUserAggregate(Base):
+    """Imported playback users scoped to one observed media-server source."""
+
+    __tablename__ = "playback_history_user_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service_config_id",
+            "observed_service",
+            "target_scope",
+            "target_id",
+            name="uq_playback_history_user_aggregate_source_target",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    observed_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    target_scope: Mapped[str] = mapped_column(String(24), index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
+    unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
+    usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
+    usernames_complete: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class Series(Base):
     """Series availability and metadata."""
 

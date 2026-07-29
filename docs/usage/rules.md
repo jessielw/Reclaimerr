@@ -492,7 +492,9 @@ Playback Reporting events do not keep a user matched after the media server no
 longer marks that user as watched. For a movie version or episode this is the
 exact item; for a season or series it means the user has completed at least one
 available local episode. This is not a per-user full-season/series completion
-check.
+check. When the same media is linked across servers, Reclaimerr combines each
+server's authoritative users; Jellyfin or Emby native state does not replace
+Plex users imported from Tautulli.
 
 `Playback activity` is either true or false when an applicable native snapshot
 or imported-history provider can observe the media target. Targets outside that
