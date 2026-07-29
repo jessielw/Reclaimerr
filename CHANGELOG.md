@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated dependencies:
-  - FastAPI to 0.140.7
+  - FastAPI to 0.140.13
 
 ### Fixed
 
