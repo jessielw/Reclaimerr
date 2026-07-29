@@ -27,10 +27,12 @@ from backend.database.models import (
     NativePlaybackAggregate,
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
+    PlaybackHistoryUserAggregate,
     Season,
     Series,
     SeriesServiceRef,
     ServiceConfig,
+    SupplementalMediaMatch,
     User,
 )
 from backend.enums import MediaType, Service, UserRole
@@ -47,6 +49,7 @@ from backend.services.playback_history import (
     _normalize_reporting_events,
     _normalize_tautulli_events,
     _playback_unavailable_reason,
+    _recent_status_from,
     _refresh_reporting_config,
     _upsert_events,
     load_playback_rule_snapshot,
@@ -78,6 +81,37 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         config.id = 4
 
         self.assertEqual(_config_api_key(config), "plain-test-key")
+
+    def test_legacy_aggregate_format_forces_provider_refresh(self) -> None:
+        config = ServiceConfig(
+            service_type=Service.TAUTULLI,
+            base_url="http://tautulli",
+            api_key="key",
+            enabled=True,
+            extra_settings={
+                "playback_history_sync": {
+                    "format_version": 2,
+                    "available": True,
+                    "last_attempt_at": datetime.now(UTC).isoformat(),
+                }
+            },
+        )
+        config.id = 4
+
+        self.assertIsNone(_recent_status_from(config))
+
+        config.extra_settings = {
+            "playback_history_sync": {
+                "format_version": 2,
+                "aggregate_format_version": 1,
+                "available": True,
+                "last_attempt_at": datetime.now(UTC).isoformat(),
+            }
+        }
+        status = _recent_status_from(config)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.observed_service, Service.PLEX)
 
     def test_playback_reporting_filters_short_events(self) -> None:
         events = _normalize_reporting_events(
@@ -953,6 +987,192 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["playback.usernames"], [])
         self.assertEqual(values["playback.unique_user_count"], 0)
         self.assertEqual(values["playback.play_count"], 1)
+
+    async def test_mixed_server_target_combines_authoritative_users(self) -> None:
+        async with self.sessionmaker() as db:
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+            )
+            jellyfin = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "native_playback_sync": {
+                        "format_version": 2,
+                        "available": True,
+                    }
+                },
+            )
+            movie = Movie(title="Linked Movie", tmdb_id=410)
+            db.add_all([tautulli, jellyfin, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            db.add_all(
+                [
+                    version,
+                    SupplementalMediaMatch(
+                        source_service=Service.JELLYFIN,
+                        source_item_id="jellyfin-item",
+                        media_type=MediaType.MOVIE,
+                        movie_id=movie.id,
+                    ),
+                ]
+            )
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryAggregate(
+                        target_scope="movie_version",
+                        target_id=version.id,
+                        media_type=MediaType.MOVIE,
+                        play_count=2,
+                        total_duration_seconds=240,
+                        longest_duration_seconds=120,
+                        unique_user_count=1,
+                        usernames=["PlexUser"],
+                        usernames_complete=True,
+                        first_activity_at=datetime(2026, 7, 1),
+                        last_activity_at=datetime(2026, 7, 2),
+                    ),
+                    PlaybackHistoryUserAggregate(
+                        source_service_config_id=tautulli.id,
+                        observed_service=Service.PLEX,
+                        target_scope="movie_version",
+                        target_id=version.id,
+                        media_type=MediaType.MOVIE,
+                        unique_user_count=1,
+                        usernames=["PlexUser"],
+                        usernames_complete=True,
+                    ),
+                    NativePlaybackAggregate(
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=jellyfin.id,
+                        target_scope="movie_version",
+                        target_id=version.id,
+                        media_type=MediaType.MOVIE,
+                        has_activity=True,
+                        play_count=1,
+                        unique_user_count=1,
+                        usernames=["JellyfinUser"],
+                        usernames_complete=True,
+                        last_activity_at=datetime(2026, 7, 3),
+                    ),
+                ]
+            )
+            await db.commit()
+            snapshot = await load_playback_rule_snapshot(
+                db,
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=tautulli.id,
+                            provider=Service.TAUTULLI,
+                            observed_service=Service.PLEX,
+                            available=True,
+                        )
+                    ]
+                ),
+            )
+
+        values = snapshot.values_by_target[("movie_version", version.id)]
+        self.assertEqual(
+            values["playback.usernames"],
+            ["JellyfinUser", "PlexUser"],
+        )
+        self.assertEqual(values["playback.unique_user_count"], 2)
+
+    async def test_rebuild_remaps_retained_event_by_current_source_item_id(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+            )
+            movie = Movie(title="Late Media Sync", tmdb_id=411)
+            db.add_all([tautulli, movie])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-late",
+                service_media_id="plex-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            event = PlaybackHistoryEvent(
+                source_service=Service.TAUTULLI,
+                source_service_config_id=tautulli.id,
+                source_event_key="retained-before-sync",
+                source_item_id="plex-late",
+                provider_media_type="movie",
+                played_at=datetime(2026, 7, 4),
+                duration_seconds=120,
+                source_user_id="user-1",
+                source_username="LateUser",
+            )
+            db.add_all([version, event])
+            await db.commit()
+            event_id = event.id
+            version_id = version.id
+            movie_id = movie.id
+            tautulli_id = tautulli.id
+
+        await rebuild_playback_history_aggregates()
+
+        async with self.sessionmaker() as db:
+            remapped = await db.get(PlaybackHistoryEvent, event_id)
+            self.assertIsNotNone(remapped)
+            assert remapped is not None
+            self.assertEqual(remapped.movie_id, movie_id)
+            self.assertEqual(remapped.tmdb_id, 411)
+            source_aggregate = (
+                await db.execute(
+                    select(PlaybackHistoryUserAggregate).where(
+                        PlaybackHistoryUserAggregate.source_service_config_id
+                        == tautulli_id,
+                        PlaybackHistoryUserAggregate.observed_service == Service.PLEX,
+                        PlaybackHistoryUserAggregate.target_scope == "movie_version",
+                        PlaybackHistoryUserAggregate.target_id == version_id,
+                    )
+                )
+            ).scalar_one()
+            self.assertEqual(source_aggregate.usernames, ["LateUser"])
+
+            snapshot = await load_playback_rule_snapshot(
+                db,
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=tautulli_id,
+                            provider=Service.TAUTULLI,
+                            observed_service=Service.PLEX,
+                            available=True,
+                        )
+                    ]
+                ),
+            )
+
+        self.assertEqual(
+            snapshot.values_by_target[("movie_version", version_id)][
+                "playback.usernames"
+            ],
+            ["LateUser"],
+        )
 
     async def test_native_tv_users_are_any_completed_descendant_watcher(self) -> None:
         async with self.sessionmaker() as db:

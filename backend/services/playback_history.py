@@ -24,6 +24,7 @@ from backend.database.models import (
     NativePlaybackAggregate,
     PlaybackHistoryAggregate,
     PlaybackHistoryEvent,
+    PlaybackHistoryUserAggregate,
     Season,
     Series,
     SeriesServiceRef,
@@ -42,6 +43,7 @@ PLAYBACK_TARGET_SCOPES = ("movie_version", "series", "season", "episode")
 PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
 PLAYBACK_EVENT_FORMAT_VERSION = 2
+PLAYBACK_AGGREGATE_FORMAT_VERSION = 1
 NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
 NATIVE_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_FIELDS = frozenset(
@@ -326,6 +328,70 @@ class _Aggregate:
             self.last_activity_at = event.played_at
 
 
+@dataclass(slots=True)
+class _UserAggregate:
+    """Per-source user identities for one playback target."""
+
+    media_type: MediaType
+    users: set[str] = field(default_factory=set)
+    usernames: dict[str, str] = field(default_factory=dict)
+    usernames_complete: bool = True
+
+    def add(self, event: PlaybackHistoryEvent) -> None:
+        """Merge one playback event into the source-scoped user aggregate."""
+
+        if not event.source_user_id:
+            self.usernames_complete = False
+            return
+        self.users.add(str(event.source_user_id))
+        username = str(event.source_username or "").strip()
+        if username:
+            self.usernames.setdefault(username.casefold(), username)
+        else:
+            self.usernames_complete = False
+
+
+@dataclass(slots=True)
+class _UserEvidence:
+    """Merged authoritative user values for one source or target."""
+
+    unique_user_count: int = 0
+    usernames: dict[str, str] = field(default_factory=dict)
+    usernames_complete: bool = True
+
+    def merge(
+        self,
+        *,
+        unique_user_count: int,
+        usernames: Iterable[object],
+        usernames_complete: bool,
+    ) -> None:
+        """Merge one source while deduplicating display names case-insensitively."""
+
+        self.unique_user_count = max(self.unique_user_count, unique_user_count)
+        for raw_name in usernames:
+            name = str(raw_name or "").strip()
+            if name:
+                self.usernames.setdefault(name.casefold(), name)
+        self.usernames_complete = self.usernames_complete and usernames_complete
+
+    def values(self) -> dict[str, object]:
+        """Return rule fields represented by this evidence."""
+
+        values: dict[str, object] = {
+            "playback.unique_user_count": max(
+                self.unique_user_count,
+                len(self.usernames),
+            )
+        }
+        if self.usernames_complete:
+            values["playback.usernames"] = sorted(
+                self.usernames.values(),
+                key=str.casefold,
+            )
+        return values
+
+
 def _parse_datetime(value: object) -> datetime | None:
     """Parse a provider datetime value into a naive UTC datetime."""
 
@@ -418,6 +484,9 @@ def _recent_status_from(config: ServiceConfig) -> PlaybackProviderStatus | None:
     """Return cached provider status if the last attempt is still fresh."""
 
     state = _state_from(config)
+    aggregate_version = _parse_int(state.get("aggregate_format_version")) or 0
+    if aggregate_version < PLAYBACK_AGGREGATE_FORMAT_VERSION:
+        return None
     if config.service_type is Service.TAUTULLI:
         version = _parse_int(state.get("format_version")) or 0
         if version < PLAYBACK_EVENT_FORMAT_VERSION and bool(state.get("available")):
@@ -485,9 +554,39 @@ def _set_state(
             if available
             else previous.get("format_version", 0)
         ),
+        "aggregate_format_version": previous.get("aggregate_format_version", 0),
     }
     settings[PLAYBACK_HISTORY_STATE_KEY] = state
     config.extra_settings = settings
+
+
+async def _mark_aggregate_format_current(config_ids: Iterable[int]) -> None:
+    """Record a successful source-aware aggregate rebuild."""
+
+    unique_ids = set(config_ids)
+    if not unique_ids:
+        return
+    async with async_db() as session:
+        configs = (
+            (
+                await session.execute(
+                    select(ServiceConfig).where(ServiceConfig.id.in_(unique_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for config in configs:
+            settings = (
+                dict(config.extra_settings)
+                if isinstance(config.extra_settings, dict)
+                else {}
+            )
+            state = dict(_state_from(config))
+            state["aggregate_format_version"] = PLAYBACK_AGGREGATE_FORMAT_VERSION
+            settings[PLAYBACK_HISTORY_STATE_KEY] = state
+            config.extra_settings = settings
+        await session.commit()
 
 
 def _normalize_reporting_events(
@@ -614,7 +713,10 @@ async def _identity_maps(
                     Movie.tmdb_id,
                 )
                 .join(Movie, MovieVersion.movie_id == Movie.id)
-                .where(MovieVersion.service == service)
+                .where(
+                    MovieVersion.service == service,
+                    Movie.removed_at.is_(None),
+                )
             )
         ).all()
     }
@@ -630,6 +732,7 @@ async def _identity_maps(
                 SupplementalMediaMatch.source_service == service,
                 SupplementalMediaMatch.media_type == MediaType.MOVIE,
                 SupplementalMediaMatch.movie_id.is_not(None),
+                Movie.removed_at.is_(None),
             )
         )
     ).all()
@@ -656,7 +759,10 @@ async def _identity_maps(
                 )
                 .join(Season, Episode.season_id == Season.id)
                 .join(Series, Season.series_id == Series.id)
-                .where(episode_column.is_not(None))
+                .where(
+                    episode_column.is_not(None),
+                    Series.removed_at.is_(None),
+                )
             )
         ).all()
         episode_map = {
@@ -1089,6 +1195,7 @@ async def _refresh_playback_history_once(
 
     if force or refreshed:
         await rebuild_playback_history_aggregates()
+        await _mark_aggregate_format_current(config.id for config in configs)
     result = PlaybackRefreshResult(statuses=statuses)
     imported = sum(status.imported_events for status in statuses)
     LOG.info(
@@ -1275,27 +1382,6 @@ def _merge_playback_metric_values(
     return values
 
 
-def _resolve_playback_user_values(
-    plugin_values: Mapping[str, object] | None,
-    native_values: Mapping[str, object] | None,
-    *,
-    native_current_state_available: bool,
-    native_current_state_unknown: bool,
-) -> dict[str, object]:
-    """Return user fields from the one source authoritative for this target."""
-
-    if native_current_state_unknown:
-        return {}
-    source_values = native_values if native_current_state_available else plugin_values
-    if source_values is None:
-        return {}
-    return {
-        field: source_values[field]
-        for field in PLAYBACK_USER_FIELDS
-        if field in source_values
-    }
-
-
 def _native_status_from_config(config: ServiceConfig) -> NativePlaybackStatus:
     """Read the availability state written by the native snapshot refresh."""
 
@@ -1352,19 +1438,43 @@ async def _load_native_playback_statuses(
     return [_native_status_from_config(config) for config in configs]
 
 
+def _observed_service_for_provider(provider: Service) -> Service:
+    """Return the media server whose playback a provider observes."""
+
+    return Service.PLEX if provider is Service.TAUTULLI else provider
+
+
 async def rebuild_playback_history_aggregates() -> None:
     """Remap retained events to current media rows and rebuild rule aggregates."""
     async with async_db() as session:
         movie_rows = (
-            await session.execute(select(Movie.id, Movie.tmdb_id, Movie.added_at))
+            await session.execute(
+                select(Movie.id, Movie.tmdb_id, Movie.added_at).where(
+                    Movie.removed_at.is_(None)
+                )
+            )
         ).all()
         movie_by_tmdb = {
-            tmdb_id: (movie_id, added_at) for movie_id, tmdb_id, added_at in movie_rows
+            tmdb_id: (movie_id, added_at)
+            for movie_id, tmdb_id, added_at in movie_rows
+            if tmdb_id is not None
+        }
+        movie_added_by_id = {
+            movie_id: added_at for movie_id, _tmdb_id, added_at in movie_rows
         }
         versions_by_movie: dict[int, list[int]] = defaultdict(list)
         for version_id, movie_id in (
-            await session.execute(select(MovieVersion.id, MovieVersion.movie_id))
+            await session.execute(
+                select(MovieVersion.id, MovieVersion.movie_id)
+                .join(Movie, MovieVersion.movie_id == Movie.id)
+                .where(
+                    Movie.removed_at.is_(None),
+                    MovieVersion.movie_id.is_not(None),
+                )
+            )
         ).all():
+            if movie_id is None:
+                continue
             versions_by_movie[movie_id].append(version_id)
 
         episode_by_identity: dict[
@@ -1377,6 +1487,8 @@ async def rebuild_playback_history_aggregates() -> None:
                 datetime | None,
             ],
         ] = {}
+        series_added_by_id: dict[int, datetime | None] = {}
+        season_added_by_id: dict[int, datetime | None] = {}
         for (
             episode_id,
             season_id,
@@ -1400,6 +1512,7 @@ async def rebuild_playback_history_aggregates() -> None:
                 )
                 .join(Season, Episode.season_id == Season.id)
                 .join(Series, Season.series_id == Series.id)
+                .where(Series.removed_at.is_(None))
             )
         ).all():
             episode_by_identity[(tmdb_id, season_number, episode_number)] = (
@@ -1409,23 +1522,55 @@ async def rebuild_playback_history_aggregates() -> None:
                 series_added_at,
                 season_added_at,
             )
+            series_added_by_id[series_id] = series_added_at
+            season_added_by_id[season_id] = season_added_at
+
+        identity_maps = {
+            service: await _identity_maps(session, service)
+            for service in (Service.PLEX, Service.JELLYFIN, Service.EMBY)
+        }
 
         aggregates: dict[PlaybackTargetKey, _Aggregate] = {}
+        user_aggregates: dict[
+            tuple[int, Service, str, int],
+            _UserAggregate,
+        ] = {}
         movie_watch: dict[int, _Aggregate] = {}
         series_watch: dict[int, _Aggregate] = {}
         season_watch: dict[int, _Aggregate] = {}
         episode_watch: dict[int, _Aggregate] = {}
+        remapped_events = 0
+        unmatched_events = 0
         events = list(
             (await session.execute(select(PlaybackHistoryEvent))).scalars().all()
         )
         for event in events:
             target_keys: list[PlaybackTargetKey] = []
-            if event.provider_media_type == "movie" and event.tmdb_id is not None:
-                movie_identity = movie_by_tmdb.get(event.tmdb_id)
-                if movie_identity is not None:
-                    movie_id, movie_added_at = movie_identity
-                    event.movie_id = movie_id
-                    event.series_id = event.season_id = event.episode_id = None
+            previous_ids = (
+                event.movie_id,
+                event.series_id,
+                event.season_id,
+                event.episode_id,
+            )
+            observed_service = _observed_service_for_provider(event.source_service)
+            movie_map, episode_map = identity_maps.get(observed_service, ({}, {}))
+
+            if event.provider_media_type == "movie":
+                movie_id: int | None = None
+                movie_added_at: datetime | None = None
+                direct_movie = movie_map.get(event.source_item_id)
+                if direct_movie is not None:
+                    movie_id, tmdb_id = direct_movie
+                    event.tmdb_id = tmdb_id
+                    movie_added_at = movie_added_by_id.get(movie_id)
+                elif event.tmdb_id is not None:
+                    movie_identity = movie_by_tmdb.get(event.tmdb_id)
+                    if movie_identity is not None:
+                        movie_id, movie_added_at = movie_identity
+
+                event.movie_id = movie_id
+                event.series_id = event.season_id = event.episode_id = None
+                if movie_id is not None:
                     target_keys.extend(
                         ("movie_version", version_id)
                         for version_id in versions_by_movie.get(movie_id, [])
@@ -1434,27 +1579,50 @@ async def rebuild_playback_history_aggregates() -> None:
                         movie_watch.setdefault(
                             movie_id, _Aggregate(media_type=MediaType.MOVIE)
                         ).add(event)
-            elif (
-                event.provider_media_type == "episode"
-                and event.tmdb_id is not None
-                and event.season_number is not None
-                and event.episode_number is not None
-            ):
-                identity = episode_by_identity.get(
-                    (event.tmdb_id, event.season_number, event.episode_number)
-                )
-                if identity:
+            elif event.provider_media_type == "episode":
+                episode_id = season_id = series_id = None
+                series_added_at = season_added_at = None
+                direct_episode = episode_map.get(event.source_item_id)
+                if direct_episode is not None:
                     (
                         episode_id,
                         season_id,
                         series_id,
-                        series_added_at,
-                        season_added_at,
-                    ) = identity
-                    event.movie_id = None
-                    event.episode_id = episode_id
-                    event.season_id = season_id
-                    event.series_id = series_id
+                        tmdb_id,
+                        season_number,
+                        episode_number,
+                    ) = direct_episode
+                    event.tmdb_id = tmdb_id
+                    event.season_number = season_number
+                    event.episode_number = episode_number
+                    series_added_at = series_added_by_id.get(series_id)
+                    season_added_at = season_added_by_id.get(season_id)
+                elif (
+                    event.tmdb_id is not None
+                    and event.season_number is not None
+                    and event.episode_number is not None
+                ):
+                    identity = episode_by_identity.get(
+                        (event.tmdb_id, event.season_number, event.episode_number)
+                    )
+                    if identity is not None:
+                        (
+                            episode_id,
+                            season_id,
+                            series_id,
+                            series_added_at,
+                            season_added_at,
+                        ) = identity
+
+                event.movie_id = None
+                event.episode_id = episode_id
+                event.season_id = season_id
+                event.series_id = series_id
+                if (
+                    episode_id is not None
+                    and season_id is not None
+                    and series_id is not None
+                ):
                     target_keys.extend(
                         [
                             ("series", series_id),
@@ -1474,20 +1642,37 @@ async def rebuild_playback_history_aggregates() -> None:
                             episode_id, _Aggregate(media_type=MediaType.SERIES)
                         ).add(event)
 
+            current_ids = (
+                event.movie_id,
+                event.series_id,
+                event.season_id,
+                event.episode_id,
+            )
+            if target_keys and current_ids != previous_ids:
+                remapped_events += 1
+            if not target_keys:
+                unmatched_events += 1
+
             for key in target_keys:
-                aggregate = aggregates.setdefault(
-                    key,
-                    _Aggregate(
-                        media_type=(
-                            MediaType.MOVIE
-                            if key[0] == "movie_version"
-                            else MediaType.SERIES
-                        )
-                    ),
+                media_type = (
+                    MediaType.MOVIE if key[0] == "movie_version" else MediaType.SERIES
                 )
-                aggregate.add(event)
+                aggregates.setdefault(
+                    key,
+                    _Aggregate(media_type=media_type),
+                ).add(event)
+                user_aggregates.setdefault(
+                    (
+                        event.source_service_config_id,
+                        observed_service,
+                        key[0],
+                        key[1],
+                    ),
+                    _UserAggregate(media_type=media_type),
+                ).add(event)
 
         await session.execute(delete(PlaybackHistoryAggregate))
+        await session.execute(delete(PlaybackHistoryUserAggregate))
         session.add_all(
             [
                 PlaybackHistoryAggregate(
@@ -1504,6 +1689,29 @@ async def rebuild_playback_history_aggregates() -> None:
                     last_activity_at=aggregate.last_activity_at,
                 )
                 for (scope, target_id), aggregate in aggregates.items()
+            ]
+        )
+        session.add_all(
+            [
+                PlaybackHistoryUserAggregate(
+                    source_service_config_id=config_id,
+                    observed_service=observed_service,
+                    target_scope=scope,
+                    target_id=target_id,
+                    media_type=aggregate.media_type,
+                    unique_user_count=len(aggregate.users),
+                    usernames=sorted(
+                        aggregate.usernames.values(),
+                        key=str.casefold,
+                    ),
+                    usernames_complete=aggregate.usernames_complete,
+                )
+                for (
+                    config_id,
+                    observed_service,
+                    scope,
+                    target_id,
+                ), aggregate in user_aggregates.items()
             ]
         )
 
@@ -1527,6 +1735,17 @@ async def rebuild_playback_history_aggregates() -> None:
                 ):
                     row.last_viewed_at = aggregate.last_activity_at
         await session.commit()
+        LOG.info(
+            "Playback aggregate rebuild complete: "
+            f"{len(aggregates)} target aggregate(s), "
+            f"{len(user_aggregates)} source-user aggregate(s), "
+            f"{remapped_events} retained event(s) remapped"
+        )
+        if unmatched_events:
+            LOG.debug(
+                f"Playback aggregate rebuild retained {unmatched_events} "
+                "event(s) without a current media target"
+            )
 
 
 async def load_playback_rule_snapshot(
@@ -1664,14 +1883,47 @@ async def load_playback_rule_snapshot(
     plugin_values_by_target = {
         (row.target_scope, row.target_id): _aggregate_values(row) for row in plugin_rows
     }
-    incomplete_plugin_username_targets: set[PlaybackTargetKey] = {
-        (row.target_scope, row.target_id)
-        for row in plugin_rows
-        if not row.usernames_complete
-    }
+    legacy_plugin_users_by_target: dict[PlaybackTargetKey, _UserEvidence] = {}
+    for row in plugin_rows:
+        legacy_plugin_users_by_target[(row.target_scope, row.target_id)] = (
+            _UserEvidence(
+                unique_user_count=row.unique_user_count,
+                usernames={
+                    str(name).casefold(): str(name)
+                    for name in row.usernames or []
+                    if str(name or "").strip()
+                },
+                usernames_complete=row.usernames_complete,
+            )
+        )
+
+    source_user_rows = (
+        (await db.execute(select(PlaybackHistoryUserAggregate))).scalars().all()
+    )
+    plugin_users_by_source: dict[
+        tuple[PlaybackTargetKey, Service],
+        _UserEvidence,
+    ] = {}
+    for row in source_user_rows:
+        evidence = plugin_users_by_source.setdefault(
+            (
+                (row.target_scope, row.target_id),
+                row.observed_service,
+            ),
+            _UserEvidence(),
+        )
+        evidence.merge(
+            unique_user_count=row.unique_user_count,
+            usernames=row.usernames or [],
+            usernames_complete=row.usernames_complete,
+        )
+
     incomplete_timestamp_targets: set[PlaybackTargetKey] = set()
-    incomplete_native_username_targets: set[PlaybackTargetKey] = set()
     native_values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
+    native_users_by_source: dict[
+        tuple[PlaybackTargetKey, Service],
+        _UserEvidence,
+    ] = {}
     if native_available_config_ids:
         native_rows = (
             (
@@ -1688,13 +1940,20 @@ async def load_playback_rule_snapshot(
         )
         for row in native_rows:
             key = (row.target_scope, row.target_id)
-            if not row.usernames_complete:
-                incomplete_native_username_targets.add(key)
             if row.has_activity and row.last_activity_at is None:
                 incomplete_timestamp_targets.add(key)
             native_values_by_target[key] = _merge_playback_source_values(
                 native_values_by_target.get(key),
                 _native_aggregate_values(row),
+            )
+            native_user_evidence = native_users_by_source.setdefault(
+                (key, row.source_service),
+                _UserEvidence(),
+            )
+            native_user_evidence.merge(
+                unique_user_count=row.unique_user_count,
+                usernames=row.usernames or [],
+                usernames_complete=row.usernames_complete,
             )
 
     plugin_zero_values: dict[str, object] = {
@@ -1724,65 +1983,101 @@ async def load_playback_rule_snapshot(
 
     available_fields_by_target: dict[PlaybackTargetKey, set[str]] = {}
     for key, values in plugin_values_by_target.items():
-        available_fields_by_target.setdefault(key, set()).update(values)
+        available_fields_by_target.setdefault(key, set()).update(
+            field for field in values if field not in PLAYBACK_USER_FIELDS
+        )
     for key in plugin_covered_targets:
         if key not in plugin_values_by_target:
             plugin_values_by_target[key] = dict(plugin_zero_values)
-            available_fields_by_target.setdefault(key, set()).update(plugin_zero_values)
+            available_fields_by_target.setdefault(key, set()).update(
+                field
+                for field in plugin_zero_values
+                if field not in PLAYBACK_USER_FIELDS
+            )
     for key, values in native_values_by_target.items():
         available_fields_by_target.setdefault(key, set()).update(
-            field for field in values if field in NATIVE_PLAYBACK_FIELDS
+            field
+            for field in values
+            if field in NATIVE_PLAYBACK_FIELDS and field not in PLAYBACK_USER_FIELDS
         )
     for key in native_covered_targets:
         if key not in native_values_by_target:
             native_values_by_target[key] = dict(native_zero_values)
-            available_fields_by_target.setdefault(key, set()).update(native_zero_values)
-
-    # A failed or out-of-date Jellyfin/Emby snapshot cannot safely be replaced
-    # with imported event users: those are historical activity, not current
-    # watched state. Keep other playback metrics available, but make user
-    # conditions unknown until the next successful playback data refresh.
-    native_user_unknown_targets: set[PlaybackTargetKey] = set()
-    for scope, services_by_target in target_services.items():
-        for target_id, services in services_by_target.items():
-            relevant_native_statuses = [
-                status for status in native_statuses if status.service in services
-            ]
-            if relevant_native_statuses and not any(
-                status.available for status in relevant_native_statuses
-            ):
-                native_user_unknown_targets.add((scope, target_id))
+            available_fields_by_target.setdefault(key, set()).update(
+                field
+                for field in native_zero_values
+                if field not in PLAYBACK_USER_FIELDS
+            )
 
     values_by_target: dict[PlaybackTargetKey, dict[str, object]] = {}
     for key in plugin_values_by_target.keys() | native_values_by_target.keys():
-        values = _merge_playback_metric_values(
+        values_by_target[key] = _merge_playback_metric_values(
             plugin_values_by_target.get(key), native_values_by_target.get(key)
         )
-        values.update(
-            _resolve_playback_user_values(
-                plugin_values_by_target.get(key),
-                native_values_by_target.get(key),
-                native_current_state_available=key in native_covered_targets,
-                native_current_state_unknown=key in native_user_unknown_targets,
-            )
-        )
-        values_by_target[key] = values
 
-    # Usernames require complete identity resolution from whichever source is
-    # authoritative for that target. A count can remain available without every
-    # display name, so only the username list is made unknown here.
-    incomplete_username_targets = (
-        incomplete_plugin_username_targets - native_covered_targets
-    ) | (incomplete_native_username_targets & native_covered_targets)
-    for key in incomplete_username_targets:
-        values_by_target.get(key, {}).pop("playback.usernames", None)
-        available_fields_by_target.get(key, set()).discard("playback.usernames")
-    for key in native_user_unknown_targets:
-        values_by_target.get(key, {}).pop("playback.usernames", None)
-        values_by_target.get(key, {}).pop("playback.unique_user_count", None)
-        available_fields = available_fields_by_target.get(key, set())
-        available_fields.discard("playback.usernames")
-        available_fields.discard("playback.unique_user_count")
+    native_statuses_by_service: dict[Service, list[NativePlaybackStatus]] = defaultdict(
+        list
+    )
+    for status in native_statuses:
+        native_statuses_by_service[status.service].append(status)
+
+    # User authority is service-scoped. Plex uses retained Tautulli identities,
+    # while Jellyfin and Emby use their current native watched state. A target
+    # available on multiple servers combines those authoritative sources
+    # instead of allowing one server to replace every other server's users.
+    for scope, services_by_target in target_services.items():
+        for target_id, services in services_by_target.items():
+            key = (scope, target_id)
+            combined = _UserEvidence()
+            has_authoritative_source = False
+            source_unknown = False
+            for service in services:
+                if service is Service.PLEX:
+                    evidence = plugin_users_by_source.get((key, service))
+                    if evidence is None and len(services) == 1:
+                        evidence = legacy_plugin_users_by_target.get(key)
+                    if evidence is not None:
+                        combined.merge(
+                            unique_user_count=evidence.unique_user_count,
+                            usernames=evidence.usernames.values(),
+                            usernames_complete=evidence.usernames_complete,
+                        )
+                        has_authoritative_source = True
+                    elif service in plugin_available_services:
+                        has_authoritative_source = True
+                    else:
+                        source_unknown = True
+                    continue
+
+                if service not in {Service.JELLYFIN, Service.EMBY}:
+                    continue
+                statuses = native_statuses_by_service.get(service, [])
+                if not any(status.available for status in statuses):
+                    source_unknown = True
+                    continue
+                evidence = native_users_by_source.get((key, service))
+                if evidence is not None:
+                    combined.merge(
+                        unique_user_count=evidence.unique_user_count,
+                        usernames=evidence.usernames.values(),
+                        usernames_complete=evidence.usernames_complete,
+                    )
+                has_authoritative_source = True
+
+            available_fields = available_fields_by_target.setdefault(key, set())
+            existing_values = values_by_target.get(key)
+            if existing_values is not None:
+                existing_values.pop("playback.usernames", None)
+                existing_values.pop("playback.unique_user_count", None)
+            available_fields.discard("playback.usernames")
+            available_fields.discard("playback.unique_user_count")
+            if source_unknown or not has_authoritative_source:
+                continue
+            user_values = combined.values()
+            values = values_by_target.setdefault(key, {})
+            values.update(user_values)
+            available_fields.update(user_values)
+
     for key in incomplete_timestamp_targets:
         values = values_by_target.get(key, {})
         values.pop("playback.last_activity_at", None)
