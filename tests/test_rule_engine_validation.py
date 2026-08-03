@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from backend.core.rule_engine import (
+    FIELD_LABELS,
+    FIELD_NUMERIC_BOUNDS,
+    NUMERIC_FIELDS,
+    RESCALED_FIELD_NOTES,
     RULE_VALUE_UNAVAILABLE,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
@@ -950,6 +954,154 @@ class ArrTagRegexOperatorTests(unittest.TestCase):
                 ["tag-1-stale"], "matches_any_regex", ["[invalid"], field="arr.tags"
             )
         )
+
+
+class NumericBoundsTableTests(unittest.TestCase):
+    def test_every_bounded_field_is_a_known_numeric_field(self) -> None:
+        for field in FIELD_NUMERIC_BOUNDS:
+            self.assertIn(field, NUMERIC_FIELDS, f"{field} is not a numeric field")
+            self.assertIn(field, FIELD_LABELS, f"{field} has no display label")
+
+    def test_bounds_are_internally_consistent(self) -> None:
+        for field, (minimum, maximum, integer_required) in FIELD_NUMERIC_BOUNDS.items():
+            self.assertGreaterEqual(minimum, 0, f"{field} has a negative minimum")
+            if maximum is not None:
+                self.assertGreater(maximum, minimum, f"{field} has max <= min")
+            self.assertIsInstance(integer_required, bool)
+
+    def test_rating_scales_are_grouped_as_specified(self) -> None:
+        ten_point = {"tmdb.vote_average", "imdb.rating", "media_server.user_rating"}
+        hundred_point = {
+            "rottentomatoes.tomato_meter",
+            "rottentomatoes.popcorn_meter",
+            "metacritic.metascore",
+            "metacritic.user_score",
+            "trakt.rating",
+            "letterboxd.score",
+            "anilist.score",
+        }
+        for field in ten_point & set(FIELD_NUMERIC_BOUNDS):
+            self.assertEqual(FIELD_NUMERIC_BOUNDS[field], (0, 10, False), field)
+        for field in hundred_point:
+            self.assertEqual(FIELD_NUMERIC_BOUNDS[field], (0, 100, True), field)
+
+    def test_rescaled_fields_have_notes(self) -> None:
+        self.assertEqual(
+            set(RESCALED_FIELD_NOTES),
+            {"metacritic.user_score", "letterboxd.score"},
+        )
+        for note in RESCALED_FIELD_NOTES.values():
+            self.assertIn("Reclaimerr stores it as a percentage", note)
+
+
+class NumericBoundsValidationTests(unittest.TestCase):
+    def _validate(self, field: str, operator: str, value: object) -> None:
+        validate_rule_definition(
+            _definition(field, operator, value),
+            target_scope=TARGET_MOVIE_VERSION,
+        )
+
+    def test_in_range_values_are_accepted(self) -> None:
+        self._validate("imdb.rating", "greater_than_or_equal", 7.5)
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 80)
+        self._validate("imdb.vote_count", "greater_than_or_equal", 5000)
+
+    def test_value_above_maximum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than_or_equal", 11)
+        self.assertIn("between 0 and 10", str(ctx.exception))
+
+        with self.assertRaises(ValueError):
+            self._validate("rottentomatoes.tomato_meter", "less_than", 101)
+
+    def test_negative_values_are_rejected(self) -> None:
+        for field in ("imdb.rating", "rottentomatoes.tomato_meter", "imdb.vote_count"):
+            with self.assertRaises(ValueError):
+                self._validate(field, "greater_than_or_equal", -1)
+
+    def test_decimals_rejected_on_integer_fields_but_allowed_on_rating_fields(
+        self,
+    ) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "equals", 78.5)
+        self.assertIn("whole number", str(ctx.exception))
+        self._validate("imdb.rating", "greater_than_or_equal", 7.25)
+
+    def test_list_values_are_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than_or_equal", [7, 8])
+        self.assertIn("single value", str(ctx.exception))
+
+    def test_booleans_are_rejected_and_not_read_as_one(self) -> None:
+        with self.assertRaises(ValueError):
+            self._validate("imdb.rating", "greater_than_or_equal", True)
+
+    def test_numeric_strings_are_accepted(self) -> None:
+        self._validate("imdb.rating", "greater_than_or_equal", "7.5")
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", "80")
+
+    def test_non_numeric_and_non_finite_values_are_rejected(self) -> None:
+        for value in ("high", "inf", "nan"):
+            with self.assertRaises(ValueError):
+                self._validate("imdb.rating", "greater_than_or_equal", value)
+
+    def test_valueless_operators_still_validate(self) -> None:
+        self._validate("imdb.rating", "exists", None)
+        self._validate("rottentomatoes.tomato_meter", "not_exists", None)
+
+    def test_error_uses_display_label_not_field_key(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 101)
+        message = str(ctx.exception)
+        self.assertIn("Rotten Tomatoes Tomatometer", message)
+        self.assertNotIn("rottentomatoes.tomato_meter", message)
+
+    def test_rescaled_fields_explain_the_provider_scale(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("metacritic.user_score", "greater_than_or_equal", 101)
+        self.assertIn("Metacritic publishes this as 0-10", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("letterboxd.score", "greater_than_or_equal", 101)
+        self.assertIn("Letterboxd publishes this as 0-5", str(ctx.exception))
+
+
+class NumericBoundaryImpossibilityTests(unittest.TestCase):
+    def _validate(self, field: str, operator: str, value: object) -> None:
+        validate_rule_definition(
+            _definition(field, operator, value),
+            target_scope=TARGET_MOVIE_VERSION,
+        )
+
+    def test_greater_than_maximum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "greater_than", 100)
+        message = str(ctx.exception)
+        self.assertIn("can never match", message)
+        self.assertIn("100 is the maximum", message)
+
+    def test_greater_than_or_equal_maximum_is_accepted(self) -> None:
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 100)
+
+    def test_less_than_minimum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.vote_count", "less_than", 0)
+        message = str(ctx.exception)
+        self.assertIn("can never match", message)
+        self.assertIn("0 is the minimum", message)
+
+    def test_less_than_or_equal_minimum_is_accepted(self) -> None:
+        self._validate("imdb.vote_count", "less_than_or_equal", 0)
+
+    def test_unbounded_field_allows_large_greater_than(self) -> None:
+        self._validate("imdb.vote_count", "greater_than", 5_000_000)
+
+    def test_boundary_message_uses_operator_symbols(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than", 10)
+        message = str(ctx.exception)
+        self.assertIn("IMDb rating > 10", message)
+        self.assertIn("use >=", message)
 
 
 if __name__ == "__main__":

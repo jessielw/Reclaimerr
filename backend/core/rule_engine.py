@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping
@@ -311,6 +312,49 @@ NUMERIC_FIELDS = {
     "disk.free_bytes",
     "disk.free_percent",
 }
+
+# field -> (minimum, maximum or None, integer required)
+# Mirrored by NUMERIC_FIELD_BOUNDS in
+# frontend/src/lib/components/settings/rules/rule-node-editor.svelte.
+# tests/test_rule_engine_frontend_parity.py fails if the two drift.
+FIELD_NUMERIC_BOUNDS: dict[str, tuple[float, float | None, bool]] = {
+    # 0-10 scales, decimals allowed
+    "tmdb.vote_average": (0, 10, False),
+    "imdb.rating": (0, 10, False),
+    "media_server.user_rating": (0, 10, False),
+    # 0-100 scales, whole numbers only
+    "rottentomatoes.tomato_meter": (0, 100, True),
+    "rottentomatoes.popcorn_meter": (0, 100, True),
+    "metacritic.metascore": (0, 100, True),
+    "metacritic.user_score": (0, 100, True),
+    "trakt.rating": (0, 100, True),
+    "letterboxd.score": (0, 100, True),
+    "anilist.score": (0, 100, True),
+    # counts, no upper bound
+    "tmdb.vote_count": (0, None, True),
+    "imdb.vote_count": (0, None, True),
+    "rottentomatoes.tomato_vote_count": (0, None, True),
+    "rottentomatoes.popcorn_vote_count": (0, None, True),
+    "metacritic.vote_count": (0, None, True),
+    "metacritic.user_vote_count": (0, None, True),
+    "trakt.vote_count": (0, None, True),
+    "letterboxd.vote_count": (0, None, True),
+    "anilist.popularity": (0, None, True),
+    "anilist.favourites": (0, None, True),
+}
+
+# Fields whose stored scale differs from the scale the provider publishes.
+# Surfaced in validation errors so the user is not left comparing our message
+# against a different number on the provider's own site.
+RESCALED_FIELD_NOTES: dict[str, str] = {
+    "metacritic.user_score": (
+        "Metacritic publishes this as 0-10; Reclaimerr stores it as a percentage"
+    ),
+    "letterboxd.score": (
+        "Letterboxd publishes this as 0-5; Reclaimerr stores it as a percentage"
+    ),
+}
+
 TEXT_FIELDS = {
     "tmdb.collection_name",
     "tmdb.genres",
@@ -1690,6 +1734,72 @@ def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> Non
         )
 
 
+def _format_bound(value: float) -> str:
+    """Render a bound without a trailing .0 so messages read naturally."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _numeric_expectation(field: str) -> str:
+    """Build the human-readable expectation for a bounded numeric field."""
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+    kind = "a whole number" if integer_required else "a value"
+    if maximum is None:
+        expectation = f"{label} expects {kind} of {_format_bound(minimum)} or greater"
+    else:
+        expectation = (
+            f"{label} expects {kind} between "
+            f"{_format_bound(minimum)} and {_format_bound(maximum)}"
+        )
+    note = RESCALED_FIELD_NOTES.get(field)
+    return f"{expectation} ({note})" if note else expectation
+
+
+def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
+    """Reject values that are out of range, the wrong type, or non-finite.
+
+    Only applies to fields listed in FIELD_NUMERIC_BOUNDS. Callers must skip
+    valueless operators, which carry no value to check.
+    """
+    if field not in FIELD_NUMERIC_BOUNDS:
+        return
+
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+
+    if isinstance(value, list):
+        raise ValueError(
+            f"{label} expects a single value, not a list. "
+            "Only the first entry would be used."
+        )
+    # bool is a subclass of int, and float(True) is 1.0, so guard it explicitly
+    if isinstance(value, bool):
+        raise ValueError(_numeric_expectation(field))
+
+    number = _number(value)
+    if number is None or not math.isfinite(number):
+        raise ValueError(_numeric_expectation(field))
+
+    if number < minimum or (maximum is not None and number > maximum):
+        raise ValueError(_numeric_expectation(field))
+    if integer_required and not float(number).is_integer():
+        raise ValueError(_numeric_expectation(field))
+
+    operator_label = OPERATOR_LABELS.get(operator, operator)
+    if maximum is not None and operator == "greater_than" and number == maximum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(maximum)} is the maximum "
+            f"(use {OPERATOR_LABELS['greater_than_or_equal']} to include it)"
+        )
+    if operator == "less_than" and number == minimum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(minimum)} is the minimum "
+            f"(use {OPERATOR_LABELS['less_than_or_equal']} to include it)"
+        )
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -1721,6 +1831,8 @@ def _validate_node(node: dict[str, Any]) -> None:
         raise ValueError(f"Unsupported rule operator '{operator}' for field '{field}'")
     if operator not in VALUELESS_OPERATORS and "value" not in node:
         raise ValueError("Rule condition requires a value")
+    if operator not in VALUELESS_OPERATORS:
+        _validate_numeric_bounds(field, operator, node.get("value"))
     if field == "library.id" and operator in LIST_OPERATORS:
         raw_values = node.get("value")
         values = raw_values if isinstance(raw_values, list) else [raw_values]
