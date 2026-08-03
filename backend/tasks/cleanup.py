@@ -1379,11 +1379,17 @@ async def _refresh_arr_tags_for_rules(
                         select(Movie).where(Movie.id.in_(refreshable_db_movie_ids))
                     )
                     for movie in result.scalars().all():
+                        confirmed = movie_label_additions.get(movie.id, set())
+                        if movie_needs_full_refresh:
+                            # Every label the arrs report for this item is known, so the
+                            # row is replaced rather than patched. This also clears a
+                            # label whose tag was deleted from the catalog, which a strip
+                            # set derived from that catalog cannot name.
+                            movie.arr_tags = sorted(confirmed)
+                            continue
                         current = set(movie.arr_tags or [])
                         current -= movie_refreshed_labels  # strip refreshed labels
-                        current |= movie_label_additions.get(
-                            movie.id, set()
-                        )  # re-add current ones
+                        current |= confirmed  # re-add current ones
                         movie.arr_tags = sorted(current)
                     await db.commit()
             elif movie_tags_wanted and radarr_failed_config_ids:
