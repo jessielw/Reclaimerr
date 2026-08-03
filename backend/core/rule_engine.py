@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping
@@ -1614,6 +1615,58 @@ def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> Non
         )
 
 
+def _format_bound(value: float) -> str:
+    """Render a bound without a trailing .0 so messages read naturally."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _numeric_expectation(field: str) -> str:
+    """Build the human-readable expectation for a bounded numeric field."""
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+    kind = "a whole number" if integer_required else "a value"
+    if maximum is None:
+        expectation = f"{label} expects {kind} of {_format_bound(minimum)} or greater"
+    else:
+        expectation = (
+            f"{label} expects {kind} between "
+            f"{_format_bound(minimum)} and {_format_bound(maximum)}"
+        )
+    note = RESCALED_FIELD_NOTES.get(field)
+    return f"{expectation} ({note})" if note else expectation
+
+
+def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
+    """Reject values that are out of range, the wrong type, or non-finite.
+
+    Only applies to fields listed in FIELD_NUMERIC_BOUNDS. Callers must skip
+    valueless operators, which carry no value to check.
+    """
+    if field not in FIELD_NUMERIC_BOUNDS:
+        return
+
+    _minimum, _maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+
+    if isinstance(value, list):
+        raise ValueError(
+            f"{label} expects a single value, not a list. "
+            "Only the first entry would be used."
+        )
+    # bool is a subclass of int, and float(True) is 1.0, so guard it explicitly
+    if isinstance(value, bool):
+        raise ValueError(f"{label} expects a number")
+
+    number = _number(value)
+    if number is None or not math.isfinite(number):
+        raise ValueError(f"{label} expects a number")
+
+    if number < _minimum or (_maximum is not None and number > _maximum):
+        raise ValueError(_numeric_expectation(field))
+    if integer_required and not float(number).is_integer():
+        raise ValueError(_numeric_expectation(field))
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -1645,6 +1698,8 @@ def _validate_node(node: dict[str, Any]) -> None:
         raise ValueError(f"Unsupported rule operator '{operator}' for field '{field}'")
     if operator not in VALUELESS_OPERATORS and "value" not in node:
         raise ValueError("Rule condition requires a value")
+    if operator not in VALUELESS_OPERATORS:
+        _validate_numeric_bounds(field, operator, node.get("value"))
     if field == "library.id" and operator in LIST_OPERATORS:
         raw_values = node.get("value")
         values = raw_values if isinstance(raw_values, list) else [raw_values]

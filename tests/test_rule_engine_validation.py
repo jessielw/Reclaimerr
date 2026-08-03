@@ -994,5 +994,77 @@ class NumericBoundsTableTests(unittest.TestCase):
             self.assertIn("Reclaimerr stores it as a percentage", note)
 
 
+class NumericBoundsValidationTests(unittest.TestCase):
+    def _validate(self, field: str, operator: str, value: object) -> None:
+        validate_rule_definition(
+            _definition(field, operator, value),
+            target_scope=TARGET_MOVIE_VERSION,
+        )
+
+    def test_in_range_values_are_accepted(self) -> None:
+        self._validate("imdb.rating", "greater_than_or_equal", 7.5)
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 80)
+        self._validate("imdb.vote_count", "greater_than_or_equal", 5000)
+
+    def test_value_above_maximum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than_or_equal", 11)
+        self.assertIn("between 0 and 10", str(ctx.exception))
+
+        with self.assertRaises(ValueError):
+            self._validate("rottentomatoes.tomato_meter", "less_than", 101)
+
+    def test_negative_values_are_rejected(self) -> None:
+        for field in ("imdb.rating", "rottentomatoes.tomato_meter", "imdb.vote_count"):
+            with self.assertRaises(ValueError):
+                self._validate(field, "greater_than_or_equal", -1)
+
+    def test_decimals_rejected_on_integer_fields_but_allowed_on_rating_fields(
+        self,
+    ) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "equals", 78.5)
+        self.assertIn("whole number", str(ctx.exception))
+        self._validate("imdb.rating", "greater_than_or_equal", 7.25)
+
+    def test_list_values_are_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than_or_equal", [7, 8])
+        self.assertIn("single value", str(ctx.exception))
+
+    def test_booleans_are_rejected_and_not_read_as_one(self) -> None:
+        with self.assertRaises(ValueError):
+            self._validate("imdb.rating", "greater_than_or_equal", True)
+
+    def test_numeric_strings_are_accepted(self) -> None:
+        self._validate("imdb.rating", "greater_than_or_equal", "7.5")
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", "80")
+
+    def test_non_numeric_and_non_finite_values_are_rejected(self) -> None:
+        for value in ("high", "inf", "nan"):
+            with self.assertRaises(ValueError):
+                self._validate("imdb.rating", "greater_than_or_equal", value)
+
+    def test_valueless_operators_still_validate(self) -> None:
+        self._validate("imdb.rating", "exists", None)
+        self._validate("rottentomatoes.tomato_meter", "not_exists", None)
+
+    def test_error_uses_display_label_not_field_key(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 101)
+        message = str(ctx.exception)
+        self.assertIn("Rotten Tomatoes Tomatometer", message)
+        self.assertNotIn("rottentomatoes.tomato_meter", message)
+
+    def test_rescaled_fields_explain_the_provider_scale(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("metacritic.user_score", "greater_than_or_equal", 101)
+        self.assertIn("Metacritic publishes this as 0-10", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("letterboxd.score", "greater_than_or_equal", 101)
+        self.assertIn("Letterboxd publishes this as 0-5", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
