@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address, ip_network
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -31,6 +32,7 @@ SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
 SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
 SESSION_TOUCH_BUSY_TIMEOUT_MS = 250
 DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
+ORIGINAL_CLIENT_HOST_STATE_KEY = "reclaimerr_original_client_host"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -143,11 +145,95 @@ def get_request_user_agent(request: Request) -> str | None:
     return None
 
 
+def _get_original_client_host(request: Request) -> str | None:
+    """Return the socket peer captured before proxy headers rewrite the scope."""
+    state = request.scope.get("state")
+    if isinstance(state, dict):
+        original_host = state.get(ORIGINAL_CLIENT_HOST_STATE_KEY)
+        if isinstance(original_host, str) and original_host:
+            return original_host
+
+    if request.client and request.client.host:
+        return request.client.host
+    return None
+
+
+def _is_forward_auth_proxy_trusted(request: Request) -> bool:
+    """Check the direct socket peer against the dedicated forward-auth allowlist."""
+    client_host = _get_original_client_host(request)
+    if client_host is None:
+        return False
+    try:
+        client_ip = ip_address(client_host)
+    except ValueError:
+        return False
+
+    return any(
+        client_ip in ip_network(network, strict=False)
+        for network in settings.forward_auth_trusted_proxies_list
+    )
+
+
+async def _get_forward_auth_user(
+    request: Request,
+    db: AsyncSession,
+) -> User | None:
+    """Resolve an asserted proxy identity without creating or elevating accounts."""
+    if not settings.forward_auth_enabled:
+        return None
+
+    asserted_usernames = request.headers.getlist(settings.forward_auth_user_header)
+    if not asserted_usernames:
+        return None
+
+    if not _is_forward_auth_proxy_trusted(request):
+        LOG.warning(
+            f"Ignored {settings.forward_auth_user_header} authentication header "
+            "from untrusted peer "
+            f"{_get_original_client_host(request) or 'unknown'}"
+        )
+        return None
+
+    if len(asserted_usernames) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy supplied multiple username headers",
+        )
+
+    username = asserted_usernames[0].strip()
+    if not username or len(username) > 32:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy supplied an invalid username",
+        )
+
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        LOG.warning(f"Trusted proxy user {username!r} is not configured in Reclaimerr")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy user is not configured",
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled",
+        )
+
+    request.state.auth_method = "forward_auth"
+    return user
+
+
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Get the current authenticated user from HttpOnly JWT cookie."""
+    """Get the current user from a trusted proxy identity or HttpOnly JWT cookie."""
+    forward_auth_user = await _get_forward_auth_user(request, db)
+    if forward_auth_user is not None:
+        return forward_auth_user
+
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(

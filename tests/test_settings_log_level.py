@@ -102,6 +102,52 @@ def test_proxy_trusted_hosts_list_parses_env(monkeypatch, tmp_path: Path) -> Non
     ]
 
 
+def test_forward_auth_is_safely_disabled_by_default(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_enabled is False
+    assert settings.forward_auth_user_header == "Remote-User"
+    assert settings.forward_auth_trusted_proxies_list == []
+
+
+def test_forward_auth_requires_explicit_trusted_proxies(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_ENABLED", "true")
+    monkeypatch.delenv("FORWARD_AUTH_TRUSTED_PROXIES", raising=False)
+
+    with pytest.raises(ValueError, match="FORWARD_AUTH_TRUSTED_PROXIES"):
+        _build_settings(tmp_path)
+
+
+def test_forward_auth_rejects_wildcard_proxy(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", "*")
+
+    with pytest.raises(ValueError, match="does not accept"):
+        _build_settings(tmp_path)
+
+
+def test_forward_auth_parses_ip_and_cidr_allowlist(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", "172.18.0.4, 10.20.0.0/16, ::1")
+    monkeypatch.setenv("FORWARD_AUTH_USER_HEADER", "X-Authenticated-User")
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_user_header == "X-Authenticated-User"
+    assert settings.forward_auth_trusted_proxies_list == [
+        "172.18.0.4",
+        "10.20.0.0/16",
+        "::1",
+    ]
+
+
+def test_forward_auth_rejects_invalid_header_name(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_USER_HEADER", "Remote User")
+
+    with pytest.raises(ValueError, match="valid HTTP header"):
+        _build_settings(tmp_path)
+
+
 def test_command_workers_defaults_to_two(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("RECLAIMERR_COMMAND_WORKERS", raising=False)
 

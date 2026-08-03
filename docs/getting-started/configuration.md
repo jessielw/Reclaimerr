@@ -21,6 +21,9 @@ set of environment variables for the runtime container or desktop process.
 | `TZ`                         | Local timezone for cron-style schedules                                    |
 | `UMASK`                      | Default permissions for created files                                      |
 | `PROXY_TRUSTED_HOSTS`        | Trusted reverse proxy IPs or CIDRs                                         |
+| `FORWARD_AUTH_ENABLED`       | Trust an authenticated username supplied by an approved reverse proxy      |
+| `FORWARD_AUTH_USER_HEADER`   | Forward-auth username header (default: `Remote-User`)                      |
+| `FORWARD_AUTH_TRUSTED_PROXIES` | Direct proxy IPs/CIDRs permitted to supply the identity header            |
 | `JWT_SECRET`                 | Session signing secret                                                     |
 | `ENCRYPTION_KEY`             | Secrets encryption key                                                     |
 | `ADMIN_PASSWORD`             | Initial admin password or admin password reset on startup                  |
@@ -29,6 +32,29 @@ set of environment variables for the runtime container or desktop process.
 
 Application URL is configured in General Settings. It is used for Plex and OIDC
 callback generation behind a reverse proxy.
+
+## Trusted Proxy Authentication
+
+Reclaimerr can use an identity asserted by Authelia or another forward-auth
+proxy. This is disabled by default and maps only to an existing, active
+Reclaimerr user; it never creates accounts or grants roles automatically.
+
+```env
+FORWARD_AUTH_ENABLED=true
+FORWARD_AUTH_USER_HEADER=Remote-User
+FORWARD_AUTH_TRUSTED_PROXIES=172.18.0.4
+```
+
+The supplied username must exactly match a Reclaimerr username. Configure the
+allowlist with the direct TCP address or CIDR of the reverse proxy container or
+host. Wildcards are rejected. Keep Reclaimerr's backend port inaccessible to
+untrusted clients, and configure the proxy to overwrite rather than preserve
+any incoming identity header.
+
+Local cookie login remains available when the trusted proxy does not assert an
+identity. When it does assert one, that identity is authoritative and an
+unknown or disabled user is denied instead of falling back to a local session.
+Signing out of the upstream identity provider remains the proxy's responsibility.
 
 ## Multi-Server Setup
 

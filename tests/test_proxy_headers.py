@@ -17,6 +17,12 @@ async def _scheme(request: Request) -> PlainTextResponse:
     return PlainTextResponse(request.url.scheme)
 
 
+async def _client_hosts(request: Request) -> PlainTextResponse:
+    original = request.scope["state"].get(api_main.ORIGINAL_CLIENT_HOST_STATE_KEY)
+    current = request.client.host if request.client else "unknown"
+    return PlainTextResponse(f"{original}|{current}")
+
+
 async def _oidc_callback(_request: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
@@ -26,6 +32,7 @@ def _build_client(*, trusted_hosts: list[str] | str) -> TestClient:
         routes=[
             Route("/api/auth/oidc/start", _oidc_start, name="oidc_start"),
             Route("/scheme", _scheme, name="scheme"),
+            Route("/client-hosts", _client_hosts, name="client_hosts"),
             Route("/api/auth/oidc/callback", _oidc_callback, name="oidc_callback"),
         ]
     )
@@ -76,3 +83,15 @@ def test_untrusted_proxy_ignores_forwarded_proto_for_callback_uri() -> None:
 
     assert response.status_code == 200
     assert response.text == "http://testserver/api/auth/oidc/callback"
+
+
+def test_proxy_wrapper_preserves_socket_peer_before_forwarded_rewrite() -> None:
+    client = _build_client(trusted_hosts="*")
+
+    response = client.get(
+        "/client-hosts",
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "testclient|203.0.113.10"

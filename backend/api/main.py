@@ -38,6 +38,7 @@ from backend.api.utils.middleware import (
     setup_guard_middleware,
     sliding_session_middleware,
 )
+from backend.core.auth import ORIGINAL_CLIENT_HOST_STATE_KEY
 from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
@@ -62,6 +63,11 @@ def _wrap_proxy_headers(
     )
 
     async def _asgi(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            client = scope.get("client")
+            if client:
+                state = scope.setdefault("state", {})
+                state[ORIGINAL_CLIENT_HOST_STATE_KEY] = str(client[0])
         await wrapped_app(scope, receive, send)
 
     return _asgi
@@ -82,6 +88,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             LOG.warning(
                 "CORS is configured to allow ALL origins ('*'). "
                 "This is insecure for production. Set CORS_ORIGINS to your frontend URL."
+            )
+
+        if settings.forward_auth_enabled:
+            LOG.info(
+                "Trusted proxy authentication enabled using header "
+                f"{settings.forward_auth_user_header} from "
+                f"{', '.join(settings.forward_auth_trusted_proxies_list)}"
             )
 
         # init db

@@ -19,6 +19,9 @@ For production deployments, use this guide.
 | `API_PORT`                   | Port exposed by the backend process                                               |
 | `TZ`                         | Keeps cron schedules and timestamps aligned with your locale                      |
 | `PROXY_TRUSTED_HOSTS`        | Ensures forwarded headers are only accepted from trusted proxies                  |
+| `FORWARD_AUTH_ENABLED`       | Enables opt-in trusted-header authentication                                      |
+| `FORWARD_AUTH_USER_HEADER`   | Selects the proxy-provided username header                                        |
+| `FORWARD_AUTH_TRUSTED_PROXIES` | Restricts identity headers to direct proxy IPs/CIDRs                             |
 | `CORS_ORIGINS`               | Restricts the UI origins that can talk to the API                                 |
 | `COOKIE_SECURE`              | Marks auth cookies secure when served over HTTPS                                  |
 | `RECLAIMERR_COMMAND_WORKERS` | Advanced internal command executor count (default `2`, range `1`-`8`)             |
@@ -39,6 +42,9 @@ For production deployments, use this guide.
   `Application URL` in General Settings for the shared public base URL, and
   keep `redirect_uri_override` for OIDC-only cases.
 - Keep the backend port private if the proxy is the only ingress point.
+- When using trusted-header authentication, never use a wildcard proxy range;
+  ensure the proxy overwrites incoming identity headers and maps only existing
+  Reclaimerr users.
 
 ## Operational Notes
 

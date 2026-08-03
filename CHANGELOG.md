@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in trusted proxy authentication with configurable user headers, strict proxy allowlisting, and existing-user mapping for Authelia-style forward auth
+
 ### Fixed
 
 - Disk-free rules now use the mounted media volume in Docker and apply scoped path mappings before falling back to Radarr or Sonarr disk data
