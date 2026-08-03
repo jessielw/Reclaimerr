@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from backend.core.rule_engine import (
+    FIELD_LABELS,
+    FIELD_NUMERIC_BOUNDS,
+    NUMERIC_FIELDS,
+    RESCALED_FIELD_NOTES,
     RULE_VALUE_UNAVAILABLE,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
@@ -950,6 +954,44 @@ class ArrTagRegexOperatorTests(unittest.TestCase):
                 ["tag-1-stale"], "matches_any_regex", ["[invalid"], field="arr.tags"
             )
         )
+
+
+class NumericBoundsTableTests(unittest.TestCase):
+    def test_every_bounded_field_is_a_known_numeric_field(self) -> None:
+        for field in FIELD_NUMERIC_BOUNDS:
+            self.assertIn(field, NUMERIC_FIELDS, f"{field} is not a numeric field")
+            self.assertIn(field, FIELD_LABELS, f"{field} has no display label")
+
+    def test_bounds_are_internally_consistent(self) -> None:
+        for field, (minimum, maximum, integer_required) in FIELD_NUMERIC_BOUNDS.items():
+            self.assertGreaterEqual(minimum, 0, f"{field} has a negative minimum")
+            if maximum is not None:
+                self.assertGreater(maximum, minimum, f"{field} has max <= min")
+            self.assertIsInstance(integer_required, bool)
+
+    def test_rating_scales_are_grouped_as_specified(self) -> None:
+        ten_point = {"tmdb.vote_average", "imdb.rating", "media_server.user_rating"}
+        hundred_point = {
+            "rottentomatoes.tomato_meter",
+            "rottentomatoes.popcorn_meter",
+            "metacritic.metascore",
+            "metacritic.user_score",
+            "trakt.rating",
+            "letterboxd.score",
+            "anilist.score",
+        }
+        for field in ten_point & set(FIELD_NUMERIC_BOUNDS):
+            self.assertEqual(FIELD_NUMERIC_BOUNDS[field], (0, 10, False), field)
+        for field in hundred_point:
+            self.assertEqual(FIELD_NUMERIC_BOUNDS[field], (0, 100, True), field)
+
+    def test_rescaled_fields_have_notes(self) -> None:
+        self.assertEqual(
+            set(RESCALED_FIELD_NOTES),
+            {"metacritic.user_score", "letterboxd.score"},
+        )
+        for note in RESCALED_FIELD_NOTES.values():
+            self.assertIn("Reclaimerr stores it as a percentage", note)
 
 
 if __name__ == "__main__":

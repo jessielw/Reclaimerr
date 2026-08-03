@@ -307,6 +307,46 @@ NUMERIC_FIELDS = {
     "disk.free_bytes",
     "disk.free_percent",
 }
+
+# field -> (minimum, maximum or None, integer required)
+FIELD_NUMERIC_BOUNDS: dict[str, tuple[float, float | None, bool]] = {
+    # 0-10 scales, decimals allowed
+    "tmdb.vote_average": (0, 10, False),
+    "imdb.rating": (0, 10, False),
+    "media_server.user_rating": (0, 10, False),
+    # 0-100 scales, whole numbers only
+    "rottentomatoes.tomato_meter": (0, 100, True),
+    "rottentomatoes.popcorn_meter": (0, 100, True),
+    "metacritic.metascore": (0, 100, True),
+    "metacritic.user_score": (0, 100, True),
+    "trakt.rating": (0, 100, True),
+    "letterboxd.score": (0, 100, True),
+    "anilist.score": (0, 100, True),
+    # counts, no upper bound
+    "tmdb.vote_count": (0, None, True),
+    "imdb.vote_count": (0, None, True),
+    "rottentomatoes.tomato_vote_count": (0, None, True),
+    "rottentomatoes.popcorn_vote_count": (0, None, True),
+    "metacritic.vote_count": (0, None, True),
+    "metacritic.user_vote_count": (0, None, True),
+    "trakt.vote_count": (0, None, True),
+    "letterboxd.vote_count": (0, None, True),
+    "anilist.popularity": (0, None, True),
+    "anilist.favourites": (0, None, True),
+}
+
+# Fields whose stored scale differs from the scale the provider publishes.
+# Surfaced in validation errors so the user is not left comparing our message
+# against a different number on the provider's own site.
+RESCALED_FIELD_NOTES: dict[str, str] = {
+    "metacritic.user_score": (
+        "Metacritic publishes this as 0-10; Reclaimerr stores it as a percentage"
+    ),
+    "letterboxd.score": (
+        "Letterboxd publishes this as 0-5; Reclaimerr stores it as a percentage"
+    ),
+}
+
 TEXT_FIELDS = {
     "tmdb.collection_name",
     "tmdb.genres",
