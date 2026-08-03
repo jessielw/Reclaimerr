@@ -5503,3 +5503,173 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await db.execute(select(Movie).where(Movie.id == movie_id))
             ).scalar_one()
             self.assertEqual(refreshed.arr_tags, [])
+
+    async def test_refresh_arr_tags_regex_rule_drops_tag_removed_in_sonarr(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="sonarr-regex-rule",
+                media_type=MediaType.SERIES,
+                target_scope="series",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            sonarr_config = ServiceConfig(
+                service_type=Service.SONARR,
+                base_url="http://sonarr-regex",
+                api_key="x",
+                name="sonarr-regex",
+                enabled=True,
+            )
+            series = Series(
+                title="Formerly Stale Series",
+                tmdb_id=90101,
+                arr_tags=["archive-four-stale"],
+            )
+            db.add_all([rule, sonarr_config, series])
+            await db.flush()
+            db.add(
+                SeriesArrRef(
+                    series_id=series.id,
+                    service_config_id=sonarr_config.id,
+                    arr_series_id=3001,
+                    tmdb_id=series.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = sonarr_config.id
+            series_id = series.id
+
+        fake_client = _SonarrTagRefreshClientFake(
+            series=[SimpleNamespace(id=3001, tags=[])],
+            tags=[SimpleNamespace(id=1, label="archive-four-stale")],
+        )
+        previous_sonarr_clients = cleanup_tasks.service_manager._sonarr_clients
+        previous_sonarr = cleanup_tasks.service_manager._sonarr
+        cleanup_tasks.service_manager._sonarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._sonarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._sonarr_clients = previous_sonarr_clients
+            cleanup_tasks.service_manager._sonarr = previous_sonarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Series).where(Series.id == series_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, [])
+
+    async def test_refresh_arr_tags_substring_rule_adds_tag_added_in_sonarr(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="sonarr-substring-rule",
+                media_type=MediaType.SERIES,
+                target_scope="series",
+                field="arr.tags",
+                operator="contains_substring",
+                value=["stale"],
+            )
+            sonarr_config = ServiceConfig(
+                service_type=Service.SONARR,
+                base_url="http://sonarr-substring",
+                api_key="x",
+                name="sonarr-substring",
+                enabled=True,
+            )
+            series = Series(title="Newly Stale Series", tmdb_id=90102, arr_tags=[])
+            db.add_all([rule, sonarr_config, series])
+            await db.flush()
+            db.add(
+                SeriesArrRef(
+                    series_id=series.id,
+                    service_config_id=sonarr_config.id,
+                    arr_series_id=3002,
+                    tmdb_id=series.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = sonarr_config.id
+            series_id = series.id
+
+        fake_client = _SonarrTagRefreshClientFake(
+            series=[SimpleNamespace(id=3002, tags=[9])],
+            tags=[SimpleNamespace(id=9, label="archive-five-stale")],
+        )
+        previous_sonarr_clients = cleanup_tasks.service_manager._sonarr_clients
+        previous_sonarr = cleanup_tasks.service_manager._sonarr
+        cleanup_tasks.service_manager._sonarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._sonarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._sonarr_clients = previous_sonarr_clients
+            cleanup_tasks.service_manager._sonarr = previous_sonarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Series).where(Series.id == series_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, ["archive-five-stale"])
+
+    async def test_refresh_arr_tags_regex_rule_preserves_failed_sonarr_config_rows(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="sonarr-regex-failure-rule",
+                media_type=MediaType.SERIES,
+                target_scope="series",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            sonarr_config = ServiceConfig(
+                service_type=Service.SONARR,
+                base_url="http://sonarr-down",
+                api_key="x",
+                name="sonarr-down",
+                enabled=True,
+            )
+            series = Series(
+                title="Unreachable Series",
+                tmdb_id=90103,
+                arr_tags=["archive-six-stale", "keep"],
+            )
+            db.add_all([rule, sonarr_config, series])
+            await db.flush()
+            db.add(
+                SeriesArrRef(
+                    series_id=series.id,
+                    service_config_id=sonarr_config.id,
+                    arr_series_id=3003,
+                    tmdb_id=series.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = sonarr_config.id
+            series_id = series.id
+
+        fake_client = _SonarrTagRefreshClientFake(fail=True)
+        previous_sonarr_clients = cleanup_tasks.service_manager._sonarr_clients
+        previous_sonarr = cleanup_tasks.service_manager._sonarr
+        cleanup_tasks.service_manager._sonarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._sonarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._sonarr_clients = previous_sonarr_clients
+            cleanup_tasks.service_manager._sonarr = previous_sonarr
+
+        async with self._sessionmaker() as db:
+            unchanged = (
+                await db.execute(select(Series).where(Series.id == series_id))
+            ).scalar_one()
+            self.assertEqual(unchanged.arr_tags, ["archive-six-stale", "keep"])

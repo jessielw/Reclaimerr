@@ -1402,12 +1402,14 @@ async def _refresh_arr_tags_for_rules(
             )
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####
-    if series_tag_labels:
+    if series_tags_wanted:
         sonarr_series_snapshot = sonarr_series_snapshot or _SonarrSeriesSnapshot()
         sonarr_clients = sonarr_series_snapshot.clients
 
         if sonarr_clients:
             series_label_additions: dict[int, set[str]] = {}
+            # every label actually refreshed, across all configs that succeeded
+            series_refreshed_labels: set[str] = set()
             sonarr_successful_config_ids: set[int] = set()
             sonarr_failed_config_ids: set[int] = set()
 
@@ -1441,10 +1443,16 @@ async def _refresh_arr_tags_for_rules(
                     continue
 
                 sonarr_successful_config_ids.add(config_id)
+                effective_labels = (
+                    _all_catalog_labels(tag_list)
+                    if series_needs_full_refresh
+                    else series_tag_labels
+                )
+                series_refreshed_labels |= effective_labels
                 label_to_arr_ids = _collect_arr_item_ids_by_label(
                     items=all_series,
                     tags=tag_list,
-                    wanted_labels=series_tag_labels,
+                    wanted_labels=effective_labels,
                 )
                 arr_to_db = sonarr_arr_to_db_by_config.get(config_id, {})
                 for label, arr_ids in label_to_arr_ids.items():
@@ -1472,18 +1480,26 @@ async def _refresh_arr_tags_for_rules(
                         select(Series).where(Series.id.in_(refreshable_db_series_ids))
                     )
                     for series in result.scalars().all():
+                        confirmed = series_label_additions.get(series.id, set())
+                        if series_needs_full_refresh:
+                            # Every label the arrs report for this item is known, so the
+                            # row is replaced rather than patched. This also clears a
+                            # label whose tag was deleted from the catalog, which a strip
+                            # set derived from that catalog cannot name.
+                            series.arr_tags = sorted(confirmed)
+                            continue
                         current = set(series.arr_tags or [])
-                        current -= series_tag_labels
-                        current |= series_label_additions.get(series.id, set())
+                        current -= series_refreshed_labels
+                        current |= confirmed
                         series.arr_tags = sorted(current)
                     await db.commit()
-            elif series_tag_labels and sonarr_failed_config_ids:
+            elif series_tags_wanted and sonarr_failed_config_ids:
                 LOG.warning(
                     "Sonarr tag refresh failed for all relevant refs; "
                     "keeping existing series arr_tags rows unchanged"
                 )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series (labels: {series_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series (labels: {series_refreshed_labels})"
             )
 
 
