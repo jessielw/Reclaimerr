@@ -5673,3 +5673,167 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await db.execute(select(Series).where(Series.id == series_id))
             ).scalar_one()
             self.assertEqual(unchanged.arr_tags, ["archive-six-stale", "keep"])
+
+    async def test_refresh_arr_tags_regex_rule_unions_labels_across_radarr_configs(
+        self,
+    ) -> None:
+        """Replace-mode correctness depends on label additions accumulating across
+        every successful config before the write loop runs, not on a single config's
+        effective_labels."""
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-regex-union-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            config_one = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-union-one",
+                api_key="x",
+                name="radarr-union-one",
+                enabled=True,
+            )
+            config_two = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-union-two",
+                api_key="x",
+                name="radarr-union-two",
+                enabled=True,
+            )
+            movie = Movie(title="Union Label Movie", tmdb_id=70007, arr_tags=[])
+            db.add_all([rule, config_one, config_two, movie])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieArrRef(
+                        movie_id=movie.id,
+                        service_config_id=config_one.id,
+                        arr_movie_id=6001,
+                        tmdb_id=movie.tmdb_id,
+                    ),
+                    MovieArrRef(
+                        movie_id=movie.id,
+                        service_config_id=config_two.id,
+                        arr_movie_id=6002,
+                        tmdb_id=movie.tmdb_id,
+                    ),
+                ]
+            )
+            await db.commit()
+            config_one_id = config_one.id
+            config_two_id = config_two.id
+            movie_id = movie.id
+
+        # Each config's fake only knows about its own arr_movie_id and only carries
+        # its own tag in its catalog; the union must come from both configs together.
+        client_one = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=6001, tags=[1])],
+            tags=[SimpleNamespace(id=1, label="alpha")],
+        )
+        client_two = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=6002, tags=[2])],
+            tags=[SimpleNamespace(id=2, label="beta")],
+        )
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
+            config_one_id: client_one,
+            config_two_id: client_two,
+        }
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, ["alpha", "beta"])
+
+    async def test_refresh_arr_tags_regex_rule_excludes_movie_reachable_from_failed_radarr_config(
+        self,
+    ) -> None:
+        """A row reachable from any failed config must be excluded from the replace-mode
+        write entirely, even when another config for the same row succeeded."""
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-regex-mixed-health-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            healthy_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-mixed-healthy",
+                api_key="x",
+                name="radarr-mixed-healthy",
+                enabled=True,
+            )
+            failed_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-mixed-failed",
+                api_key="x",
+                name="radarr-mixed-failed",
+                enabled=True,
+            )
+            movie = Movie(
+                title="Mixed Health Movie",
+                tmdb_id=70008,
+                arr_tags=["archive-nine-stale"],
+            )
+            db.add_all([rule, healthy_config, failed_config, movie])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieArrRef(
+                        movie_id=movie.id,
+                        service_config_id=healthy_config.id,
+                        arr_movie_id=6003,
+                        tmdb_id=movie.tmdb_id,
+                    ),
+                    MovieArrRef(
+                        movie_id=movie.id,
+                        service_config_id=failed_config.id,
+                        arr_movie_id=6004,
+                        tmdb_id=movie.tmdb_id,
+                    ),
+                ]
+            )
+            await db.commit()
+            healthy_config_id = healthy_config.id
+            failed_config_id = failed_config.id
+            movie_id = movie.id
+
+        healthy_client = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=6003, tags=[])],
+            tags=[],
+        )
+        failed_client = _RadarrTagRefreshClientFake(fail=True)
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {  # pyright: ignore[reportAttributeAccessIssue]
+            healthy_config_id: healthy_client,
+            failed_config_id: failed_client,
+        }
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            unchanged = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(unchanged.arr_tags, ["archive-nine-stale"])

@@ -1270,11 +1270,18 @@ async def _refresh_arr_tags_for_rules(
 
     Steps:
     1. Collect the distinct tag labels used in arr.tags conditions across all rules.
+       A pattern condition (regex/substring) cannot name its labels ahead of time, so
+       its presence triggers a full refresh of the arr's whole tag catalog instead.
     2. Per arr client: fetch items + tag catalog and resolve tag IDs to labels.
     3. Map arr item IDs -> DB IDs via MovieArrRef / SeriesArrRef.
-    4. Strip rule-relevant labels only on refs for configs that refreshed successfully,
-       then re-add only where confirmed present.
-    Failed config fetches are non-destructive (existing DB tags are preserved).
+    4. Write the confirmed labels to each ref reachable from a successfully refreshed
+       config, in one of two modes:
+       - Full refresh (a pattern condition is present): replace arr_tags outright with
+         the confirmed labels, since every label the arrs report for the item is known.
+       - Exact-match only: patch arr_tags, stripping just the rule-relevant labels and
+         re-adding only the ones confirmed present, leaving unrelated labels alone.
+    Failed config fetches are non-destructive in both modes: a ref reachable from any
+    failed config is excluded from the write, so its existing DB tags are preserved.
     """
     movie_rules = [
         r for r in rules if normalize_rule_target(r) in {TARGET_MOVIE_VERSION}
@@ -1307,7 +1314,9 @@ async def _refresh_arr_tags_for_rules(
         if radarr_clients:
             # movie_id (DB) -> set of labels to add
             movie_label_additions: dict[int, set[str]] = {}
-            # every label actually refreshed, across all configs that succeeded
+            # Every label actually refreshed, across all configs that succeeded. Drives
+            # the exact-match strip and the debug log only; full-refresh mode replaces
+            # arr_tags with movie_label_additions instead.
             movie_refreshed_labels: set[str] = set()
             radarr_successful_config_ids: set[int] = set()
             radarr_failed_config_ids: set[int] = set()
@@ -1392,13 +1401,18 @@ async def _refresh_arr_tags_for_rules(
                         current |= confirmed  # re-add current ones
                         movie.arr_tags = sorted(current)
                     await db.commit()
-            elif movie_tags_wanted and radarr_failed_config_ids:
+            elif radarr_failed_config_ids:
                 LOG.warning(
                     "Radarr tag refresh failed for all relevant refs; "
                     "keeping existing movie arr_tags rows unchanged"
                 )
+            label_summary = (
+                f"{len(movie_refreshed_labels)} catalog labels"
+                if movie_needs_full_refresh
+                else f"labels: {movie_refreshed_labels}"
+            )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies (labels: {movie_refreshed_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies ({label_summary})"
             )
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####
@@ -1408,7 +1422,9 @@ async def _refresh_arr_tags_for_rules(
 
         if sonarr_clients:
             series_label_additions: dict[int, set[str]] = {}
-            # every label actually refreshed, across all configs that succeeded
+            # Every label actually refreshed, across all configs that succeeded. Drives
+            # the exact-match strip and the debug log only; full-refresh mode replaces
+            # arr_tags with series_label_additions instead.
             series_refreshed_labels: set[str] = set()
             sonarr_successful_config_ids: set[int] = set()
             sonarr_failed_config_ids: set[int] = set()
@@ -1493,13 +1509,18 @@ async def _refresh_arr_tags_for_rules(
                         current |= confirmed
                         series.arr_tags = sorted(current)
                     await db.commit()
-            elif series_tags_wanted and sonarr_failed_config_ids:
+            elif sonarr_failed_config_ids:
                 LOG.warning(
                     "Sonarr tag refresh failed for all relevant refs; "
                     "keeping existing series arr_tags rows unchanged"
                 )
+            label_summary = (
+                f"{len(series_refreshed_labels)} catalog labels"
+                if series_needs_full_refresh
+                else f"labels: {series_refreshed_labels}"
+            )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series (labels: {series_refreshed_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series ({label_summary})"
             )
 
 
