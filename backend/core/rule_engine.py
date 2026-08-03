@@ -7,7 +7,11 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any, Final, TypeAlias
 
-from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.filesystem import (
+    mapped_path_variants,
+    normalize_fpath,
+    resolve_path,
+)
 from backend.core.utils.language import normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database.models import (
@@ -813,7 +817,9 @@ class DiskStatsResolver:
         self._path_mappings: list[dict[str, Any]] = sorted(
             path_mappings or [], key=lambda m: -len(str(m.get("source_prefix") or ""))
         )
-        self._cache: dict[str, tuple[int, float] | None] = {}
+        self._cache: dict[
+            tuple[str, str | None, str | None], tuple[int, float] | None
+        ] = {}
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -824,57 +830,134 @@ class DiskStatsResolver:
         """Return the resolver active in the current async context, or None."""
         return cls._ctx.get()
 
-    def resolve(self, path: str) -> tuple[int, float] | None:
+    def resolve(
+        self,
+        path: str,
+        *,
+        media_service_type: str | None = None,
+        arr_service_type: str | None = None,
+    ) -> tuple[int, float] | None:
         """Return ``(free_bytes, free_percent)`` for the filesystem containing *path*.
 
         Results are cached for the lifetime of this instance (one scan run).
-        Primary source: pre fetched arr /disk space entries.
-        Fallback: shutil.disk_usage with path-mapping translation.
+        An accessible local or path-mapped media path is authoritative.  Pre-fetched
+        Arr disk-space entries are the fallback for remote media filesystems that are
+        not mounted into Reclaimerr.
         """
-        if path in self._cache:
-            return self._cache[path]
-        result = self._resolve_arr(path) or self._resolve_local(path)
-        self._cache[path] = result
+        normalized_path = normalize_fpath(path, strip_ending_slash=True)
+        cache_key = (normalized_path, media_service_type, arr_service_type)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        result = self._resolve_local(
+            path, media_service_type=media_service_type
+        ) or self._resolve_arr(
+            path,
+            media_service_type=media_service_type,
+            arr_service_type=arr_service_type,
+        )
+        self._cache[cache_key] = result
         return result
 
-    def _resolve_arr(self, path: str) -> tuple[int, float] | None:
-        """Look up disk stats in the pre fetched Radarr/Sonarr /disk space entries."""
-        norm = path.replace("\\", "/")
-        for entry in self._arr_entries:  # sorted longest first
-            raw = (entry.get("path") or "").replace("\\", "/")
-            if not raw:
-                continue
-            ep = raw.rstrip("/") or "/"  # preserve "/" (never collapse to "")
-            if ep == "/":
-                if not norm.startswith("/"):
-                    continue
-            elif norm != ep and not norm.startswith(ep + "/"):
-                continue
-            free = entry.get("free_space", 0) or 0
-            total = entry.get("total_space", 0) or 0
-            return free, (free / total * 100.0 if total else 0.0)
-        return None
-
-    def _resolve_local(self, path: str) -> tuple[int, float] | None:
-        """Fall back to shutil.disk_usage with path mapping translation."""
-        for m in self._path_mappings:  # sorted longest source first
-            source = m.get("source_prefix") or ""
-            if source and path.startswith(source):
-                local = (m.get("local_prefix") or "") + path[len(source) :]
-                try:
-                    usage = shutil.disk_usage(local)
-                    return usage.free, (
-                        usage.free / usage.total * 100.0 if usage.total else 0.0
-                    )
-                except Exception:
-                    return None
+    def _resolve_local(
+        self, path: str, *, media_service_type: str | None
+    ) -> tuple[int, float] | None:
+        """Resolve disk stats from a media path accessible to Reclaimerr."""
+        local_path = resolve_path(
+            path,
+            self._path_mappings,
+            service_type=media_service_type,
+            warn_missing=False,
+        )
+        if local_path is None:
+            return None
         try:
-            usage = shutil.disk_usage(path)
+            usage = shutil.disk_usage(local_path)
             return usage.free, (
                 usage.free / usage.total * 100.0 if usage.total else 0.0
             )
-        except Exception:
+        except OSError:
             return None
+
+    def _resolve_arr(
+        self,
+        path: str,
+        *,
+        media_service_type: str | None,
+        arr_service_type: str | None,
+    ) -> tuple[int, float] | None:
+        """Resolve remote disk stats using the most specific mapped Arr mount."""
+        media_variants = self._path_variants(
+            path,
+            service_type=media_service_type,
+            service_config_id=None,
+        )
+        if not media_variants:
+            return None
+
+        requested_arr_type = (arr_service_type or "").lower()
+        best_specificity = -1
+        best_result: tuple[int, float] | None = None
+        for entry in self._arr_entries:
+            entry_service_type = str(entry.get("service_type") or "").lower()
+            if (
+                requested_arr_type
+                and entry_service_type
+                and entry_service_type != requested_arr_type
+            ):
+                continue
+
+            entry_path = str(entry.get("path") or "")
+            entry_config_id = entry.get("service_config_id")
+            if not isinstance(entry_config_id, int):
+                entry_config_id = None
+            entry_variants = self._path_variants(
+                entry_path,
+                service_type=entry_service_type or requested_arr_type or None,
+                service_config_id=entry_config_id,
+            )
+            for media_path in media_variants:
+                for mount_path in entry_variants:
+                    if not self._path_is_within_mount(media_path, mount_path):
+                        continue
+                    specificity = len(mount_path)
+                    if specificity <= best_specificity:
+                        continue
+                    free = int(entry.get("free_space", 0) or 0)
+                    total = int(entry.get("total_space", 0) or 0)
+                    best_specificity = specificity
+                    best_result = (
+                        free,
+                        free / total * 100.0 if total else 0.0,
+                    )
+        return best_result
+
+    def _path_variants(
+        self,
+        path: str,
+        *,
+        service_type: str | None,
+        service_config_id: int | None,
+    ) -> set[str]:
+        """Return normalized raw/mapped variants while preserving filesystem roots."""
+        variants = mapped_path_variants(
+            path,
+            self._path_mappings,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        )
+        normalized = normalize_fpath(path, strip_ending_slash=True)
+        if normalized:
+            variants.add(normalized)
+        elif str(path).strip().replace("\\", "/") == "/":
+            variants.add("/")
+        return variants
+
+    @staticmethod
+    def _path_is_within_mount(path: str, mount: str) -> bool:
+        if mount == "/":
+            return path.startswith("/")
+        return path == mount or path.startswith(mount + "/")
 
 
 class ArrRuleDataResolver:
@@ -1518,6 +1601,39 @@ def _collection_names_from_series_refs(refs: Iterable[Any]) -> list[str]:
     return normalize_name_list(names) or []
 
 
+def _media_service_type_for_path(path: str | None, refs: Iterable[Any]) -> str | None:
+    """Return the service whose stored series root most specifically contains *path*."""
+    normalized_path = normalize_fpath(path or "", strip_ending_slash=True)
+    if not normalized_path:
+        return None
+
+    best_match: tuple[int, str] | None = None
+    fallback_services: list[str] = []
+    for ref in refs:
+        service = getattr(ref, "service", None)
+        service_value = getattr(service, "value", service)
+        if not service_value:
+            continue
+        service_name = str(service_value)
+        fallback_services.append(service_name)
+        root = normalize_fpath(
+            str(getattr(ref, "path", "") or ""), strip_ending_slash=True
+        )
+        if not root or not DiskStatsResolver._path_is_within_mount(
+            normalized_path, root
+        ):
+            continue
+        candidate = (len(root), service_name)
+        if best_match is None or candidate[0] > best_match[0]:
+            best_match = candidate
+
+    if best_match is not None:
+        return best_match[1]
+    if len(set(fallback_services)) == 1:
+        return fallback_services[0]
+    return None
+
+
 def _has_valid_definition(definition: RuleDefinition | None) -> bool:
     """Check if the rule definition has a valid structure with a root group."""
     return isinstance(definition, dict) and isinstance(definition.get("root"), dict)
@@ -1654,7 +1770,13 @@ def _build_context(
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
-            _resolver.resolve(version.path) if (_resolver and version.path) else None
+            _resolver.resolve(
+                version.path,
+                media_service_type=version.service.value,
+                arr_service_type=Service.RADARR.value,
+            )
+            if (_resolver and version.path)
+            else None
         )
         _added = version.added_at or movie.added_at
         _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
@@ -1816,14 +1938,21 @@ def _build_context(
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
         _collections = _collection_names_from_series_refs(refs)
-        _series_path = next((ref.path for ref in refs if ref.path), None)
+        _series_ref = next((ref for ref in refs if ref.path), None)
+        _series_path = _series_ref.path if _series_ref else None
         _series_file_names = [
             file_name
             for file_name in (_path_basename(ref.path) for ref in refs)
             if file_name
         ]
         _disk = (
-            _resolver.resolve(_series_path) if (_resolver and _series_path) else None
+            _resolver.resolve(
+                _series_path,
+                media_service_type=_series_ref.service.value if _series_ref else None,
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and _series_path)
+            else None
         )
         _last_viewed = _effective_last_viewed(series.last_viewed_at, series.added_at)
         _favorite_users = (
@@ -1986,7 +2115,15 @@ def _build_context(
         else:
             seasons_from_latest = None
             is_latest_season = False
-        _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
+        _disk = (
+            _resolver.resolve(
+                season.path,
+                media_service_type=_media_service_type_for_path(season.path, refs),
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and season.path)
+            else None
+        )
         _last_viewed = _effective_last_viewed(season.last_viewed_at, season.added_at)
         _favorite_users = (
             _favorites_resolver.usernames(MediaType.SERIES, series.tmdb_id)
@@ -2185,7 +2322,13 @@ def _build_context(
             seasons_from_latest_ep = None
             is_latest_season_ep = False
         _disk = (
-            _resolver.resolve(episode.path) if (_resolver and episode.path) else None
+            _resolver.resolve(
+                episode.path,
+                media_service_type=_media_service_type_for_path(episode.path, refs),
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and episode.path)
+            else None
         )
         _last_viewed_ep = _effective_last_viewed(
             episode.last_viewed_at, season.added_at

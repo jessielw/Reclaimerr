@@ -5448,11 +5448,9 @@ def _order_series_arr_refs(
 async def _load_arr_disk_space() -> list[dict[str, Any]]:
     """Fetch disk space from all configured Radarr/Sonarr instances.
 
-    Returns a merged, deduplicated list of disk entries (path, free_space,
-    total_space) reported by each arr server.  Entries from different instances
-    that share the same path are de-duplicated (first writer wins).  The list
-    is sorted longest path first so rule_engine prefix matching finds the most
-    specific mount point first.
+    Each entry retains its service type and config ID so scoped path mappings
+    and provider-specific rule targets can be resolved without conflating two
+    Arr instances that happen to expose the same container path.
     """
     radarr_clients = service_manager.radarr_clients()
     if not radarr_clients and service_manager.radarr:
@@ -5461,18 +5459,32 @@ async def _load_arr_disk_space() -> list[dict[str, Any]]:
     if not sonarr_clients and service_manager.sonarr:
         sonarr_clients = {0: service_manager.sonarr}
 
-    seen: set[str] = set()
     result: list[dict[str, Any]] = []
 
-    for client in list(radarr_clients.values()) + list(sonarr_clients.values()):
-        try:
-            for entry in await client.get_disk_space():
-                p = str(entry.get("path", "") or "")
-                if p and p not in seen:
-                    seen.add(p)
-                    result.append(entry)
-        except Exception:
-            pass
+    client_groups = (
+        (Service.RADARR, radarr_clients),
+        (Service.SONARR, sonarr_clients),
+    )
+    for service_type, clients in client_groups:
+        for config_id, client in clients.items():
+            try:
+                for entry in await client.get_disk_space():
+                    path = str(entry.get("path", "") or "")
+                    if not path:
+                        continue
+                    result.append(
+                        {
+                            **entry,
+                            "path": path,
+                            "service_type": service_type.value,
+                            "service_config_id": config_id,
+                        }
+                    )
+            except Exception as exc:
+                LOG.debug(
+                    f"Could not load {service_type.value} disk-space data "
+                    f"for config {config_id}: {exc}"
+                )
 
     return sorted(result, key=lambda e: -len(str(e.get("path") or "")))
 
