@@ -1620,7 +1620,7 @@
       if (hint) return hint;
       return bounds.max === null
         ? `${bounds.min} or more…`
-        : `${bounds.min}-${bounds.max}`;
+        : `${bounds.min}-${bounds.max}…`;
     }
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";

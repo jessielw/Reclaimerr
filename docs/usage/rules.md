@@ -277,6 +277,12 @@ Rotten Tomatoes, Metacritic, Trakt, and Letterboxd plus vote counts. OMDb is
 used as a fallback for Tomatometer and Metacritic when an IMDb ID is available.
 Direct Rotten Tomatoes and Metacritic scraping is intentionally not used.
 
+Metacritic user score and Letterboxd score are stored and matched on a 0-100
+scale, but the providers publish them differently: Metacritic shows its user
+score as 0-10 on its own site, and Letterboxd shows its score as 0-5. Build
+rules against the stored 0-100 value, not the number shown on the provider's
+site.
+
 Ratings are refreshed by the provider-specific `Refresh MDBList Ratings` and
 `Refresh OMDb Ratings` tasks. They keep independent schedules and caches.
 MDBList values remain authoritative, while OMDb fills missing Tomatometer and

@@ -310,6 +310,9 @@ NUMERIC_FIELDS = {
 }
 
 # field -> (minimum, maximum or None, integer required)
+# Mirrored by NUMERIC_FIELD_BOUNDS in
+# frontend/src/lib/components/settings/rules/rule-node-editor.svelte.
+# tests/test_rule_engine_frontend_parity.py fails if the two drift.
 FIELD_NUMERIC_BOUNDS: dict[str, tuple[float, float | None, bool]] = {
     # 0-10 scales, decimals allowed
     "tmdb.vote_average": (0, 10, False),
@@ -1645,7 +1648,7 @@ def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
     if field not in FIELD_NUMERIC_BOUNDS:
         return
 
-    _minimum, _maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
     label = FIELD_LABELS.get(field, field)
 
     if isinstance(value, list):
@@ -1655,28 +1658,28 @@ def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
         )
     # bool is a subclass of int, and float(True) is 1.0, so guard it explicitly
     if isinstance(value, bool):
-        raise ValueError(f"{label} expects a number")
+        raise ValueError(_numeric_expectation(field))
 
     number = _number(value)
     if number is None or not math.isfinite(number):
-        raise ValueError(f"{label} expects a number")
+        raise ValueError(_numeric_expectation(field))
 
-    if number < _minimum or (_maximum is not None and number > _maximum):
+    if number < minimum or (maximum is not None and number > maximum):
         raise ValueError(_numeric_expectation(field))
     if integer_required and not float(number).is_integer():
         raise ValueError(_numeric_expectation(field))
 
     operator_label = OPERATOR_LABELS.get(operator, operator)
-    if _maximum is not None and operator == "greater_than" and number == _maximum:
+    if maximum is not None and operator == "greater_than" and number == maximum:
         raise ValueError(
             f"{label} {operator_label} {_format_bound(number)} can never match; "
-            f"{_format_bound(_maximum)} is the maximum "
+            f"{_format_bound(maximum)} is the maximum "
             f"(use {OPERATOR_LABELS['greater_than_or_equal']} to include it)"
         )
-    if operator == "less_than" and number == _minimum:
+    if operator == "less_than" and number == minimum:
         raise ValueError(
             f"{label} {operator_label} {_format_bound(number)} can never match; "
-            f"{_format_bound(_minimum)} is the minimum "
+            f"{_format_bound(minimum)} is the minimum "
             f"(use {OPERATOR_LABELS['less_than_or_equal']} to include it)"
         )
 
