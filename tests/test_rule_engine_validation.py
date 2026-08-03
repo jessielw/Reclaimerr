@@ -1006,6 +1006,44 @@ class NumericBoundsValidationTests(unittest.TestCase):
         self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 80)
         self._validate("imdb.vote_count", "greater_than_or_equal", 5000)
 
+
+class NumericBoundaryImpossibilityTests(unittest.TestCase):
+    def _validate(self, field: str, operator: str, value: object) -> None:
+        validate_rule_definition(
+            _definition(field, operator, value),
+            target_scope=TARGET_MOVIE_VERSION,
+        )
+
+    def test_greater_than_maximum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("rottentomatoes.tomato_meter", "greater_than", 100)
+        message = str(ctx.exception)
+        self.assertIn("can never match", message)
+        self.assertIn("100 is the maximum", message)
+
+    def test_greater_than_or_equal_maximum_is_accepted(self) -> None:
+        self._validate("rottentomatoes.tomato_meter", "greater_than_or_equal", 100)
+
+    def test_less_than_minimum_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.vote_count", "less_than", 0)
+        message = str(ctx.exception)
+        self.assertIn("can never match", message)
+        self.assertIn("0 is the minimum", message)
+
+    def test_less_than_or_equal_minimum_is_accepted(self) -> None:
+        self._validate("imdb.vote_count", "less_than_or_equal", 0)
+
+    def test_unbounded_field_allows_large_greater_than(self) -> None:
+        self._validate("imdb.vote_count", "greater_than", 5_000_000)
+
+    def test_boundary_message_uses_operator_symbols(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._validate("imdb.rating", "greater_than", 10)
+        message = str(ctx.exception)
+        self.assertIn("IMDb rating > 10", message)
+        self.assertIn("use >=", message)
+
     def test_value_above_maximum_is_rejected(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self._validate("imdb.rating", "greater_than_or_equal", 11)

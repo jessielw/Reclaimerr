@@ -1666,6 +1666,20 @@ def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
     if integer_required and not float(number).is_integer():
         raise ValueError(_numeric_expectation(field))
 
+    operator_label = OPERATOR_LABELS.get(operator, operator)
+    if _maximum is not None and operator == "greater_than" and number == _maximum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(_maximum)} is the maximum "
+            f"(use {OPERATOR_LABELS['greater_than_or_equal']} to include it)"
+        )
+    if operator == "less_than" and number == _minimum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(_minimum)} is the minimum "
+            f"(use {OPERATOR_LABELS['less_than_or_equal']} to include it)"
+        )
+
 
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
