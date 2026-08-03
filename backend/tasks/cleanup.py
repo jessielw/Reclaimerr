@@ -1287,12 +1287,19 @@ async def _refresh_arr_tags_for_rules(
 
     movie_tag_labels = _collect_arr_tag_labels(movie_rules)
     series_tag_labels = _collect_arr_tag_labels(series_rules)
+    movie_needs_full_refresh = _has_non_exact_arr_tag_condition(movie_rules)
+    series_needs_full_refresh = _has_non_exact_arr_tag_condition(series_rules)
 
-    if not movie_tag_labels and not series_tag_labels:
+    # A pattern condition cannot name the labels it will match, so the whole
+    # catalog is refreshed for that media type instead of a filtered subset.
+    movie_tags_wanted = bool(movie_tag_labels) or movie_needs_full_refresh
+    series_tags_wanted = bool(series_tag_labels) or series_needs_full_refresh
+
+    if not movie_tags_wanted and not series_tags_wanted:
         return
 
     #### radarr: refresh movie arr_tags for rule relevant labels ####
-    if movie_tag_labels:
+    if movie_tags_wanted:
         radarr_clients = service_manager.radarr_clients()
         if not radarr_clients and service_manager.radarr:
             radarr_clients = {0: service_manager.radarr}
@@ -1300,6 +1307,8 @@ async def _refresh_arr_tags_for_rules(
         if radarr_clients:
             # movie_id (DB) -> set of labels to add
             movie_label_additions: dict[int, set[str]] = {}
+            # every label actually refreshed, across all configs that succeeded
+            movie_refreshed_labels: set[str] = set()
             radarr_successful_config_ids: set[int] = set()
             radarr_failed_config_ids: set[int] = set()
 
@@ -1332,10 +1341,16 @@ async def _refresh_arr_tags_for_rules(
                     continue
 
                 radarr_successful_config_ids.add(config_id)
+                effective_labels = (
+                    _all_catalog_labels(tag_list)
+                    if movie_needs_full_refresh
+                    else movie_tag_labels
+                )
+                movie_refreshed_labels |= effective_labels
                 label_to_arr_ids = _collect_arr_item_ids_by_label(
                     items=all_movies,
                     tags=tag_list,
-                    wanted_labels=movie_tag_labels,
+                    wanted_labels=effective_labels,
                 )
                 arr_to_db = arr_to_db_by_config.get(config_id, {})
                 for label, arr_ids in label_to_arr_ids.items():
@@ -1365,19 +1380,19 @@ async def _refresh_arr_tags_for_rules(
                     )
                     for movie in result.scalars().all():
                         current = set(movie.arr_tags or [])
-                        current -= movie_tag_labels  # strip stale rule-relevant labels
+                        current -= movie_refreshed_labels  # strip refreshed labels
                         current |= movie_label_additions.get(
                             movie.id, set()
                         )  # re-add current ones
                         movie.arr_tags = sorted(current)
                     await db.commit()
-            elif movie_tag_labels and radarr_failed_config_ids:
+            elif movie_tags_wanted and radarr_failed_config_ids:
                 LOG.warning(
                     "Radarr tag refresh failed for all relevant refs; "
                     "keeping existing movie arr_tags rows unchanged"
                 )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies (labels: {movie_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies (labels: {movie_refreshed_labels})"
             )
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####

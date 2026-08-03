@@ -5139,3 +5139,243 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 settings.leaving_soon_last_success_titles,
                 {Service.PLEX.value: "Old A"},
             )
+
+    async def test_refresh_arr_tags_regex_rule_drops_tag_removed_in_radarr(
+        self,
+    ) -> None:
+        """The reported defect. A regex rule got no per-scan top-up, so a tag removed
+        in Radarr stayed on the row until the next full media sync."""
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-regex-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            radarr_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-a",
+                api_key="x",
+                name="radarr-a",
+                enabled=True,
+            )
+            movie = Movie(
+                title="Formerly Stale Movie",
+                tmdb_id=70001,
+                arr_tags=["archive-one-stale"],
+            )
+            db.add_all([rule, radarr_config, movie])
+            await db.flush()
+            db.add(
+                MovieArrRef(
+                    movie_id=movie.id,
+                    service_config_id=radarr_config.id,
+                    arr_movie_id=2001,
+                    tmdb_id=movie.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = radarr_config.id
+            movie_id = movie.id
+
+        # Radarr still knows the tag, but no longer applies it to this movie.
+        fake_client = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=2001, tags=[])],
+            tags=[SimpleNamespace(id=1, label="archive-one-stale")],
+        )
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, [])
+
+    async def test_refresh_arr_tags_substring_rule_adds_tag_added_in_radarr(
+        self,
+    ) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-substring-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="contains_substring",
+                value=["stale"],
+            )
+            radarr_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-b",
+                api_key="x",
+                name="radarr-b",
+                enabled=True,
+            )
+            movie = Movie(title="Newly Stale Movie", tmdb_id=70002, arr_tags=[])
+            db.add_all([rule, radarr_config, movie])
+            await db.flush()
+            db.add(
+                MovieArrRef(
+                    movie_id=movie.id,
+                    service_config_id=radarr_config.id,
+                    arr_movie_id=2002,
+                    tmdb_id=movie.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = radarr_config.id
+            movie_id = movie.id
+
+        fake_client = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=2002, tags=[7])],
+            tags=[SimpleNamespace(id=7, label="archive-two-stale")],
+        )
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, ["archive-two-stale"])
+
+    async def test_refresh_arr_tags_exact_rule_preserves_unreferenced_movie_labels(
+        self,
+    ) -> None:
+        """Exact-match rules keep the narrow behaviour: only referenced labels are
+        refreshed, and labels the rules never mention survive untouched."""
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-exact-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="contains_any",
+                value=["keep"],
+            )
+            radarr_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-c",
+                api_key="x",
+                name="radarr-c",
+                enabled=True,
+            )
+            movie = Movie(
+                title="Partially Tagged Movie",
+                tmdb_id=70003,
+                arr_tags=["keep", "unrelated-label"],
+            )
+            db.add_all([rule, radarr_config, movie])
+            await db.flush()
+            db.add(
+                MovieArrRef(
+                    movie_id=movie.id,
+                    service_config_id=radarr_config.id,
+                    arr_movie_id=2003,
+                    tmdb_id=movie.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = radarr_config.id
+            movie_id = movie.id
+
+        # Radarr reports neither label on the movie. Only "keep" is rule-relevant,
+        # so only "keep" should be stripped.
+        fake_client = _RadarrTagRefreshClientFake(
+            movies=[SimpleNamespace(id=2003, tags=[])],
+            tags=[
+                SimpleNamespace(id=1, label="keep"),
+                SimpleNamespace(id=2, label="unrelated-label"),
+            ],
+        )
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            refreshed = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(refreshed.arr_tags, ["unrelated-label"])
+
+    async def test_refresh_arr_tags_regex_rule_preserves_failed_radarr_config_rows(
+        self,
+    ) -> None:
+        """Widening the label set must not turn a failed fetch into data loss."""
+        async with self._sessionmaker() as db:
+            rule = _make_single_condition_rule(
+                name="radarr-regex-failure-rule",
+                media_type=MediaType.MOVIE,
+                target_scope="movie_version",
+                field="arr.tags",
+                operator="matches_any_regex",
+                value=["archive-.*-stale$"],
+            )
+            radarr_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="http://radarr-down",
+                api_key="x",
+                name="radarr-down",
+                enabled=True,
+            )
+            movie = Movie(
+                title="Unreachable Movie",
+                tmdb_id=70004,
+                arr_tags=["archive-three-stale", "keep"],
+            )
+            db.add_all([rule, radarr_config, movie])
+            await db.flush()
+            db.add(
+                MovieArrRef(
+                    movie_id=movie.id,
+                    service_config_id=radarr_config.id,
+                    arr_movie_id=2004,
+                    tmdb_id=movie.tmdb_id,
+                )
+            )
+            await db.commit()
+            config_id = radarr_config.id
+            movie_id = movie.id
+
+        fake_client = _RadarrTagRefreshClientFake(fail=True)
+        previous_radarr_clients = cleanup_tasks.service_manager._radarr_clients
+        previous_radarr = cleanup_tasks.service_manager._radarr
+        cleanup_tasks.service_manager._radarr_clients = {config_id: fake_client}  # pyright: ignore[reportAttributeAccessIssue]
+        cleanup_tasks.service_manager._radarr = None
+        try:
+            with patch.object(cleanup_tasks, "async_db", self._sessionmaker):
+                await cleanup_tasks._refresh_arr_tags_for_rules([rule])
+        finally:
+            cleanup_tasks.service_manager._radarr_clients = previous_radarr_clients
+            cleanup_tasks.service_manager._radarr = previous_radarr
+
+        async with self._sessionmaker() as db:
+            unchanged = (
+                await db.execute(select(Movie).where(Movie.id == movie_id))
+            ).scalar_one()
+            self.assertEqual(unchanged.arr_tags, ["archive-three-stale", "keep"])
