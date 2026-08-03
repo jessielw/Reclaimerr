@@ -1554,8 +1554,37 @@
     SCOPE_FIELD_VALUES[targetScope].has(fieldValue);
   const operatorLabel = (value: RuleConditionOperator) =>
     operatorLabelMap[value] ?? value;
+  // Mirrors FIELD_NUMERIC_BOUNDS in backend/core/rule_engine.py.
+  // tests/test_rule_engine_frontend_parity.py fails if the two drift.
+  const NUMERIC_FIELD_BOUNDS: Record<
+    string,
+    { min: number; max: number | null; step: "1" | "any" }
+  > = {
+    "tmdb.vote_average": { min: 0, max: 10, step: "any" },
+    "imdb.rating": { min: 0, max: 10, step: "any" },
+    "media_server.user_rating": { min: 0, max: 10, step: "any" },
+    "rottentomatoes.tomato_meter": { min: 0, max: 100, step: "1" },
+    "rottentomatoes.popcorn_meter": { min: 0, max: 100, step: "1" },
+    "metacritic.metascore": { min: 0, max: 100, step: "1" },
+    "metacritic.user_score": { min: 0, max: 100, step: "1" },
+    "trakt.rating": { min: 0, max: 100, step: "1" },
+    "letterboxd.score": { min: 0, max: 100, step: "1" },
+    "anilist.score": { min: 0, max: 100, step: "1" },
+    "tmdb.vote_count": { min: 0, max: null, step: "1" },
+    "imdb.vote_count": { min: 0, max: null, step: "1" },
+    "rottentomatoes.tomato_vote_count": { min: 0, max: null, step: "1" },
+    "rottentomatoes.popcorn_vote_count": { min: 0, max: null, step: "1" },
+    "metacritic.vote_count": { min: 0, max: null, step: "1" },
+    "metacritic.user_vote_count": { min: 0, max: null, step: "1" },
+    "trakt.vote_count": { min: 0, max: null, step: "1" },
+    "letterboxd.vote_count": { min: 0, max: null, step: "1" },
+    "anilist.popularity": { min: 0, max: null, step: "1" },
+    "anilist.favourites": { min: 0, max: null, step: "1" },
+  };
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
+  const numericBoundsFor = (c: RuleCondition) =>
+    isNumericInput(c) ? NUMERIC_FIELD_BOUNDS[c.field] : undefined;
   const isByteInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "bytes" && !listOperators.has(c.operator);
   const isTemporalInput = (c: RuleCondition) =>
@@ -2212,6 +2241,9 @@
                 : isTemporalInput(node)
                   ? "date"
                   : "text"}
+              min={numericBoundsFor(node)?.min}
+              max={numericBoundsFor(node)?.max ?? undefined}
+              step={numericBoundsFor(node)?.step}
               placeholder={valuePlaceholder(node)}
               value={valueText(node)}
               oninput={(e) => setConditionValue(node, e.currentTarget.value)}
