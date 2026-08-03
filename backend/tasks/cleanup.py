@@ -20,10 +20,12 @@ from backend.core.rule_engine import (
     FAVORITES_RULE_FIELDS,
     PLAYBACK_RULE_FIELDS,
     RANK_RULE_FIELDS,
+    REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
     SONARR_RULE_FIELDS,
+    TAG_SUBSTRING_OPERATORS,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
@@ -1158,16 +1160,58 @@ async def scan_cleanup_candidates() -> None:
                 raise
 
 
+# arr.tags operators that match against patterns rather than whole tag labels.
+# Their condition values are needles or regexes, never tag names, so they cannot
+# be resolved to specific labels before the arr's tag catalog has been fetched.
+NON_EXACT_ARR_TAG_OPERATORS = REGEX_OPERATORS | TAG_SUBSTRING_OPERATORS
+
+
 def _collect_arr_tag_labels(rules: list[ReclaimRule]) -> set[str]:
-    """Return the distinct lowercase tag labels referenced in arr.tags conditions across rules."""
+    """Return the distinct lowercase tag labels named by exact-match arr.tags conditions.
+
+    Values belonging to non-exact operators are patterns rather than labels, so they
+    are skipped here; _has_non_exact_arr_tag_condition reports their presence instead.
+    """
     labels: set[str] = set()
     for rule in rules:
         for condition in collect_rule_conditions(rule.definition, field="arr.tags"):
+            if condition.get("operator") in NON_EXACT_ARR_TAG_OPERATORS:
+                continue
             value = condition.get("value")
             values = value if isinstance(value, list) else [value]
             for v in values:
                 if v is not None and str(v).strip():
                     labels.add(str(v).strip().lower())
+    return labels
+
+
+def _has_non_exact_arr_tag_condition(rules: list[ReclaimRule]) -> bool:
+    """Return True when any arr.tags condition matches by pattern instead of by label.
+
+    Such a condition cannot be narrowed to specific tag names ahead of time, so the
+    refresh widens to the arr's whole tag catalog rather than a filtered subset.
+    """
+    for rule in rules:
+        for condition in collect_rule_conditions(rule.definition, field="arr.tags"):
+            if condition.get("operator") in NON_EXACT_ARR_TAG_OPERATORS:
+                return True
+    return False
+
+
+def _all_catalog_labels(tags: Sequence[Any]) -> set[str]:
+    """Return every non-blank lowercase label in an arr tag catalog.
+
+    Normalisation matches _collect_arr_item_ids_by_label so that the labels used for
+    lookup and the labels stripped from existing rows are the same strings.
+    """
+    labels: set[str] = set()
+    for tag in tags:
+        label_raw = getattr(tag, "label", None)
+        if label_raw is None:
+            continue
+        label = str(label_raw).strip().lower()
+        if label:
+            labels.add(label)
     return labels
 
 

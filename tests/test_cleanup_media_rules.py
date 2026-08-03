@@ -2761,6 +2761,78 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ArrTagLabelCollectionTests(unittest.TestCase):
+    @staticmethod
+    def _tag_rule(operator: str, value: object) -> ReclaimRule:
+        return _make_single_condition_rule(
+            name=f"tag-rule-{operator}",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="arr.tags",
+            operator=operator,
+            value=value,
+        )
+
+    def test_exact_operator_values_are_collected_as_labels(self) -> None:
+        rule = self._tag_rule("contains_any", ["keep"])
+        self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), {"keep"})
+        self.assertFalse(cleanup_tasks._has_non_exact_arr_tag_condition([rule]))
+
+    def test_regex_pattern_is_not_collected_as_a_label(self) -> None:
+        rule = self._tag_rule("matches_any_regex", ["archive-.*-stale$"])
+        self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), set())
+        self.assertTrue(cleanup_tasks._has_non_exact_arr_tag_condition([rule]))
+
+    def test_substring_needle_is_not_collected_as_a_label(self) -> None:
+        rule = self._tag_rule("contains_substring", ["stale"])
+        self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), set())
+        self.assertTrue(cleanup_tasks._has_non_exact_arr_tag_condition([rule]))
+
+    def test_negated_non_exact_operators_are_recognised(self) -> None:
+        for operator, value in (
+            ("not_matches_any_regex", ["archive-.*$"]),
+            ("not_contains_substring", ["stale"]),
+        ):
+            with self.subTest(operator=operator):
+                rule = self._tag_rule(operator, value)
+                self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), set())
+                self.assertTrue(
+                    cleanup_tasks._has_non_exact_arr_tag_condition([rule])
+                )
+
+    def test_mixed_rules_collect_exact_labels_and_flag_non_exact(self) -> None:
+        rules = [
+            self._tag_rule("contains_any", ["keep"]),
+            self._tag_rule("matches_any_regex", ["archive-.*-stale$"]),
+        ]
+        self.assertEqual(cleanup_tasks._collect_arr_tag_labels(rules), {"keep"})
+        self.assertTrue(cleanup_tasks._has_non_exact_arr_tag_condition(rules))
+
+    def test_non_tag_field_conditions_are_ignored(self) -> None:
+        rule = _make_single_condition_rule(
+            name="not-a-tag-rule",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="media.title",
+            operator="contains_substring",
+            value=["stale"],
+        )
+        self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), set())
+        self.assertFalse(cleanup_tasks._has_non_exact_arr_tag_condition([rule]))
+
+    def test_all_catalog_labels_normalises_case_and_skips_blanks(self) -> None:
+        tags = [
+            SimpleNamespace(id=1, label=" Keep "),
+            SimpleNamespace(id=2, label="ARCHIVE-ONE-STALE"),
+            SimpleNamespace(id=3, label=""),
+            SimpleNamespace(id=4, label=None),
+        ]
+        self.assertEqual(
+            cleanup_tasks._all_catalog_labels(tags),
+            {"keep", "archive-one-stale"},
+        )
+
+
 class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         tmp_root = Path("tests/.tmp")
