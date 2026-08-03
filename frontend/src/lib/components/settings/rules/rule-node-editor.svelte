@@ -1581,6 +1581,11 @@
     "anilist.popularity": { min: 0, max: null, step: "1" },
     "anilist.favourites": { min: 0, max: null, step: "1" },
   };
+  // The two fields where following the provider's own site gives a wrong value.
+  const RESCALED_FIELD_HINTS: Record<string, string> = {
+    "metacritic.user_score": "0-100 (Metacritic shows this as 0-10)",
+    "letterboxd.score": "0-100 (Letterboxd shows this as 0-5)",
+  };
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
   const numericBoundsFor = (c: RuleCondition) =>
@@ -1609,6 +1614,14 @@
       return "Country codes (for example: US, GB)...";
     if (c.field === "media_server.collections")
       return "Media-server collections (comma-separated)...";
+    const bounds = numericBoundsFor(c);
+    if (bounds) {
+      const hint = RESCALED_FIELD_HINTS[c.field];
+      if (hint) return hint;
+      return bounds.max === null
+        ? `${bounds.min} or more…`
+        : `${bounds.min}-${bounds.max}`;
+    }
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";
   };
