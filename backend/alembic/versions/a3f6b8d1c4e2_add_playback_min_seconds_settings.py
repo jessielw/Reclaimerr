@@ -1,7 +1,7 @@
 """add playback min seconds settings
 
 Revision ID: a3f6b8d1c4e2
-Revises: d7f9a2c4e6b8
+Revises: c3f7b1d09a24
 Create Date: 2026-08-04 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a3f6b8d1c4e2"
-down_revision: str | Sequence[str] | None = "d7f9a2c4e6b8"
+down_revision: str | Sequence[str] | None = "c3f7b1d09a24"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

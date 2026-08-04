@@ -251,6 +251,11 @@ codes currently found in local TMDB metadata.
 TMDB rating comparisons use the raw `vote_average` value from TMDB on a 0-10
 scale. That is different from percentage-style ratings elsewhere in the app.
 
+TMDB has no rating for a title nobody has voted on. Reclaimerr stores that as an
+empty value rather than as a score of zero, so a comparison such as `<` never
+matches an unrated title. Use `does not exist` on the TMDB rating field when
+you specifically want to find those titles.
+
 ### External Ratings
 
 External rating fields are available to all scopes. Movie-version rules use the
