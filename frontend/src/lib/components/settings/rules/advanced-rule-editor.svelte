@@ -22,6 +22,7 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import { isConditionValueSet } from "$lib/components/settings/rules/rule-condition-value.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { toast } from "svelte-sonner";
   import {
@@ -237,26 +238,6 @@
       )
       .map((pattern) => String(pattern).trim())
       .filter(Boolean);
-
-  const valuelessOperators = new Set<RuleConditionOperator>([
-    "exists",
-    "not_exists",
-    "is_true",
-    "is_false",
-  ]);
-
-  const isConditionValueSet = (condition: RuleCondition): boolean => {
-    if (valuelessOperators.has(condition.operator)) return true;
-    const value = condition.value;
-    if (Array.isArray(value)) {
-      return value.some(
-        (item) =>
-          item !== null && item !== undefined && String(item).trim() !== "",
-      );
-    }
-    if (value === null || value === undefined) return false;
-    return String(value).trim() !== "";
-  };
 
   const hasValidConditions = (node: RuleNode): boolean => {
     if (node.type === "condition") return isConditionValueSet(node);

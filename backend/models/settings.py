@@ -266,6 +266,10 @@ class GeneralSettingsResponse(BaseModel):
     auto_delete_series_delay_days: int = Field(default=7, ge=0, le=3650)
     application_url: str | None = None
 
+    # minimum playback event duration (seconds) before it counts as activity
+    playback_movie_min_seconds: int = Field(default=15, ge=0, le=3600)
+    playback_episode_min_seconds: int = Field(default=7, ge=0, le=3600)
+
     # favorites
     favorites_ignore_enabled: bool = False
     favorites_protect_all_users: bool = False
