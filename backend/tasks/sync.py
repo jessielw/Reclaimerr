@@ -883,6 +883,8 @@ async def _upsert_episodes(
                 e.size = ep.size
             if ep.path is not None:
                 e.path = ep.path
+            if ep.runtime_seconds is not None:
+                e.runtime = ep.runtime_seconds
             if ep.media_server_user_rating is not None:
                 e.media_server_user_rating = ep.media_server_user_rating
             if service_type is Service.PLEX and ep.plex_rating_key:
@@ -905,6 +907,7 @@ async def _upsert_episodes(
                 jellyfin_episode_id=ep.jellyfin_episode_id,
                 emby_episode_id=ep.emby_episode_id,
                 media_server_user_rating=ep.media_server_user_rating,
+                runtime=ep.runtime_seconds,
             )
             session.add(new_ep)
             # We have to register in existing_eps so a duplicate ep_number later in the

@@ -267,6 +267,8 @@ export interface GeneralSettings {
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
   application_url: string | null;
+  playback_movie_min_seconds: number;
+  playback_episode_min_seconds: number;
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
@@ -459,12 +461,26 @@ export type RuleConditionOperator =
   | "matches_any_regex"
   | "not_matches_any_regex";
 
+// value shape for user-scoped playback fields, e.g.
+// "playback.user_watched_duration_minutes" / "playback.user_watched_percent"
+export interface UserScopedPlaybackValue {
+  usernames: string[];
+  amount: number | null;
+}
+
 export interface RuleCondition {
   type: "condition";
   enabled?: boolean;
   field: string;
   operator: RuleConditionOperator;
-  value?: string | number | boolean | string[] | number[] | null;
+  value?:
+    | string
+    | number
+    | boolean
+    | string[]
+    | number[]
+    | UserScopedPlaybackValue
+    | null;
 }
 
 export interface RuleGroup {

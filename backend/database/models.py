@@ -342,6 +342,11 @@ class GeneralSettings(Base):
     auto_delete_series_delay_days: Mapped[int] = mapped_column(Integer, default=7)
     application_url: Mapped[str | None] = mapped_column(String(500), default=None)
 
+    # minimum playback event duration (seconds) before it counts as activity;
+    # shorter events (accidental scrubs) are dropped during playback history ingestion
+    playback_movie_min_seconds: Mapped[int] = mapped_column(Integer, default=15)
+    playback_episode_min_seconds: Mapped[int] = mapped_column(Integer, default=7)
+
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     favorites_protect_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1383,6 +1388,8 @@ class Episode(Base):
     air_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     size: Mapped[int | None] = mapped_column(Integer, default=None)
     path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # runtime in whole seconds, from the media server's item metadata
+    runtime: Mapped[int | None] = mapped_column(Integer, default=None)
 
     # watch tracking
     view_count: Mapped[int] = mapped_column(Integer, default=0)
