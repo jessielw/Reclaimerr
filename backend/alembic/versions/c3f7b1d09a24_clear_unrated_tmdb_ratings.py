@@ -23,7 +23,9 @@ def upgrade() -> None:
     # written before the sync stopped storing that value still hold it, where a
     # rating rule reads it as a genuine score of zero. Requiring both a zero
     # rating and a zero vote count means only the sentinel is cleared, so no
-    # real rating can be lost.
+    # real rating can be lost. The sync is stricter, clearing on any zero
+    # vote count alone; this migration deliberately stays narrower so it
+    # cannot destroy one.
     op.execute(
         sa.text(
             """
