@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from backend.database.models import Movie, MovieVersion, ReclaimRule
+from backend.database.models import Movie, MovieVersion, ReclaimRule, Series
 from backend.enums import MediaType, Service
 from backend.tasks.cleanup import _evaluate_movie_rule
-from backend.tasks.sync import _update_movie_tmdb_metadata
+from backend.tasks.sync import (
+    _update_movie_tmdb_metadata,
+    _update_series_tmdb_metadata,
+)
 
 
 class _FakeTMDBMovieService:
@@ -13,6 +16,14 @@ class _FakeTMDBMovieService:
         self._payload = payload
 
     async def get_movie_details(self, tmdb_id: int) -> dict:
+        return self._payload
+
+
+class _FakeTMDBSeriesService:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def get_tv_details(self, tmdb_id: int) -> dict:
         return self._payload
 
 
@@ -113,6 +124,73 @@ class MovieTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(_evaluate_movie_rule(movie, below_five, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, missing, {}, []))
+
+
+class SeriesTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _make_series() -> Series:
+        return Series(title="Placeholder Series", tmdb_id=2, size=20 * 1024**3)
+
+    async def test_zero_votes_stores_no_rating(self) -> None:
+        series = self._make_series()
+        service = _FakeTMDBSeriesService({"vote_average": 0, "vote_count": 0})
+
+        await _update_series_tmdb_metadata(  # type: ignore[arg-type]
+            series, 2, service
+        )
+
+        self.assertIsNotNone(series.last_metadata_refresh_at)
+        self.assertIsNone(series.vote_average)
+        self.assertEqual(series.vote_count, 0)
+
+    async def test_real_votes_store_the_rating_unchanged(self) -> None:
+        series = self._make_series()
+        service = _FakeTMDBSeriesService({"vote_average": 8.1, "vote_count": 900})
+
+        await _update_series_tmdb_metadata(  # type: ignore[arg-type]
+            series, 2, service
+        )
+
+        self.assertIsNotNone(series.last_metadata_refresh_at)
+        self.assertEqual(series.vote_average, 8.1)
+        self.assertEqual(series.vote_count, 900)
+
+    async def test_missing_vote_count_stores_no_rating(self) -> None:
+        series = self._make_series()
+        service = _FakeTMDBSeriesService({"vote_average": 8.1})
+
+        await _update_series_tmdb_metadata(  # type: ignore[arg-type]
+            series, 2, service
+        )
+
+        self.assertIsNotNone(series.last_metadata_refresh_at)
+        self.assertIsNone(series.vote_average)
+        self.assertIsNone(series.vote_count)
+
+    async def test_unrated_series_is_excluded_from_rating_rules(self) -> None:
+        series = self._make_series()
+        service = _FakeTMDBSeriesService({"vote_average": 0, "vote_count": 0})
+
+        await _update_series_tmdb_metadata(  # type: ignore[arg-type]
+            series, 2, service
+        )
+
+        self.assertIsNotNone(series.last_metadata_refresh_at)
+
+        below_five = _rating_rule(
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            operator="less_than",
+            value=5,
+        )
+        missing = _rating_rule(
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            operator="not_exists",
+        )
+
+        self.assertFalse(_evaluate_movie_rule(series, below_five, {}, []))
+        self.assertTrue(_evaluate_movie_rule(series, missing, {}, []))
 
 
 if __name__ == "__main__":
