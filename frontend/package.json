@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "format": "prettier --write .",
-    "test:rule-dnd": "node --test src/lib/components/settings/rules/rule-tree-dnd.test.js"
+    "test:rule-dnd": "node --test src/lib/components/settings/rules/rule-tree-dnd.test.js",
+    "test:rule-condition-value": "node --test src/lib/components/settings/rules/rule-condition-value.test.js"
   },
   "devDependencies": {
     "@internationalized/date": "^3.12.1",
