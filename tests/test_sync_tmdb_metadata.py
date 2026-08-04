@@ -97,6 +97,8 @@ class MovieTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
 
         await _update_movie_tmdb_metadata(movie, 1, service)  # type: ignore[arg-type]
 
+        self.assertIsNotNone(movie.last_metadata_refresh_at)
+
         below_five = _rating_rule(
             media_type=MediaType.MOVIE,
             target_scope="movie_version",
