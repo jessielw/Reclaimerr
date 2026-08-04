@@ -58,6 +58,16 @@ NATIVE_PLAYBACK_FIELDS = frozenset(
     }
 )
 PLAYBACK_USER_FIELDS = frozenset({"playback.unique_user_count", "playback.usernames"})
+# fields only imported Playback Reporting/Tautulli events can answer: native
+# media-server watch state records that something was watched, not for how long.
+# A target carrying one of these has imported history behind it, which is also
+# what the per-user duration and percent fields are built from.
+IMPORTED_PLAYBACK_DURATION_FIELDS = frozenset(
+    {
+        "playback.total_duration_minutes",
+        "playback.longest_duration_minutes",
+    }
+)
 
 _playback_refresh_lock = Lock()
 

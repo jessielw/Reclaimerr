@@ -120,6 +120,7 @@ from backend.services.notifications import (
     notify_all_users,
 )
 from backend.services.playback_history import (
+    IMPORTED_PLAYBACK_DURATION_FIELDS,
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
     load_playback_rule_snapshot,
@@ -944,22 +945,8 @@ async def collect_rule_preview_matches_with_metadata(
         require_fresh=require_fresh,
     )
     if target_ids_by_scope and playback_result.snapshot is not None:
-        requested_fields_by_scope: dict[str, set[str]] = defaultdict(set)
-        for rule in rules:
-            scope = normalize_rule_target(rule)
-            for field in PLAYBACK_RULE_FIELDS:
-                if collect_rule_conditions(rule.definition, field=field):
-                    requested_fields_by_scope.setdefault(scope, set()).add(field)
-        metadata.playback_unavailable_count = sum(
-            1
-            for scope, target_ids in target_ids_by_scope.items()
-            for target_id in target_ids
-            if requested_fields_by_scope.get(scope)
-            and not requested_fields_by_scope[scope].issubset(
-                playback_result.snapshot.available_fields_by_target.get(
-                    (scope, target_id), set()
-                )
-            )
+        metadata.playback_unavailable_count = _playback_unavailable_target_count(
+            playback_result.snapshot, rules, target_ids_by_scope
         )
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
@@ -1596,6 +1583,62 @@ def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
     )
 
 
+def _targets_with_imported_playback(
+    snapshot: PlaybackRuleSnapshot,
+) -> set[tuple[str, int]]:
+    """Return the targets backed by imported playback events.
+
+    Per-user duration and percent are read from those events, so a target that
+    only has native watch state behind it has unknown per-user totals rather
+    than zero ones -- the same distinction the aggregate duration fields make.
+    """
+    return {
+        key
+        for key, available in snapshot.available_fields_by_target.items()
+        if available & IMPORTED_PLAYBACK_DURATION_FIELDS
+    }
+
+
+def _playback_unavailable_target_count(
+    snapshot: PlaybackRuleSnapshot,
+    rules: Iterable[ReclaimRule],
+    target_ids_by_scope: Mapping[str, set[int]],
+) -> int:
+    """Count preview targets whose playback values these rules cannot read."""
+    requested_fields_by_scope: dict[str, set[str]] = defaultdict(set)
+    user_scoped_scopes: set[str] = set()
+    for rule in rules:
+        scope = normalize_rule_target(rule)
+        for field in PLAYBACK_RULE_FIELDS:
+            if collect_rule_conditions(rule.definition, field=field):
+                requested_fields_by_scope[scope].add(field)
+        if any(
+            collect_rule_conditions(rule.definition, field=field)
+            for field in USER_SCOPED_PLAYBACK_FIELDS
+        ):
+            user_scoped_scopes.add(scope)
+    imported_targets = (
+        _targets_with_imported_playback(snapshot) if user_scoped_scopes else set()
+    )
+
+    def _unavailable(scope: str, target_id: int) -> bool:
+        requested = requested_fields_by_scope.get(scope)
+        if requested and not requested.issubset(
+            snapshot.available_fields_by_target.get((scope, target_id), set())
+        ):
+            return True
+        # per-user totals are not tracked per field in the snapshot; they come
+        # from the same imported events the aggregate duration fields do
+        return scope in user_scoped_scopes and (scope, target_id) not in imported_targets
+
+    return sum(
+        1
+        for scope, target_ids in target_ids_by_scope.items()
+        for target_id in target_ids
+        if _unavailable(scope, target_id)
+    )
+
+
 async def _activate_playback_history_for_rules(
     db: AsyncSession,
     rules: list[ReclaimRule],
@@ -1605,14 +1648,24 @@ async def _activate_playback_history_for_rules(
     playback_rules = [rule for rule in rules if _rule_uses_playback_fields(rule)]
     if not playback_rules:
         PlaybackHistoryResolver({}).activate()
-        PlaybackUserHistoryResolver({}).activate()
+        PlaybackUserHistoryResolver({}, available_targets=set()).activate()
         return _PlaybackRuleDataResult(snapshot=None)
 
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
+    # aggregate fields only: the snapshot tracks availability per field for
+    # these, while the user-scoped fields are tracked per target instead (see
+    # user_scoped_fields below), so mixing them here would compare a field name
+    # against a set that can never contain it.
     fields = {
         field
         for rule in playback_rules
         for field in PLAYBACK_RULE_FIELDS
+        if collect_rule_conditions(rule.definition, field=field)
+    }
+    user_scoped_fields = {
+        field
+        for rule in playback_rules
+        for field in USER_SCOPED_PLAYBACK_FIELDS
         if collect_rule_conditions(rule.definition, field=field)
     }
 
@@ -1642,8 +1695,16 @@ async def _activate_playback_history_for_rules(
     refresh_result = await refresh_playback_history(force=require_fresh)
     snapshot = await load_playback_rule_snapshot(db, refresh_result)
     PlaybackHistoryResolver(snapshot.values_by_target).activate()
-    user_totals = await load_user_playback_totals(db)
-    PlaybackUserHistoryResolver(user_totals).activate()
+    if user_scoped_fields:
+        PlaybackUserHistoryResolver(
+            await load_user_playback_totals(db),
+            available_targets=_targets_with_imported_playback(snapshot),
+        ).activate()
+    else:
+        # no rule reads per-user totals, so skip the query entirely; an empty
+        # observability set keeps the unread resolver from reporting targets as
+        # watched by nobody
+        PlaybackUserHistoryResolver({}, available_targets=set()).activate()
     log_playback_rule_coverage(snapshot, scopes, fields)
     unavailable_count = snapshot.unavailable_count(scopes, fields)
     if unavailable_count == 0 and not (
@@ -1658,10 +1719,7 @@ async def _activate_playback_history_for_rules(
         error = "; ".join(errors)
     elif not snapshot.has_configured_provider:
         error = "No playback source is configured"
-    elif fields & {
-        "playback.total_duration_minutes",
-        "playback.longest_duration_minutes",
-    }:
+    elif fields & IMPORTED_PLAYBACK_DURATION_FIELDS:
         error = (
             "Playback duration fields require imported Playback Reporting or "
             "Tautulli history for the media source"

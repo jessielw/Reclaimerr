@@ -1403,27 +1403,39 @@ class PlaybackUserHistoryResolver:
 
     Computed on demand from durable events (see
     ``playback_history.load_user_playback_totals``) rather than a persisted
-    aggregate, so this only needs to hold and look up the pre-fetched mapping --
-    no native-state merge or unavailability bookkeeping like
-    ``PlaybackHistoryResolver``, since there is no native/current-state
-    equivalent for per-user duration.
+    aggregate, so this mostly needs to hold and look up the pre-fetched mapping
+    -- no native-state merge like ``PlaybackHistoryResolver``, since there is no
+    native/current-state equivalent for per-user duration.
+
+    ``available_targets`` carries the same observability set the aggregate
+    snapshot uses: a target no configured playback source can see has unknown
+    per-user totals rather than zero ones. Passing ``None`` skips that check,
+    for callers that only need the totals.
     """
 
     _ctx: ContextVar[PlaybackUserHistoryResolver | None] = ContextVar(
         "playback_user_history_resolver", default=None
     )
 
-    __slots__ = ("_totals_by_target",)
+    __slots__ = ("_totals_by_target", "_available_targets")
 
     def __init__(
         self,
         totals_by_target: Mapping[tuple[str, int], Mapping[str, Mapping[str, object]]]
         | None = None,
+        available_targets: Iterable[tuple[str, int]] | None = None,
     ) -> None:
         self._totals_by_target = {
             (str(scope), int(target_id)): dict(per_user)
             for (scope, target_id), per_user in (totals_by_target or {}).items()
         }
+        self._available_targets = (
+            None
+            if available_targets is None
+            else {
+                (str(scope), int(target_id)) for scope, target_id in available_targets
+            }
+        )
 
     def activate(self) -> None:
         PlaybackUserHistoryResolver._ctx.set(self)
@@ -1431,6 +1443,14 @@ class PlaybackUserHistoryResolver:
     @classmethod
     def current(cls) -> PlaybackUserHistoryResolver | None:
         return cls._ctx.get()
+
+    def is_available(self, target_scope: str, target_id: int | None) -> bool:
+        """Whether a configured playback source can observe the target at all."""
+        if target_id is None:
+            return False
+        if self._available_targets is None:
+            return True
+        return (target_scope, target_id) in self._available_targets
 
     def resolve(
         self, target_scope: str, target_id: int | None
@@ -1467,14 +1487,15 @@ def _user_scoped_playback_context(
     """Build the per-user duration/percent context values for one target.
 
     Each value is a ``{normalized_username: number}`` dict (not a scalar) --
-    condition evaluation reduces it to a scalar once it knows which usernames
-    the condition selected. ``RULE_VALUE_UNAVAILABLE`` only when the resolver
-    itself was never activated (no rule in this scan needed it); a target with
+    condition evaluation compares one entry per selected username once it knows
+    which usernames the condition selected. ``RULE_VALUE_UNAVAILABLE`` when the
+    resolver was never activated (no rule in this scan needed it) or when no
+    configured playback source can observe the target; an observable target with
     no recorded plays for anyone still resolves to an empty dict, since that is
     a known fact ("nobody has watched this"), not missing data.
     """
     per_user = resolver.resolve(target_scope, target_id) if resolver else None
-    if resolver is None:
+    if resolver is None or not resolver.is_available(target_scope, target_id):
         duration_by_user: object = RULE_VALUE_UNAVAILABLE
         percent_by_user: object = RULE_VALUE_UNAVAILABLE
     else:
@@ -1702,32 +1723,46 @@ def evaluate_advanced_rule_state(
     return _evaluate_node_state(root, context)
 
 
-def _reduce_user_scoped_value(context_value: Any, condition_value: Any) -> Any:
-    """Reduce a per-user ``{username: number}`` dict to a scalar for one condition.
+def _evaluate_user_scoped_condition(
+    context_value: Any,
+    condition_value: Any,
+    operator: str,
+    *,
+    field: str,
+) -> tuple[bool | None, Any]:
+    """Compare one user-scoped playback condition against each selected user.
+
+    The condition matches as soon as *any* selected user's own total satisfies
+    the operator, so "watched under 5 minutes by alice or bob" is true when
+    either of them is under it. Reducing the per-user totals to a single number
+    first would instead mean "all of them" for the less-than operators.
 
     Shared by both evaluation entry points (``_evaluate_condition`` and
-    ``_evaluate_node_state``) so they can never drift on how a user-scoped
-    playback field is compared. Returns ``RULE_VALUE_UNAVAILABLE`` when the
-    field itself is unavailable (the per-user resolver was never activated) or
-    the condition's value is malformed -- not when a selected user simply has
-    no recorded activity, which contributes 0 (a known fact, not missing data;
-    see ``_user_scoped_playback_context``). When more than one username is
-    selected, the reduced value is the max across them: the rule matches if
-    *any* selected user individually meets the threshold.
+    ``_evaluate_node_state``) so they can never drift. Returns
+    ``(matched, value)``, where ``matched`` is ``None`` when the field itself is
+    unavailable (see ``_user_scoped_playback_context``) or the condition's value
+    is malformed -- not when a selected user simply has no recorded activity,
+    which counts as 0 (a known fact, not missing data). ``value`` is the total
+    belonging to the user that satisfied the operator, for match reporting.
     """
     if context_value is RULE_VALUE_UNAVAILABLE or not isinstance(context_value, dict):
-        return RULE_VALUE_UNAVAILABLE
+        return None, RULE_VALUE_UNAVAILABLE
     if not isinstance(condition_value, dict):
-        return RULE_VALUE_UNAVAILABLE
+        return None, RULE_VALUE_UNAVAILABLE
     raw_usernames = condition_value.get("usernames")
     if not isinstance(raw_usernames, list):
-        return RULE_VALUE_UNAVAILABLE
+        return None, RULE_VALUE_UNAVAILABLE
     usernames = [
         str(name).strip().casefold() for name in raw_usernames if str(name).strip()
     ]
     if not usernames:
-        return RULE_VALUE_UNAVAILABLE
-    return max(context_value.get(username, 0) for username in usernames)
+        return None, RULE_VALUE_UNAVAILABLE
+    amount = condition_value.get("amount")
+    for username in usernames:
+        value = context_value.get(username, 0)
+        if _matches_operator(value, operator, amount, field=field):
+            return True, value
+    return False, None
 
 
 def _evaluate_node_state(
@@ -1765,16 +1800,18 @@ def _evaluate_node_state(
         return False
     field = str(node.get("field", ""))
     actual = context.get(field)
-    value = node.get("value")
+    operator = str(node.get("operator", ""))
     if field in USER_SCOPED_PLAYBACK_FIELDS:
-        actual = _reduce_user_scoped_value(actual, value)
-        value = value.get("amount") if isinstance(value, dict) else None
+        state, _value = _evaluate_user_scoped_condition(
+            actual, node.get("value"), operator, field=field
+        )
+        return state
     if actual is RULE_VALUE_UNAVAILABLE:
         return None
     return _matches_operator(
         actual,
-        str(node.get("operator", "")),
-        value,
+        operator,
+        node.get("value"),
         field=field,
     )
 
@@ -2887,9 +2924,13 @@ def _evaluate_condition(
     expected = condition.get("value")
     actual = context.get(field)
     if field in USER_SCOPED_PLAYBACK_FIELDS:
-        actual = _reduce_user_scoped_value(actual, expected)
+        state, actual = _evaluate_user_scoped_condition(
+            actual, expected, operator, field=field
+        )
         expected = expected.get("amount") if isinstance(expected, dict) else None
-    if not _matches_operator(actual, operator, expected, field=field):
+        if not state:
+            return False
+    elif not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))

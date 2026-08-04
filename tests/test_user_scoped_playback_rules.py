@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from backend.core.rule_engine import (
     RULE_VALUE_UNAVAILABLE,
@@ -13,6 +14,8 @@ from backend.core.rule_engine import (
 )
 from backend.database.models import Episode, Movie, MovieVersion, ReclaimRule, Season, Series
 from backend.enums import MediaType, Service
+from backend.services.playback_history import PlaybackRuleSnapshot
+from backend.tasks import cleanup as cleanup_tasks
 
 
 def _condition(field: str, operator: str, value: object) -> dict[str, object]:
@@ -437,3 +440,285 @@ class UserScopedPlaybackEvaluationTests(unittest.TestCase):
         )
         self.assertTrue(matched)
         self.assertEqual(criteria["playback.user_watched_duration_minutes"], 90.0)
+
+    def _activate_heavy_and_light_viewer(self, version_id: int) -> None:
+        """alice watched 90 minutes of the target, bob watched 1."""
+        PlaybackUserHistoryResolver(
+            {
+                ("movie_version", version_id): {
+                    "alice": {
+                        "display_username": "alice",
+                        "total_duration_seconds": 5400,
+                        "play_count": 1,
+                        "last_activity_at": None,
+                    },
+                    "bob": {
+                        "display_username": "bob",
+                        "total_duration_seconds": 60,
+                        "play_count": 1,
+                        "last_activity_at": None,
+                    },
+                }
+            }
+        ).activate()
+
+    def test_less_than_matches_when_any_selected_user_is_under_the_threshold(
+        self,
+    ) -> None:
+        movie, version = _movie_version(duration_ms=None)
+        version.id = 7
+        self._activate_heavy_and_light_viewer(7)
+
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "less_than",
+                {"usernames": ["alice", "bob"], "amount": 5},
+            ),
+        )
+        matched, criteria, _ = evaluate_advanced_rule(
+            rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+        )
+        # bob watched 1 minute, so "under 5 minutes by alice or bob" is true of
+        # bob even though alice watched 90
+        self.assertTrue(matched)
+        self.assertEqual(criteria["playback.user_watched_duration_minutes"], 1.0)
+        self.assertTrue(
+            evaluate_advanced_rule_state(
+                rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+            )
+        )
+
+    def test_equals_matches_the_selected_user_that_holds_the_value(self) -> None:
+        movie, version = _movie_version(duration_ms=None)
+        version.id = 8
+        self._activate_heavy_and_light_viewer(8)
+
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "equals",
+                {"usernames": ["alice", "bob"], "amount": 1},
+            ),
+        )
+        matched, criteria, _ = evaluate_advanced_rule(
+            rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+        )
+        self.assertTrue(matched)
+        self.assertEqual(criteria["playback.user_watched_duration_minutes"], 1.0)
+
+    def test_no_selected_user_meeting_the_threshold_does_not_match(self) -> None:
+        movie, version = _movie_version(duration_ms=None)
+        version.id = 9
+        self._activate_heavy_and_light_viewer(9)
+
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "greater_than_or_equal",
+                {"usernames": ["alice", "bob"], "amount": 120},
+            ),
+        )
+        matched, _, _ = evaluate_advanced_rule(
+            rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+        )
+        self.assertFalse(matched)
+        self.assertFalse(
+            evaluate_advanced_rule_state(
+                rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+            )
+        )
+
+    def test_target_no_playback_source_can_observe_is_unavailable(self) -> None:
+        """No configured source covers the target, so "nobody watched it" is unknown.
+
+        Without this the target would read as a concrete 0 for every selected
+        user, and a "watched less than X" rule would match the whole library
+        whenever the playback provider is missing.
+        """
+        movie, version = _movie_version(duration_ms=None)
+        version.id = 10
+        PlaybackUserHistoryResolver({}, available_targets=set()).activate()
+
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "less_than",
+                {"usernames": ["alice"], "amount": 30},
+            ),
+        )
+        matched, _, _ = evaluate_advanced_rule(
+            rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+        )
+        self.assertFalse(matched)
+        self.assertIsNone(
+            evaluate_advanced_rule_state(
+                rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+            )
+        )
+
+    def test_observable_target_with_no_events_is_still_a_concrete_zero(self) -> None:
+        movie, version = _movie_version(duration_ms=None)
+        version.id = 11
+        PlaybackUserHistoryResolver(
+            {}, available_targets={("movie_version", 11)}
+        ).activate()
+
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "less_than",
+                {"usernames": ["alice"], "amount": 30},
+            ),
+        )
+        matched, criteria, _ = evaluate_advanced_rule(
+            rule, target_scope=TARGET_MOVIE_VERSION, movie=movie, version=version
+        )
+        self.assertTrue(matched)
+        self.assertEqual(criteria["playback.user_watched_duration_minutes"], 0)
+
+
+class UserScopedPlaybackActivationTests(unittest.IsolatedAsyncioTestCase):
+    """Cover what a cleanup scan loads and activates for these fields."""
+
+    def tearDown(self) -> None:
+        PlaybackUserHistoryResolver._ctx.set(None)
+
+    @staticmethod
+    def _snapshot() -> PlaybackRuleSnapshot:
+        return PlaybackRuleSnapshot(
+            values_by_target={},
+            available_targets={("movie_version", 1), ("movie_version", 2)},
+            target_counts={},
+            errors=[],
+            has_configured_provider=True,
+            provider_statuses=[],
+            unavailable_reasons={},
+            unavailable_target_samples={},
+            available_fields_by_target={
+                # imported history covers version 1; version 2 is observable
+                # only through the media server's own watch state, which
+                # carries no play durations to split by user
+                ("movie_version", 1): {"playback.total_duration_minutes"},
+                ("movie_version", 2): {"playback.has_activity"},
+            },
+        )
+
+    async def _activate(self, rule: ReclaimRule) -> AsyncMock:
+        totals = AsyncMock(return_value={("movie_version", 1): {}})
+        with (
+            patch.object(cleanup_tasks, "refresh_playback_history", new=AsyncMock()),
+            patch.object(
+                cleanup_tasks,
+                "load_playback_rule_snapshot",
+                new=AsyncMock(return_value=self._snapshot()),
+            ),
+            patch.object(cleanup_tasks, "load_user_playback_totals", new=totals),
+        ):
+            await cleanup_tasks._activate_playback_history_for_rules(
+                AsyncMock(), [rule]
+            )
+        return totals
+
+    async def test_user_scoped_rule_loads_totals_and_carries_observability(
+        self,
+    ) -> None:
+        totals = await self._activate(
+            _rule(
+                TARGET_MOVIE_VERSION,
+                MediaType.MOVIE,
+                _condition(
+                    "playback.user_watched_duration_minutes",
+                    "greater_than_or_equal",
+                    {"usernames": ["alice"], "amount": 30},
+                ),
+            )
+        )
+        totals.assert_awaited_once()
+        resolver = PlaybackUserHistoryResolver.current()
+        assert resolver is not None
+        self.assertTrue(resolver.is_available(TARGET_MOVIE_VERSION, 1))
+        # no imported history for version 2, so "nobody watched it" is unknown
+        # rather than zero for every user
+        self.assertFalse(resolver.is_available(TARGET_MOVIE_VERSION, 2))
+        self.assertFalse(resolver.is_available(TARGET_MOVIE_VERSION, 3))
+
+    async def test_aggregate_only_rule_does_not_load_per_user_totals(self) -> None:
+        totals = await self._activate(
+            _rule(
+                TARGET_MOVIE_VERSION,
+                MediaType.MOVIE,
+                _condition("playback.longest_duration_minutes", "greater_than", 30),
+            )
+        )
+        totals.assert_not_awaited()
+        # nothing in the scan reads per-user totals, so the activated resolver
+        # must not answer "nobody watched this" for targets it never loaded
+        resolver = PlaybackUserHistoryResolver.current()
+        assert resolver is not None
+        self.assertFalse(resolver.is_available(TARGET_MOVIE_VERSION, 1))
+
+
+class PlaybackPreviewUnavailableCountTests(unittest.TestCase):
+    """A preview must report the targets a playback rule cannot read."""
+
+    @staticmethod
+    def _snapshot() -> PlaybackRuleSnapshot:
+        return PlaybackRuleSnapshot(
+            values_by_target={},
+            available_targets={("movie_version", 1), ("movie_version", 2)},
+            target_counts={},
+            errors=[],
+            has_configured_provider=True,
+            provider_statuses=[],
+            unavailable_reasons={},
+            unavailable_target_samples={},
+            available_fields_by_target={
+                ("movie_version", 1): {"playback.longest_duration_minutes"},
+                ("movie_version", 2): {"playback.has_activity"},
+            },
+        )
+
+    def test_user_scoped_rule_counts_targets_without_imported_history(self) -> None:
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition(
+                "playback.user_watched_duration_minutes",
+                "less_than",
+                {"usernames": ["alice"], "amount": 30},
+            ),
+        )
+        count = cleanup_tasks._playback_unavailable_target_count(
+            self._snapshot(),
+            [rule],
+            {"movie_version": {1, 2, 3}},
+        )
+        # version 1 has imported history; version 2 is observable but only
+        # through native watch state, and version 3 not at all
+        self.assertEqual(count, 2)
+
+    def test_aggregate_rule_counts_targets_missing_the_requested_field(self) -> None:
+        rule = _rule(
+            TARGET_MOVIE_VERSION,
+            MediaType.MOVIE,
+            _condition("playback.total_duration_minutes", "greater_than", 30),
+        )
+        count = cleanup_tasks._playback_unavailable_target_count(
+            self._snapshot(),
+            [rule],
+            {"movie_version": {1, 2}},
+        )
+        # neither target carries the requested field, even though both are
+        # observable
+        self.assertEqual(count, 2)
