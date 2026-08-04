@@ -1850,8 +1850,11 @@ async def _update_movie_tmdb_metadata(
         movie.overview = movie_metadata.get("overview")
         movie.genres = movie_metadata.get("genres")
         movie.popularity = movie_metadata.get("popularity")
-        movie.vote_average = movie_metadata.get("vote_average")
-        movie.vote_count = movie_metadata.get("vote_count")
+        # TMDB reports vote_average as 0 when nothing has been voted on, so a
+        # stored 0 would read as a genuine bad rating in reclaim rules
+        votes = movie_metadata.get("vote_count")
+        movie.vote_average = movie_metadata.get("vote_average") if votes else None
+        movie.vote_count = votes
         movie.revenue = movie_metadata.get("revenue")
         movie.runtime = movie_metadata.get("runtime")
         movie.status = movie_metadata.get("status")
