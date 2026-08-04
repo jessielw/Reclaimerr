@@ -18,12 +18,15 @@ _CREATE = (
 )
 
 # id 1 is the sentinel, id 2 is a real rating, id 3 has an unknown vote count,
-# id 4 is already clear
+# id 4 is already clear, and id 5 pairs a real rating with zero votes. The sync
+# never writes id 5's shape, but without it the test cannot tell this clause
+# apart from a narrower "vote_count = 0", which would wrongly clear it.
 _ROWS = (
     (1, 0.0, 0),
     (2, 7.5, 1200),
     (3, 0.0, None),
     (4, None, 0),
+    (5, 6.0, 0),
 )
 
 
@@ -56,6 +59,7 @@ def test_migration_clears_only_the_zero_vote_sentinel(monkeypatch, tmp_path) -> 
             assert ratings[2] == 7.5, f"{table}: real rating was modified"
             assert ratings[3] == 0.0, f"{table}: unknown vote count was modified"
             assert ratings[4] is None, f"{table}: already-clear row changed"
+            assert ratings[5] == 6.0, f"{table}: rating with zero votes was cleared"
 
         MIGRATION.downgrade()
 
