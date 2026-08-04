@@ -484,6 +484,11 @@ are ignored by default. These thresholds prevent brief scrubs from counting as
 activity, and can be changed in **Settings → General → Minimum Playback
 Duration**.
 
+The thresholds are applied while history is imported, so a change only affects
+events imported after it. History already imported keeps the events it was
+imported with: raising the minimum does not retire short events that are
+already stored, and lowering it does not bring back events that were skipped.
+
 #### Per-user playback conditions
 
 The fields above are aggregated across every user who played the media, so
@@ -499,16 +504,29 @@ fields scope playback to one or more chosen users instead:
 Both fields require picking at least one user from a user-picker in the rule
 editor (there is no "any user" option — use the aggregate `Playback users` /
 `Longest playback` fields above for that). When more than one user is
-selected, the condition matches if **any** of them individually meets the
-threshold. A selected user with no recorded activity on the target counts as
-0, not unknown.
+selected, each one is compared on their own and the condition matches as soon
+as any of them satisfies it, so `under 5 minutes by alice or bob` is true when
+either of them is under 5 minutes. A selected user with no recorded activity
+counts as 0, not unknown, on any target imported history covers. Both fields
+read the same imported events the aggregate duration fields do, so a target
+with no Playback Reporting or Tautulli history behind it is unknown rather than
+watched by nobody, and the condition does not match it.
 
 `Playback watched by user (%)` is only available for movie-version and
 episode rules, since percent-watched needs a known runtime and only movie
 files and episodes have one on record (series and season rules can still use
-the minutes field). `Playback duration by user (minutes)` sums a user's
-playback across all of their sessions for the target, so resuming a paused
-movie across multiple sittings still counts toward the total.
+the minutes field). Episode runtimes are recorded during a media-server sync,
+so on an existing install episode percent rules stay unknown until the next
+sync has run.
+
+Both fields sum a user's playback across all of their sessions for the target,
+so resuming a paused movie across several sittings still counts toward the
+total. That also means percent is time watched rather than furthest position
+reached: re-watching pushes a user past 100%, and re-watching the same twenty
+minutes repeatedly accrues percent without the rest of the film ever being
+seen. Percent is measured against the runtime of the movie file the rule is
+evaluating, so on a movie kept in both a theatrical and an extended version the
+same watch time reads as a higher percent on the shorter file.
 
 Events are retained locally until their source service configuration is
 deleted. They are mapped by exact media-server IDs and stable TMDB,

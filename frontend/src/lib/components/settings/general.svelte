@@ -847,7 +847,8 @@
       <p class="text-muted-foreground text-sm mb-3">
         Playback events shorter than these durations are treated as accidental
         scrubs and are not recorded as activity, so they never count toward
-        playback rule conditions.
+        playback rule conditions. This applies to history imported from now on;
+        history already imported keeps the events it was imported with.
       </p>
       <div class="grid gap-3 sm:grid-cols-2">
         <div class="space-y-2">
