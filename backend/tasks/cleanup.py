@@ -30,11 +30,13 @@ from backend.core.rule_engine import (
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    USER_SCOPED_PLAYBACK_FIELDS,
     ArrRuleDataResolver,
     CollectionSiblingRuleDataResolver,
     DiskStatsResolver,
     FavoritesRuleDataResolver,
     PlaybackHistoryResolver,
+    PlaybackUserHistoryResolver,
     RankRuleDataResolver,
     SeerrRequestResolver,
     SonarrRuleDataResolver,
@@ -121,6 +123,7 @@ from backend.services.playback_history import (
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
     load_playback_rule_snapshot,
+    load_user_playback_totals,
     log_playback_rule_coverage,
     refresh_playback_history,
 )
@@ -1589,7 +1592,7 @@ async def _season_watch_inventory_rule_data(
 def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
-        for field in PLAYBACK_RULE_FIELDS
+        for field in PLAYBACK_RULE_FIELDS | USER_SCOPED_PLAYBACK_FIELDS
     )
 
 
@@ -1602,6 +1605,7 @@ async def _activate_playback_history_for_rules(
     playback_rules = [rule for rule in rules if _rule_uses_playback_fields(rule)]
     if not playback_rules:
         PlaybackHistoryResolver({}).activate()
+        PlaybackUserHistoryResolver({}).activate()
         return _PlaybackRuleDataResult(snapshot=None)
 
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
@@ -1638,6 +1642,8 @@ async def _activate_playback_history_for_rules(
     refresh_result = await refresh_playback_history(force=require_fresh)
     snapshot = await load_playback_rule_snapshot(db, refresh_result)
     PlaybackHistoryResolver(snapshot.values_by_target).activate()
+    user_totals = await load_user_playback_totals(db)
+    PlaybackUserHistoryResolver(user_totals).activate()
     log_playback_rule_coverage(snapshot, scopes, fields)
     unavailable_count = snapshot.unavailable_count(scopes, fields)
     if unavailable_count == 0 and not (

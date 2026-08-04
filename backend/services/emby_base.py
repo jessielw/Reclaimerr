@@ -1328,11 +1328,17 @@ class EmbyServiceBase:
                     if ep_num is not None:
                         ep_path: str | None = None
                         ep_size_ep: int | None = None
+                        ep_runtime_seconds: int | None = None
                         for _src in media_sources:
                             _p = _src.get("Path")
                             if _p:
                                 ep_path = normalize_fpath(_p)
                                 ep_size_ep = as_int(_src.get("Size"))
+                                _run_time_ticks = as_float(_src.get("RunTimeTicks"))
+                                if _run_time_ticks is not None:
+                                    ep_runtime_seconds = int(
+                                        _run_time_ticks / 10_000_000
+                                    )
                                 break
                         ep_air_ep: datetime | None = season_air_date.get(sk)
                         _ep_premiere = episode.get("PremiereDate")
@@ -1360,6 +1366,7 @@ class EmbyServiceBase:
                                 if self.service_type == Service.EMBY
                                 else None,
                                 media_server_user_rating=episode_user_rating,
+                                runtime_seconds=ep_runtime_seconds,
                             )
                         )
 

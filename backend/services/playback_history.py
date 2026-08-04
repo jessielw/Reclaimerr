@@ -19,6 +19,7 @@ from backend.core.utils.request import format_http_failure, summarize_error_mess
 from backend.database import async_db
 from backend.database.models import (
     Episode,
+    GeneralSettings,
     Movie,
     MovieVersion,
     NativePlaybackAggregate,
@@ -592,6 +593,9 @@ async def _mark_aggregate_format_current(config_ids: Iterable[int]) -> None:
 def _normalize_reporting_events(
     rows: Iterable[Mapping[str, object]],
     usernames_by_id: Mapping[str, str] | None = None,
+    *,
+    movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
+    episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
 ) -> list[_NormalizedEvent]:
     """Convert reporting plugin rows into normalized playback events."""
 
@@ -604,11 +608,7 @@ def _normalize_reporting_events(
             "movie" if media_type_raw == "movie" else "episode"
         )
         duration = _parse_int(row.get("PlayDuration"))
-        threshold = (
-            PLAYBACK_MOVIE_MIN_SECONDS
-            if media_type == "movie"
-            else PLAYBACK_EPISODE_MIN_SECONDS
-        )
+        threshold = movie_min_seconds if media_type == "movie" else episode_min_seconds
         played_at = _parse_datetime(row.get("DateCreatedUtc") or row.get("DateCreated"))
         item_id = str(row.get("ItemId") or "").strip()
         user_id = str(row.get("UserId") or "").strip() or None
@@ -639,6 +639,9 @@ def _normalize_reporting_events(
 def _normalize_tautulli_events(
     rows: Iterable[Mapping[str, object]],
     usernames_by_id: Mapping[str, str] | None = None,
+    *,
+    movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
+    episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
 ) -> list[_NormalizedEvent]:
     """Convert Tautulli rows into normalized playback events."""
 
@@ -651,11 +654,7 @@ def _normalize_tautulli_events(
             "movie" if media_type_raw == "movie" else "episode"
         )
         duration = _parse_int(row.get("play_duration"))
-        threshold = (
-            PLAYBACK_MOVIE_MIN_SECONDS
-            if media_type == "movie"
-            else PLAYBACK_EPISODE_MIN_SECONDS
-        )
+        threshold = movie_min_seconds if media_type == "movie" else episode_min_seconds
         played_at = _parse_datetime(row.get("stopped") or row.get("started"))
         item_id = str(row.get("rating_key") or "").strip()
         user_id = str(row.get("user_id") or row.get("user") or "").strip() or None
@@ -971,6 +970,9 @@ async def _persist_unavailable_status(
 
 async def _refresh_reporting_config(
     config: ServiceConfig,
+    *,
+    movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
+    episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
 ) -> PlaybackProviderStatus:
     """Refresh one Jellyfin or Emby playback source."""
 
@@ -1003,7 +1005,12 @@ async def _refresh_reporting_config(
                 if since is not None:
                     since -= timedelta(days=1)
                 rows = await client.get_playback_reporting_events(since=since)
-                events = _normalize_reporting_events(rows, usernames_by_id)
+                events = _normalize_reporting_events(
+                    rows,
+                    usernames_by_id,
+                    movie_min_seconds=movie_min_seconds,
+                    episode_min_seconds=episode_min_seconds,
+                )
         except Exception as exc:
             error = _provider_error_message(exc)
             LOG.warning(
@@ -1065,6 +1072,9 @@ async def _refresh_reporting_config(
 
 async def _refresh_tautulli_config(
     config: ServiceConfig,
+    *,
+    movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
+    episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
 ) -> PlaybackProviderStatus:
     """Refresh one Tautulli playback source."""
 
@@ -1092,7 +1102,12 @@ async def _refresh_tautulli_config(
                     f"{config.id}: {_provider_error_message(exc)}"
                 )
             rows = await client.get_history_records(since=_last_success_from(config))
-            events = _normalize_tautulli_events(rows, usernames_by_id)
+            events = _normalize_tautulli_events(
+                rows,
+                usernames_by_id,
+                movie_min_seconds=movie_min_seconds,
+                episode_min_seconds=episode_min_seconds,
+            )
         except Exception as exc:
             error = _provider_error_message(exc)
             LOG.warning(
@@ -1179,6 +1194,19 @@ async def _refresh_playback_history_once(
             )
             is not None
         )
+        general_settings = (
+            (await session.execute(select(GeneralSettings))).scalars().first()
+        )
+        movie_min_seconds = (
+            general_settings.playback_movie_min_seconds
+            if general_settings is not None
+            else PLAYBACK_MOVIE_MIN_SECONDS
+        )
+        episode_min_seconds = (
+            general_settings.playback_episode_min_seconds
+            if general_settings is not None
+            else PLAYBACK_EPISODE_MIN_SECONDS
+        )
 
     statuses: list[PlaybackProviderStatus] = []
     refreshed = False
@@ -1187,10 +1215,22 @@ async def _refresh_playback_history_once(
             statuses.append(recent_status)
             continue
         if config.service_type in {Service.JELLYFIN, Service.EMBY}:
-            statuses.append(await _refresh_reporting_config(config))
+            statuses.append(
+                await _refresh_reporting_config(
+                    config,
+                    movie_min_seconds=movie_min_seconds,
+                    episode_min_seconds=episode_min_seconds,
+                )
+            )
             refreshed = True
         elif config.service_type == Service.TAUTULLI and has_plex:
-            statuses.append(await _refresh_tautulli_config(config))
+            statuses.append(
+                await _refresh_tautulli_config(
+                    config,
+                    movie_min_seconds=movie_min_seconds,
+                    episode_min_seconds=episode_min_seconds,
+                )
+            )
             refreshed = True
 
     if force or refreshed:
@@ -2142,3 +2182,140 @@ async def load_playback_rule_snapshot(
         native_statuses=native_statuses,
         target_ids_by_scope=target_ids_by_scope,
     )
+
+
+async def load_user_playback_totals(
+    db: AsyncSession,
+) -> dict[PlaybackTargetKey, dict[str, dict[str, object]]]:
+    """Return per-(target, user) playback totals for user-scoped rule conditions.
+
+    Computed on demand from durable ``PlaybackHistoryEvent`` rows -- there is no
+    persisted per-user rollup table, mirroring how ``load_playback_rule_snapshot``
+    loads the whole ``PlaybackHistoryAggregate`` table unconditionally rather than
+    filtering to a specific scan batch. Movie-version targets are fanned out from
+    their parent movie's totals, since playback events are recorded per movie, not
+    per physical file version (a movie's multiple versions share one playback
+    history).
+
+    Returns a mapping of ``(target_scope, target_id)`` to
+    ``{normalized_username: {"display_username", "total_duration_seconds",
+    "play_count", "last_activity_at"}}``.
+    """
+    totals: dict[PlaybackTargetKey, dict[str, dict[str, object]]] = {}
+
+    def _merge(
+        scope: str,
+        target_id: int,
+        username: str,
+        total_seconds: int,
+        play_count: int,
+        last_activity_at: datetime | None,
+    ) -> None:
+        display_username = username.strip()
+        normalized = display_username.casefold()
+        if not normalized:
+            return
+        bucket = totals.setdefault((scope, target_id), {})
+        existing = bucket.get(normalized)
+        if existing is None:
+            bucket[normalized] = {
+                "display_username": display_username,
+                "total_duration_seconds": total_seconds,
+                "play_count": play_count,
+                "last_activity_at": last_activity_at,
+            }
+            return
+        existing["total_duration_seconds"] = (
+            cast(int, existing["total_duration_seconds"]) + total_seconds
+        )
+        existing["play_count"] = cast(int, existing["play_count"]) + play_count
+        existing_last = cast("datetime | None", existing["last_activity_at"])
+        if last_activity_at is not None and (
+            existing_last is None or last_activity_at > existing_last
+        ):
+            existing["last_activity_at"] = last_activity_at
+
+    # movies: playback events are grouped by movie_id, then fanned out to every
+    # active version of that movie (rule targets are movie versions, not movies)
+    movie_rows = (
+        await db.execute(
+            select(
+                PlaybackHistoryEvent.movie_id,
+                PlaybackHistoryEvent.source_username,
+                func.sum(PlaybackHistoryEvent.duration_seconds),
+                func.count(PlaybackHistoryEvent.id),
+                func.max(PlaybackHistoryEvent.played_at),
+            )
+            .where(
+                PlaybackHistoryEvent.movie_id.is_not(None),
+                PlaybackHistoryEvent.source_username.is_not(None),
+            )
+            .group_by(
+                PlaybackHistoryEvent.movie_id, PlaybackHistoryEvent.source_username
+            )
+        )
+    ).all()
+    if movie_rows:
+        version_ids_by_movie: dict[int, list[int]] = defaultdict(list)
+        for version_id, movie_id in (
+            await db.execute(
+                select(MovieVersion.id, MovieVersion.movie_id)
+                .join(Movie, MovieVersion.movie_id == Movie.id)
+                .where(Movie.removed_at.is_(None), MovieVersion.movie_id.is_not(None))
+            )
+        ).all():
+            version_ids_by_movie[movie_id].append(version_id)
+        for (
+            movie_id,
+            username,
+            total_seconds,
+            play_count,
+            last_activity_at,
+        ) in movie_rows:
+            if not username:
+                continue
+            for version_id in version_ids_by_movie.get(movie_id, []):
+                _merge(
+                    "movie_version",
+                    version_id,
+                    username,
+                    int(total_seconds or 0),
+                    int(play_count or 0),
+                    last_activity_at,
+                )
+
+    # series/season/episode: the FK id already matches the rule target id directly
+    for scope, column in (
+        ("series", PlaybackHistoryEvent.series_id),
+        ("season", PlaybackHistoryEvent.season_id),
+        ("episode", PlaybackHistoryEvent.episode_id),
+    ):
+        rows = (
+            await db.execute(
+                select(
+                    column,
+                    PlaybackHistoryEvent.source_username,
+                    func.sum(PlaybackHistoryEvent.duration_seconds),
+                    func.count(PlaybackHistoryEvent.id),
+                    func.max(PlaybackHistoryEvent.played_at),
+                )
+                .where(
+                    column.is_not(None),
+                    PlaybackHistoryEvent.source_username.is_not(None),
+                )
+                .group_by(column, PlaybackHistoryEvent.source_username)
+            )
+        ).all()
+        for target_id, username, total_seconds, play_count, last_activity_at in rows:
+            if not username:
+                continue
+            _merge(
+                scope,
+                target_id,
+                username,
+                int(total_seconds or 0),
+                int(play_count or 0),
+                last_activity_at,
+            )
+
+    return totals

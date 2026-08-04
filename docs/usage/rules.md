@@ -480,7 +480,35 @@ Jellyfin/Emby Playback Reporting plugin and Tautulli:
 | Days since playback activity | Whole days since the most recent timestamp                                  |
 
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds
-are ignored. These thresholds prevent brief scrubs from counting as activity.
+are ignored by default. These thresholds prevent brief scrubs from counting as
+activity, and can be changed in **Settings → General → Minimum Playback
+Duration**.
+
+#### Per-user playback conditions
+
+The fields above are aggregated across every user who played the media, so
+`Longest playback > 30` matches if *anyone* watched 30+ minutes, even if the
+specific person you care about only watched a few seconds. Two additional
+fields scope playback to one or more chosen users instead:
+
+| Field                          | Meaning                                          | Available scopes         |
+| ------------------------------- | ------------------------------------------------- | ------------------------- |
+| Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
+| Playback watched by user (%)   | Selected user's total watched time as a percent of runtime | Movie version, episode only |
+
+Both fields require picking at least one user from a user-picker in the rule
+editor (there is no "any user" option — use the aggregate `Playback users` /
+`Longest playback` fields above for that). When more than one user is
+selected, the condition matches if **any** of them individually meets the
+threshold. A selected user with no recorded activity on the target counts as
+0, not unknown.
+
+`Playback watched by user (%)` is only available for movie-version and
+episode rules, since percent-watched needs a known runtime and only movie
+files and episodes have one on record (series and season rules can still use
+the minutes field). `Playback duration by user (minutes)` sums a user's
+playback across all of their sessions for the target, so resuming a paused
+movie across multiple sittings still counts toward the total.
 
 Events are retained locally until their source service configuration is
 deleted. They are mapped by exact media-server IDs and stable TMDB,

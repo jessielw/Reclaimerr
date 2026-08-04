@@ -58,6 +58,8 @@
   let autoDeleteMovieDelayDays = $state(14);
   let autoDeleteSeriesDelayDays = $state(7);
   let applicationUrl = $state("");
+  let playbackMovieMinSeconds = $state(15);
+  let playbackEpisodeMinSeconds = $state(7);
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
@@ -122,6 +124,18 @@
           "Automatic delete delays must be whole numbers from 0 to 3650",
         );
       }
+      if (
+        !Number.isInteger(playbackMovieMinSeconds) ||
+        playbackMovieMinSeconds < 0 ||
+        playbackMovieMinSeconds > 3600 ||
+        !Number.isInteger(playbackEpisodeMinSeconds) ||
+        playbackEpisodeMinSeconds < 0 ||
+        playbackEpisodeMinSeconds > 3600
+      ) {
+        throw new Error(
+          "Minimum playback durations must be whole numbers from 0 to 3600 seconds",
+        );
+      }
 
       // save settings to backend
       await put_api("/api/settings/general", {
@@ -142,6 +156,8 @@
         auto_delete_movie_delay_days: autoDeleteMovieDelayDays,
         auto_delete_series_delay_days: autoDeleteSeriesDelayDays,
         application_url: applicationUrl.trim() || null,
+        playback_movie_min_seconds: playbackMovieMinSeconds,
+        playback_episode_min_seconds: playbackEpisodeMinSeconds,
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
@@ -296,6 +312,8 @@
         autoDeleteMovieDelayDays = settings.auto_delete_movie_delay_days ?? 14;
         autoDeleteSeriesDelayDays = settings.auto_delete_series_delay_days ?? 7;
         applicationUrl = settings.application_url ?? "";
+        playbackMovieMinSeconds = settings.playback_movie_min_seconds ?? 15;
+        playbackEpisodeMinSeconds = settings.playback_episode_min_seconds ?? 7;
         favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
         favoritesProtectAllUsers =
           settings.favorites_protect_all_users ?? false;
@@ -818,6 +836,49 @@
           automatic deletion enabled. Protected media and items with pending
           protection or delete requests are skipped.
         </p>
+      </div>
+    </div>
+
+    <!-- playback activity thresholds -->
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="mb-1">
+        <h3 class="font-semibold text-foreground">Minimum Playback Duration</h3>
+      </div>
+      <p class="text-muted-foreground text-sm mb-3">
+        Playback events shorter than these durations are treated as accidental
+        scrubs and are not recorded as activity, so they never count toward
+        playback rule conditions.
+      </p>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div class="space-y-2">
+          <Label for="playbackMovieMinSeconds" class="text-sm text-foreground">
+            Movie minimum (seconds)
+          </Label>
+          <Input
+            id="playbackMovieMinSeconds"
+            type="number"
+            min="0"
+            max="3600"
+            step="1"
+            bind:value={playbackMovieMinSeconds}
+          />
+        </div>
+        <div class="space-y-2">
+          <Label
+            for="playbackEpisodeMinSeconds"
+            class="text-sm text-foreground"
+          >
+            Episode minimum (seconds)
+          </Label>
+          <Input
+            id="playbackEpisodeMinSeconds"
+            type="number"
+            min="0"
+            max="3600"
+            step="1"
+            bind:value={playbackEpisodeMinSeconds}
+          />
+        </div>
       </div>
     </div>
 

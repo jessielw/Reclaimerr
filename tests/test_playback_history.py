@@ -53,6 +53,7 @@ from backend.services.playback_history import (
     _refresh_reporting_config,
     _upsert_events,
     load_playback_rule_snapshot,
+    load_user_playback_totals,
     log_playback_rule_coverage,
     rebuild_playback_history_aggregates,
 )
@@ -137,6 +138,52 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         self.assertEqual(events[0].source_item_id, "movie-1")
         self.assertEqual(events[0].source_username, "Alice")
         self.assertIsNone(events[0].completed)
+
+    def test_playback_reporting_respects_configured_thresholds(self) -> None:
+        rows = [
+            {
+                "DateCreated": "2026-06-20 12:00:00",
+                "UserId": "user-1",
+                "ItemId": "movie-1",
+                "ItemType": "Movie",
+                "PlayDuration": 15,
+            },
+            {
+                "DateCreated": "2026-06-20 12:01:00",
+                "UserId": "user-1",
+                "ItemId": "episode-1",
+                "ItemType": "Episode",
+                "PlayDuration": 6,
+            },
+        ]
+        # default thresholds (15s movie / 7s episode) keep only the movie event
+        self.assertEqual(len(_normalize_reporting_events(rows)), 1)
+        # raising the movie threshold above 15s drops it too
+        self.assertEqual(
+            len(_normalize_reporting_events(rows, movie_min_seconds=16)), 0
+        )
+        # lowering the episode threshold to 6s or below keeps both events
+        self.assertEqual(
+            len(_normalize_reporting_events(rows, episode_min_seconds=6)), 2
+        )
+
+    def test_tautulli_respects_configured_thresholds(self) -> None:
+        base_row = {
+            "media_type": "movie",
+            "rating_key": "100",
+            "user_id": "7",
+            "user": "Alice",
+            "play_duration": 15,
+            "stopped": 1_750_000_000,
+        }
+        events = _normalize_tautulli_events(
+            [{**base_row, "row_id": 1}], movie_min_seconds=15
+        )
+        self.assertEqual(len(events), 1)
+        events = _normalize_tautulli_events(
+            [{**base_row, "row_id": 1}], movie_min_seconds=16
+        )
+        self.assertEqual(len(events), 0)
 
     def test_tautulli_uses_row_id_and_utc_timestamp(self) -> None:
         events = _normalize_tautulli_events(
@@ -1899,6 +1946,168 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             ]
             self.assertFalse(state["available"])
             self.assertIn("provider offline", state["last_error"])
+
+
+class UserPlaybackTotalsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        tmp_root = Path("tests/.tmp")
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        self.db_path = tmp_root / f"test_user_playback_{uuid4().hex}.db"
+        self.engine = create_async_engine(f"sqlite+aiosqlite:///{self.db_path}")
+        self.sessionmaker = async_sessionmaker(
+            self.engine,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+    async def asyncTearDown(self) -> None:
+        await self.engine.dispose()
+        if self.db_path.exists():
+            self.db_path.unlink()
+
+    async def test_movie_totals_are_per_user_and_fan_out_to_every_version(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            movie = Movie(title="Shared Movie", tmdb_id=501)
+            db.add(movie)
+            await db.flush()
+            version_a = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media-a",
+                library_id="library",
+                library_name="Movies",
+            )
+            version_b = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media-b",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add_all([version_a, version_b])
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=1,
+                        source_event_key="a1",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 1, 1),
+                        duration_seconds=25,
+                        source_user_id="user-a",
+                        source_username="UserA",
+                        movie_id=movie.id,
+                    ),
+                    # a second session for the same user should be summed, not
+                    # overwritten (cumulative "how much have they watched")
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=1,
+                        source_event_key="a2",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 1, 2),
+                        duration_seconds=35,
+                        source_user_id="user-a",
+                        source_username="usera",  # differing case, same person
+                        movie_id=movie.id,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=1,
+                        source_event_key="b1",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 1, 3),
+                        duration_seconds=7200,
+                        source_user_id="user-b",
+                        source_username="UserB",
+                        movie_id=movie.id,
+                    ),
+                ]
+            )
+            await db.commit()
+            version_a_id = version_a.id
+            version_b_id = version_b.id
+
+            totals = await load_user_playback_totals(db)
+
+        for version_id in (version_a_id, version_b_id):
+            bucket = totals[("movie_version", version_id)]
+            self.assertEqual(bucket["usera"]["total_duration_seconds"], 60)
+            self.assertEqual(bucket["usera"]["play_count"], 2)
+            self.assertEqual(bucket["usera"]["display_username"], "UserA")
+            self.assertEqual(bucket["userb"]["total_duration_seconds"], 7200)
+            self.assertEqual(bucket["userb"]["play_count"], 1)
+
+    async def test_series_season_episode_totals_use_direct_fk_id(self) -> None:
+        async with self.sessionmaker() as db:
+            series = Series(title="Show", tmdb_id=601)
+            db.add(series)
+            await db.flush()
+            season = Season(series_id=series.id, season_number=1)
+            db.add(season)
+            await db.flush()
+            episode = Episode(season_id=season.id, episode_number=1)
+            db.add(episode)
+            await db.flush()
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TAUTULLI,
+                    source_service_config_id=1,
+                    source_event_key="e1",
+                    source_item_id="plex-episode",
+                    provider_media_type="episode",
+                    played_at=datetime(2026, 1, 1),
+                    duration_seconds=900,
+                    source_user_id="user-a",
+                    source_username="Alice",
+                    series_id=series.id,
+                    season_id=season.id,
+                    episode_id=episode.id,
+                )
+            )
+            await db.commit()
+            series_id, season_id, episode_id = series.id, season.id, episode.id
+
+            totals = await load_user_playback_totals(db)
+
+        for scope, target_id in (
+            ("series", series_id),
+            ("season", season_id),
+            ("episode", episode_id),
+        ):
+            bucket = totals[(scope, target_id)]
+            self.assertEqual(bucket["alice"]["total_duration_seconds"], 900)
+            self.assertEqual(bucket["alice"]["play_count"], 1)
+
+    async def test_target_with_no_events_is_absent(self) -> None:
+        async with self.sessionmaker() as db:
+            movie = Movie(title="Unwatched", tmdb_id=701)
+            db.add(movie)
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item-2",
+                service_media_id="plex-media-2",
+                library_id="library",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.commit()
+
+            totals = await load_user_playback_totals(db)
+
+        self.assertEqual(totals, {})
 
 
 class PlaybackRefreshSerializationTests(unittest.IsolatedAsyncioTestCase):

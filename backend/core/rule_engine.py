@@ -6,7 +6,7 @@ import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, TypeAlias, cast
 
 from backend.core.utils.filesystem import (
     mapped_path_variants,
@@ -65,6 +65,15 @@ PLAYBACK_RULE_FIELDS = {
     "playback.usernames",
     "playback.last_activity_at",
     "playback.days_since_last_activity",
+}
+# playback conditions scoped to one or more specific users, rather than the
+# aggregate-across-all-users semantics of PLAYBACK_RULE_FIELDS. Kept as a
+# separate set (not folded into PLAYBACK_RULE_FIELDS) because their allowed
+# target scopes differ per field and their value is a compound
+# {"usernames": [...], "amount": ...} object rather than a bare scalar.
+USER_SCOPED_PLAYBACK_FIELDS = {
+    "playback.user_watched_duration_minutes",
+    "playback.user_watched_percent",
 }
 
 RuleDefinition = dict[str, Any]
@@ -136,6 +145,8 @@ FIELD_LABELS: dict[str, str] = {
     "playback.usernames": "Playback users",
     "playback.last_activity_at": "Last playback activity",
     "playback.days_since_last_activity": "Days since playback activity",
+    "playback.user_watched_duration_minutes": "Playback duration by user (minutes)",
+    "playback.user_watched_percent": "Playback watched by user (%)",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "TMDB rating",
     "tmdb.vote_count": "Vote count",
@@ -494,6 +505,17 @@ TEMPORAL_OPERATORS = {
     "after",
     "on_or_after",
 }
+# user-scoped playback fields always require a value (a compound
+# {"usernames": [...], "amount": ...} object), so exists/not_exists -- which
+# would otherwise be valueless -- are deliberately excluded.
+USER_SCOPED_PLAYBACK_OPERATORS = {
+    "equals",
+    "not_equals",
+    "greater_than",
+    "greater_than_or_equal",
+    "less_than",
+    "less_than_or_equal",
+}
 PATH_OPERATORS = TEXT_OPERATORS | {"matches_any_regex"}
 PATH_LIBRARY_INCLUSION_OPERATORS = {"contains_any", "contains_all", "in", "equals"}
 PATH_LIBRARY_UNSUPPORTED_OPERATORS = {
@@ -519,6 +541,8 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.series_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS | REGEX_OPERATORS,
+    "playback.user_watched_duration_minutes": set(USER_SCOPED_PLAYBACK_OPERATORS),
+    "playback.user_watched_percent": set(USER_SCOPED_PLAYBACK_OPERATORS),
 }
 
 TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
@@ -602,6 +626,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        *USER_SCOPED_PLAYBACK_FIELDS,
         "movie.version_count",
     },
     TARGET_SERIES: {
@@ -674,6 +699,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        "playback.user_watched_duration_minutes",
     },
     TARGET_SEASON: {
         "anilist.favourites",
@@ -753,6 +779,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        "playback.user_watched_duration_minutes",
     },
     TARGET_EPISODE: {
         "anilist.favourites",
@@ -827,6 +854,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        *USER_SCOPED_PLAYBACK_FIELDS,
     },
 }
 
@@ -1370,6 +1398,49 @@ class PlaybackHistoryResolver:
         )
 
 
+class PlaybackUserHistoryResolver:
+    """Holds per-(target, user) playback totals for one rule evaluation run.
+
+    Computed on demand from durable events (see
+    ``playback_history.load_user_playback_totals``) rather than a persisted
+    aggregate, so this only needs to hold and look up the pre-fetched mapping --
+    no native-state merge or unavailability bookkeeping like
+    ``PlaybackHistoryResolver``, since there is no native/current-state
+    equivalent for per-user duration.
+    """
+
+    _ctx: ContextVar[PlaybackUserHistoryResolver | None] = ContextVar(
+        "playback_user_history_resolver", default=None
+    )
+
+    __slots__ = ("_totals_by_target",)
+
+    def __init__(
+        self,
+        totals_by_target: Mapping[tuple[str, int], Mapping[str, Mapping[str, object]]]
+        | None = None,
+    ) -> None:
+        self._totals_by_target = {
+            (str(scope), int(target_id)): dict(per_user)
+            for (scope, target_id), per_user in (totals_by_target or {}).items()
+        }
+
+    def activate(self) -> None:
+        PlaybackUserHistoryResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> PlaybackUserHistoryResolver | None:
+        return cls._ctx.get()
+
+    def resolve(
+        self, target_scope: str, target_id: int | None
+    ) -> Mapping[str, Mapping[str, object]] | None:
+        """Return the per-normalized-username metrics dict for a target, or None."""
+        if target_id is None:
+            return None
+        return self._totals_by_target.get((target_scope, target_id))
+
+
 def _playback_context(
     resolver: PlaybackHistoryResolver | None,
     target_scope: str,
@@ -1383,6 +1454,52 @@ def _playback_context(
         )
         for field in PLAYBACK_RULE_FIELDS
     }
+
+
+def _user_scoped_playback_context(
+    resolver: PlaybackUserHistoryResolver | None,
+    target_scope: str,
+    target_id: int | None,
+    *,
+    include_percent: bool = False,
+    runtime_seconds: float | None = None,
+) -> dict[str, object]:
+    """Build the per-user duration/percent context values for one target.
+
+    Each value is a ``{normalized_username: number}`` dict (not a scalar) --
+    condition evaluation reduces it to a scalar once it knows which usernames
+    the condition selected. ``RULE_VALUE_UNAVAILABLE`` only when the resolver
+    itself was never activated (no rule in this scan needed it); a target with
+    no recorded plays for anyone still resolves to an empty dict, since that is
+    a known fact ("nobody has watched this"), not missing data.
+    """
+    per_user = resolver.resolve(target_scope, target_id) if resolver else None
+    if resolver is None:
+        duration_by_user: object = RULE_VALUE_UNAVAILABLE
+        percent_by_user: object = RULE_VALUE_UNAVAILABLE
+    else:
+        duration_by_user = {
+            username: round(cast(int, metrics["total_duration_seconds"]) / 60, 2)
+            for username, metrics in (per_user or {}).items()
+        }
+        if include_percent and runtime_seconds and runtime_seconds > 0:
+            percent_by_user = {
+                username: round(
+                    cast(int, metrics["total_duration_seconds"])
+                    / runtime_seconds
+                    * 100,
+                    2,
+                )
+                for username, metrics in (per_user or {}).items()
+            }
+        else:
+            percent_by_user = RULE_VALUE_UNAVAILABLE
+    result: dict[str, object] = {
+        "playback.user_watched_duration_minutes": duration_by_user,
+    }
+    if include_percent:
+        result["playback.user_watched_percent"] = percent_by_user
+    return result
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -1585,6 +1702,34 @@ def evaluate_advanced_rule_state(
     return _evaluate_node_state(root, context)
 
 
+def _reduce_user_scoped_value(context_value: Any, condition_value: Any) -> Any:
+    """Reduce a per-user ``{username: number}`` dict to a scalar for one condition.
+
+    Shared by both evaluation entry points (``_evaluate_condition`` and
+    ``_evaluate_node_state``) so they can never drift on how a user-scoped
+    playback field is compared. Returns ``RULE_VALUE_UNAVAILABLE`` when the
+    field itself is unavailable (the per-user resolver was never activated) or
+    the condition's value is malformed -- not when a selected user simply has
+    no recorded activity, which contributes 0 (a known fact, not missing data;
+    see ``_user_scoped_playback_context``). When more than one username is
+    selected, the reduced value is the max across them: the rule matches if
+    *any* selected user individually meets the threshold.
+    """
+    if context_value is RULE_VALUE_UNAVAILABLE or not isinstance(context_value, dict):
+        return RULE_VALUE_UNAVAILABLE
+    if not isinstance(condition_value, dict):
+        return RULE_VALUE_UNAVAILABLE
+    raw_usernames = condition_value.get("usernames")
+    if not isinstance(raw_usernames, list):
+        return RULE_VALUE_UNAVAILABLE
+    usernames = [
+        str(name).strip().casefold() for name in raw_usernames if str(name).strip()
+    ]
+    if not usernames:
+        return RULE_VALUE_UNAVAILABLE
+    return max(context_value.get(username, 0) for username in usernames)
+
+
 def _evaluate_node_state(
     node: dict[str, Any],
     context: dict[str, Any],
@@ -1620,12 +1765,16 @@ def _evaluate_node_state(
         return False
     field = str(node.get("field", ""))
     actual = context.get(field)
+    value = node.get("value")
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        actual = _reduce_user_scoped_value(actual, value)
+        value = value.get("amount") if isinstance(value, dict) else None
     if actual is RULE_VALUE_UNAVAILABLE:
         return None
     return _matches_operator(
         actual,
         str(node.get("operator", "")),
-        node.get("value"),
+        value,
         field=field,
     )
 
@@ -1800,6 +1949,34 @@ def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
         )
 
 
+def _validate_user_scoped_playback_value(field: str, value: Any) -> None:
+    """Validate the ``{"usernames": [...], "amount": ...}`` compound value shape.
+
+    User-scoped playback fields never allow valueless operators (see
+    USER_SCOPED_PLAYBACK_OPERATORS), so a value always reaches this check.
+    Deliberately not routed through ``_validate_numeric_bounds`` /
+    ``FIELD_NUMERIC_BOUNDS``, which assume a bare scalar value.
+    """
+    label = FIELD_LABELS.get(field, field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} requires a user selection and an amount")
+    usernames = value.get("usernames")
+    if not isinstance(usernames, list) or not any(
+        str(name).strip() for name in usernames
+    ):
+        raise ValueError(f"{label} requires at least one selected user")
+    amount = value.get("amount")
+    if isinstance(amount, bool):
+        raise ValueError(f"{label} requires a numeric amount")
+    number = _number(amount)
+    if number is None or not math.isfinite(number) or number < 0:
+        raise ValueError(f"{label} requires a numeric amount of 0 or greater")
+    if field == "playback.user_watched_percent" and number > 100:
+        raise ValueError(f"{label} expects a percent between 0 and 100")
+    if field == "playback.user_watched_duration_minutes" and number > 100000:
+        raise ValueError(f"{label} expects a value of 100000 or less")
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -1833,6 +2010,8 @@ def _validate_node(node: dict[str, Any]) -> None:
         raise ValueError("Rule condition requires a value")
     if operator not in VALUELESS_OPERATORS:
         _validate_numeric_bounds(field, operator, node.get("value"))
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        _validate_user_scoped_playback_value(field, node.get("value"))
     if field == "library.id" and operator in LIST_OPERATORS:
         raw_values = node.get("value")
         values = raw_values if isinstance(raw_values, list) else [raw_values]
@@ -1875,6 +2054,7 @@ def _build_context(
     _seerr_resolver = SeerrRequestResolver.current()
     _sonarr_resolver = SonarrRuleDataResolver.current()
     _playback_resolver = PlaybackHistoryResolver.current()
+    _playback_user_resolver = PlaybackUserHistoryResolver.current()
     _arr_resolver = ArrRuleDataResolver.current()
     _favorites_resolver = FavoritesRuleDataResolver.current()
     _rank_resolver = RankRuleDataResolver.current()
@@ -1931,6 +2111,13 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_MOVIE_VERSION, version.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver,
+                TARGET_MOVIE_VERSION,
+                version.id,
+                include_percent=True,
+                runtime_seconds=(version.duration / 1000 if version.duration else None),
+            ),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.in_collection": (
                 movie.tmdb_collection_id is not None
@@ -2092,6 +2279,9 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": series.view_count == 0 or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_SERIES, series.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver, TARGET_SERIES, series.id
+            ),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -2263,6 +2453,9 @@ def _build_context(
             "watch.never_watched": (season.view_count or 0) == 0
             or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_SEASON, season.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver, TARGET_SEASON, season.id
+            ),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
@@ -2470,6 +2663,13 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
             "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
             **_playback_context(_playback_resolver, TARGET_EPISODE, episode.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver,
+                TARGET_EPISODE,
+                episode.id,
+                include_percent=True,
+                runtime_seconds=episode.runtime,
+            ),
             "episode.number": episode.episode_number,
             "episode.position_by_air_date": (
                 _rank_resolver.episode_rank(episode.id)
@@ -2686,6 +2886,9 @@ def _evaluate_condition(
     operator = str(condition.get("operator", ""))
     expected = condition.get("value")
     actual = context.get(field)
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        actual = _reduce_user_scoped_value(actual, expected)
+        expected = expected.get("amount") if isinstance(expected, dict) else None
     if not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual

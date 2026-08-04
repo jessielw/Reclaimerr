@@ -1009,17 +1009,22 @@ class PlexService:
                 if ep_num is not None:
                     ep_path: str | None = None
                     ep_size: int | None = None
+                    ep_runtime_seconds: int | None = None
                     _ep_media = source_episode.get("Media", []) or episode.get(
                         "Media", []
                     )
-                    if _ep_media and _ep_media[0].get("Part"):
-                        _part = _ep_media[0]["Part"][0]
-                        ep_path = (
-                            normalize_fpath(_part.get("file"))
-                            if _part.get("file")
-                            else None
-                        )
-                        ep_size = _part.get("size") or episode_size or None
+                    if _ep_media:
+                        ep_duration_ms = as_float(_ep_media[0].get("duration"))
+                        if ep_duration_ms is not None:
+                            ep_runtime_seconds = int(ep_duration_ms / 1000)
+                        if _ep_media[0].get("Part"):
+                            _part = _ep_media[0]["Part"][0]
+                            ep_path = (
+                                normalize_fpath(_part.get("file"))
+                                if _part.get("file")
+                                else None
+                            )
+                            ep_size = _part.get("size") or episode_size or None
                     ep_air: datetime | None = None
                     _ep_air_raw = source_episode.get(
                         "originallyAvailableAt"
@@ -1045,6 +1050,7 @@ class PlexService:
                                 source_episode.get("userRating")
                                 or episode.get("userRating")
                             ),
+                            runtime_seconds=ep_runtime_seconds,
                         )
                     )
                     episode_rating = as_float(
