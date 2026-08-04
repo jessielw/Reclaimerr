@@ -121,9 +121,15 @@ class MovieTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
             target_scope="movie_version",
             operator="not_exists",
         )
+        present = _rating_rule(
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            operator="exists",
+        )
 
         self.assertFalse(_evaluate_movie_rule(movie, below_five, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, missing, {}, []))
+        self.assertFalse(_evaluate_movie_rule(movie, present, {}, []))
 
 
 class SeriesTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
@@ -188,9 +194,15 @@ class SeriesTmdbRatingSyncTests(unittest.IsolatedAsyncioTestCase):
             target_scope="series",
             operator="not_exists",
         )
+        present = _rating_rule(
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            operator="exists",
+        )
 
         self.assertFalse(_evaluate_movie_rule(series, below_five, {}, []))
         self.assertTrue(_evaluate_movie_rule(series, missing, {}, []))
+        self.assertFalse(_evaluate_movie_rule(series, present, {}, []))
 
 
 if __name__ == "__main__":
