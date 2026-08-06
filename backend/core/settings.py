@@ -97,7 +97,8 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Comma-separated direct proxy IPs or CIDRs allowed to supply the "
-            "forward-auth user header. Wildcards are not accepted."
+            "forward-auth user header. Wildcards and all-address ranges such as "
+            "0.0.0.0/0 are not accepted."
         ),
     )
 
@@ -232,16 +233,24 @@ class Settings(BaseSettings):
             if entry == "*":
                 raise PydanticCustomError(
                     "unsafe_forward_auth_proxy_wildcard",
-                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*'",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as 0.0.0.0/0",
                 )
             try:
-                ipaddress.ip_network(entry, strict=False)
+                network = ipaddress.ip_network(entry, strict=False)
             except ValueError as exc:
                 raise PydanticCustomError(
                     "invalid_forward_auth_proxy",
                     "Invalid proxy IP or CIDR in FORWARD_AUTH_TRUSTED_PROXIES: {entry}",
                     {"entry": entry},
                 ) from exc
+            if network.prefixlen == 0:
+                raise PydanticCustomError(
+                    "unsafe_forward_auth_proxy_wildcard",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as {entry}",
+                    {"entry": entry},
+                )
         return ",".join(entries)
 
     @field_validator("jwt_secret", mode="before")

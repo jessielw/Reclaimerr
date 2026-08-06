@@ -127,6 +127,16 @@ def test_forward_auth_rejects_wildcard_proxy(monkeypatch, tmp_path: Path) -> Non
         _build_settings(tmp_path)
 
 
+@pytest.mark.parametrize("value", ["0.0.0.0/0", "::/0", "172.18.0.4,0.0.0.0/0"])
+def test_forward_auth_rejects_all_address_ranges(
+    monkeypatch, tmp_path: Path, value: str
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", value)
+
+    with pytest.raises(ValueError, match="does not accept"):
+        _build_settings(tmp_path)
+
+
 def test_forward_auth_parses_ip_and_cidr_allowlist(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", "172.18.0.4, 10.20.0.0/16, ::1")
     monkeypatch.setenv("FORWARD_AUTH_USER_HEADER", "X-Authenticated-User")
