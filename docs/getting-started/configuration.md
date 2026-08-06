@@ -86,6 +86,9 @@ FORWARD_AUTH_LOGOUT_URL=https://auth.example.com/logout
     order they are written. Without `route`, the header would not actually be
     stripped before the auth step runs.
 
+    `Remote-User` here is the default. If `FORWARD_AUTH_USER_HEADER` is set to
+    something else, strip that header name instead of `Remote-User`.
+
 Create the Reclaimerr user first, then enable the feature. The asserted
 username must match an existing Reclaimerr username exactly, including case.
 A mismatch produces a 401 on every request, plus a log line naming the
@@ -102,10 +105,13 @@ IPs and CIDRs: the address of the reverse proxy container or host itself, not
 the client behind it. It rejects both `*` and all-address ranges such as
 `0.0.0.0/0` or `::/0`.
 
-The sidebar logout control only appears when `FORWARD_AUTH_LOGOUT_URL` is set,
-since signing out of the identity provider is the proxy's job, not
-Reclaimerr's. When it is unset, the logout control is replaced by a
-non-interactive "Managed by SSO" label.
+For a trusted-proxy session, the sidebar logout control only appears when
+`FORWARD_AUTH_LOGOUT_URL` is set, since signing out of the identity provider
+is the proxy's job, not Reclaimerr's. When it is unset, the logout control is
+replaced by a "Managed by SSO" label. This does not apply to a local session
+started through `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` recovery mode: that
+session gets the normal logout button regardless of
+`FORWARD_AUTH_LOGOUT_URL`.
 
 ## Multi-Server Setup
 
