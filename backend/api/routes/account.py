@@ -42,6 +42,7 @@ from backend.models.auth import (
     ChangePasswordRequest,
     ChangeProfileInfoRequest,
     CreateUserRequest,
+    CurrentUserInfo,
     MediaIdentityItem,
     MediaIdentityLinkRequest,
     MediaIdentityListResponse,
@@ -119,12 +120,24 @@ def _serialize_media_identity(
     )
 
 
-@router.get("/me", response_model=UserInfo)
+@router.get("/me", response_model=CurrentUserInfo)
 async def get_me(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
-) -> UserInfo:
-    """Get current user info."""
-    return UserInfo.from_user(current_user)
+) -> CurrentUserInfo:
+    """Get current user info plus how this session was authenticated."""
+    auth_source = (
+        "forward_auth"
+        if getattr(request.state, "auth_method", None) == "forward_auth"
+        else "local"
+    )
+    logout_url: str | None = None
+    if auth_source == "forward_auth":
+        logout_url = settings.forward_auth_logout_url or None
+
+    return CurrentUserInfo.from_current_user(
+        current_user, auth_source=auth_source, logout_url=logout_url
+    )
 
 
 @router.post("/me")

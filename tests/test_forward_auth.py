@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from starlette.requests import Request
 
+from backend.core import auth as auth_module
 from backend.core.auth import (
     COOKIE_NAME,
     ORIGINAL_CLIENT_HOST_STATE_KEY,
@@ -48,6 +50,23 @@ def _request(
             "scheme": "https",
             "server": ("reclaimerr.example", 443),
             "state": {ORIGINAL_CLIENT_HOST_STATE_KEY: original_client},
+        }
+    )
+
+
+def _request_without_wrapper_state(username: str = "alice") -> Request:
+    """A request as it would arrive if the proxy-header wrapper never ran."""
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/account/me",
+            "headers": [(b"remote-user", username.encode())],
+            "query_string": b"",
+            "client": ("172.18.0.4", 4242),
+            "scheme": "https",
+            "server": ("reclaimerr.example", 443),
+            "state": {},
         }
     )
 
@@ -295,6 +314,262 @@ def test_missing_forward_auth_header_preserves_cookie_auth(monkeypatch) -> None:
 
             assert authenticated.username == "cookie-user"
             assert getattr(request.state, "auth_method", None) is None
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_missing_wrapper_state_is_not_trusted(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="alice",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            # The socket peer is a trusted proxy IP, but the wrapper never
+            # recorded it, so the header must be ignored rather than trusted.
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request_without_wrapper_state(), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unknown_identity_falls_back_to_cookie_when_recovery_enabled(
+    monkeypatch,
+) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_allow_local_fallback", True)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            user = User(
+                username="local-admin",
+                password_hash="hashed",
+                role=UserRole.ADMIN,
+                permissions=[],
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+
+            session_id = "recovery-session"
+            db.add(
+                UserSession(
+                    user_id=user.id,
+                    session_id=session_id,
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+            )
+            await db.commit()
+            cookie = create_access_token(
+                data={"sub": str(user.id)},
+                token_version=user.token_version,
+                session_id=session_id,
+            )
+
+            request = _request(username="unknown-user", cookie=cookie)
+            authenticated = await get_current_user(request, db)
+
+            assert authenticated.username == "local-admin"
+            assert getattr(request.state, "auth_method", None) is None
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_disabled_identity_is_rejected_even_when_recovery_enabled(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_allow_local_fallback", True)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="disabled-user",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                    is_active=False,
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="disabled-user"), db)
+
+            assert exc.value.status_code == 403
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeated_untrusted_peers_warn_once(monkeypatch, caplog) -> None:
+    _configure_forward_auth(monkeypatch)
+    auth_module._forward_auth_warned_peers.clear()
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with caplog.at_level(logging.WARNING):
+                for _ in range(3):
+                    with pytest.raises(HTTPException):
+                        await get_current_user(
+                            _request(username="admin", original_client="192.0.2.77"),
+                            db,
+                        )
+
+            warnings = [
+                record
+                for record in caplog.records
+                if "untrusted peer" in record.getMessage()
+                and record.levelno == logging.WARNING
+            ]
+            assert len(warnings) == 1
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_header_is_ignored_when_forward_auth_is_disabled(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_enabled", False)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="admin",
+                    password_hash="hashed",
+                    role=UserRole.ADMIN,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            # Trusted peer, valid user, correct header, but the feature is off.
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="admin"), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("username", ["", "   ", "a" * 33])
+def test_invalid_asserted_usernames_are_rejected(monkeypatch, username: str) -> None:
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username=username), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Trusted proxy supplied an invalid username"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_missing_wrapper_state_warns_accurately(monkeypatch, caplog) -> None:
+    _configure_forward_auth(monkeypatch)
+    auth_module._forward_auth_warned_missing_wrapper = False
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(HTTPException) as exc:
+                    await get_current_user(_request_without_wrapper_state(), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+
+            record = next(r for r in caplog.records if r.levelno == logging.WARNING)
+            assert "proxy header wrapper" in record.getMessage()
+            assert "untrusted peer" not in record.getMessage()
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_all_address_range_assigned_directly_does_not_confer_trust(
+    monkeypatch,
+) -> None:
+    _configure_forward_auth(monkeypatch)
+    # Bypass validate_forward_auth_trusted_proxies entirely: Settings does not
+    # set validate_assignment, so a direct attribute assignment (as opposed to
+    # construction from the environment) skips the field validator. This is
+    # exactly the gap _parse_trusted_networks must re-close.
+    monkeypatch.setattr(settings, "forward_auth_trusted_proxies", "0.0.0.0/0")
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="admin",
+                    password_hash="hashed",
+                    role=UserRole.ADMIN,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(
+                    _request(username="admin", original_client="198.51.100.23"), db
+                )
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_username_matching_is_case_sensitive(monkeypatch) -> None:
+    """Pins case sensitivity, which currently comes from SQLite's BINARY
+    collation rather than from anything declared in the model."""
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="carol",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="Carol"), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Trusted proxy user is not configured"
         await engine.dispose()
 
     asyncio.run(run())

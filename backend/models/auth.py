@@ -209,6 +209,33 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
         )
 
 
+class CurrentUserInfo(UserInfo):
+    """UserInfo plus how the current request was authenticated.
+
+    Session-scoped, so it is used only by GET /api/account/me. UserInfo itself
+    stays unchanged for login and the admin user list, where these fields would
+    always be null.
+    """
+
+    auth_source: Literal["forward_auth", "local"] = "local"
+    logout_url: str | None = None
+
+    @classmethod
+    def from_current_user(
+        cls,
+        user: Any,
+        *,
+        auth_source: Literal["forward_auth", "local"],
+        logout_url: str | None,
+    ) -> "CurrentUserInfo":
+        """Build from a DB user plus the current request's auth context."""
+        return cls(
+            **UserInfo.from_user(user).model_dump(),
+            auth_source=auth_source,
+            logout_url=logout_url,
+        )
+
+
 class AuthResponse(BaseModel):
     user: UserInfo
 

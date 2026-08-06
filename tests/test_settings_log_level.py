@@ -127,6 +127,16 @@ def test_forward_auth_rejects_wildcard_proxy(monkeypatch, tmp_path: Path) -> Non
         _build_settings(tmp_path)
 
 
+@pytest.mark.parametrize("value", ["0.0.0.0/0", "::/0", "172.18.0.4,0.0.0.0/0"])
+def test_forward_auth_rejects_all_address_ranges(
+    monkeypatch, tmp_path: Path, value: str
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", value)
+
+    with pytest.raises(ValueError, match="does not accept"):
+        _build_settings(tmp_path)
+
+
 def test_forward_auth_parses_ip_and_cidr_allowlist(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FORWARD_AUTH_TRUSTED_PROXIES", "172.18.0.4, 10.20.0.0/16, ::1")
     monkeypatch.setenv("FORWARD_AUTH_USER_HEADER", "X-Authenticated-User")
@@ -182,3 +192,37 @@ def test_invalid_command_workers_falls_back_to_two(
     settings = _build_settings(tmp_path)
 
     assert settings.command_workers == 2
+
+
+def test_forward_auth_local_fallback_defaults_off(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_allow_local_fallback is False
+
+
+def test_forward_auth_logout_url_defaults_empty(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_logout_url == ""
+
+
+def test_forward_auth_logout_url_accepts_absolute_https(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_LOGOUT_URL", " https://auth.example.com/logout ")
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_logout_url == "https://auth.example.com/logout"
+
+
+@pytest.mark.parametrize(
+    "value", ["javascript:alert(1)", "/logout", "auth.example.com/logout", "ftp://x/y"]
+)
+def test_forward_auth_logout_url_rejects_non_http(
+    monkeypatch, tmp_path: Path, value: str
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_LOGOUT_URL", value)
+
+    with pytest.raises(ValueError, match="absolute http or https URL"):
+        _build_settings(tmp_path)

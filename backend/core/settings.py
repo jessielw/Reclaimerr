@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -97,7 +98,23 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Comma-separated direct proxy IPs or CIDRs allowed to supply the "
-            "forward-auth user header. Wildcards are not accepted."
+            "forward-auth user header. Wildcards and all-address ranges such as "
+            "0.0.0.0/0 are not accepted."
+        ),
+    )
+    forward_auth_allow_local_fallback: bool = Field(
+        default=False,
+        description=(
+            "Recovery switch. When the trusted proxy asserts a username that does "
+            "not exist in Reclaimerr, fall back to local cookie login instead of "
+            "denying the request. Remove once the matching user exists."
+        ),
+    )
+    forward_auth_logout_url: str = Field(
+        default="",
+        description=(
+            "Absolute URL of the identity provider sign-out endpoint. When set, "
+            "the UI shows a logout control that redirects here instead of hiding it."
         ),
     )
 
@@ -232,17 +249,40 @@ class Settings(BaseSettings):
             if entry == "*":
                 raise PydanticCustomError(
                     "unsafe_forward_auth_proxy_wildcard",
-                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*'",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as 0.0.0.0/0",
                 )
             try:
-                ipaddress.ip_network(entry, strict=False)
+                network = ipaddress.ip_network(entry, strict=False)
             except ValueError as exc:
                 raise PydanticCustomError(
                     "invalid_forward_auth_proxy",
                     "Invalid proxy IP or CIDR in FORWARD_AUTH_TRUSTED_PROXIES: {entry}",
                     {"entry": entry},
                 ) from exc
+            if network.prefixlen == 0:
+                raise PydanticCustomError(
+                    "unsafe_forward_auth_proxy_wildcard",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as {entry}",
+                    {"entry": entry},
+                )
         return ",".join(entries)
+
+    @field_validator("forward_auth_logout_url", mode="before")
+    @classmethod
+    def validate_forward_auth_logout_url(cls, v: object) -> str:
+        """Require an absolute http(s) URL so the UI cannot be sent to a script URI."""
+        value = "" if v is None else str(v).strip()
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise PydanticCustomError(
+                "invalid_forward_auth_logout_url",
+                "FORWARD_AUTH_LOGOUT_URL must be an absolute http or https URL",
+            )
+        return value
 
     @field_validator("jwt_secret", mode="before")
     @classmethod

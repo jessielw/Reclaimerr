@@ -31,6 +31,8 @@ PROXY_TRUSTED_HOSTS=127.0.0.1,::1
 # FORWARD_AUTH_ENABLED=true
 # FORWARD_AUTH_USER_HEADER=Remote-User
 # FORWARD_AUTH_TRUSTED_PROXIES=172.18.0.4
+# FORWARD_AUTH_ALLOW_LOCAL_FALLBACK=true
+# FORWARD_AUTH_LOGOUT_URL=https://auth.example.com/logout
 # Advanced; default 2, supported range 1-8
 RECLAIMERR_COMMAND_WORKERS=2
 ```
@@ -48,9 +50,13 @@ headers are preserved and `PROXY_TRUSTED_HOSTS` points at the proxy IP or CIDR.
 Set `Application URL` in General Settings if you want Plex and OIDC callbacks
 to use a fixed public base URL.
 
-For Authelia or another forward-auth provider, enable the three
-`FORWARD_AUTH_*` settings shown above and ensure the asserted username already
-exists in Reclaimerr. `FORWARD_AUTH_TRUSTED_PROXIES` is deliberately separate
-from `PROXY_TRUSTED_HOSTS` and does not permit `*`.
+For Authelia or another forward-auth provider, enable the core
+`FORWARD_AUTH_*` settings shown above and make sure the asserted username
+already exists in Reclaimerr. `FORWARD_AUTH_TRUSTED_PROXIES` is deliberately separate
+from `PROXY_TRUSTED_HOSTS` and rejects both `*` and all-address ranges such as
+`0.0.0.0/0`. The two optional settings add a local-login recovery path and an
+identity provider sign-out link for the UI; see
+[Trusted Proxy Authentication](../getting-started/configuration.md#trusted-proxy-authentication)
+for details.
 
 See the [production guide](production.md) for the hardening checklist.
