@@ -44,9 +44,12 @@ For production deployments, use this guide.
   `Application URL` in General Settings for the shared public base URL, and
   keep `redirect_uri_override` for OIDC-only cases.
 - Keep the backend port private if the proxy is the only ingress point.
-- When using trusted-header authentication, never use a wildcard proxy range;
-  ensure the proxy overwrites incoming identity headers and maps only existing
-  Reclaimerr users.
+- When using trusted-header authentication, never use a wildcard or
+  all-address proxy range such as `0.0.0.0/0`; Reclaimerr rejects both. The
+  proxy must strip the client-supplied identity header before the auth step
+  runs, not just overwrite it. See
+  [Trusted Proxy Authentication](../getting-started/configuration.md#trusted-proxy-authentication)
+  for the reasoning and a verified Caddy example.
 - Reclaimerr has no CSRF tokens and relies on `SameSite=lax` session cookies. Under
   trusted-header authentication its own cookie is not what authenticates the request, so
   cross-site protection depends on your proxy's session cookie configuration. Keep that
