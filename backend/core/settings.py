@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -107,6 +108,13 @@ class Settings(BaseSettings):
             "Recovery switch. When the trusted proxy asserts a username that does "
             "not exist in Reclaimerr, fall back to local cookie login instead of "
             "denying the request. Remove once the matching user exists."
+        ),
+    )
+    forward_auth_logout_url: str = Field(
+        default="",
+        description=(
+            "Absolute URL of the identity provider sign-out endpoint. When set, "
+            "the UI shows a logout control that redirects here instead of hiding it."
         ),
     )
 
@@ -260,6 +268,21 @@ class Settings(BaseSettings):
                     {"entry": entry},
                 )
         return ",".join(entries)
+
+    @field_validator("forward_auth_logout_url", mode="before")
+    @classmethod
+    def validate_forward_auth_logout_url(cls, v: object) -> str:
+        """Require an absolute http(s) URL so the UI cannot be sent to a script URI."""
+        value = "" if v is None else str(v).strip()
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise PydanticCustomError(
+                "invalid_forward_auth_logout_url",
+                "FORWARD_AUTH_LOGOUT_URL must be an absolute http or https URL",
+            )
+        return value
 
     @field_validator("jwt_secret", mode="before")
     @classmethod

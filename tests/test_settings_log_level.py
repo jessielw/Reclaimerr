@@ -198,3 +198,31 @@ def test_forward_auth_local_fallback_defaults_off(tmp_path: Path) -> None:
     settings = _build_settings(tmp_path)
 
     assert settings.forward_auth_allow_local_fallback is False
+
+
+def test_forward_auth_logout_url_defaults_empty(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_logout_url == ""
+
+
+def test_forward_auth_logout_url_accepts_absolute_https(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_LOGOUT_URL", " https://auth.example.com/logout ")
+
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_logout_url == "https://auth.example.com/logout"
+
+
+@pytest.mark.parametrize(
+    "value", ["javascript:alert(1)", "/logout", "auth.example.com/logout", "ftp://x/y"]
+)
+def test_forward_auth_logout_url_rejects_non_http(
+    monkeypatch, tmp_path: Path, value: str
+) -> None:
+    monkeypatch.setenv("FORWARD_AUTH_LOGOUT_URL", value)
+
+    with pytest.raises(ValueError, match="absolute http or https URL"):
+        _build_settings(tmp_path)
