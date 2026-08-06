@@ -343,3 +343,74 @@ def test_missing_wrapper_state_is_not_trusted(monkeypatch) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_unknown_identity_falls_back_to_cookie_when_recovery_enabled(
+    monkeypatch,
+) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_allow_local_fallback", True)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            user = User(
+                username="local-admin",
+                password_hash="hashed",
+                role=UserRole.ADMIN,
+                permissions=[],
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+
+            session_id = "recovery-session"
+            db.add(
+                UserSession(
+                    user_id=user.id,
+                    session_id=session_id,
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+            )
+            await db.commit()
+            cookie = create_access_token(
+                data={"sub": str(user.id)},
+                token_version=user.token_version,
+                session_id=session_id,
+            )
+
+            request = _request(username="unknown-user", cookie=cookie)
+            authenticated = await get_current_user(request, db)
+
+            assert authenticated.username == "local-admin"
+            assert getattr(request.state, "auth_method", None) is None
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_disabled_identity_is_rejected_even_when_recovery_enabled(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_allow_local_fallback", True)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="disabled-user",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                    is_active=False,
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="disabled-user"), db)
+
+            assert exc.value.status_code == 403
+        await engine.dispose()
+
+    asyncio.run(run())

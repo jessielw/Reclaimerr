@@ -216,6 +216,11 @@ async def _get_forward_auth_user(
     user = result.scalar_one_or_none()
     if user is None:
         LOG.warning(f"Trusted proxy user {username!r} is not configured in Reclaimerr")
+        if settings.forward_auth_allow_local_fallback:
+            # Recovery mode: let the request try local cookie auth so an admin can
+            # sign in and create the missing user. Still needs a valid JWT and a
+            # live session row, so this is not a bypass.
+            return None
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Trusted proxy user is not configured",

@@ -192,3 +192,9 @@ def test_invalid_command_workers_falls_back_to_two(
     settings = _build_settings(tmp_path)
 
     assert settings.command_workers == 2
+
+
+def test_forward_auth_local_fallback_defaults_off(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+
+    assert settings.forward_auth_allow_local_fallback is False

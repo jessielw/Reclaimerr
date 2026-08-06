@@ -101,6 +101,14 @@ class Settings(BaseSettings):
             "0.0.0.0/0 are not accepted."
         ),
     )
+    forward_auth_allow_local_fallback: bool = Field(
+        default=False,
+        description=(
+            "Recovery switch. When the trusted proxy asserts a username that does "
+            "not exist in Reclaimerr, fall back to local cookie login instead of "
+            "denying the request. Remove once the matching user exists."
+        ),
+    )
 
     # JWT authentication
     jwt_secret: str = Field(
