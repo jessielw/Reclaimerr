@@ -443,3 +443,76 @@ def test_repeated_untrusted_peers_warn_once(monkeypatch, caplog) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_header_is_ignored_when_forward_auth_is_disabled(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+    monkeypatch.setattr(settings, "forward_auth_enabled", False)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="admin",
+                    password_hash="hashed",
+                    role=UserRole.ADMIN,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            # Trusted peer, valid user, correct header, but the feature is off.
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="admin"), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("username", ["", "   ", "a" * 33])
+def test_invalid_asserted_usernames_are_rejected(monkeypatch, username: str) -> None:
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username=username), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Trusted proxy supplied an invalid username"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_username_matching_is_case_sensitive(monkeypatch) -> None:
+    """Pins case sensitivity, which currently comes from SQLite's BINARY
+    collation rather than from anything declared in the model."""
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="carol",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="Carol"), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Trusted proxy user is not configured"
+        await engine.dispose()
+
+    asyncio.run(run())
