@@ -44,6 +44,8 @@ export enum PageAccess {
 export interface UserProfile extends User {
   avatar_url: string | null;
   created_at: string;
+  auth_source?: "forward_auth" | "local";
+  logout_url?: string | null;
 }
 
 export interface AccountSession {
