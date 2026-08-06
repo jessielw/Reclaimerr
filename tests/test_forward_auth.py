@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from starlette.requests import Request
 
+from backend.core import auth as auth_module
 from backend.core.auth import (
     COOKIE_NAME,
     ORIGINAL_CLIENT_HOST_STATE_KEY,
@@ -411,6 +413,33 @@ def test_disabled_identity_is_rejected_even_when_recovery_enabled(monkeypatch) -
                 await get_current_user(_request(username="disabled-user"), db)
 
             assert exc.value.status_code == 403
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeated_untrusted_peers_warn_once(monkeypatch, caplog) -> None:
+    _configure_forward_auth(monkeypatch)
+    auth_module._forward_auth_warned_peers.clear()
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with caplog.at_level(logging.WARNING):
+                for _ in range(3):
+                    with pytest.raises(HTTPException):
+                        await get_current_user(
+                            _request(username="admin", original_client="192.0.2.77"),
+                            db,
+                        )
+
+            warnings = [
+                record
+                for record in caplog.records
+                if "untrusted peer" in record.getMessage()
+                and record.levelno == logging.WARNING
+            ]
+            assert len(warnings) == 1
         await engine.dispose()
 
     asyncio.run(run())

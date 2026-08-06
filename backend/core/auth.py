@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
-from ipaddress import ip_address, ip_network
+from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -33,6 +34,39 @@ SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
 SESSION_TOUCH_BUSY_TIMEOUT_MS = 250
 DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
 ORIGINAL_CLIENT_HOST_STATE_KEY = "reclaimerr_original_client_host"
+
+FORWARD_AUTH_WARNED_PEERS_MAX = 256
+_forward_auth_warned_peers: set[str] = set()
+
+
+@lru_cache(maxsize=8)
+def _parse_trusted_networks(raw: str) -> tuple[IPv4Network | IPv6Network, ...]:
+    """Parse the forward-auth allowlist once per distinct configured value.
+
+    Keyed on the raw string rather than cached on Settings, so tests that
+    monkeypatch settings.forward_auth_trusted_proxies get a fresh entry instead
+    of a stale one.
+    """
+    return tuple(
+        ip_network(entry.strip(), strict=False)
+        for entry in raw.split(",")
+        if entry.strip()
+    )
+
+
+def _log_untrusted_forward_auth_peer(peer: str) -> None:
+    """Warn once per peer, then drop to debug, so probing cannot flood the log."""
+    message = (
+        f"Ignored {settings.forward_auth_user_header} authentication header "
+        f"from untrusted peer {peer}"
+    )
+    if peer in _forward_auth_warned_peers:
+        LOG.debug(message)
+        return
+    if len(_forward_auth_warned_peers) >= FORWARD_AUTH_WARNED_PEERS_MAX:
+        _forward_auth_warned_peers.clear()
+    _forward_auth_warned_peers.add(peer)
+    LOG.warning(message)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -174,8 +208,8 @@ def _is_forward_auth_proxy_trusted(request: Request) -> bool:
         return False
 
     return any(
-        client_ip in ip_network(network, strict=False)
-        for network in settings.forward_auth_trusted_proxies_list
+        client_ip in network
+        for network in _parse_trusted_networks(settings.forward_auth_trusted_proxies)
     )
 
 
@@ -192,10 +226,8 @@ async def _get_forward_auth_user(
         return None
 
     if not _is_forward_auth_proxy_trusted(request):
-        LOG.warning(
-            f"Ignored {settings.forward_auth_user_header} authentication header "
-            "from untrusted peer "
-            f"{_get_original_client_host(request) or 'unknown'}"
+        _log_untrusted_forward_auth_peer(
+            _get_original_client_host(request) or "unknown"
         )
         return None
 
