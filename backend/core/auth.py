@@ -153,8 +153,13 @@ def _get_original_client_host(request: Request) -> str | None:
         if isinstance(original_host, str) and original_host:
             return original_host
 
-    if request.client and request.client.host:
-        return request.client.host
+    # No snapshot means the outer proxy-header wrapper did not run, so
+    # request.client may already have been rewritten from X-Forwarded-For by
+    # some other layer. Treat the peer as unknown rather than trusting it.
+    LOG.debug(
+        "Proxy header wrapper did not record the socket peer; "
+        "treating this request as untrusted for forward auth"
+    )
     return None
 
 

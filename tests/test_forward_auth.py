@@ -52,6 +52,23 @@ def _request(
     )
 
 
+def _request_without_wrapper_state(username: str = "alice") -> Request:
+    """A request as it would arrive if the proxy-header wrapper never ran."""
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/account/me",
+            "headers": [(b"remote-user", username.encode())],
+            "query_string": b"",
+            "client": ("172.18.0.4", 4242),
+            "scheme": "https",
+            "server": ("reclaimerr.example", 443),
+            "state": {},
+        }
+    )
+
+
 async def _session_maker() -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
@@ -295,6 +312,34 @@ def test_missing_forward_auth_header_preserves_cookie_auth(monkeypatch) -> None:
 
             assert authenticated.username == "cookie-user"
             assert getattr(request.state, "auth_method", None) is None
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_missing_wrapper_state_is_not_trusted(monkeypatch) -> None:
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="alice",
+                    password_hash="hashed",
+                    role=UserRole.USER,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            # The socket peer is a trusted proxy IP, but the wrapper never
+            # recorded it, so the header must be ignored rather than trusted.
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request_without_wrapper_state(), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
         await engine.dispose()
 
     asyncio.run(run())
