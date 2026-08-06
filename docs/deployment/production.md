@@ -22,6 +22,8 @@ For production deployments, use this guide.
 | `FORWARD_AUTH_ENABLED`       | Enables opt-in trusted-header authentication                                      |
 | `FORWARD_AUTH_USER_HEADER`   | Selects the proxy-provided username header                                        |
 | `FORWARD_AUTH_TRUSTED_PROXIES` | Restricts identity headers to direct proxy IPs/CIDRs                             |
+| `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` | Recovery switch for an unrecognised proxy identity; remove after use |
+| `FORWARD_AUTH_LOGOUT_URL`    | Identity provider sign-out endpoint used by the UI logout control                 |
 | `CORS_ORIGINS`               | Restricts the UI origins that can talk to the API                                 |
 | `COOKIE_SECURE`              | Marks auth cookies secure when served over HTTPS                                  |
 | `RECLAIMERR_COMMAND_WORKERS` | Advanced internal command executor count (default `2`, range `1`-`8`)             |
@@ -45,6 +47,10 @@ For production deployments, use this guide.
 - When using trusted-header authentication, never use a wildcard proxy range;
   ensure the proxy overwrites incoming identity headers and maps only existing
   Reclaimerr users.
+- Reclaimerr has no CSRF tokens and relies on `SameSite=lax` session cookies. Under
+  trusted-header authentication its own cookie is not what authenticates the request, so
+  cross-site protection depends on your proxy's session cookie configuration. Keep that
+  cookie's `SameSite` at `lax` or stricter.
 
 ## Operational Notes
 
