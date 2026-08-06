@@ -490,6 +490,63 @@ def test_invalid_asserted_usernames_are_rejected(monkeypatch, username: str) -> 
     asyncio.run(run())
 
 
+def test_missing_wrapper_state_warns_accurately(monkeypatch, caplog) -> None:
+    _configure_forward_auth(monkeypatch)
+    auth_module._forward_auth_warned_missing_wrapper = False
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(HTTPException) as exc:
+                    await get_current_user(_request_without_wrapper_state(), db)
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+
+            record = next(r for r in caplog.records if r.levelno == logging.WARNING)
+            assert "proxy header wrapper" in record.getMessage()
+            assert "untrusted peer" not in record.getMessage()
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_all_address_range_assigned_directly_does_not_confer_trust(
+    monkeypatch,
+) -> None:
+    _configure_forward_auth(monkeypatch)
+    # Bypass validate_forward_auth_trusted_proxies entirely: Settings does not
+    # set validate_assignment, so a direct attribute assignment (as opposed to
+    # construction from the environment) skips the field validator. This is
+    # exactly the gap _parse_trusted_networks must re-close.
+    monkeypatch.setattr(settings, "forward_auth_trusted_proxies", "0.0.0.0/0")
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            db.add(
+                User(
+                    username="admin",
+                    password_hash="hashed",
+                    role=UserRole.ADMIN,
+                    permissions=[],
+                )
+            )
+            await db.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(
+                    _request(username="admin", original_client="198.51.100.23"), db
+                )
+
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Not authenticated"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_username_matching_is_case_sensitive(monkeypatch) -> None:
     """Pins case sensitivity, which currently comes from SQLite's BINARY
     collation rather than from anything declared in the model."""
