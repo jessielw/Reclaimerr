@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # Keep the SHA pins in .github/workflows fresh. Without this, pinning by
+  # commit means the actions never get security or bug fixes.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      # Roll routine bumps into one PR; majors still arrive individually so
+      # breaking changes get reviewed on their own.
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
