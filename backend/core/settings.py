@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
+import re
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -15,6 +18,7 @@ from backend.enums import LogLevel
 # Resolve the secrets file path at import time using the same DATA_DIR the app
 # will use, so a custom DATA_DIR (e.g. /var/reclaimerr) is honoured on restarts.
 _SECRETS_ENV = Path(os.environ.get("DATA_DIR", "./data")) / "secrets.env"
+_HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 class Settings(BaseSettings):
@@ -78,6 +82,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # trusted reverse-proxy authentication
+    forward_auth_enabled: bool = Field(
+        default=False,
+        description=(
+            "Trust a reverse proxy supplied user header for UI authentication. "
+            "Requires FORWARD_AUTH_TRUSTED_PROXIES."
+        ),
+    )
+    forward_auth_user_header: str = Field(
+        default="Remote-User",
+        description="Header containing the authenticated proxy username.",
+    )
+    forward_auth_trusted_proxies: str = Field(
+        default="",
+        description=(
+            "Comma-separated direct proxy IPs or CIDRs allowed to supply the "
+            "forward-auth user header. Wildcards and all-address ranges such as "
+            "0.0.0.0/0 are not accepted."
+        ),
+    )
+    forward_auth_allow_local_fallback: bool = Field(
+        default=False,
+        description=(
+            "Recovery switch. When the trusted proxy asserts a username that does "
+            "not exist in Reclaimerr, fall back to local cookie login instead of "
+            "denying the request. Remove once the matching user exists."
+        ),
+    )
+    forward_auth_logout_url: str = Field(
+        default="",
+        description=(
+            "Absolute URL of the identity provider sign-out endpoint. When set, "
+            "the UI shows a logout control that redirects here instead of hiding it."
+        ),
+    )
+
     # JWT authentication
     jwt_secret: str = Field(
         default="",
@@ -113,6 +153,19 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _validate_forward_auth_config(self) -> Settings:
+        """Fail closed when trusted-header auth has no explicit trust boundary."""
+        if self.forward_auth_enabled and not self.forward_auth_trusted_proxies_list:
+            raise PydanticCustomError(
+                "forward_auth_missing_trusted_proxies",
+                (
+                    "FORWARD_AUTH_TRUSTED_PROXIES must contain at least one proxy "
+                    "IP or CIDR when FORWARD_AUTH_ENABLED is true"
+                ),
+            )
+        return self
 
     @model_validator(mode="after")
     def _persist_generated_secrets(self) -> Settings:
@@ -170,6 +223,66 @@ class Settings(BaseSettings):
                 clamped,
             )
         return clamped
+
+    @field_validator("forward_auth_user_header", mode="before")
+    @classmethod
+    def validate_forward_auth_user_header(cls, v: object) -> str:
+        """Require one syntactically valid HTTP header name."""
+        value = str(v).strip()
+        if not value or len(value) > 128 or not _HTTP_HEADER_NAME_RE.fullmatch(value):
+            raise PydanticCustomError(
+                "invalid_forward_auth_header",
+                "FORWARD_AUTH_USER_HEADER must be a valid HTTP header name",
+            )
+        return value
+
+    @field_validator("forward_auth_trusted_proxies", mode="before")
+    @classmethod
+    def validate_forward_auth_trusted_proxies(cls, v: object) -> str:
+        """Validate explicit IP and CIDR entries used for identity-header trust."""
+        raw = "" if v is None else str(v).strip()
+        if not raw:
+            return ""
+
+        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        for entry in entries:
+            if entry == "*":
+                raise PydanticCustomError(
+                    "unsafe_forward_auth_proxy_wildcard",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as 0.0.0.0/0",
+                )
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise PydanticCustomError(
+                    "invalid_forward_auth_proxy",
+                    "Invalid proxy IP or CIDR in FORWARD_AUTH_TRUSTED_PROXIES: {entry}",
+                    {"entry": entry},
+                ) from exc
+            if network.prefixlen == 0:
+                raise PydanticCustomError(
+                    "unsafe_forward_auth_proxy_wildcard",
+                    "FORWARD_AUTH_TRUSTED_PROXIES does not accept '*' or "
+                    "all-address ranges such as {entry}",
+                    {"entry": entry},
+                )
+        return ",".join(entries)
+
+    @field_validator("forward_auth_logout_url", mode="before")
+    @classmethod
+    def validate_forward_auth_logout_url(cls, v: object) -> str:
+        """Require an absolute http(s) URL so the UI cannot be sent to a script URI."""
+        value = "" if v is None else str(v).strip()
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise PydanticCustomError(
+                "invalid_forward_auth_logout_url",
+                "FORWARD_AUTH_LOGOUT_URL must be an absolute http or https URL",
+            )
+        return value
 
     @field_validator("jwt_secret", mode="before")
     @classmethod
@@ -236,6 +349,15 @@ class Settings(BaseSettings):
             return ["127.0.0.1", "::1"]
         hosts = [item.strip() for item in raw.split(",") if item.strip()]
         return hosts or ["127.0.0.1", "::1"]
+
+    @property
+    def forward_auth_trusted_proxies_list(self) -> list[str]:
+        """Return the explicit reverse proxies trusted to assert user identity."""
+        return [
+            item.strip()
+            for item in self.forward_auth_trusted_proxies.split(",")
+            if item.strip()
+        ]
 
     @property
     def version(self) -> str:

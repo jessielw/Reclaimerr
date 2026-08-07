@@ -16,6 +16,7 @@ from fastapi import (
 )
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult, Result
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
@@ -33,6 +34,7 @@ from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
     MediaUserIdentity,
+    ReclaimHistory,
     ServiceConfig,
     User,
     UserSession,
@@ -42,6 +44,7 @@ from backend.models.auth import (
     ChangePasswordRequest,
     ChangeProfileInfoRequest,
     CreateUserRequest,
+    CurrentUserInfo,
     MediaIdentityItem,
     MediaIdentityLinkRequest,
     MediaIdentityListResponse,
@@ -119,12 +122,24 @@ def _serialize_media_identity(
     )
 
 
-@router.get("/me", response_model=UserInfo)
+@router.get("/me", response_model=CurrentUserInfo)
 async def get_me(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
-) -> UserInfo:
-    """Get current user info."""
-    return UserInfo.from_user(current_user)
+) -> CurrentUserInfo:
+    """Get current user info plus how this session was authenticated."""
+    auth_source = (
+        "forward_auth"
+        if getattr(request.state, "auth_method", None) == "forward_auth"
+        else "local"
+    )
+    logout_url: str | None = None
+    if auth_source == "forward_auth":
+        logout_url = settings.forward_auth_logout_url or None
+
+    return CurrentUserInfo.from_current_user(
+        current_user, auth_source=auth_source, logout_url=logout_url
+    )
 
 
 @router.post("/me")
@@ -472,6 +487,33 @@ async def update_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only administrators can grant admin role",
             )
+
+    # rename is optional; omitting the field leaves the username untouched
+    new_username = request.username
+    if new_username and new_username != user.username:
+        existing = await db.execute(
+            select(User).where(User.username == new_username, User.id != user_id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already exists",
+            )
+
+        old_username = user.username
+        user.username = new_username
+        # reclaim history stores the approver's username rather than a foreign key,
+        # so carry it forward. Leaving it stale would mis-attribute past reclaims to
+        # whoever is given the freed-up username next.
+        await db.execute(
+            update(ReclaimHistory)
+            .where(ReclaimHistory.approved_by == old_username)
+            .values(approved_by=new_username)
+        )
+        LOG.info(
+            f"User manager {actor.username} renamed user {old_username} to {new_username}"
+        )
+
     user.display_name = request.display_name
     user.email = request.email
     user.role = request.role
@@ -492,7 +534,15 @@ async def update_user(
             reason="password_reset_by_admin",
         )
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # the pre-checks above can lose a race against a concurrent write
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already exists",
+        ) from None
 
     LOG.info(f"User manager {actor.username} updated user {user.username}")
 

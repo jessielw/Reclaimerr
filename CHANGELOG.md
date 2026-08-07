@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in trusted proxy authentication with configurable user headers, strict proxy allowlisting, and existing-user mapping for Authelia-style forward auth
+- Optional recovery mode and identity provider sign-out URL for trusted proxy authentication
+- Administrators can rename a user, including the initial `admin`, from Settings -> Users, so an account can be lined up with an SSO username without creating a duplicate
+
 ### Fixed
 
 - Disk-free rules now use the mounted media volume in Docker and apply scoped path mappings before falling back to Radarr or Sonarr disk data
+- Trusted proxy allowlists now reject all-address ranges such as `0.0.0.0/0`, not just `*`
+- Trusted proxy authentication now fails closed when the proxy header wrapper has not recorded the socket peer
 
 ## [0.3.4] - 2026-07-29
 

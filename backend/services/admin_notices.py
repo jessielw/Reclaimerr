@@ -14,6 +14,7 @@ NOTICE_KEY_SEERR_RULE_SKIP = "seerr_rules_skipped"
 NOTICE_KEY_SONARR_RULE_DATA = "sonarr_rule_data_unavailable"
 NOTICE_KEY_PLAYBACK_RULE_DATA = "playback_rule_data_unavailable"
 NOTICE_KEY_STALE_LIBRARY_IDS = "stale_library_ids"
+NOTICE_KEY_FORWARD_AUTH_FALLBACK = "forward_auth_local_fallback_enabled"
 
 
 def _normalize_context(context: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -261,6 +262,36 @@ async def sync_update_available_notice(
             "latest_version": latest_version,
             "latest_release_url": latest_release_url,
         },
+    )
+
+
+async def sync_forward_auth_fallback_notice(
+    db: AsyncSession,
+    *,
+    fallback_active: bool,
+) -> None:
+    """Creates or resolves the notice for forward-auth recovery mode."""
+    if not fallback_active:
+        await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_FORWARD_AUTH_FALLBACK)
+        return
+
+    await upsert_singleton_notice(
+        db,
+        dedupe_key=NOTICE_KEY_FORWARD_AUTH_FALLBACK,
+        kind="forward_auth_local_fallback",
+        severity="warning",
+        title="Trusted proxy recovery mode is enabled",
+        message=(
+            "FORWARD_AUTH_ALLOW_LOCAL_FALLBACK is enabled, so a proxy identity "
+            "that does not match a Reclaimerr user falls back to local password "
+            "login instead of being denied. Remove the variable once the "
+            "matching user exists."
+        ),
+        action_label="View trusted proxy documentation",
+        action_href=(
+            "https://jessielw.github.io/Reclaimerr/getting-started/configuration/"
+            "#trusted-proxy-authentication"
+        ),
     )
 
 

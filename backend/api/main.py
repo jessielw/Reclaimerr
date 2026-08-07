@@ -38,14 +38,16 @@ from backend.api.utils.middleware import (
     setup_guard_middleware,
     sliding_session_middleware,
 )
+from backend.core.auth import ORIGINAL_CLIENT_HOST_STATE_KEY
 from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
 from backend.core.settings import settings
 from backend.core.worker import start_worker_pool
-from backend.database import close_db, init_db
+from backend.database import async_db, close_db, init_db
 from backend.jobs.queue import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
+from backend.services.admin_notices import sync_forward_auth_fallback_notice
 from backend.services.lifecycle_webhooks import recover_pending_webhook_deliveries
 from backend.utils.create_admin import create_initial_admin
 
@@ -62,6 +64,11 @@ def _wrap_proxy_headers(
     )
 
     async def _asgi(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            client = scope.get("client")
+            if client:
+                state = scope.setdefault("state", {})
+                state[ORIGINAL_CLIENT_HOST_STATE_KEY] = str(client[0])
         await wrapped_app(scope, receive, send)
 
     return _asgi
@@ -84,11 +91,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "This is insecure for production. Set CORS_ORIGINS to your frontend URL."
             )
 
+        if settings.forward_auth_enabled:
+            LOG.info(
+                "Trusted proxy authentication enabled using header "
+                f"{settings.forward_auth_user_header} from "
+                f"{', '.join(settings.forward_auth_trusted_proxies_list)}"
+            )
+            if settings.forward_auth_allow_local_fallback:
+                LOG.warning(
+                    "FORWARD_AUTH_ALLOW_LOCAL_FALLBACK is enabled. An unrecognised "
+                    "proxy identity will fall back to local password login. Remove "
+                    "this variable once the matching user exists."
+                )
+
         # init db
         await init_db()
 
         # check if admin account needs created
         await create_initial_admin()
+
+        # Recovery mode is only meaningful while forward auth is on; with it off
+        # the fallback is inert and a notice would be noise.
+        async with async_db() as session:
+            await sync_forward_auth_fallback_notice(
+                session,
+                fallback_active=(
+                    settings.forward_auth_enabled
+                    and settings.forward_auth_allow_local_fallback
+                ),
+            )
+            await session.commit()
 
         # load service configs from database and initialize clients
         await load_enabled_services()

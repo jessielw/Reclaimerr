@@ -7,6 +7,8 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 import backend.api.main as api_main
+from backend.core.auth import _is_forward_auth_proxy_trusted
+from backend.core.settings import settings
 
 
 async def _oidc_start(request: Request) -> PlainTextResponse:
@@ -17,8 +19,18 @@ async def _scheme(request: Request) -> PlainTextResponse:
     return PlainTextResponse(request.url.scheme)
 
 
+async def _client_hosts(request: Request) -> PlainTextResponse:
+    original = request.scope["state"].get(api_main.ORIGINAL_CLIENT_HOST_STATE_KEY)
+    current = request.client.host if request.client else "unknown"
+    return PlainTextResponse(f"{original}|{current}")
+
+
 async def _oidc_callback(_request: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
+
+
+async def _forward_auth_trusted(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(str(_is_forward_auth_proxy_trusted(request)))
 
 
 def _build_client(*, trusted_hosts: list[str] | str) -> TestClient:
@@ -26,7 +38,9 @@ def _build_client(*, trusted_hosts: list[str] | str) -> TestClient:
         routes=[
             Route("/api/auth/oidc/start", _oidc_start, name="oidc_start"),
             Route("/scheme", _scheme, name="scheme"),
+            Route("/client-hosts", _client_hosts, name="client_hosts"),
             Route("/api/auth/oidc/callback", _oidc_callback, name="oidc_callback"),
+            Route("/forward-auth-trusted", _forward_auth_trusted, name="fa_trusted"),
         ]
     )
     wrapped_app = api_main._wrap_proxy_headers(  # pyright: ignore[reportPrivateUsage]
@@ -76,3 +90,35 @@ def test_untrusted_proxy_ignores_forwarded_proto_for_callback_uri() -> None:
 
     assert response.status_code == 200
     assert response.text == "http://testserver/api/auth/oidc/callback"
+
+
+def test_proxy_wrapper_preserves_socket_peer_before_forwarded_rewrite() -> None:
+    client = _build_client(trusted_hosts="*")
+
+    response = client.get(
+        "/client-hosts",
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "testclient|203.0.113.10"
+
+
+def test_forwarded_for_cannot_forge_the_forward_auth_trust_decision(
+    monkeypatch,
+) -> None:
+    """The whole point of the wrapper: even with PROXY_TRUSTED_HOSTS='*', an
+    untrusted client cannot use X-Forwarded-For to look like the trusted proxy."""
+    monkeypatch.setattr(settings, "forward_auth_enabled", True)
+    monkeypatch.setattr(settings, "forward_auth_trusted_proxies", "172.18.0.4")
+
+    client = _build_client(trusted_hosts="*")
+
+    response = client.get(
+        "/forward-auth-trusted",
+        headers={"X-Forwarded-For": "172.18.0.4"},
+    )
+
+    assert response.status_code == 200
+    # The socket peer is 'testclient', not the spoofed 172.18.0.4.
+    assert response.text == "False"

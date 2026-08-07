@@ -14,6 +14,7 @@
   import Settings from "@lucide/svelte/icons/settings";
   import DoorOpen from "@lucide/svelte/icons/door-open";
   import DoorClosed from "@lucide/svelte/icons/door-closed";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import Ticket from "@lucide/svelte/icons/ticket";
   import Shield from "@lucide/svelte/icons/shield";
@@ -157,9 +158,21 @@
     return $location === path;
   };
 
+  // A proxy-managed session is owned by the identity provider, not by us.
+  const isProxyManagedSession = $derived(
+    $auth.user?.auth_source === "forward_auth",
+  );
+  const proxyLogoutUrl = $derived($auth.user?.logout_url ?? null);
+
   // logout handler
   const handleLogout = async () => {
+    // Capture before auth.logout() clears $auth.user, which would otherwise
+    // make these derived values go stale (false/null) before we read them.
+    const redirectUrl = isProxyManagedSession ? proxyLogoutUrl : null;
     await auth.logout();
+    if (redirectUrl) {
+      window.location.href = redirectUrl;
+    }
   };
 
   const isShown = (path: string): boolean => !hiddenPaths.includes(path);
@@ -403,21 +416,37 @@
           </div>
         </div>
 
-        <!-- logout button -->
-        <button
-          onmouseenter={() => (logoutHovered = true)}
-          onmouseleave={() => (logoutHovered = false)}
-          onclick={handleLogout}
-          class="w-full flex justify-center items-center gap-3 px-4 py-2 rounded-lg text-muted-foreground
-            hover:bg-destructive/10 hover:text-destructive transition-colors duration-200 cursor-pointer mt-1"
-        >
-          {#if logoutHovered}
-            <DoorOpen />
-          {:else}
-            <DoorClosed />
-          {/if}
-          <span class="font-medium">Logout</span>
-        </button>
+        <!-- logout button, or a label when the identity provider owns the session -->
+        {#if !isProxyManagedSession || proxyLogoutUrl}
+          <button
+            onmouseenter={() => (logoutHovered = true)}
+            onmouseleave={() => (logoutHovered = false)}
+            onclick={handleLogout}
+            class="w-full flex justify-center items-center gap-3 px-4 py-2 rounded-lg text-muted-foreground
+              hover:bg-destructive/10 hover:text-destructive transition-colors duration-200 cursor-pointer mt-1"
+          >
+            {#if logoutHovered}
+              <DoorOpen />
+            {:else}
+              <DoorClosed />
+            {/if}
+            <span class="font-medium">Logout</span>
+          </button>
+        {:else}
+          <Tooltip.Root>
+            <Tooltip.Trigger
+              class="w-full flex justify-center items-center gap-3 px-4 py-2 rounded-lg
+                text-muted-foreground cursor-default mt-1"
+            >
+              <ShieldCheck />
+              <span class="font-medium">Managed by SSO</span>
+            </Tooltip.Trigger>
+            <Tooltip.Content side="top">
+              Your session is managed by your identity provider. Sign out there
+              to end it.
+            </Tooltip.Content>
+          </Tooltip.Root>
+        {/if}
       </div>
     {/if}
   </div>

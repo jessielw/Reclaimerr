@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -31,6 +33,65 @@ SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
 SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
 SESSION_TOUCH_BUSY_TIMEOUT_MS = 250
 DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
+ORIGINAL_CLIENT_HOST_STATE_KEY = "reclaimerr_original_client_host"
+
+FORWARD_AUTH_WARNED_PEERS_MAX = 256
+_forward_auth_warned_peers: set[str] = set()
+_forward_auth_warned_missing_wrapper = False
+
+
+@lru_cache(maxsize=8)
+def _parse_trusted_networks(raw: str) -> tuple[IPv4Network | IPv6Network, ...]:
+    """Parse the forward-auth allowlist once per distinct configured value.
+
+    Keyed on the raw string rather than cached on Settings, so tests that
+    monkeypatch settings.forward_auth_trusted_proxies get a fresh entry instead
+    of a stale one.
+    """
+    # Settings validation already rejects 0.0.0.0/0 and ::/0, but Settings does
+    # not set validate_assignment, so a direct attribute assignment bypasses
+    # that validator. Re-check here as defence in depth so an all-address
+    # range can never confer trust, however the value arrived.
+    return tuple(
+        network
+        for network in (
+            ip_network(entry.strip(), strict=False)
+            for entry in raw.split(",")
+            if entry.strip()
+        )
+        if network.prefixlen != 0
+    )
+
+
+def _log_untrusted_forward_auth_peer(peer: str) -> None:
+    """Warn once per peer, then drop to debug, so probing cannot flood the log."""
+    message = (
+        f"Ignored {settings.forward_auth_user_header} authentication header "
+        f"from untrusted peer {peer}"
+    )
+    if peer in _forward_auth_warned_peers:
+        LOG.debug(message)
+        return
+    if len(_forward_auth_warned_peers) >= FORWARD_AUTH_WARNED_PEERS_MAX:
+        _forward_auth_warned_peers.clear()
+    _forward_auth_warned_peers.add(peer)
+    LOG.warning(message)
+
+
+def _log_missing_proxy_wrapper() -> None:
+    """Warn once per process that the proxy header wrapper did not run."""
+    global _forward_auth_warned_missing_wrapper
+    message = (
+        "Forward auth is enabled but the proxy header wrapper did not record "
+        "the socket peer, so this request cannot be trusted and forward auth "
+        "is inactive. Serve backend.api.main:app rather than the bare FastAPI "
+        "app, and disable any other proxy-header middleware in front of it."
+    )
+    if _forward_auth_warned_missing_wrapper:
+        LOG.debug(message)
+        return
+    _forward_auth_warned_missing_wrapper = True
+    LOG.warning(message)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -143,11 +204,102 @@ def get_request_user_agent(request: Request) -> str | None:
     return None
 
 
+def _get_original_client_host(request: Request) -> str | None:
+    """Return the socket peer captured before proxy headers rewrite the scope."""
+    state = request.scope.get("state")
+    if isinstance(state, dict):
+        original_host = state.get(ORIGINAL_CLIENT_HOST_STATE_KEY)
+        if isinstance(original_host, str) and original_host:
+            return original_host
+
+    # No snapshot means the outer proxy-header wrapper did not run, so
+    # request.client may already have been rewritten from X-Forwarded-For by
+    # some other layer. Treat the peer as unknown rather than trusting it.
+    return None
+
+
+def _is_forward_auth_proxy_trusted(request: Request) -> bool:
+    """Check the direct socket peer against the dedicated forward-auth allowlist."""
+    client_host = _get_original_client_host(request)
+    if client_host is None:
+        return False
+    try:
+        client_ip = ip_address(client_host)
+    except ValueError:
+        return False
+
+    return any(
+        client_ip in network
+        for network in _parse_trusted_networks(settings.forward_auth_trusted_proxies)
+    )
+
+
+async def _get_forward_auth_user(
+    request: Request,
+    db: AsyncSession,
+) -> User | None:
+    """Resolve an asserted proxy identity without creating or elevating accounts."""
+    if not settings.forward_auth_enabled:
+        return None
+
+    asserted_usernames = request.headers.getlist(settings.forward_auth_user_header)
+    if not asserted_usernames:
+        return None
+
+    client_host = _get_original_client_host(request)
+    if client_host is None:
+        _log_missing_proxy_wrapper()
+        return None
+
+    if not _is_forward_auth_proxy_trusted(request):
+        _log_untrusted_forward_auth_peer(client_host)
+        return None
+
+    if len(asserted_usernames) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy supplied multiple username headers",
+        )
+
+    username = asserted_usernames[0].strip()
+    if not username or len(username) > 32:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy supplied an invalid username",
+        )
+
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        LOG.warning(f"Trusted proxy user {username!r} is not configured in Reclaimerr")
+        if settings.forward_auth_allow_local_fallback:
+            # Recovery mode: let the request try local cookie auth so an admin can
+            # sign in and create the missing user. Still needs a valid JWT and a
+            # live session row, so this is not a bypass.
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Trusted proxy user is not configured",
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled",
+        )
+
+    request.state.auth_method = "forward_auth"
+    return user
+
+
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Get the current authenticated user from HttpOnly JWT cookie."""
+    """Get the current user from a trusted proxy identity or HttpOnly JWT cookie."""
+    forward_auth_user = await _get_forward_auth_user(request, db)
+    if forward_auth_user is not None:
+        return forward_auth_user
+
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(
