@@ -20,19 +20,23 @@ from backend.core.rule_engine import (
     FAVORITES_RULE_FIELDS,
     PLAYBACK_RULE_FIELDS,
     RANK_RULE_FIELDS,
+    REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
     SONARR_RULE_FIELDS,
+    TAG_SUBSTRING_OPERATORS,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
     TARGET_SEASON,
     TARGET_SERIES,
+    USER_SCOPED_PLAYBACK_FIELDS,
     ArrRuleDataResolver,
     CollectionSiblingRuleDataResolver,
     DiskStatsResolver,
     FavoritesRuleDataResolver,
     PlaybackHistoryResolver,
+    PlaybackUserHistoryResolver,
     RankRuleDataResolver,
     SeerrRequestResolver,
     SonarrRuleDataResolver,
@@ -116,9 +120,11 @@ from backend.services.notifications import (
     notify_all_users,
 )
 from backend.services.playback_history import (
+    IMPORTED_PLAYBACK_DURATION_FIELDS,
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
     load_playback_rule_snapshot,
+    load_user_playback_totals,
     log_playback_rule_coverage,
     refresh_playback_history,
 )
@@ -939,22 +945,8 @@ async def collect_rule_preview_matches_with_metadata(
         require_fresh=require_fresh,
     )
     if target_ids_by_scope and playback_result.snapshot is not None:
-        requested_fields_by_scope: dict[str, set[str]] = defaultdict(set)
-        for rule in rules:
-            scope = normalize_rule_target(rule)
-            for field in PLAYBACK_RULE_FIELDS:
-                if collect_rule_conditions(rule.definition, field=field):
-                    requested_fields_by_scope.setdefault(scope, set()).add(field)
-        metadata.playback_unavailable_count = sum(
-            1
-            for scope, target_ids in target_ids_by_scope.items()
-            for target_id in target_ids
-            if requested_fields_by_scope.get(scope)
-            and not requested_fields_by_scope[scope].issubset(
-                playback_result.snapshot.available_fields_by_target.get(
-                    (scope, target_id), set()
-                )
-            )
+        metadata.playback_unavailable_count = _playback_unavailable_target_count(
+            playback_result.snapshot, rules, target_ids_by_scope
         )
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
@@ -1158,16 +1150,58 @@ async def scan_cleanup_candidates() -> None:
                 raise
 
 
+# arr.tags operators that match against patterns rather than whole tag labels.
+# Their condition values are needles or regexes, never tag names, so they cannot
+# be resolved to specific labels before the arr's tag catalog has been fetched.
+NON_EXACT_ARR_TAG_OPERATORS = REGEX_OPERATORS | TAG_SUBSTRING_OPERATORS
+
+
 def _collect_arr_tag_labels(rules: list[ReclaimRule]) -> set[str]:
-    """Return the distinct lowercase tag labels referenced in arr.tags conditions across rules."""
+    """Return the distinct lowercase tag labels named by exact-match arr.tags conditions.
+
+    Values belonging to non-exact operators are patterns rather than labels, so they
+    are skipped here; _has_non_exact_arr_tag_condition reports their presence instead.
+    """
     labels: set[str] = set()
     for rule in rules:
         for condition in collect_rule_conditions(rule.definition, field="arr.tags"):
+            if condition.get("operator") in NON_EXACT_ARR_TAG_OPERATORS:
+                continue
             value = condition.get("value")
             values = value if isinstance(value, list) else [value]
             for v in values:
                 if v is not None and str(v).strip():
                     labels.add(str(v).strip().lower())
+    return labels
+
+
+def _has_non_exact_arr_tag_condition(rules: list[ReclaimRule]) -> bool:
+    """Return True when any arr.tags condition matches by pattern instead of by label.
+
+    Such a condition cannot be narrowed to specific tag names ahead of time, so the
+    refresh widens to the arr's whole tag catalog rather than a filtered subset.
+    """
+    for rule in rules:
+        for condition in collect_rule_conditions(rule.definition, field="arr.tags"):
+            if condition.get("operator") in NON_EXACT_ARR_TAG_OPERATORS:
+                return True
+    return False
+
+
+def _all_catalog_labels(tags: Sequence[Any]) -> set[str]:
+    """Return every non-blank lowercase label in an arr tag catalog.
+
+    Normalisation matches _collect_arr_item_ids_by_label so that the labels used for
+    lookup and the labels stripped from existing rows are the same strings.
+    """
+    labels: set[str] = set()
+    for tag in tags:
+        label_raw = getattr(tag, "label", None)
+        if label_raw is None:
+            continue
+        label = str(label_raw).strip().lower()
+        if label:
+            labels.add(label)
     return labels
 
 
@@ -1226,11 +1260,18 @@ async def _refresh_arr_tags_for_rules(
 
     Steps:
     1. Collect the distinct tag labels used in arr.tags conditions across all rules.
+       A pattern condition (regex/substring) cannot name its labels ahead of time, so
+       its presence triggers a full refresh of the arr's whole tag catalog instead.
     2. Per arr client: fetch items + tag catalog and resolve tag IDs to labels.
     3. Map arr item IDs -> DB IDs via MovieArrRef / SeriesArrRef.
-    4. Strip rule-relevant labels only on refs for configs that refreshed successfully,
-       then re-add only where confirmed present.
-    Failed config fetches are non-destructive (existing DB tags are preserved).
+    4. Write the confirmed labels to each ref reachable from a successfully refreshed
+       config, in one of two modes:
+       - Full refresh (a pattern condition is present): replace arr_tags outright with
+         the confirmed labels, since every label the arrs report for the item is known.
+       - Exact-match only: patch arr_tags, stripping just the rule-relevant labels and
+         re-adding only the ones confirmed present, leaving unrelated labels alone.
+    Failed config fetches are non-destructive in both modes: a ref reachable from any
+    failed config is excluded from the write, so its existing DB tags are preserved.
     """
     movie_rules = [
         r for r in rules if normalize_rule_target(r) in {TARGET_MOVIE_VERSION}
@@ -1243,12 +1284,19 @@ async def _refresh_arr_tags_for_rules(
 
     movie_tag_labels = _collect_arr_tag_labels(movie_rules)
     series_tag_labels = _collect_arr_tag_labels(series_rules)
+    movie_needs_full_refresh = _has_non_exact_arr_tag_condition(movie_rules)
+    series_needs_full_refresh = _has_non_exact_arr_tag_condition(series_rules)
 
-    if not movie_tag_labels and not series_tag_labels:
+    # A pattern condition cannot name the labels it will match, so the whole
+    # catalog is refreshed for that media type instead of a filtered subset.
+    movie_tags_wanted = bool(movie_tag_labels) or movie_needs_full_refresh
+    series_tags_wanted = bool(series_tag_labels) or series_needs_full_refresh
+
+    if not movie_tags_wanted and not series_tags_wanted:
         return
 
     #### radarr: refresh movie arr_tags for rule relevant labels ####
-    if movie_tag_labels:
+    if movie_tags_wanted:
         radarr_clients = service_manager.radarr_clients()
         if not radarr_clients and service_manager.radarr:
             radarr_clients = {0: service_manager.radarr}
@@ -1256,6 +1304,10 @@ async def _refresh_arr_tags_for_rules(
         if radarr_clients:
             # movie_id (DB) -> set of labels to add
             movie_label_additions: dict[int, set[str]] = {}
+            # Every label actually refreshed, across all configs that succeeded. Drives
+            # the exact-match strip and the debug log only; full-refresh mode replaces
+            # arr_tags with movie_label_additions instead.
+            movie_refreshed_labels: set[str] = set()
             radarr_successful_config_ids: set[int] = set()
             radarr_failed_config_ids: set[int] = set()
 
@@ -1288,10 +1340,16 @@ async def _refresh_arr_tags_for_rules(
                     continue
 
                 radarr_successful_config_ids.add(config_id)
+                effective_labels = (
+                    _all_catalog_labels(tag_list)
+                    if movie_needs_full_refresh
+                    else movie_tag_labels
+                )
+                movie_refreshed_labels |= effective_labels
                 label_to_arr_ids = _collect_arr_item_ids_by_label(
                     items=all_movies,
                     tags=tag_list,
-                    wanted_labels=movie_tag_labels,
+                    wanted_labels=effective_labels,
                 )
                 arr_to_db = arr_to_db_by_config.get(config_id, {})
                 for label, arr_ids in label_to_arr_ids.items():
@@ -1320,29 +1378,44 @@ async def _refresh_arr_tags_for_rules(
                         select(Movie).where(Movie.id.in_(refreshable_db_movie_ids))
                     )
                     for movie in result.scalars().all():
+                        confirmed = movie_label_additions.get(movie.id, set())
+                        if movie_needs_full_refresh:
+                            # Every label the arrs report for this item is known, so the
+                            # row is replaced rather than patched. This also clears a
+                            # label whose tag was deleted from the catalog, which a strip
+                            # set derived from that catalog cannot name.
+                            movie.arr_tags = sorted(confirmed)
+                            continue
                         current = set(movie.arr_tags or [])
-                        current -= movie_tag_labels  # strip stale rule-relevant labels
-                        current |= movie_label_additions.get(
-                            movie.id, set()
-                        )  # re-add current ones
+                        current -= movie_refreshed_labels  # strip refreshed labels
+                        current |= confirmed  # re-add current ones
                         movie.arr_tags = sorted(current)
                     await db.commit()
-            elif movie_tag_labels and radarr_failed_config_ids:
+            elif radarr_failed_config_ids:
                 LOG.warning(
                     "Radarr tag refresh failed for all relevant refs; "
                     "keeping existing movie arr_tags rows unchanged"
                 )
+            label_summary = (
+                f"{len(movie_refreshed_labels)} catalog labels"
+                if movie_needs_full_refresh
+                else f"labels: {movie_refreshed_labels}"
+            )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies (labels: {movie_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_movie_ids)} movies ({label_summary})"
             )
 
     #### sonarr: refresh series arr_tags for rule relevant labels ####
-    if series_tag_labels:
+    if series_tags_wanted:
         sonarr_series_snapshot = sonarr_series_snapshot or _SonarrSeriesSnapshot()
         sonarr_clients = sonarr_series_snapshot.clients
 
         if sonarr_clients:
             series_label_additions: dict[int, set[str]] = {}
+            # Every label actually refreshed, across all configs that succeeded. Drives
+            # the exact-match strip and the debug log only; full-refresh mode replaces
+            # arr_tags with series_label_additions instead.
+            series_refreshed_labels: set[str] = set()
             sonarr_successful_config_ids: set[int] = set()
             sonarr_failed_config_ids: set[int] = set()
 
@@ -1376,10 +1449,16 @@ async def _refresh_arr_tags_for_rules(
                     continue
 
                 sonarr_successful_config_ids.add(config_id)
+                effective_labels = (
+                    _all_catalog_labels(tag_list)
+                    if series_needs_full_refresh
+                    else series_tag_labels
+                )
+                series_refreshed_labels |= effective_labels
                 label_to_arr_ids = _collect_arr_item_ids_by_label(
                     items=all_series,
                     tags=tag_list,
-                    wanted_labels=series_tag_labels,
+                    wanted_labels=effective_labels,
                 )
                 arr_to_db = sonarr_arr_to_db_by_config.get(config_id, {})
                 for label, arr_ids in label_to_arr_ids.items():
@@ -1407,18 +1486,31 @@ async def _refresh_arr_tags_for_rules(
                         select(Series).where(Series.id.in_(refreshable_db_series_ids))
                     )
                     for series in result.scalars().all():
+                        confirmed = series_label_additions.get(series.id, set())
+                        if series_needs_full_refresh:
+                            # Every label the arrs report for this item is known, so the
+                            # row is replaced rather than patched. This also clears a
+                            # label whose tag was deleted from the catalog, which a strip
+                            # set derived from that catalog cannot name.
+                            series.arr_tags = sorted(confirmed)
+                            continue
                         current = set(series.arr_tags or [])
-                        current -= series_tag_labels
-                        current |= series_label_additions.get(series.id, set())
+                        current -= series_refreshed_labels
+                        current |= confirmed
                         series.arr_tags = sorted(current)
                     await db.commit()
-            elif series_tag_labels and sonarr_failed_config_ids:
+            elif sonarr_failed_config_ids:
                 LOG.warning(
                     "Sonarr tag refresh failed for all relevant refs; "
                     "keeping existing series arr_tags rows unchanged"
                 )
+            label_summary = (
+                f"{len(series_refreshed_labels)} catalog labels"
+                if series_needs_full_refresh
+                else f"labels: {series_refreshed_labels}"
+            )
             LOG.debug(
-                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series (labels: {series_tag_labels})"
+                f"Refreshed arr_tags for {len(refreshable_db_series_ids)} series ({label_summary})"
             )
 
 
@@ -1487,7 +1579,63 @@ async def _season_watch_inventory_rule_data(
 def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
-        for field in PLAYBACK_RULE_FIELDS
+        for field in PLAYBACK_RULE_FIELDS | USER_SCOPED_PLAYBACK_FIELDS
+    )
+
+
+def _targets_with_imported_playback(
+    snapshot: PlaybackRuleSnapshot,
+) -> set[tuple[str, int]]:
+    """Return the targets backed by imported playback events.
+
+    Per-user duration and percent are read from those events, so a target that
+    only has native watch state behind it has unknown per-user totals rather
+    than zero ones -- the same distinction the aggregate duration fields make.
+    """
+    return {
+        key
+        for key, available in snapshot.available_fields_by_target.items()
+        if available & IMPORTED_PLAYBACK_DURATION_FIELDS
+    }
+
+
+def _playback_unavailable_target_count(
+    snapshot: PlaybackRuleSnapshot,
+    rules: Iterable[ReclaimRule],
+    target_ids_by_scope: Mapping[str, set[int]],
+) -> int:
+    """Count preview targets whose playback values these rules cannot read."""
+    requested_fields_by_scope: dict[str, set[str]] = defaultdict(set)
+    user_scoped_scopes: set[str] = set()
+    for rule in rules:
+        scope = normalize_rule_target(rule)
+        for field in PLAYBACK_RULE_FIELDS:
+            if collect_rule_conditions(rule.definition, field=field):
+                requested_fields_by_scope[scope].add(field)
+        if any(
+            collect_rule_conditions(rule.definition, field=field)
+            for field in USER_SCOPED_PLAYBACK_FIELDS
+        ):
+            user_scoped_scopes.add(scope)
+    imported_targets = (
+        _targets_with_imported_playback(snapshot) if user_scoped_scopes else set()
+    )
+
+    def _unavailable(scope: str, target_id: int) -> bool:
+        requested = requested_fields_by_scope.get(scope)
+        if requested and not requested.issubset(
+            snapshot.available_fields_by_target.get((scope, target_id), set())
+        ):
+            return True
+        # per-user totals are not tracked per field in the snapshot; they come
+        # from the same imported events the aggregate duration fields do
+        return scope in user_scoped_scopes and (scope, target_id) not in imported_targets
+
+    return sum(
+        1
+        for scope, target_ids in target_ids_by_scope.items()
+        for target_id in target_ids
+        if _unavailable(scope, target_id)
     )
 
 
@@ -1500,13 +1648,24 @@ async def _activate_playback_history_for_rules(
     playback_rules = [rule for rule in rules if _rule_uses_playback_fields(rule)]
     if not playback_rules:
         PlaybackHistoryResolver({}).activate()
+        PlaybackUserHistoryResolver({}, available_targets=set()).activate()
         return _PlaybackRuleDataResult(snapshot=None)
 
     scopes = {normalize_rule_target(rule) for rule in playback_rules}
+    # aggregate fields only: the snapshot tracks availability per field for
+    # these, while the user-scoped fields are tracked per target instead (see
+    # user_scoped_fields below), so mixing them here would compare a field name
+    # against a set that can never contain it.
     fields = {
         field
         for rule in playback_rules
         for field in PLAYBACK_RULE_FIELDS
+        if collect_rule_conditions(rule.definition, field=field)
+    }
+    user_scoped_fields = {
+        field
+        for rule in playback_rules
+        for field in USER_SCOPED_PLAYBACK_FIELDS
         if collect_rule_conditions(rule.definition, field=field)
     }
 
@@ -1536,6 +1695,16 @@ async def _activate_playback_history_for_rules(
     refresh_result = await refresh_playback_history(force=require_fresh)
     snapshot = await load_playback_rule_snapshot(db, refresh_result)
     PlaybackHistoryResolver(snapshot.values_by_target).activate()
+    if user_scoped_fields:
+        PlaybackUserHistoryResolver(
+            await load_user_playback_totals(db),
+            available_targets=_targets_with_imported_playback(snapshot),
+        ).activate()
+    else:
+        # no rule reads per-user totals, so skip the query entirely; an empty
+        # observability set keeps the unread resolver from reporting targets as
+        # watched by nobody
+        PlaybackUserHistoryResolver({}, available_targets=set()).activate()
     log_playback_rule_coverage(snapshot, scopes, fields)
     unavailable_count = snapshot.unavailable_count(scopes, fields)
     if unavailable_count == 0 and not (
@@ -1550,10 +1719,7 @@ async def _activate_playback_history_for_rules(
         error = "; ".join(errors)
     elif not snapshot.has_configured_provider:
         error = "No playback source is configured"
-    elif fields & {
-        "playback.total_duration_minutes",
-        "playback.longest_duration_minutes",
-    }:
+    elif fields & IMPORTED_PLAYBACK_DURATION_FIELDS:
         error = (
             "Playback duration fields require imported Playback Reporting or "
             "Tautulli history for the media source"
@@ -5448,11 +5614,9 @@ def _order_series_arr_refs(
 async def _load_arr_disk_space() -> list[dict[str, Any]]:
     """Fetch disk space from all configured Radarr/Sonarr instances.
 
-    Returns a merged, deduplicated list of disk entries (path, free_space,
-    total_space) reported by each arr server.  Entries from different instances
-    that share the same path are de-duplicated (first writer wins).  The list
-    is sorted longest path first so rule_engine prefix matching finds the most
-    specific mount point first.
+    Each entry retains its service type and config ID so scoped path mappings
+    and provider-specific rule targets can be resolved without conflating two
+    Arr instances that happen to expose the same container path.
     """
     radarr_clients = service_manager.radarr_clients()
     if not radarr_clients and service_manager.radarr:
@@ -5461,18 +5625,32 @@ async def _load_arr_disk_space() -> list[dict[str, Any]]:
     if not sonarr_clients and service_manager.sonarr:
         sonarr_clients = {0: service_manager.sonarr}
 
-    seen: set[str] = set()
     result: list[dict[str, Any]] = []
 
-    for client in list(radarr_clients.values()) + list(sonarr_clients.values()):
-        try:
-            for entry in await client.get_disk_space():
-                p = str(entry.get("path", "") or "")
-                if p and p not in seen:
-                    seen.add(p)
-                    result.append(entry)
-        except Exception:
-            pass
+    client_groups = (
+        (Service.RADARR, radarr_clients),
+        (Service.SONARR, sonarr_clients),
+    )
+    for service_type, clients in client_groups:
+        for config_id, client in clients.items():
+            try:
+                for entry in await client.get_disk_space():
+                    path = str(entry.get("path", "") or "")
+                    if not path:
+                        continue
+                    result.append(
+                        {
+                            **entry,
+                            "path": path,
+                            "service_type": service_type.value,
+                            "service_config_id": config_id,
+                        }
+                    )
+            except Exception as exc:
+                LOG.debug(
+                    f"Could not load {service_type.value} disk-space data "
+                    f"for config {config_id}: {exc}"
+                )
 
     return sorted(result, key=lambda e: -len(str(e.get("path") or "")))
 

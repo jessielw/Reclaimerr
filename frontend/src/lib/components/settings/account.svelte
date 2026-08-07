@@ -395,7 +395,7 @@
             maxlength={32}
           />
           <p class="mt-1 text-xs text-muted-foreground">
-            Username cannot be changed
+            Only an administrator can change your username
           </p>
         </div>
 

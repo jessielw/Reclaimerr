@@ -42,6 +42,8 @@
     auto_delete_movie_delay_days: 14,
     auto_delete_series_delay_days: 7,
     application_url: null,
+    playback_movie_min_seconds: 15,
+    playback_episode_min_seconds: 7,
     favorites_ignore_enabled: false,
     favorites_protect_all_users: false,
     favorites_usernames: [],

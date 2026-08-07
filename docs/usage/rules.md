@@ -251,6 +251,11 @@ codes currently found in local TMDB metadata.
 TMDB rating comparisons use the raw `vote_average` value from TMDB on a 0-10
 scale. That is different from percentage-style ratings elsewhere in the app.
 
+TMDB has no rating for a title nobody has voted on. Reclaimerr stores that as an
+empty value rather than as a score of zero, so a comparison such as `<` never
+matches an unrated title. Use `does not exist` on the TMDB rating field when
+you specifically want to find those titles.
+
 ### External Ratings
 
 External rating fields are available to all scopes. Movie-version rules use the
@@ -276,6 +281,12 @@ MDBList is preferred because it provides structured `ratings[]` entries for
 Rotten Tomatoes, Metacritic, Trakt, and Letterboxd plus vote counts. OMDb is
 used as a fallback for Tomatometer and Metacritic when an IMDb ID is available.
 Direct Rotten Tomatoes and Metacritic scraping is intentionally not used.
+
+Metacritic user score and Letterboxd score are stored and matched on a 0-100
+scale, but the providers publish them differently: Metacritic shows its user
+score as 0-10 on its own site, and Letterboxd shows its score as 0-5. Build
+rules against the stored 0-100 value, not the number shown on the provider's
+site.
 
 Ratings are refreshed by the provider-specific `Refresh MDBList Ratings` and
 `Refresh OMDb Ratings` tasks. They keep independent schedules and caches.
@@ -474,7 +485,53 @@ Jellyfin/Emby Playback Reporting plugin and Tautulli:
 | Days since playback activity | Whole days since the most recent timestamp                                  |
 
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds
-are ignored. These thresholds prevent brief scrubs from counting as activity.
+are ignored by default. These thresholds prevent brief scrubs from counting as
+activity, and can be changed in **Settings → General → Minimum Playback
+Duration**.
+
+The thresholds are applied while history is imported, so a change only affects
+events imported after it. History already imported keeps the events it was
+imported with: raising the minimum does not retire short events that are
+already stored, and lowering it does not bring back events that were skipped.
+
+#### Per-user playback conditions
+
+The fields above are aggregated across every user who played the media, so
+`Longest playback > 30` matches if *anyone* watched 30+ minutes, even if the
+specific person you care about only watched a few seconds. Two additional
+fields scope playback to one or more chosen users instead:
+
+| Field                          | Meaning                                          | Available scopes         |
+| ------------------------------- | ------------------------------------------------- | ------------------------- |
+| Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
+| Playback watched by user (%)   | Selected user's total watched time as a percent of runtime | Movie version, episode only |
+
+Both fields require picking at least one user from a user-picker in the rule
+editor (there is no "any user" option — use the aggregate `Playback users` /
+`Longest playback` fields above for that). When more than one user is
+selected, each one is compared on their own and the condition matches as soon
+as any of them satisfies it, so `under 5 minutes by alice or bob` is true when
+either of them is under 5 minutes. A selected user with no recorded activity
+counts as 0, not unknown, on any target imported history covers. Both fields
+read the same imported events the aggregate duration fields do, so a target
+with no Playback Reporting or Tautulli history behind it is unknown rather than
+watched by nobody, and the condition does not match it.
+
+`Playback watched by user (%)` is only available for movie-version and
+episode rules, since percent-watched needs a known runtime and only movie
+files and episodes have one on record (series and season rules can still use
+the minutes field). Episode runtimes are recorded during a media-server sync,
+so on an existing install episode percent rules stay unknown until the next
+sync has run.
+
+Both fields sum a user's playback across all of their sessions for the target,
+so resuming a paused movie across several sittings still counts toward the
+total. That also means percent is time watched rather than furthest position
+reached: re-watching pushes a user past 100%, and re-watching the same twenty
+minutes repeatedly accrues percent without the rest of the film ever being
+seen. Percent is measured against the runtime of the movie file the rule is
+evaluating, so on a movie kept in both a theatrical and an extended version the
+same watch time reads as a higher percent on the shorter file.
 
 Events are retained locally until their source service configuration is
 deleted. They are mapped by exact media-server IDs and stable TMDB,

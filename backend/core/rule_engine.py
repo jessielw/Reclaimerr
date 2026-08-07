@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import math
 import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, TypeAlias, cast
 
-from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.filesystem import (
+    mapped_path_variants,
+    normalize_fpath,
+    resolve_path,
+)
 from backend.core.utils.language import normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database.models import (
@@ -60,6 +65,15 @@ PLAYBACK_RULE_FIELDS = {
     "playback.usernames",
     "playback.last_activity_at",
     "playback.days_since_last_activity",
+}
+# playback conditions scoped to one or more specific users, rather than the
+# aggregate-across-all-users semantics of PLAYBACK_RULE_FIELDS. Kept as a
+# separate set (not folded into PLAYBACK_RULE_FIELDS) because their allowed
+# target scopes differ per field and their value is a compound
+# {"usernames": [...], "amount": ...} object rather than a bare scalar.
+USER_SCOPED_PLAYBACK_FIELDS = {
+    "playback.user_watched_duration_minutes",
+    "playback.user_watched_percent",
 }
 
 RuleDefinition = dict[str, Any]
@@ -131,6 +145,8 @@ FIELD_LABELS: dict[str, str] = {
     "playback.usernames": "Playback users",
     "playback.last_activity_at": "Last playback activity",
     "playback.days_since_last_activity": "Days since playback activity",
+    "playback.user_watched_duration_minutes": "Playback duration by user (minutes)",
+    "playback.user_watched_percent": "Playback watched by user (%)",
     "tmdb.popularity": "Popularity",
     "tmdb.vote_average": "TMDB rating",
     "tmdb.vote_count": "Vote count",
@@ -307,6 +323,49 @@ NUMERIC_FIELDS = {
     "disk.free_bytes",
     "disk.free_percent",
 }
+
+# field -> (minimum, maximum or None, integer required)
+# Mirrored by NUMERIC_FIELD_BOUNDS in
+# frontend/src/lib/components/settings/rules/rule-node-editor.svelte.
+# tests/test_rule_engine_frontend_parity.py fails if the two drift.
+FIELD_NUMERIC_BOUNDS: dict[str, tuple[float, float | None, bool]] = {
+    # 0-10 scales, decimals allowed
+    "tmdb.vote_average": (0, 10, False),
+    "imdb.rating": (0, 10, False),
+    "media_server.user_rating": (0, 10, False),
+    # 0-100 scales, whole numbers only
+    "rottentomatoes.tomato_meter": (0, 100, True),
+    "rottentomatoes.popcorn_meter": (0, 100, True),
+    "metacritic.metascore": (0, 100, True),
+    "metacritic.user_score": (0, 100, True),
+    "trakt.rating": (0, 100, True),
+    "letterboxd.score": (0, 100, True),
+    "anilist.score": (0, 100, True),
+    # counts, no upper bound
+    "tmdb.vote_count": (0, None, True),
+    "imdb.vote_count": (0, None, True),
+    "rottentomatoes.tomato_vote_count": (0, None, True),
+    "rottentomatoes.popcorn_vote_count": (0, None, True),
+    "metacritic.vote_count": (0, None, True),
+    "metacritic.user_vote_count": (0, None, True),
+    "trakt.vote_count": (0, None, True),
+    "letterboxd.vote_count": (0, None, True),
+    "anilist.popularity": (0, None, True),
+    "anilist.favourites": (0, None, True),
+}
+
+# Fields whose stored scale differs from the scale the provider publishes.
+# Surfaced in validation errors so the user is not left comparing our message
+# against a different number on the provider's own site.
+RESCALED_FIELD_NOTES: dict[str, str] = {
+    "metacritic.user_score": (
+        "Metacritic publishes this as 0-10; Reclaimerr stores it as a percentage"
+    ),
+    "letterboxd.score": (
+        "Letterboxd publishes this as 0-5; Reclaimerr stores it as a percentage"
+    ),
+}
+
 TEXT_FIELDS = {
     "tmdb.collection_name",
     "tmdb.genres",
@@ -446,6 +505,17 @@ TEMPORAL_OPERATORS = {
     "after",
     "on_or_after",
 }
+# user-scoped playback fields always require a value (a compound
+# {"usernames": [...], "amount": ...} object), so exists/not_exists -- which
+# would otherwise be valueless -- are deliberately excluded.
+USER_SCOPED_PLAYBACK_OPERATORS = {
+    "equals",
+    "not_equals",
+    "greater_than",
+    "greater_than_or_equal",
+    "less_than",
+    "less_than_or_equal",
+}
 PATH_OPERATORS = TEXT_OPERATORS | {"matches_any_regex"}
 PATH_LIBRARY_INCLUSION_OPERATORS = {"contains_any", "contains_all", "in", "equals"}
 PATH_LIBRARY_UNSUPPORTED_OPERATORS = {
@@ -471,6 +541,8 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.series_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.tags": set(TEXT_OPERATORS) | TAG_SUBSTRING_OPERATORS | REGEX_OPERATORS,
+    "playback.user_watched_duration_minutes": set(USER_SCOPED_PLAYBACK_OPERATORS),
+    "playback.user_watched_percent": set(USER_SCOPED_PLAYBACK_OPERATORS),
 }
 
 TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
@@ -554,6 +626,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        *USER_SCOPED_PLAYBACK_FIELDS,
         "movie.version_count",
     },
     TARGET_SERIES: {
@@ -626,6 +699,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        "playback.user_watched_duration_minutes",
     },
     TARGET_SEASON: {
         "anilist.favourites",
@@ -705,6 +779,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        "playback.user_watched_duration_minutes",
     },
     TARGET_EPISODE: {
         "anilist.favourites",
@@ -779,6 +854,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.never_watched",
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
+        *USER_SCOPED_PLAYBACK_FIELDS,
     },
 }
 
@@ -813,7 +889,9 @@ class DiskStatsResolver:
         self._path_mappings: list[dict[str, Any]] = sorted(
             path_mappings or [], key=lambda m: -len(str(m.get("source_prefix") or ""))
         )
-        self._cache: dict[str, tuple[int, float] | None] = {}
+        self._cache: dict[
+            tuple[str, str | None, str | None], tuple[int, float] | None
+        ] = {}
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -824,57 +902,134 @@ class DiskStatsResolver:
         """Return the resolver active in the current async context, or None."""
         return cls._ctx.get()
 
-    def resolve(self, path: str) -> tuple[int, float] | None:
+    def resolve(
+        self,
+        path: str,
+        *,
+        media_service_type: str | None = None,
+        arr_service_type: str | None = None,
+    ) -> tuple[int, float] | None:
         """Return ``(free_bytes, free_percent)`` for the filesystem containing *path*.
 
         Results are cached for the lifetime of this instance (one scan run).
-        Primary source: pre fetched arr /disk space entries.
-        Fallback: shutil.disk_usage with path-mapping translation.
+        An accessible local or path-mapped media path is authoritative.  Pre-fetched
+        Arr disk-space entries are the fallback for remote media filesystems that are
+        not mounted into Reclaimerr.
         """
-        if path in self._cache:
-            return self._cache[path]
-        result = self._resolve_arr(path) or self._resolve_local(path)
-        self._cache[path] = result
+        normalized_path = normalize_fpath(path, strip_ending_slash=True)
+        cache_key = (normalized_path, media_service_type, arr_service_type)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        result = self._resolve_local(
+            path, media_service_type=media_service_type
+        ) or self._resolve_arr(
+            path,
+            media_service_type=media_service_type,
+            arr_service_type=arr_service_type,
+        )
+        self._cache[cache_key] = result
         return result
 
-    def _resolve_arr(self, path: str) -> tuple[int, float] | None:
-        """Look up disk stats in the pre fetched Radarr/Sonarr /disk space entries."""
-        norm = path.replace("\\", "/")
-        for entry in self._arr_entries:  # sorted longest first
-            raw = (entry.get("path") or "").replace("\\", "/")
-            if not raw:
-                continue
-            ep = raw.rstrip("/") or "/"  # preserve "/" (never collapse to "")
-            if ep == "/":
-                if not norm.startswith("/"):
-                    continue
-            elif norm != ep and not norm.startswith(ep + "/"):
-                continue
-            free = entry.get("free_space", 0) or 0
-            total = entry.get("total_space", 0) or 0
-            return free, (free / total * 100.0 if total else 0.0)
-        return None
-
-    def _resolve_local(self, path: str) -> tuple[int, float] | None:
-        """Fall back to shutil.disk_usage with path mapping translation."""
-        for m in self._path_mappings:  # sorted longest source first
-            source = m.get("source_prefix") or ""
-            if source and path.startswith(source):
-                local = (m.get("local_prefix") or "") + path[len(source) :]
-                try:
-                    usage = shutil.disk_usage(local)
-                    return usage.free, (
-                        usage.free / usage.total * 100.0 if usage.total else 0.0
-                    )
-                except Exception:
-                    return None
+    def _resolve_local(
+        self, path: str, *, media_service_type: str | None
+    ) -> tuple[int, float] | None:
+        """Resolve disk stats from a media path accessible to Reclaimerr."""
+        local_path = resolve_path(
+            path,
+            self._path_mappings,
+            service_type=media_service_type,
+            warn_missing=False,
+        )
+        if local_path is None:
+            return None
         try:
-            usage = shutil.disk_usage(path)
+            usage = shutil.disk_usage(local_path)
             return usage.free, (
                 usage.free / usage.total * 100.0 if usage.total else 0.0
             )
-        except Exception:
+        except OSError:
             return None
+
+    def _resolve_arr(
+        self,
+        path: str,
+        *,
+        media_service_type: str | None,
+        arr_service_type: str | None,
+    ) -> tuple[int, float] | None:
+        """Resolve remote disk stats using the most specific mapped Arr mount."""
+        media_variants = self._path_variants(
+            path,
+            service_type=media_service_type,
+            service_config_id=None,
+        )
+        if not media_variants:
+            return None
+
+        requested_arr_type = (arr_service_type or "").lower()
+        best_specificity = -1
+        best_result: tuple[int, float] | None = None
+        for entry in self._arr_entries:
+            entry_service_type = str(entry.get("service_type") or "").lower()
+            if (
+                requested_arr_type
+                and entry_service_type
+                and entry_service_type != requested_arr_type
+            ):
+                continue
+
+            entry_path = str(entry.get("path") or "")
+            entry_config_id = entry.get("service_config_id")
+            if not isinstance(entry_config_id, int):
+                entry_config_id = None
+            entry_variants = self._path_variants(
+                entry_path,
+                service_type=entry_service_type or requested_arr_type or None,
+                service_config_id=entry_config_id,
+            )
+            for media_path in media_variants:
+                for mount_path in entry_variants:
+                    if not self._path_is_within_mount(media_path, mount_path):
+                        continue
+                    specificity = len(mount_path)
+                    if specificity <= best_specificity:
+                        continue
+                    free = int(entry.get("free_space", 0) or 0)
+                    total = int(entry.get("total_space", 0) or 0)
+                    best_specificity = specificity
+                    best_result = (
+                        free,
+                        free / total * 100.0 if total else 0.0,
+                    )
+        return best_result
+
+    def _path_variants(
+        self,
+        path: str,
+        *,
+        service_type: str | None,
+        service_config_id: int | None,
+    ) -> set[str]:
+        """Return normalized raw/mapped variants while preserving filesystem roots."""
+        variants = mapped_path_variants(
+            path,
+            self._path_mappings,
+            service_type=service_type,
+            service_config_id=service_config_id,
+        )
+        normalized = normalize_fpath(path, strip_ending_slash=True)
+        if normalized:
+            variants.add(normalized)
+        elif str(path).strip().replace("\\", "/") == "/":
+            variants.add("/")
+        return variants
+
+    @staticmethod
+    def _path_is_within_mount(path: str, mount: str) -> bool:
+        if mount == "/":
+            return path.startswith("/")
+        return path == mount or path.startswith(mount + "/")
 
 
 class ArrRuleDataResolver:
@@ -1243,6 +1398,69 @@ class PlaybackHistoryResolver:
         )
 
 
+class PlaybackUserHistoryResolver:
+    """Holds per-(target, user) playback totals for one rule evaluation run.
+
+    Computed on demand from durable events (see
+    ``playback_history.load_user_playback_totals``) rather than a persisted
+    aggregate, so this mostly needs to hold and look up the pre-fetched mapping
+    -- no native-state merge like ``PlaybackHistoryResolver``, since there is no
+    native/current-state equivalent for per-user duration.
+
+    ``available_targets`` carries the same observability set the aggregate
+    snapshot uses: a target no configured playback source can see has unknown
+    per-user totals rather than zero ones. Passing ``None`` skips that check,
+    for callers that only need the totals.
+    """
+
+    _ctx: ContextVar[PlaybackUserHistoryResolver | None] = ContextVar(
+        "playback_user_history_resolver", default=None
+    )
+
+    __slots__ = ("_totals_by_target", "_available_targets")
+
+    def __init__(
+        self,
+        totals_by_target: Mapping[tuple[str, int], Mapping[str, Mapping[str, object]]]
+        | None = None,
+        available_targets: Iterable[tuple[str, int]] | None = None,
+    ) -> None:
+        self._totals_by_target = {
+            (str(scope), int(target_id)): dict(per_user)
+            for (scope, target_id), per_user in (totals_by_target or {}).items()
+        }
+        self._available_targets = (
+            None
+            if available_targets is None
+            else {
+                (str(scope), int(target_id)) for scope, target_id in available_targets
+            }
+        )
+
+    def activate(self) -> None:
+        PlaybackUserHistoryResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> PlaybackUserHistoryResolver | None:
+        return cls._ctx.get()
+
+    def is_available(self, target_scope: str, target_id: int | None) -> bool:
+        """Whether a configured playback source can observe the target at all."""
+        if target_id is None:
+            return False
+        if self._available_targets is None:
+            return True
+        return (target_scope, target_id) in self._available_targets
+
+    def resolve(
+        self, target_scope: str, target_id: int | None
+    ) -> Mapping[str, Mapping[str, object]] | None:
+        """Return the per-normalized-username metrics dict for a target, or None."""
+        if target_id is None:
+            return None
+        return self._totals_by_target.get((target_scope, target_id))
+
+
 def _playback_context(
     resolver: PlaybackHistoryResolver | None,
     target_scope: str,
@@ -1256,6 +1474,53 @@ def _playback_context(
         )
         for field in PLAYBACK_RULE_FIELDS
     }
+
+
+def _user_scoped_playback_context(
+    resolver: PlaybackUserHistoryResolver | None,
+    target_scope: str,
+    target_id: int | None,
+    *,
+    include_percent: bool = False,
+    runtime_seconds: float | None = None,
+) -> dict[str, object]:
+    """Build the per-user duration/percent context values for one target.
+
+    Each value is a ``{normalized_username: number}`` dict (not a scalar) --
+    condition evaluation compares one entry per selected username once it knows
+    which usernames the condition selected. ``RULE_VALUE_UNAVAILABLE`` when the
+    resolver was never activated (no rule in this scan needed it) or when no
+    configured playback source can observe the target; an observable target with
+    no recorded plays for anyone still resolves to an empty dict, since that is
+    a known fact ("nobody has watched this"), not missing data.
+    """
+    per_user = resolver.resolve(target_scope, target_id) if resolver else None
+    if resolver is None or not resolver.is_available(target_scope, target_id):
+        duration_by_user: object = RULE_VALUE_UNAVAILABLE
+        percent_by_user: object = RULE_VALUE_UNAVAILABLE
+    else:
+        duration_by_user = {
+            username: round(cast(int, metrics["total_duration_seconds"]) / 60, 2)
+            for username, metrics in (per_user or {}).items()
+        }
+        if include_percent and runtime_seconds and runtime_seconds > 0:
+            percent_by_user = {
+                username: round(
+                    cast(int, metrics["total_duration_seconds"])
+                    / runtime_seconds
+                    * 100,
+                    2,
+                )
+                for username, metrics in (per_user or {}).items()
+            }
+        else:
+            percent_by_user = RULE_VALUE_UNAVAILABLE
+    result: dict[str, object] = {
+        "playback.user_watched_duration_minutes": duration_by_user,
+    }
+    if include_percent:
+        result["playback.user_watched_percent"] = percent_by_user
+    return result
 
 
 def normalize_rule_target(rule: ReclaimRule) -> str:
@@ -1458,6 +1723,48 @@ def evaluate_advanced_rule_state(
     return _evaluate_node_state(root, context)
 
 
+def _evaluate_user_scoped_condition(
+    context_value: Any,
+    condition_value: Any,
+    operator: str,
+    *,
+    field: str,
+) -> tuple[bool | None, Any]:
+    """Compare one user-scoped playback condition against each selected user.
+
+    The condition matches as soon as *any* selected user's own total satisfies
+    the operator, so "watched under 5 minutes by alice or bob" is true when
+    either of them is under it. Reducing the per-user totals to a single number
+    first would instead mean "all of them" for the less-than operators.
+
+    Shared by both evaluation entry points (``_evaluate_condition`` and
+    ``_evaluate_node_state``) so they can never drift. Returns
+    ``(matched, value)``, where ``matched`` is ``None`` when the field itself is
+    unavailable (see ``_user_scoped_playback_context``) or the condition's value
+    is malformed -- not when a selected user simply has no recorded activity,
+    which counts as 0 (a known fact, not missing data). ``value`` is the total
+    belonging to the user that satisfied the operator, for match reporting.
+    """
+    if context_value is RULE_VALUE_UNAVAILABLE or not isinstance(context_value, dict):
+        return None, RULE_VALUE_UNAVAILABLE
+    if not isinstance(condition_value, dict):
+        return None, RULE_VALUE_UNAVAILABLE
+    raw_usernames = condition_value.get("usernames")
+    if not isinstance(raw_usernames, list):
+        return None, RULE_VALUE_UNAVAILABLE
+    usernames = [
+        str(name).strip().casefold() for name in raw_usernames if str(name).strip()
+    ]
+    if not usernames:
+        return None, RULE_VALUE_UNAVAILABLE
+    amount = condition_value.get("amount")
+    for username in usernames:
+        value = context_value.get(username, 0)
+        if _matches_operator(value, operator, amount, field=field):
+            return True, value
+    return False, None
+
+
 def _evaluate_node_state(
     node: dict[str, Any],
     context: dict[str, Any],
@@ -1493,11 +1800,17 @@ def _evaluate_node_state(
         return False
     field = str(node.get("field", ""))
     actual = context.get(field)
+    operator = str(node.get("operator", ""))
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        state, _value = _evaluate_user_scoped_condition(
+            actual, node.get("value"), operator, field=field
+        )
+        return state
     if actual is RULE_VALUE_UNAVAILABLE:
         return None
     return _matches_operator(
         actual,
-        str(node.get("operator", "")),
+        operator,
         node.get("value"),
         field=field,
     )
@@ -1516,6 +1829,39 @@ def _collection_names_from_series_refs(refs: Iterable[Any]) -> list[str]:
     for ref in refs:
         names.extend(ref.media_server_collection_names or [])
     return normalize_name_list(names) or []
+
+
+def _media_service_type_for_path(path: str | None, refs: Iterable[Any]) -> str | None:
+    """Return the service whose stored series root most specifically contains *path*."""
+    normalized_path = normalize_fpath(path or "", strip_ending_slash=True)
+    if not normalized_path:
+        return None
+
+    best_match: tuple[int, str] | None = None
+    fallback_services: list[str] = []
+    for ref in refs:
+        service = getattr(ref, "service", None)
+        service_value = getattr(service, "value", service)
+        if not service_value:
+            continue
+        service_name = str(service_value)
+        fallback_services.append(service_name)
+        root = normalize_fpath(
+            str(getattr(ref, "path", "") or ""), strip_ending_slash=True
+        )
+        if not root or not DiskStatsResolver._path_is_within_mount(
+            normalized_path, root
+        ):
+            continue
+        candidate = (len(root), service_name)
+        if best_match is None or candidate[0] > best_match[0]:
+            best_match = candidate
+
+    if best_match is not None:
+        return best_match[1]
+    if len(set(fallback_services)) == 1:
+        return fallback_services[0]
+    return None
 
 
 def _has_valid_definition(definition: RuleDefinition | None) -> bool:
@@ -1574,6 +1920,100 @@ def _validate_scope_fields(definition: RuleDefinition, target_scope: str) -> Non
         )
 
 
+def _format_bound(value: float) -> str:
+    """Render a bound without a trailing .0 so messages read naturally."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _numeric_expectation(field: str) -> str:
+    """Build the human-readable expectation for a bounded numeric field."""
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+    kind = "a whole number" if integer_required else "a value"
+    if maximum is None:
+        expectation = f"{label} expects {kind} of {_format_bound(minimum)} or greater"
+    else:
+        expectation = (
+            f"{label} expects {kind} between "
+            f"{_format_bound(minimum)} and {_format_bound(maximum)}"
+        )
+    note = RESCALED_FIELD_NOTES.get(field)
+    return f"{expectation} ({note})" if note else expectation
+
+
+def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
+    """Reject values that are out of range, the wrong type, or non-finite.
+
+    Only applies to fields listed in FIELD_NUMERIC_BOUNDS. Callers must skip
+    valueless operators, which carry no value to check.
+    """
+    if field not in FIELD_NUMERIC_BOUNDS:
+        return
+
+    minimum, maximum, integer_required = FIELD_NUMERIC_BOUNDS[field]
+    label = FIELD_LABELS.get(field, field)
+
+    if isinstance(value, list):
+        raise ValueError(
+            f"{label} expects a single value, not a list. "
+            "Only the first entry would be used."
+        )
+    # bool is a subclass of int, and float(True) is 1.0, so guard it explicitly
+    if isinstance(value, bool):
+        raise ValueError(_numeric_expectation(field))
+
+    number = _number(value)
+    if number is None or not math.isfinite(number):
+        raise ValueError(_numeric_expectation(field))
+
+    if number < minimum or (maximum is not None and number > maximum):
+        raise ValueError(_numeric_expectation(field))
+    if integer_required and not float(number).is_integer():
+        raise ValueError(_numeric_expectation(field))
+
+    operator_label = OPERATOR_LABELS.get(operator, operator)
+    if maximum is not None and operator == "greater_than" and number == maximum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(maximum)} is the maximum "
+            f"(use {OPERATOR_LABELS['greater_than_or_equal']} to include it)"
+        )
+    if operator == "less_than" and number == minimum:
+        raise ValueError(
+            f"{label} {operator_label} {_format_bound(number)} can never match; "
+            f"{_format_bound(minimum)} is the minimum "
+            f"(use {OPERATOR_LABELS['less_than_or_equal']} to include it)"
+        )
+
+
+def _validate_user_scoped_playback_value(field: str, value: Any) -> None:
+    """Validate the ``{"usernames": [...], "amount": ...}`` compound value shape.
+
+    User-scoped playback fields never allow valueless operators (see
+    USER_SCOPED_PLAYBACK_OPERATORS), so a value always reaches this check.
+    Deliberately not routed through ``_validate_numeric_bounds`` /
+    ``FIELD_NUMERIC_BOUNDS``, which assume a bare scalar value.
+    """
+    label = FIELD_LABELS.get(field, field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} requires a user selection and an amount")
+    usernames = value.get("usernames")
+    if not isinstance(usernames, list) or not any(
+        str(name).strip() for name in usernames
+    ):
+        raise ValueError(f"{label} requires at least one selected user")
+    amount = value.get("amount")
+    if isinstance(amount, bool):
+        raise ValueError(f"{label} requires a numeric amount")
+    number = _number(amount)
+    if number is None or not math.isfinite(number) or number < 0:
+        raise ValueError(f"{label} requires a numeric amount of 0 or greater")
+    if field == "playback.user_watched_percent" and number > 100:
+        raise ValueError(f"{label} expects a percent between 0 and 100")
+    if field == "playback.user_watched_duration_minutes" and number > 100000:
+        raise ValueError(f"{label} expects a value of 100000 or less")
+
+
 def _validate_node(node: dict[str, Any]) -> None:
     """Validate the structure and content of a rule node."""
     node_type = node.get("type")
@@ -1605,6 +2045,10 @@ def _validate_node(node: dict[str, Any]) -> None:
         raise ValueError(f"Unsupported rule operator '{operator}' for field '{field}'")
     if operator not in VALUELESS_OPERATORS and "value" not in node:
         raise ValueError("Rule condition requires a value")
+    if operator not in VALUELESS_OPERATORS:
+        _validate_numeric_bounds(field, operator, node.get("value"))
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        _validate_user_scoped_playback_value(field, node.get("value"))
     if field == "library.id" and operator in LIST_OPERATORS:
         raw_values = node.get("value")
         values = raw_values if isinstance(raw_values, list) else [raw_values]
@@ -1647,6 +2091,7 @@ def _build_context(
     _seerr_resolver = SeerrRequestResolver.current()
     _sonarr_resolver = SonarrRuleDataResolver.current()
     _playback_resolver = PlaybackHistoryResolver.current()
+    _playback_user_resolver = PlaybackUserHistoryResolver.current()
     _arr_resolver = ArrRuleDataResolver.current()
     _favorites_resolver = FavoritesRuleDataResolver.current()
     _rank_resolver = RankRuleDataResolver.current()
@@ -1654,7 +2099,13 @@ def _build_context(
     if target_scope == TARGET_MOVIE_VERSION and movie and version:
         size = version.size if version.size and version.size > 0 else movie.size
         _disk = (
-            _resolver.resolve(version.path) if (_resolver and version.path) else None
+            _resolver.resolve(
+                version.path,
+                media_service_type=version.service.value,
+                arr_service_type=Service.RADARR.value,
+            )
+            if (_resolver and version.path)
+            else None
         )
         _added = version.added_at or movie.added_at
         _last_viewed = _effective_last_viewed(movie.last_viewed_at, _added)
@@ -1697,6 +2148,13 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_MOVIE_VERSION, version.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver,
+                TARGET_MOVIE_VERSION,
+                version.id,
+                include_percent=True,
+                runtime_seconds=(version.duration / 1000 if version.duration else None),
+            ),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.in_collection": (
                 movie.tmdb_collection_id is not None
@@ -1816,14 +2274,21 @@ def _build_context(
     if target_scope == TARGET_SERIES and series:
         refs = series.service_refs or []
         _collections = _collection_names_from_series_refs(refs)
-        _series_path = next((ref.path for ref in refs if ref.path), None)
+        _series_ref = next((ref for ref in refs if ref.path), None)
+        _series_path = _series_ref.path if _series_ref else None
         _series_file_names = [
             file_name
             for file_name in (_path_basename(ref.path) for ref in refs)
             if file_name
         ]
         _disk = (
-            _resolver.resolve(_series_path) if (_resolver and _series_path) else None
+            _resolver.resolve(
+                _series_path,
+                media_service_type=_series_ref.service.value if _series_ref else None,
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and _series_path)
+            else None
         )
         _last_viewed = _effective_last_viewed(series.last_viewed_at, series.added_at)
         _favorite_users = (
@@ -1851,6 +2316,9 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
             "watch.never_watched": series.view_count == 0 or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_SERIES, series.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver, TARGET_SERIES, series.id
+            ),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
             "tmdb.days_since_first_air_date": _days_between(
@@ -1986,7 +2454,15 @@ def _build_context(
         else:
             seasons_from_latest = None
             is_latest_season = False
-        _disk = _resolver.resolve(season.path) if (_resolver and season.path) else None
+        _disk = (
+            _resolver.resolve(
+                season.path,
+                media_service_type=_media_service_type_for_path(season.path, refs),
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and season.path)
+            else None
+        )
         _last_viewed = _effective_last_viewed(season.last_viewed_at, season.added_at)
         _favorite_users = (
             _favorites_resolver.usernames(MediaType.SERIES, series.tmdb_id)
@@ -2014,6 +2490,9 @@ def _build_context(
             "watch.never_watched": (season.view_count or 0) == 0
             or _last_viewed is None,
             **_playback_context(_playback_resolver, TARGET_SEASON, season.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver, TARGET_SEASON, season.id
+            ),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
             "season.season_number": season.season_number,
@@ -2185,7 +2664,13 @@ def _build_context(
             seasons_from_latest_ep = None
             is_latest_season_ep = False
         _disk = (
-            _resolver.resolve(episode.path) if (_resolver and episode.path) else None
+            _resolver.resolve(
+                episode.path,
+                media_service_type=_media_service_type_for_path(episode.path, refs),
+                arr_service_type=Service.SONARR.value,
+            )
+            if (_resolver and episode.path)
+            else None
         )
         _last_viewed_ep = _effective_last_viewed(
             episode.last_viewed_at, season.added_at
@@ -2215,6 +2700,13 @@ def _build_context(
             "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
             "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
             **_playback_context(_playback_resolver, TARGET_EPISODE, episode.id),
+            **_user_scoped_playback_context(
+                _playback_user_resolver,
+                TARGET_EPISODE,
+                episode.id,
+                include_percent=True,
+                runtime_seconds=episode.runtime,
+            ),
             "episode.number": episode.episode_number,
             "episode.position_by_air_date": (
                 _rank_resolver.episode_rank(episode.id)
@@ -2431,7 +2923,14 @@ def _evaluate_condition(
     operator = str(condition.get("operator", ""))
     expected = condition.get("value")
     actual = context.get(field)
-    if not _matches_operator(actual, operator, expected, field=field):
+    if field in USER_SCOPED_PLAYBACK_FIELDS:
+        state, actual = _evaluate_user_scoped_condition(
+            actual, expected, operator, field=field
+        )
+        expected = expected.get("amount") if isinstance(expected, dict) else None
+        if not state:
+            return False
+    elif not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reasons.append(_build_reason_condition(field, operator, expected, actual))

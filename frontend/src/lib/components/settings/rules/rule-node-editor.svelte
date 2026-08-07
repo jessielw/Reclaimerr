@@ -46,6 +46,7 @@
     RuleConditionOperator,
     RuleGroup,
     RuleNode,
+    UserScopedPlaybackValue,
   } from "$lib/types/shared";
 
   interface Props {
@@ -60,7 +61,13 @@
   }
 
   type RuleTargetScope = "movie_version" | "series" | "season" | "episode";
-  type FieldKind = "number" | "bytes" | "text" | "boolean" | "temporal";
+  type FieldKind =
+    | "number"
+    | "bytes"
+    | "text"
+    | "boolean"
+    | "temporal"
+    | "user_scoped_number";
 
   interface FieldConfig {
     value: string;
@@ -107,6 +114,7 @@
   let fieldQuery = $state("");
   let seerrPickerOpen = $state(false);
   let playbackUserPickerOpen = $state(false);
+  let userScopedPlaybackPickerOpen = $state(false);
   let collectionPickerOpen = $state(false);
   let genrePickerOpen = $state(false);
   let mediaServerCollectionPickerOpen = $state(false);
@@ -269,6 +277,19 @@
     "is_false",
   ];
 
+  // user-scoped playback fields always carry a compound
+  // {usernames, amount} value, so exists/not_exists (which would be
+  // valueless) are deliberately excluded -- mirrors
+  // USER_SCOPED_PLAYBACK_OPERATORS in backend/core/rule_engine.py.
+  const userScopedPlaybackOperators: RuleConditionOperator[] = [
+    "equals",
+    "not_equals",
+    "greater_than",
+    "greater_than_or_equal",
+    "less_than",
+    "less_than_or_equal",
+  ];
+
   const requesterIdOperators: RuleConditionOperator[] = [
     "in",
     "not_in",
@@ -428,6 +449,20 @@
       label: "Days since playback activity",
       kind: "number",
       operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.user_watched_duration_minutes",
+      label: "Playback duration by user (minutes)",
+      kind: "user_scoped_number",
+      operators: userScopedPlaybackOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "playback.user_watched_percent",
+      label: "Playback watched by user (%)",
+      kind: "user_scoped_number",
+      operators: userScopedPlaybackOperators,
       defaultOperator: "greater_than_or_equal",
     },
     {
@@ -1162,6 +1197,8 @@
       "watch.never_watched",
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
+      "playback.user_watched_duration_minutes",
+      "playback.user_watched_percent",
       "movie.version_count",
       "rottentomatoes.popcorn_meter",
       "rottentomatoes.popcorn_vote_count",
@@ -1238,6 +1275,7 @@
       "watch.never_watched",
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
+      "playback.user_watched_duration_minutes",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1317,6 +1355,7 @@
       "watch.never_watched",
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
+      "playback.user_watched_duration_minutes",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1392,6 +1431,8 @@
       "watch.never_watched",
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
+      "playback.user_watched_duration_minutes",
+      "playback.user_watched_percent",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1554,13 +1595,49 @@
     SCOPE_FIELD_VALUES[targetScope].has(fieldValue);
   const operatorLabel = (value: RuleConditionOperator) =>
     operatorLabelMap[value] ?? value;
+  // Mirrors FIELD_NUMERIC_BOUNDS in backend/core/rule_engine.py.
+  // tests/test_rule_engine_frontend_parity.py fails if the two drift.
+  const NUMERIC_FIELD_BOUNDS: Record<
+    string,
+    { min: number; max: number | null; step: "1" | "any" }
+  > = {
+    "tmdb.vote_average": { min: 0, max: 10, step: "any" },
+    "imdb.rating": { min: 0, max: 10, step: "any" },
+    "media_server.user_rating": { min: 0, max: 10, step: "any" },
+    "rottentomatoes.tomato_meter": { min: 0, max: 100, step: "1" },
+    "rottentomatoes.popcorn_meter": { min: 0, max: 100, step: "1" },
+    "metacritic.metascore": { min: 0, max: 100, step: "1" },
+    "metacritic.user_score": { min: 0, max: 100, step: "1" },
+    "trakt.rating": { min: 0, max: 100, step: "1" },
+    "letterboxd.score": { min: 0, max: 100, step: "1" },
+    "anilist.score": { min: 0, max: 100, step: "1" },
+    "tmdb.vote_count": { min: 0, max: null, step: "1" },
+    "imdb.vote_count": { min: 0, max: null, step: "1" },
+    "rottentomatoes.tomato_vote_count": { min: 0, max: null, step: "1" },
+    "rottentomatoes.popcorn_vote_count": { min: 0, max: null, step: "1" },
+    "metacritic.vote_count": { min: 0, max: null, step: "1" },
+    "metacritic.user_vote_count": { min: 0, max: null, step: "1" },
+    "trakt.vote_count": { min: 0, max: null, step: "1" },
+    "letterboxd.vote_count": { min: 0, max: null, step: "1" },
+    "anilist.popularity": { min: 0, max: null, step: "1" },
+    "anilist.favourites": { min: 0, max: null, step: "1" },
+  };
+  // The two fields where following the provider's own site gives a wrong value.
+  const RESCALED_FIELD_HINTS: Record<string, string> = {
+    "metacritic.user_score": "0-100 (Metacritic shows this as 0-10)",
+    "letterboxd.score": "0-100 (Letterboxd shows this as 0-5)",
+  };
   const isNumericInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "number" && !listOperators.has(c.operator);
+  const numericBoundsFor = (c: RuleCondition) =>
+    isNumericInput(c) ? NUMERIC_FIELD_BOUNDS[c.field] : undefined;
   const isByteInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "bytes" && !listOperators.has(c.operator);
   const isTemporalInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "temporal" &&
     !valuelessOperators.has(c.operator);
+  const isUserScopedNumberInput = (c: RuleCondition) =>
+    fieldConfig(c.field).kind === "user_scoped_number";
   const valuePlaceholder = (c: RuleCondition) => {
     if (
       c.operator === "matches_any_regex" ||
@@ -1580,11 +1657,30 @@
       return "Country codes (for example: US, GB)...";
     if (c.field === "media_server.collections")
       return "Media-server collections (comma-separated)...";
+    const bounds = numericBoundsFor(c);
+    if (bounds) {
+      const hint = RESCALED_FIELD_HINTS[c.field];
+      if (hint) return hint;
+      return bounds.max === null
+        ? `${bounds.min} or more…`
+        : `${bounds.min}-${bounds.max}…`;
+    }
     if (listOperators.has(c.operator)) return "comma-separated…";
     return "value…";
   };
 
   const valueText = (c: RuleCondition) => {
+    if (isUserScopedNumberInput(c)) {
+      const { usernames, amount } = userScopedPlaybackValue(c);
+      if (usernames.length === 0 && amount === null) return "";
+      const who =
+        usernames.length === 0
+          ? "no user selected"
+          : usernames.length === 1
+            ? usernames[0]
+            : `${usernames.length} users`;
+      return `${who} · ${amount ?? "?"}`;
+    }
     const v = c.value;
     if (Array.isArray(v)) return v.join(", ");
     return v === null || v === undefined ? "" : String(v);
@@ -1822,6 +1918,39 @@
   const applyPlaybackUsernames = (c: RuleCondition, usernames: string[]) => {
     if (!listOperators.has(c.operator)) return;
     c.value = usernames;
+    onChange();
+  };
+
+  const userScopedPlaybackValue = (
+    c: RuleCondition,
+  ): UserScopedPlaybackValue => {
+    const raw = c.value;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const value = raw as Partial<UserScopedPlaybackValue>;
+      return {
+        usernames: Array.isArray(value.usernames)
+          ? value.usernames.map((u) => String(u))
+          : [],
+        amount: typeof value.amount === "number" ? value.amount : null,
+      };
+    }
+    return { usernames: [], amount: null };
+  };
+
+  const applyUserScopedPlaybackUsernames = (
+    c: RuleCondition,
+    usernames: string[],
+  ) => {
+    c.value = { usernames, amount: userScopedPlaybackValue(c).amount };
+    onChange();
+  };
+
+  const applyUserScopedPlaybackAmount = (c: RuleCondition, raw: string) => {
+    const parsed = raw.trim() === "" ? null : Number(raw);
+    c.value = {
+      usernames: userScopedPlaybackValue(c).usernames,
+      amount: parsed !== null && Number.isFinite(parsed) ? parsed : null,
+    };
     onChange();
   };
 
@@ -2175,6 +2304,44 @@
                 </Select.Content>
               </Select.Root>
             </div>
+          {:else if isUserScopedNumberInput(node)}
+            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <Input
+                class="h-8 w-24 shrink-0 text-sm text-foreground placeholder:text-muted-foreground bg-background"
+                type="number"
+                min="0"
+                max={node.field === "playback.user_watched_percent"
+                  ? 100
+                  : undefined}
+                step="any"
+                placeholder={node.field === "playback.user_watched_percent"
+                  ? "0-100"
+                  : "minutes"}
+                value={userScopedPlaybackValue(node).amount ?? ""}
+                oninput={(e) =>
+                  applyUserScopedPlaybackAmount(node, e.currentTarget.value)}
+              />
+              <span class="text-xs text-muted-foreground shrink-0">by</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                class="h-8 text-xs gap-1.5 cursor-pointer bg-secondary/75 hover:bg-secondary/90 text-foreground shrink-0"
+                onclick={() => (userScopedPlaybackPickerOpen = true)}
+              >
+                <Users class="size-3.5" />
+                <span class="hidden md:inline">
+                  {#if userScopedPlaybackValue(node).usernames.length}
+                    {userScopedPlaybackValue(node).usernames.length} user{userScopedPlaybackValue(
+                      node,
+                    ).usernames.length === 1
+                      ? ""
+                      : "s"}
+                  {:else}
+                    Pick Users
+                  {/if}
+                </span>
+              </Button>
+            </div>
           {:else if (node.field === "series.status" || node.field === "sonarr.series_status") && !listOperators.has(node.operator)}
             <Select.Root
               type="single"
@@ -2212,6 +2379,9 @@
                 : isTemporalInput(node)
                   ? "date"
                   : "text"}
+              min={numericBoundsFor(node)?.min}
+              max={numericBoundsFor(node)?.max ?? undefined}
+              step={numericBoundsFor(node)?.step}
               placeholder={valuePlaceholder(node)}
               value={valueText(node)}
               oninput={(e) => setConditionValue(node, e.currentTarget.value)}
@@ -2374,6 +2544,14 @@
       bind:open={playbackUserPickerOpen}
       initialSelectedUsernames={normalizeValueList(node.value)}
       onApply={(usernames) => applyPlaybackUsernames(node, usernames)}
+    />
+  {/if}
+
+  {#if isUserScopedNumberInput(node)}
+    <PlaybackUserPicker
+      bind:open={userScopedPlaybackPickerOpen}
+      initialSelectedUsernames={userScopedPlaybackValue(node).usernames}
+      onApply={(usernames) => applyUserScopedPlaybackUsernames(node, usernames)}
     />
   {/if}
 

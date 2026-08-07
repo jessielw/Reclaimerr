@@ -19,7 +19,7 @@ cd ..
 Run the backend:
 
 ```bash
-uv run uvicorn --reload --reload-dir backend backend.api.main:app
+uv run uvicorn --no-proxy-headers --reload --reload-dir backend backend.api.main:app
 ```
 
 Run the frontend in a second terminal:

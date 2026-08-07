@@ -137,6 +137,9 @@ class ReclaimerServer:
             host=self.api_host,
             port=self.port,
             loop="asyncio",
+            # Reclaimerr's outer ASGI wrapper validates and applies proxy headers.
+            # Keep Uvicorn from rewriting the socket peer before that trust check.
+            proxy_headers=False,
             log_config=None,  # backend has its own logger
         )
         self._server = uvicorn.Server(config)

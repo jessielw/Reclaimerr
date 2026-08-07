@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-08-07
+
+### Added
+
+- Opt-in trusted proxy authentication with configurable user headers, strict proxy allowlisting, and existing-user mapping for Authelia-style forward auth
+- Optional recovery mode and identity provider sign-out URL for trusted proxy authentication
+- Administrators can rename a user, including the initial `admin`, from Settings -> Users, so an account can be lined up with an SSO username without creating a duplicate
+
+### Changed
+
+- Updated dependencies:
+  - Backend:
+    - alembic to 1.19.0
+    - cryptography to 50.0.0
+    - fastapi to 0.141.1
+    - granian to 2.8.1
+    - pydantic-settings to 2.15.0
+  - Frontend:
+    - nanoid to 3.3.18
+
+### Fixed
+
+- Disk-free rules now use the mounted media volume in Docker and apply scoped path mappings before falling back to Radarr or Sonarr disk data
+- Trusted proxy allowlists now reject all-address ranges such as `0.0.0.0/0`, not just `*`
+- Trusted proxy authentication now fails closed when the proxy header wrapper has not recorded the socket peer
+
 ## [0.3.4] - 2026-07-29
 
 ### Added

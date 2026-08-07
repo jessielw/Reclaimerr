@@ -232,6 +232,8 @@ def resolve_path(
     mappings: list[dict[str, Any]] | None,
     service_type: str | None = None,
     service_config_id: int | None = None,
+    *,
+    warn_missing: bool = True,
 ) -> Path | None:
     """Resolve a media server reported path to a local filesystem path.
 
@@ -247,6 +249,9 @@ def resolve_path(
             include optional ``service_type`` and ``service_config_id`` fields.
             Exact service-config mappings are preferred over service-type and
             global mappings.
+        service_type: Optional service type used to select scoped mappings.
+        service_config_id: Optional service config ID used to select scoped mappings.
+        warn_missing: Log a warning when a matched mapping points to a missing path.
 
     Returns:
         An existing ``Path`` object, or ``None`` if the file cannot be located.
@@ -301,10 +306,11 @@ def resolve_path(
             if p.exists():
                 LOG.debug(f"resolve_path: mapped {media_server_path!r} to {p}")
                 return p
-            LOG.warning(
-                f"resolve_path: mapped path {p} does not exist "
-                f"(source={source!r}, local={local!r})"
-            )
+            if warn_missing:
+                LOG.warning(
+                    f"resolve_path: mapped path {p} does not exist "
+                    f"(source={source!r}, local={local!r})"
+                )
             return None
 
     # no mapping matched: try the path as is (bare metal installs)

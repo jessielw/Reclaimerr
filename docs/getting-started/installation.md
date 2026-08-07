@@ -28,7 +28,7 @@ uv sync
 cd frontend
 npm install
 cd ..
-uv run uvicorn --reload --reload-dir backend backend.api.main:app
+uv run uvicorn --no-proxy-headers --reload --reload-dir backend backend.api.main:app
 ```
 
 Then start the frontend in a second terminal:

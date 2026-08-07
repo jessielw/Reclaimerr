@@ -1,4 +1,4 @@
-name: Python Type Check
+name: Python Tests
 
 on:
   push:
@@ -6,13 +6,12 @@ on:
   pull_request:
     branches:
       - "**"
-  # workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  basedpyright:
+  pytest:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -29,5 +28,5 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev --extra desktop --frozen
 
-      - name: Run BasedPyright
-        run: uv run basedpyright
+      - name: Run pytest
+        run: uv run pytest

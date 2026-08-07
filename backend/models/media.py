@@ -117,6 +117,8 @@ class AggregatedEpisodeData:
     jellyfin_episode_id: str | None = None
     emby_episode_id: str | None = None
     media_server_user_rating: float | None = None
+    # file runtime in whole seconds, from the media server's item metadata
+    runtime_seconds: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
