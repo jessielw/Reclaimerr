@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in trusted proxy authentication with configurable user headers, strict proxy allowlisting, and existing-user mapping for Authelia-style forward auth
 - Optional recovery mode and identity provider sign-out URL for trusted proxy authentication
+- Administrators can rename a user, including the initial `admin`, from Settings -> Users, so an account can be lined up with an SSO username without creating a duplicate
 
 ### Fixed
 

@@ -94,6 +94,13 @@ username must match an existing Reclaimerr username exactly, including case.
 A mismatch produces a 401 on every request, plus a log line naming the
 asserted username.
 
+You do not need a second account to line the two names up. An administrator
+can rename any existing user, including the initial `admin`, from
+**Settings -> Users** by editing the user and changing the Username field.
+Renaming does not sign the user out and keeps their reclaim history, since
+accounts are tracked by ID internally. If the renamed user signs in through
+the proxy, update the proxy to assert the new username as well.
+
 If you get locked out, for example the feature was enabled before the
 matching user existed, set `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK=true` and
 restart. Sign in locally, create the matching user, then remove the variable

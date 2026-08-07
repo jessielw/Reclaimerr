@@ -89,6 +89,7 @@
 
   // edit user form
   let editUser = $state({
+    username: "",
     display_name: "",
     email: "",
     role: "user",
@@ -344,6 +345,7 @@
   const openEditModal = (user: User) => {
     editingUser = user;
     editUser = {
+      username: user.username,
       display_name: user.display_name || "",
       email: user.email || "",
       role: user.role,
@@ -360,6 +362,7 @@
     showEditModal = false;
     editingUser = null;
     editUser = {
+      username: "",
       display_name: "",
       email: "",
       role: "user",
@@ -375,6 +378,7 @@
 
     try {
       const updateData: any = {
+        username: editUser.username.trim(),
         display_name: editUser.display_name.trim(),
         email: editUser.email.trim(),
         role: editUser.role,
@@ -982,6 +986,23 @@
         class="space-y-4"
         autocomplete="off"
       >
+        <div class="space-y-2">
+          <Label for="edit_username">Username</Label>
+          <Input
+            id="edit_username"
+            type="text"
+            bind:value={editUser.username}
+            required
+            placeholder="Enter username"
+            class="input-hover-el"
+            minlength={5}
+            maxlength={32}
+          />
+          <p class="text-xs text-muted-foreground">
+            Used to sign in. If this user signs in through a reverse proxy,
+            renaming them changes the username the proxy must send.
+          </p>
+        </div>
         <div class="space-y-2">
           <Label for="edit_display_name">Display Name</Label>
           <Input

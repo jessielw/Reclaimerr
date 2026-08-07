@@ -367,13 +367,30 @@ class CreateUserRequest(
         return self
 
 
-class UpdateUserRequest(BaseModel, DisplayNameMixin, PasswordValidationMixin):
+class UpdateUserRequest(
+    BaseModel, UsernameMixin, DisplayNameMixin, PasswordValidationMixin
+):
+    username: str | None = None
     display_name: str | None = None
     email: EmailStr | None = None
     role: UserRole
     permissions: list[Permission] = []
     allowed_pages: list[PageAccess] | None = None
     password: str | None = None
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def empty_username_to_none(cls, v: str | None) -> str | None:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def username_validation(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return cls.validate_username(v)
 
     @field_validator("display_name")
     @classmethod

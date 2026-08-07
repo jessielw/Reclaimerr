@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from starlette.requests import Request
 
+from backend.api.routes.account import update_user
 from backend.core import auth as auth_module
 from backend.core.auth import (
     COOKIE_NAME,
@@ -25,6 +26,7 @@ from backend.core.settings import settings
 from backend.database import Base
 from backend.database.models import User, UserSession
 from backend.enums import UserRole
+from backend.models.auth import UpdateUserRequest
 
 
 def _request(
@@ -568,6 +570,41 @@ def test_username_matching_is_case_sensitive(monkeypatch) -> None:
             with pytest.raises(HTTPException) as exc:
                 await get_current_user(_request(username="Carol"), db)
 
+            assert exc.value.status_code == 401
+            assert exc.value.detail == "Trusted proxy user is not configured"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_renaming_a_user_moves_which_asserted_username_is_accepted(monkeypatch) -> None:
+    """Renaming is how an operator lines an account up with their SSO username."""
+    _configure_forward_auth(monkeypatch)
+
+    async def run() -> None:
+        engine, session_maker = await _session_maker()
+        async with session_maker() as db:
+            actor = User(
+                username="admin",
+                password_hash="hashed",
+                role=UserRole.ADMIN,
+                permissions=[],
+            )
+            db.add(actor)
+            await db.commit()
+
+            await update_user(
+                actor.id,
+                UpdateUserRequest(username="sso_admin", role=UserRole.ADMIN),
+                actor,
+                db,
+            )
+
+            authenticated = await get_current_user(_request(username="sso_admin"), db)
+            assert authenticated.id == actor.id
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_request(username="admin"), db)
             assert exc.value.status_code == 401
             assert exc.value.detail == "Trusted proxy user is not configured"
         await engine.dispose()
