@@ -1,7 +1,6 @@
 # Features
 
-Reclaimerr is built around a predictable reclaim pipeline: scan, review,
-protect, approve, then delete or move through the correct service.
+Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect, approve, then delete or move through the correct service.
 
 ## Core Workflow
 
@@ -38,4 +37,3 @@ protect, approve, then delete or move through the correct service.
 - Seerr
 - Tautulli
 - Tracearr 2.0.0 or newer
-

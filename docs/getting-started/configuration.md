@@ -1,48 +1,40 @@
 # Configuration
 
-Reclaimerr is configured through General Settings, service settings, and a small
-set of environment variables for the runtime container or desktop process.
+Reclaimerr is configured through General Settings, service settings, and a small set of environment variables for the runtime container or desktop process.
 
 ## Core Settings Areas
 
 - **Media servers** - connect Plex, Jellyfin, Emby, Radarr, and Sonarr
-- **General Settings** - path mappings, move destinations, public application
-  URL, fallback deletion, Leaving Soon, and default auto-delete review periods
+- **General Settings** - path mappings, move destinations, public application URL, fallback deletion, Leaving Soon, and default auto-delete review periods
 - **Tasks** - schedule scans, tagging, syncs, and optional auto-deletion
 - **Notifications** - configure Apprise destinations
 
 ## Important Environment Variables
 
-| Variable                     | Purpose                                                                    |
-| ---------------------------- | -------------------------------------------------------------------------- |
-| `API_HOST`                   | Bind address for the API server                                            |
-| `API_PORT`                   | HTTP port for the API server                                               |
-| `DATA_DIR`                   | Persistent application data location                                       |
-| `TZ`                         | Local timezone for cron-style schedules                                    |
-| `UMASK`                      | Default permissions for created files                                      |
-| `PROXY_TRUSTED_HOSTS`        | Trusted reverse proxy IPs or CIDRs                                         |
-| `FORWARD_AUTH_ENABLED`       | Trust an authenticated username supplied by an approved reverse proxy      |
-| `FORWARD_AUTH_USER_HEADER`   | Forward-auth username header (default: `Remote-User`)                      |
-| `FORWARD_AUTH_TRUSTED_PROXIES` | Direct proxy IPs/CIDRs permitted to supply the identity header            |
+| Variable | Purpose |
+| --- | --- |
+| `API_HOST` | Bind address for the API server |
+| `API_PORT` | HTTP port for the API server |
+| `DATA_DIR` | Persistent application data location |
+| `TZ` | Local timezone for cron-style schedules |
+| `UMASK` | Default permissions for created files |
+| `PROXY_TRUSTED_HOSTS` | Trusted reverse proxy IPs or CIDRs |
+| `FORWARD_AUTH_ENABLED` | Trust an authenticated username supplied by an approved reverse proxy |
+| `FORWARD_AUTH_USER_HEADER` | Forward-auth username header (default: `Remote-User`) |
+| `FORWARD_AUTH_TRUSTED_PROXIES` | Direct proxy IPs/CIDRs permitted to supply the identity header |
 | `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` | Recovery switch: allow local login when the asserted username is unrecognized (default: off) |
-| `FORWARD_AUTH_LOGOUT_URL`    | Identity provider sign-out endpoint used by the UI logout control          |
-| `JWT_SECRET`                 | Session signing secret                                                     |
-| `ENCRYPTION_KEY`             | Secrets encryption key                                                     |
-| `ADMIN_PASSWORD`             | Initial admin password or admin password reset on startup                  |
-| `RECLAIMERR_TASK_ISOLATION`  | Set to `off` to run heavy tasks inline instead of isolated child processes |
-| `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2)             |
+| `FORWARD_AUTH_LOGOUT_URL` | Identity provider sign-out endpoint used by the UI logout control |
+| `JWT_SECRET` | Session signing secret |
+| `ENCRYPTION_KEY` | Secrets encryption key |
+| `ADMIN_PASSWORD` | Initial admin password or admin password reset on startup |
+| `RECLAIMERR_TASK_ISOLATION` | Set to `off` to run heavy tasks inline instead of isolated child processes |
+| `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2) |
 
-Application URL is configured in General Settings. It is used for Plex and OIDC
-callback generation behind a reverse proxy.
+Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy.
 
 ## Trusted Proxy Authentication
 
-Reclaimerr can trust a username asserted by Authelia or another forward-auth
-reverse proxy instead of requiring a local sign-in. This is disabled by
-default, and it never creates accounts or grants roles: it only maps an
-asserted username onto an existing, active Reclaimerr user. Local sign-in
-keeps working for requests where the trusted proxy does not assert an
-identity.
+Reclaimerr can trust a username asserted by Authelia or another forward-auth reverse proxy instead of requiring a local sign-in. This is disabled by default, and it never creates accounts or grants roles: it only maps an asserted username onto an existing, active Reclaimerr user. Local sign-in keeps working for requests where the trusted proxy does not assert an identity.
 
 ```env
 FORWARD_AUTH_ENABLED=true
@@ -89,36 +81,15 @@ FORWARD_AUTH_LOGOUT_URL=https://auth.example.com/logout
     `Remote-User` here is the default. If `FORWARD_AUTH_USER_HEADER` is set to
     something else, strip that header name instead of `Remote-User`.
 
-Create the Reclaimerr user first, then enable the feature. The asserted
-username must match an existing Reclaimerr username exactly, including case.
-A mismatch produces a 401 on every request, plus a log line naming the
-asserted username.
+Create the Reclaimerr user first, then enable the feature. The asserted username must match an existing Reclaimerr username exactly, including case. A mismatch produces a 401 on every request, plus a log line naming the asserted username.
 
-You do not need a second account to line the two names up. An administrator
-can rename any existing user, including the initial `admin`, from
-**Settings -> Users** by editing the user and changing the Username field.
-Renaming does not sign the user out and keeps their reclaim history, since
-accounts are tracked by ID internally. If the renamed user signs in through
-the proxy, update the proxy to assert the new username as well.
+You do not need a second account to line the two names up. An administrator can rename any existing user, including the initial `admin`, from **Settings -> Users** by editing the user and changing the Username field. Renaming does not sign the user out and keeps their reclaim history, since accounts are tracked by ID internally. If the renamed user signs in through the proxy, update the proxy to assert the new username as well.
 
-If you get locked out, for example the feature was enabled before the
-matching user existed, set `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK=true` and
-restart. Sign in locally, create the matching user, then remove the variable
-and restart again. While the variable is set, an admin notice stays visible
-in the sidebar as a reminder to turn it back off.
+If you get locked out, for example the feature was enabled before the matching user existed, set `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK=true` and restart. Sign in locally, create the matching user, then remove the variable and restart again. While the variable is set, an admin notice stays visible in the sidebar as a reminder to turn it back off.
 
-`FORWARD_AUTH_TRUSTED_PROXIES` takes a comma-separated list of direct proxy
-IPs and CIDRs: the address of the reverse proxy container or host itself, not
-the client behind it. It rejects both `*` and all-address ranges such as
-`0.0.0.0/0` or `::/0`.
+`FORWARD_AUTH_TRUSTED_PROXIES` takes a comma-separated list of direct proxy IPs and CIDRs: the address of the reverse proxy container or host itself, not the client behind it. It rejects both `*` and all-address ranges such as `0.0.0.0/0` or `::/0`.
 
-For a trusted-proxy session, the sidebar logout control only appears when
-`FORWARD_AUTH_LOGOUT_URL` is set, since signing out of the identity provider
-is the proxy's job, not Reclaimerr's. When it is unset, the logout control is
-replaced by a "Managed by SSO" label. This does not apply to a local session
-started through `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` recovery mode: that
-session gets the normal logout button regardless of
-`FORWARD_AUTH_LOGOUT_URL`.
+For a trusted-proxy session, the sidebar logout control only appears when `FORWARD_AUTH_LOGOUT_URL` is set, since signing out of the identity provider is the proxy's job, not Reclaimerr's. When it is unset, the logout control is replaced by a "Managed by SSO" label. This does not apply to a local session started through `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` recovery mode: that session gets the normal logout button regardless of `FORWARD_AUTH_LOGOUT_URL`.
 
 ## Multi-Server Setup
 
@@ -128,45 +99,26 @@ session gets the normal logout button regardless of
 
 ## Disabling Or Deleting Offline Services
 
-Service configuration changes do not require the external service to be online.
-An existing Radarr, Sonarr, Seerr, Tautulli, Tracearr, Jellyfin, Emby, or Plex
-configuration can be disabled or deleted while that service is unreachable.
+Service configuration changes do not require the external service to be online. An existing Radarr, Sonarr, Seerr, Tautulli, Tracearr, Jellyfin, Emby, or Plex configuration can be disabled or deleted while that service is unreachable.
 
 ## Tracearr Playback History
 
-Tracearr requires its stable public API v2, available in Tracearr 2.0.0 and
-newer. Add the Tracearr base URL and a public API key, choose **Discover
-servers**, then confirm the Tracearr server that belongs to each configured
-Plex, Jellyfin, or Emby server. One Tracearr instance can cover multiple media
-servers.
+Tracearr requires its stable public API v2, available in Tracearr 2.0.0 and newer. Add the Tracearr base URL and a public API key, choose **Discover servers**, then confirm the Tracearr server that belongs to each configured Plex, Jellyfin, or Emby server. One Tracearr instance can cover multiple media servers.
 
-A binding selects the single durable history provider for that media server:
-Tracearr replaces Tautulli for a bound Plex server and Playback Reporting for a
-bound Jellyfin or Emby server. Reclaimerr never combines those durable event
-streams or silently falls back when the selected Tracearr source is offline.
-Jellyfin and Emby native current-watch snapshots remain complementary and are
-still used where applicable. Remove a binding to return to the prior durable
-provider; retained events are remapped without double-counting.
+A binding selects the single durable history provider for that media server: Tracearr replaces Tautulli for a bound Plex server and Playback Reporting for a bound Jellyfin or Emby server. Reclaimerr never combines those durable event streams or silently falls back when the selected Tracearr source is offline. Jellyfin and Emby native current-watch snapshots remain complementary and are still used where applicable. Remove a binding to return to the prior durable provider; retained events are remapped without double-counting.
 
-- **Disable** keeps the saved URL, credentials, and related configuration for
-  later use.
-- **Delete** permanently removes the service configuration without contacting
-  the external service.
-- Enabling a service or saving a new enabled configuration still requires a
-  successful connection test.
-- The active main media server cannot be disabled or deleted. Assign another
-  configured media server as main first.
+- **Disable** keeps the saved URL, credentials, and related configuration for later use.
+- **Delete** permanently removes the service configuration without contacting the external service.
+- Enabling a service or saving a new enabled configuration still requires a successful connection test.
+- The active main media server cannot be disabled or deleted. Assign another configured media server as main first.
 
 Deleting a Radarr or Sonarr instance also performs local dependency cleanup:
 
 - stored media references for that instance are removed;
-- rules explicitly assigned to the instance are disabled and their instance
-  selection is cleared;
+- rules explicitly assigned to the instance are disabled and their instance selection is cleared;
 - path mappings scoped only to that instance are removed.
 
-The Settings page reports when dependent rules or path mappings were changed.
-Review disabled rules before enabling them again and select the intended ARR
-instance.
+The Settings page reports when dependent rules or path mappings were changed. Review disabled rules before enabling them again and select the intended ARR instance.
 
 ## Safety Settings Worth Reviewing
 
@@ -178,9 +130,6 @@ instance.
 
 ## Resetting The Admin Password
 
-Set `ADMIN_PASSWORD` in the environment, start Reclaimerr, sign in with the new
-password, then remove `ADMIN_PASSWORD` again.
+Set `ADMIN_PASSWORD` in the environment, start Reclaimerr, sign in with the new password, then remove `ADMIN_PASSWORD` again.
 
-If an admin account already exists, Reclaimerr resets that account's password
-on startup. If no admin account exists yet, Reclaimerr creates the initial admin
-account with that password.
+If an admin account already exists, Reclaimerr resets that account's password on startup. If no admin account exists yet, Reclaimerr creates the initial admin account with that password.
