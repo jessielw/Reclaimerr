@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.api.routes.settings import services
 from backend.api.routes.settings.services import (
+    _utc_second,
     delete_service_settings,
     set_service_settings,
 )
@@ -37,6 +39,23 @@ def _admin_user() -> User:
         role=UserRole.ADMIN,
         permissions=[],
     )
+
+
+def test_tracearr_match_timestamps_treat_naive_values_as_utc() -> None:
+    naive_utc = datetime(2026, 8, 11, 12, 0, 0, 900_000)
+    aware_offset = datetime(
+        2026,
+        8,
+        11,
+        8,
+        0,
+        0,
+        100_000,
+        tzinfo=timezone(-timedelta(hours=4)),
+    )
+
+    assert _utc_second(naive_utc) == _utc_second(aware_offset)
+    assert _utc_second(naive_utc) == int(naive_utc.replace(tzinfo=UTC).timestamp())
 
 
 def test_delete_service_config_success_radarr(monkeypatch):

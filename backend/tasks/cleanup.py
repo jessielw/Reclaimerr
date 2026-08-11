@@ -123,6 +123,8 @@ from backend.services.playback_history import (
     IMPORTED_PLAYBACK_DURATION_FIELDS,
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
+    active_playback_event_clause,
+    load_active_tracearr_sources,
     load_playback_rule_snapshot,
     load_user_playback_totals,
     log_playback_rule_coverage,
@@ -2791,10 +2793,12 @@ async def _activate_seerr_request_resolver_for_rules(
     )
     mappings = [m for m in raw_mappings if isinstance(m, dict)]
 
+    active_tracearr_sources = await load_active_tracearr_sources(db)
     durable_rows = (
         await db.execute(
             select(
                 PlaybackHistoryEvent.source_service,
+                PlaybackHistoryEvent.observed_service,
                 PlaybackHistoryEvent.provider_media_type,
                 PlaybackHistoryEvent.tmdb_id,
                 PlaybackHistoryEvent.season_number,
@@ -2806,6 +2810,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 PlaybackHistoryEvent.completed.is_(True),
                 PlaybackHistoryEvent.tmdb_id.is_not(None),
                 PlaybackHistoryEvent.provider_media_type.in_(("movie", "episode")),
+                active_playback_event_clause(active_tracearr_sources),
             )
         )
     ).all()
@@ -2815,6 +2820,7 @@ async def _activate_seerr_request_resolver_for_rules(
     durable_event_count = 0
     for (
         source_service,
+        observed_service,
         provider_media_type,
         tmdb_id,
         season_number,
@@ -2826,7 +2832,7 @@ async def _activate_seerr_request_resolver_for_rules(
         watch_key = _normalize_watch_key(source_username or source_user_id)
         if not watch_key or played_at is None or tmdb_id is None:
             continue
-        watch_service = (
+        watch_service = observed_service or (
             Service.PLEX if source_service is Service.TAUTULLI else source_service
         )
         watched_at = ensure_utc(played_at)

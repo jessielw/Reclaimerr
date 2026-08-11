@@ -35,4 +35,7 @@ protect, approve, then delete or move through the correct service.
 - Emby
 - Radarr
 - Sonarr
+- Seerr
+- Tautulli
+- Tracearr 2.0.0 or newer
 

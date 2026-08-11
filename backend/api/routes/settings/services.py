@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -14,6 +16,7 @@ from backend.core.auth import require_admin
 from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
+from backend.core.task_runtime import enqueue_task_run
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
@@ -22,9 +25,11 @@ from backend.database.models import (
     GeneralSettings,
     Movie,
     MovieArrRef,
+    MovieVersion,
     ReclaimRule,
     Series,
     SeriesArrRef,
+    SeriesServiceRef,
     ServiceConfig,
     ServiceMediaLibrary,
     User,
@@ -34,14 +39,17 @@ from backend.enums import (
     BackgroundJobStatus,
     BackgroundJobType,
     Service,
+    Task,
 )
 from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import ServiceToggleJobPayload
 from backend.models.settings import (
     LibrarySelectionUpdate,
     ServiceConfigUpdate,
+    TracearrDiscoveryRequest,
     UpdateMediaLibrariesRequest,
 )
+from backend.services.tracearr import TracearrClient
 from backend.tasks.external_ratings import (
     DEFAULT_MDBLIST_REQUEST_LIMIT,
     DEFAULT_OMDB_REQUEST_LIMIT,
@@ -85,6 +93,263 @@ def _parse_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_tracearr_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
+def _utc_second(value: datetime) -> int:
+    normalized = (
+        value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    )
+    return int(normalized.timestamp())
+
+
+async def _resolve_tracearr_api_key(
+    db: AsyncSession, *, config_id: int | None, api_key: str | None
+) -> str:
+    if api_key:
+        return api_key
+    query = select(ServiceConfig).where(ServiceConfig.service_type == Service.TRACEARR)
+    if config_id is not None:
+        query = query.where(ServiceConfig.id == config_id)
+    config = (await db.execute(query)).scalars().first()
+    if config is None:
+        raise HTTPException(status_code=400, detail="Tracearr API key is required")
+    return fer_decrypt(config.api_key)
+
+
+async def _local_tracearr_probe_items(
+    db: AsyncSession,
+) -> dict[Service, dict[str, tuple[str, datetime | None]]]:
+    items: dict[Service, dict[str, tuple[str, datetime | None]]] = defaultdict(dict)
+    movie_rows = (
+        await db.execute(
+            select(
+                MovieVersion.service,
+                MovieVersion.service_item_id,
+                Movie.title,
+                MovieVersion.added_at,
+                Movie.added_at,
+            )
+            .join(Movie, MovieVersion.movie_id == Movie.id)
+            .where(Movie.removed_at.is_(None))
+        )
+    ).all()
+    for service, item_id, title, version_added_at, movie_added_at in movie_rows:
+        items[service][str(item_id)] = (
+            str(title),
+            version_added_at or movie_added_at,
+        )
+
+    series_rows = (
+        await db.execute(
+            select(
+                SeriesServiceRef.service,
+                SeriesServiceRef.service_id,
+                Series.title,
+                Series.added_at,
+            )
+            .join(Series, SeriesServiceRef.series_id == Series.id)
+            .where(Series.removed_at.is_(None))
+        )
+    ).all()
+    for service, item_id, title, added_at in series_rows:
+        items[service][str(item_id)] = (str(title), added_at)
+    return items
+
+
+async def _tracearr_discovery_payload(
+    db: AsyncSession, *, base_url: str, api_key: str
+) -> dict[str, Any]:
+    client = TracearrClient(api_key=api_key, base_url=base_url, timeout=30)
+    try:
+        if not await client.health():
+            raise HTTPException(
+                status_code=400,
+                detail="Tracearr must expose the stable public API v2 (2.0.0 or newer)",
+            )
+        servers = await client.discover_servers()
+        local_items = await _local_tracearr_probe_items(db)
+        media_configs = list(
+            (
+                await db.execute(
+                    select(ServiceConfig).where(
+                        ServiceConfig.enabled.is_(True),
+                        ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidates_by_service: dict[Service, list[dict[str, Any]]] = defaultdict(list)
+        for server in servers:
+            server_id = str(server.get("id") or "").strip()
+            server_type_raw = str(server.get("server_type") or "").strip().lower()
+            try:
+                server_type = Service(server_type_raw)
+            except ValueError:
+                server_type = None
+            recent_rows = await client.get_recently_added(server_id, page_size=25)
+            for media_config in media_configs:
+                if (
+                    server_type is not None
+                    and server_type is not media_config.service_type
+                ):
+                    continue
+                matches = 0
+                contradictions = 0
+                checked = 0
+                item_map = local_items.get(media_config.service_type, {})
+                for row in recent_rows:
+                    rating_key = str(row.get("rating_key") or "").strip()
+                    local = item_map.get(rating_key)
+                    if local is None:
+                        continue
+                    checked += 1
+                    local_title, local_added_at = local
+                    remote_title = str(row.get("title") or "")
+                    remote_added_at = _parse_tracearr_datetime(row.get("added_at"))
+                    dates_match = (
+                        local_added_at is not None
+                        and remote_added_at is not None
+                        and _utc_second(local_added_at) == _utc_second(remote_added_at)
+                    )
+                    if local_title == remote_title and dates_match:
+                        matches += 1
+                    else:
+                        contradictions += 1
+                if matches >= 2:
+                    confidence = "confirmed"
+                elif contradictions:
+                    confidence = "conflict"
+                else:
+                    confidence = "unverified"
+                candidates_by_service[media_config.service_type].append(
+                    {
+                        **server,
+                        "match": confidence,
+                        "matches": matches,
+                        "contradictions": contradictions,
+                        "checked": checked,
+                    }
+                )
+
+        return {
+            "servers": servers,
+            "media_servers": [
+                {
+                    "service_config_id": config.id,
+                    "name": config.name or config.service_type.title(),
+                    "server_type": config.service_type.value,
+                    "candidates": candidates_by_service.get(config.service_type, []),
+                    "recommended_tracearr_server_id": next(
+                        (
+                            candidate["id"]
+                            for candidate in candidates_by_service.get(
+                                config.service_type, []
+                            )
+                            if candidate["match"] == "confirmed"
+                        ),
+                        None,
+                    )
+                    if sum(
+                        candidate["match"] == "confirmed"
+                        for candidate in candidates_by_service.get(
+                            config.service_type, []
+                        )
+                    )
+                    == 1
+                    else None,
+                }
+                for config in media_configs
+            ],
+        }
+    finally:
+        await client.session.close()
+
+
+async def _validate_tracearr_bindings(
+    db: AsyncSession, data: ServiceConfigUpdate, api_key: str
+) -> None:
+    settings = dict(data.extra_settings or {})
+    raw_bindings = settings.get("server_bindings")
+    if not isinstance(raw_bindings, list) or not raw_bindings:
+        raise HTTPException(
+            status_code=400,
+            detail="Bind at least one Reclaimerr media server to a Tracearr server",
+        )
+    discovery = await _tracearr_discovery_payload(
+        db, base_url=data.base_url, api_key=api_key
+    )
+    remote_by_id = {
+        str(server["id"]): server
+        for server in discovery["servers"]
+        if isinstance(server, Mapping) and server.get("id")
+    }
+    media_configs = {
+        config.id: config
+        for config in (
+            (
+                await db.execute(
+                    select(ServiceConfig).where(
+                        ServiceConfig.enabled.is_(True),
+                        ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
+    normalized: list[dict[str, Any]] = []
+    local_ids: set[int] = set()
+    remote_ids: set[str] = set()
+    for raw in raw_bindings:
+        if not isinstance(raw, Mapping):
+            raise HTTPException(status_code=400, detail="Invalid Tracearr binding")
+        local_id = _parse_optional_int(raw.get("service_config_id"))
+        remote_id = str(raw.get("tracearr_server_id") or "").strip()
+        local = media_configs.get(local_id or -1)
+        remote = remote_by_id.get(remote_id)
+        if local is None or remote is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A selected Tracearr binding is no longer available",
+            )
+        remote_type = str(remote.get("server_type") or "").strip().lower()
+        if remote_type and remote_type != local.service_type.value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{remote.get('name') or remote_id} is not a {local.service_type.title()} server",
+            )
+        if local.id in local_ids or remote_id in remote_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Each media server and Tracearr server can only be bound once",
+            )
+        local_ids.add(local.id)
+        remote_ids.add(remote_id)
+        normalized.append(
+            {
+                "service_config_id": local.id,
+                "tracearr_server_id": remote_id,
+                "tracearr_server_name": str(remote.get("name") or remote_id),
+                "server_type": local.service_type.value,
+            }
+        )
+    settings["server_bindings"] = normalized
+    data.extra_settings = settings
 
 
 def _coverage_payload(covered: int, total: int) -> dict[str, int | float]:
@@ -316,6 +581,31 @@ def _service_config_payload(config: ServiceConfig) -> dict[str, Any]:
     }
 
 
+@router.post("/tracearr/discover")
+async def discover_tracearr_servers(
+    data: TracearrDiscoveryRequest,
+    _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """List Tracearr servers and compare their libraries with local media servers."""
+
+    api_key = await _resolve_tracearr_api_key(
+        db, config_id=data.id, api_key=data.api_key
+    )
+    try:
+        return await _tracearr_discovery_payload(
+            db, base_url=data.base_url, api_key=api_key
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOG.warning(f"Tracearr discovery failed: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not discover Tracearr servers. Verify the URL and API key.",
+        ) from None
+
+
 @router.post("/save/service")
 async def set_service_settings(
     data: ServiceConfigUpdate,
@@ -357,6 +647,8 @@ async def set_service_settings(
         )
         if not success:
             raise HTTPException(status_code=400, detail=error_msg)
+        if data.service_type is Service.TRACEARR:
+            await _validate_tracearr_bindings(db, data, resolved_api_key)
 
     # detect if the main server is switching before we write the new config
     main_switched = False
@@ -431,6 +723,9 @@ async def set_service_settings(
     # update selected toggle for libraries
     if data.service_type in MEDIA_SERVERS and data.libraries:
         await _upsert_service_libraries(db, data.libraries)
+
+    if data.service_type is Service.TRACEARR:
+        await enqueue_task_run(Task.REFRESH_PLAYBACK_HISTORY)
 
     return {
         "message": f"{data.service_type.title()} settings updated",
@@ -532,6 +827,9 @@ async def delete_service_settings(
         LOG.warning(
             f"Service config {config_id} was deleted, but runtime cleanup failed: {e}"
         )
+
+    if service_type is Service.TRACEARR or service_type in MEDIA_SERVERS:
+        await enqueue_task_run(Task.REFRESH_PLAYBACK_HISTORY)
 
     return {
         "message": f"{service_type.value.title()} configuration deleted",

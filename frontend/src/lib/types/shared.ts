@@ -106,6 +106,7 @@ export enum SettingsTab {
   Sonarr = "sonarr",
   Seerr = "seerr",
   Tautulli = "tautulli",
+  Tracearr = "tracearr",
   MDBList = "mdblist",
   OMDb = "omdb",
   General = "general",

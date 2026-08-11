@@ -379,21 +379,24 @@ Reclaimerr first matches Seerr users automatically using usernames, display
 names, and email addresses from Seerr's user directory. Explicit requester
 watch-user mappings are additive fallbacks for users whose identities differ
 between Seerr and the playback provider. Username comparisons are
-case-insensitive. Tautulli identities are treated as Plex identities when
+case-insensitive. Tautulli and Plex-bound Tracearr identities are treated as
+Plex identities when
 applying provider-scoped mappings.
 
 Requester watch state combines completed per-user playback snapshots from
-Plex, Jellyfin, and Emby with Tautulli events whose provider-native watched
-status is complete. Each provider's configured watched threshold remains the
-source of truth. Jellyfin and Emby Playback Reporting events describe activity
-but do not expose a reliable completion signal, so they do not independently
-satisfy this field. They remain available to the general `playback.*` fields.
+Plex, Jellyfin, and Emby with Tautulli or Tracearr events whose
+provider-native watched status is complete. Each provider's configured watched
+threshold remains the source of truth. Jellyfin and Emby Playback Reporting
+events describe activity but do not expose a reliable completion signal, so
+they do not independently satisfy this field. They remain available to the
+general `playback.*` fields.
 When the same completed play is available from multiple sources, Reclaimerr
 keeps the latest qualifying timestamp.
 
 After configuring Seerr or changing identity mappings, run `Sync Media` before
 previewing the rule. Plex can provide current completed-watch state directly;
-durable completed Plex history requires Tautulli.
+durable completed Plex history requires Tautulli or a Plex-bound Tracearr
+server.
 
 ### Sonarr Rule Data
 
@@ -497,14 +500,14 @@ already stored, and lowering it does not bring back events that were skipped.
 #### Per-user playback conditions
 
 The fields above are aggregated across every user who played the media, so
-`Longest playback > 30` matches if *anyone* watched 30+ minutes, even if the
+`Longest playback > 30` matches if _anyone_ watched 30+ minutes, even if the
 specific person you care about only watched a few seconds. Two additional
 fields scope playback to one or more chosen users instead:
 
-| Field                          | Meaning                                          | Available scopes         |
-| ------------------------------- | ------------------------------------------------- | ------------------------- |
-| Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
-| Playback watched by user (%)   | Selected user's total watched time as a percent of runtime | Movie version, episode only |
+| Field                               | Meaning                                                    | Available scopes                       |
+| ----------------------------------- | ---------------------------------------------------------- | -------------------------------------- |
+| Playback duration by user (minutes) | Selected user's total watched minutes for the target       | Movie version, series, season, episode |
+| Playback watched by user (%)        | Selected user's total watched time as a percent of runtime | Movie version, episode only            |
 
 Both fields require picking at least one user from a user-picker in the rule
 editor (there is no "any user" option — use the aggregate `Playback users` /
@@ -564,7 +567,16 @@ Native snapshots are read from the database. A preview refreshes them when they
 are more than 15 minutes old, while cleanup scans require a current snapshot.
 Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting
 and Tautulli imports use an overlap window and event keys to avoid duplicate
-events during incremental refreshes.
+events during incremental refreshes. Tracearr uses its cursor-paginated public
+API v2 history and user endpoints, retaining unfinished play chains until their
+completed rows arrive.
+
+For each media server, Reclaimerr uses exactly one durable history provider. A
+Tracearr binding replaces Tautulli or Playback Reporting for that server; their
+retained rows are excluded from aggregates while the binding is active. A
+Tracearr failure is reported as unavailable and does not fall back to the other
+provider. Native Jellyfin/Emby snapshots continue to supplement durable
+history.
 
 Playback-user rules match usernames case-insensitively and can require any,
 none, or all selected users. Jellyfin and Emby resolve names from their native
@@ -577,7 +589,8 @@ playback metrics remain usable.
 If a native watched item has no usable last-played timestamp, activity and
 count remain available while the last-activity fields stay unknown.
 
-Plex playback fields, including playback-user rules, require Tautulli.
+Plex playback fields, including playback-user rules, require Tautulli or a
+Plex-bound Tracearr server.
 Jellyfin/Emby activity, count, users, and latest-watch fields work without the
 Playback Reporting plugin after a playback data refresh; duration fields still require
 imported plugin history. Reclaimerr does not currently import playback events

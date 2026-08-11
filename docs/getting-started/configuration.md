@@ -129,8 +129,24 @@ session gets the normal logout button regardless of
 ## Disabling Or Deleting Offline Services
 
 Service configuration changes do not require the external service to be online.
-An existing Radarr, Sonarr, Seerr, Tautulli, Jellyfin, Emby, or Plex
+An existing Radarr, Sonarr, Seerr, Tautulli, Tracearr, Jellyfin, Emby, or Plex
 configuration can be disabled or deleted while that service is unreachable.
+
+## Tracearr Playback History
+
+Tracearr requires its stable public API v2, available in Tracearr 2.0.0 and
+newer. Add the Tracearr base URL and a public API key, choose **Discover
+servers**, then confirm the Tracearr server that belongs to each configured
+Plex, Jellyfin, or Emby server. One Tracearr instance can cover multiple media
+servers.
+
+A binding selects the single durable history provider for that media server:
+Tracearr replaces Tautulli for a bound Plex server and Playback Reporting for a
+bound Jellyfin or Emby server. Reclaimerr never combines those durable event
+streams or silently falls back when the selected Tracearr source is offline.
+Jellyfin and Emby native current-watch snapshots remain complementary and are
+still used where applicable. Remove a binding to return to the prior durable
+provider; retained events are remapped without double-counting.
 
 - **Disable** keeps the saved URL, credentials, and related configuration for
   later use.
