@@ -31,6 +31,7 @@
   import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
   import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
   import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
+  import TracearrSVG from "$lib/components/svgs/tracearr-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import KeyRound from "@lucide/svelte/icons/key-round";
@@ -176,7 +177,7 @@
         {
           id: SettingsTab.Tracearr,
           label: "Tracearr",
-          icon: Server,
+          icon: TracearrSVG,
           desc: "Use Tracearr public API v2 as the authoritative durable playback history source for selected media servers",
           baseUrlPlaceholder: "e.g. http://localhost:3000",
           adminOnly: true,
