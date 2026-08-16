@@ -120,3 +120,11 @@ async def load_enabled_services() -> None:
                 "Tautulli",
                 lambda: service_manager.initialize_tautulli(config.base_url, api_key),
             )
+        elif config.service_type is Service.TRACEARR:
+            timeout = int((config.extra_settings or {}).get("timeout", 30))
+            await _initialize_with_retry(
+                "Tracearr",
+                lambda: service_manager.initialize_tracearr(
+                    config.base_url, api_key, timeout
+                ),
+            )

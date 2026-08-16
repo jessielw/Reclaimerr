@@ -9,6 +9,7 @@ class Service(StrEnum):
     PLEX = auto()
     SEERR = auto()
     TAUTULLI = auto()
+    TRACEARR = auto()
     MDBLIST = auto()
     OMDB = auto()
 

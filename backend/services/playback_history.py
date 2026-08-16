@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, false, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from backend.enums import MediaType, Service
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.tautulli import TautulliClient
+from backend.services.tracearr import TracearrClient
 
 PLAYBACK_HISTORY_STATE_KEY = "playback_history_sync"
 PLAYBACK_MOVIE_MIN_SECONDS = 15
@@ -45,6 +46,7 @@ PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
 PLAYBACK_EVENT_FORMAT_VERSION = 2
 PLAYBACK_AGGREGATE_FORMAT_VERSION = 1
+TRACEARR_PLAYBACK_FORMAT_VERSION = 1
 NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
 NATIVE_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_FIELDS = frozenset(
@@ -300,6 +302,142 @@ class _NormalizedEvent:
     source_user_id: str | None
     source_username: str | None
     completed: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TracearrBinding:
+    """One Tracearr server bound to one configured Reclaimerr media server."""
+
+    service_config_id: int
+    tracearr_server_id: str
+    tracearr_server_name: str
+    observed_service: Service
+
+
+def _tracearr_bindings(config: ServiceConfig) -> list[_TracearrBinding]:
+    settings = config.extra_settings if isinstance(config.extra_settings, dict) else {}
+    raw_bindings = settings.get("server_bindings")
+    if not isinstance(raw_bindings, list):
+        return []
+
+    bindings: list[_TracearrBinding] = []
+    seen_local: set[int] = set()
+    seen_remote: set[str] = set()
+    for raw in raw_bindings:
+        if not isinstance(raw, Mapping):
+            continue
+        config_id = _parse_int(raw.get("service_config_id"))
+        server_id = str(raw.get("tracearr_server_id") or "").strip()
+        server_name = str(raw.get("tracearr_server_name") or server_id).strip()
+        try:
+            observed_service = Service(str(raw.get("server_type") or "").lower())
+        except ValueError:
+            continue
+        if (
+            config_id is None
+            or not server_id
+            or observed_service not in {Service.PLEX, Service.JELLYFIN, Service.EMBY}
+            or config_id in seen_local
+            or server_id in seen_remote
+        ):
+            continue
+        seen_local.add(config_id)
+        seen_remote.add(server_id)
+        bindings.append(
+            _TracearrBinding(
+                service_config_id=config_id,
+                tracearr_server_id=server_id,
+                tracearr_server_name=server_name or server_id,
+                observed_service=observed_service,
+            )
+        )
+    return bindings
+
+
+async def load_active_tracearr_sources(
+    db: AsyncSession,
+) -> set[tuple[int, Service, str]]:
+    """Return active Tracearr config/service/server durable-source bindings."""
+
+    configs = list(
+        (
+            await db.execute(
+                select(ServiceConfig).where(
+                    ServiceConfig.enabled.is_(True),
+                    ServiceConfig.service_type.in_(
+                        {Service.TRACEARR, Service.PLEX, Service.JELLYFIN, Service.EMBY}
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    media_configs = {
+        config.id: config
+        for config in configs
+        if config.service_type in {Service.PLEX, Service.JELLYFIN, Service.EMBY}
+    }
+    active: set[tuple[int, Service, str]] = set()
+    for config in configs:
+        if config.service_type is not Service.TRACEARR:
+            continue
+        for binding in _tracearr_bindings(config):
+            media_config = media_configs.get(binding.service_config_id)
+            if (
+                media_config is not None
+                and media_config.service_type is binding.observed_service
+            ):
+                active.add(
+                    (
+                        config.id,
+                        binding.observed_service,
+                        binding.tracearr_server_id,
+                    )
+                )
+    return active
+
+
+def active_playback_event_clause(
+    active_tracearr_sources: set[tuple[int, Service, str]],
+):
+    """Build the SQL predicate for the single authoritative durable provider."""
+
+    selected_services = {
+        service for _config_id, service, _server_id in active_tracearr_sources
+    }
+    legacy_clause = and_(
+        PlaybackHistoryEvent.source_service != Service.TRACEARR,
+        PlaybackHistoryEvent.observed_service.not_in(selected_services),
+    )
+    tracearr_clauses = [
+        and_(
+            PlaybackHistoryEvent.source_service == Service.TRACEARR,
+            PlaybackHistoryEvent.source_service_config_id == config_id,
+            PlaybackHistoryEvent.observed_service == service,
+            PlaybackHistoryEvent.source_event_key.startswith(f"{server_id}:"),
+        )
+        for config_id, service, server_id in active_tracearr_sources
+    ]
+    return or_(legacy_clause, or_(*tracearr_clauses) if tracearr_clauses else false())
+
+
+def _playback_event_is_active(
+    event: PlaybackHistoryEvent,
+    active_tracearr_sources: set[tuple[int, Service, str]],
+) -> bool:
+    observed_service = _observed_service_for_event(event)
+    selected_services = {
+        service for _config_id, service, _server_id in active_tracearr_sources
+    }
+    if event.source_service is Service.TRACEARR:
+        return any(
+            event.source_service_config_id == config_id
+            and observed_service is service
+            and event.source_event_key.startswith(f"{server_id}:")
+            for config_id, service, server_id in active_tracearr_sources
+        )
+    return observed_service not in selected_services
 
 
 @dataclass(slots=True)
@@ -704,6 +842,68 @@ def _normalize_tautulli_events(
     return events
 
 
+def _normalize_tracearr_events(
+    rows: Iterable[Mapping[str, object]],
+    usernames_by_identity: Mapping[str, str] | None,
+    *,
+    server_id: str,
+    movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
+    episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
+) -> list[_NormalizedEvent]:
+    """Convert Tracearr public-v2 play chains into normalized playback events."""
+
+    events: list[_NormalizedEvent] = []
+    for row in rows:
+        if str(row.get("server_id") or "").strip() != server_id:
+            continue
+        media_type_raw = str(row.get("media_type") or "").strip().lower()
+        if media_type_raw not in {"movie", "episode"}:
+            continue
+        media_type: Literal["movie", "episode"] = (
+            "movie" if media_type_raw == "movie" else "episode"
+        )
+        duration_ms = _parse_int(row.get("duration_ms"))
+        duration = max(0, duration_ms or 0) // 1000
+        threshold = movie_min_seconds if media_type == "movie" else episode_min_seconds
+        played_at = _parse_datetime(row.get("stopped_at") or row.get("started_at"))
+        item_id = str(row.get("rating_key") or "").strip()
+        event_id = str(row.get("id") or "").strip()
+        raw_user = row.get("user")
+        user: Mapping[str, object] = raw_user if isinstance(raw_user, Mapping) else {}
+        user_id = str(user.get("id") or "").strip() or None
+        username = (
+            str(
+                (
+                    usernames_by_identity.get(user_id)
+                    if user_id and usernames_by_identity
+                    else ""
+                )
+                or user.get("username")
+                or ""
+            ).strip()
+            or None
+        )
+        if not event_id or not item_id or played_at is None or duration < threshold:
+            continue
+        events.append(
+            _NormalizedEvent(
+                source_event_key=f"{server_id}:{event_id}",
+                source_item_id=item_id,
+                provider_media_type=media_type,
+                played_at=played_at,
+                duration_seconds=duration,
+                source_user_id=user_id,
+                source_username=username,
+                completed=(
+                    bool(row.get("watched"))
+                    if isinstance(row.get("watched"), bool)
+                    else None
+                ),
+            )
+        )
+    return events
+
+
 async def _identity_maps(
     session: AsyncSession, service: Service
 ) -> tuple[
@@ -857,6 +1057,7 @@ async def _upsert_events(
             new_values.append(
                 {
                     "source_service": provider,
+                    "observed_service": observed_service,
                     "source_service_config_id": config.id,
                     "source_event_key": event.source_event_key,
                     "source_item_id": event.source_item_id,
@@ -878,6 +1079,7 @@ async def _upsert_events(
             continue
 
         existing.source_item_id = event.source_item_id
+        existing.observed_service = observed_service
         existing.provider_media_type = event.provider_media_type
         existing.played_at = event.played_at
         existing.duration_seconds = event.duration_seconds
@@ -901,23 +1103,21 @@ async def _backfill_event_usernames(
     *,
     config_id: int,
     usernames_by_id: Mapping[str, str],
+    source_event_prefix: str | None = None,
 ) -> None:
     """Apply current provider usernames to every retained event for a config."""
 
     if not usernames_by_id:
         return
-    events = (
-        (
-            await session.execute(
-                select(PlaybackHistoryEvent).where(
-                    PlaybackHistoryEvent.source_service_config_id == config_id,
-                    PlaybackHistoryEvent.source_user_id.is_not(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    query = select(PlaybackHistoryEvent).where(
+        PlaybackHistoryEvent.source_service_config_id == config_id,
+        PlaybackHistoryEvent.source_user_id.is_not(None),
     )
+    if source_event_prefix:
+        query = query.where(
+            PlaybackHistoryEvent.source_event_key.like(f"{source_event_prefix}%")
+        )
+    events = (await session.execute(query)).scalars().all()
     for event in events:
         username = usernames_by_id.get(str(event.source_user_id or ""))
         if username:
@@ -1168,6 +1368,320 @@ async def _refresh_tautulli_config(
             await client.session.close()
 
 
+def _tracearr_binding_state(
+    config: ServiceConfig, binding: _TracearrBinding
+) -> dict[str, object]:
+    state = _state_from(config)
+    bindings = state.get("bindings")
+    if not isinstance(bindings, dict):
+        return {}
+    value = bindings.get(binding.tracearr_server_id)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _recent_tracearr_binding_status(
+    config: ServiceConfig, binding: _TracearrBinding
+) -> PlaybackProviderStatus | None:
+    state = _tracearr_binding_state(config, binding)
+    if (
+        _parse_int(state.get("format_version")) or 0
+    ) < TRACEARR_PLAYBACK_FORMAT_VERSION:
+        return None
+    last_attempt = _parse_datetime(state.get("last_attempt_at"))
+    if (
+        last_attempt is None
+        or datetime.now(UTC).replace(tzinfo=None) - last_attempt
+        >= PLAYBACK_PREVIEW_REFRESH_INTERVAL
+    ):
+        return None
+    return PlaybackProviderStatus(
+        config_id=config.id,
+        provider=Service.TRACEARR,
+        observed_service=binding.observed_service,
+        available=bool(state.get("available")),
+        error=summarize_error_message(str(state.get("last_error") or "").strip())
+        or None,
+    )
+
+
+def _set_tracearr_binding_state(
+    config: ServiceConfig,
+    binding: _TracearrBinding,
+    *,
+    available: bool,
+    error: str | None,
+    imported_events: int,
+    last_event_at: datetime | None = None,
+    unfinished_event_keys: Iterable[str] = (),
+) -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    settings = (
+        dict(config.extra_settings) if isinstance(config.extra_settings, dict) else {}
+    )
+    state = _state_from(config)
+    raw_bindings = state.get("bindings")
+    binding_states = dict(raw_bindings) if isinstance(raw_bindings, dict) else {}
+    previous_raw = binding_states.get(binding.tracearr_server_id)
+    previous = dict(previous_raw) if isinstance(previous_raw, dict) else {}
+    binding_states[binding.tracearr_server_id] = {
+        "available": available,
+        "last_attempt_at": now.isoformat(),
+        "last_success_at": (
+            now.isoformat() if available else previous.get("last_success_at")
+        ),
+        "last_event_at": (
+            last_event_at.isoformat()
+            if last_event_at is not None
+            else previous.get("last_event_at")
+        ),
+        "last_error": error,
+        "imported_events": imported_events,
+        "unfinished_event_keys": sorted(set(unfinished_event_keys)),
+        "format_version": TRACEARR_PLAYBACK_FORMAT_VERSION,
+        "observed_service": binding.observed_service.value,
+        "service_config_id": binding.service_config_id,
+    }
+    state.update(
+        {
+            "provider": Service.TRACEARR.value,
+            "bindings": binding_states,
+            "aggregate_format_version": state.get("aggregate_format_version", 0),
+        }
+    )
+    settings[PLAYBACK_HISTORY_STATE_KEY] = state
+    config.extra_settings = settings
+
+
+async def _fetch_tracearr_usernames(
+    client: TracearrClient, server_id: str
+) -> dict[str, str]:
+    usernames: dict[str, str] = {}
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        rows, next_cursor = await client.get_users_page(cursor=cursor)
+        for row in rows:
+            identity_id = str(row.get("id") or "").strip()
+            accounts = row.get("accounts")
+            if not identity_id or not isinstance(accounts, list):
+                continue
+            for account in accounts:
+                if not isinstance(account, Mapping):
+                    continue
+                if str(
+                    account.get("server_id") or ""
+                ).strip() != server_id or account.get("removed_at"):
+                    continue
+                username = str(account.get("username") or "").strip()
+                if username:
+                    usernames[identity_id] = username
+                    break
+        if not next_cursor:
+            return usernames
+        if next_cursor in seen_cursors:
+            raise ValueError("Tracearr users cursor repeated before completion")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+
+async def _persist_tracearr_unavailable_status(
+    config: ServiceConfig,
+    binding: _TracearrBinding,
+    error: str,
+) -> PlaybackProviderStatus:
+    async with async_db() as session:
+        db_config = await session.get(ServiceConfig, config.id)
+        if db_config is not None:
+            previous = _tracearr_binding_state(db_config, binding)
+            unfinished = previous.get("unfinished_event_keys")
+            _set_tracearr_binding_state(
+                db_config,
+                binding,
+                available=False,
+                error=error,
+                imported_events=0,
+                unfinished_event_keys=(
+                    str(value)
+                    for value in (unfinished if isinstance(unfinished, list) else [])
+                ),
+            )
+            await session.commit()
+    return PlaybackProviderStatus(
+        config_id=config.id,
+        provider=Service.TRACEARR,
+        observed_service=binding.observed_service,
+        available=False,
+        error=error,
+    )
+
+
+async def _refresh_tracearr_binding(
+    config: ServiceConfig,
+    binding: _TracearrBinding,
+    client: TracearrClient,
+    *,
+    movie_min_seconds: int,
+    episode_min_seconds: int,
+) -> PlaybackProviderStatus:
+    try:
+        usernames_by_identity = await _fetch_tracearr_usernames(
+            client, binding.tracearr_server_id
+        )
+        state = _tracearr_binding_state(config, binding)
+        unfinished_raw = state.get("unfinished_event_keys")
+        unresolved_unfinished = {
+            str(value)
+            for value in (unfinished_raw if isinstance(unfinished_raw, list) else [])
+            if str(value)
+        }
+        prefix = f"{binding.tracearr_server_id}:"
+        async with async_db() as session:
+            known_event_keys = set(
+                (
+                    await session.execute(
+                        select(PlaybackHistoryEvent.source_event_key).where(
+                            PlaybackHistoryEvent.source_service_config_id == config.id,
+                            PlaybackHistoryEvent.source_service == Service.TRACEARR,
+                            PlaybackHistoryEvent.source_event_key.like(f"{prefix}%"),
+                        )
+                    )
+                ).scalars()
+            )
+
+        rows: list[Mapping[str, object]] = []
+        current_unfinished: set[str] = set()
+        reached_known_history = False
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            page, next_cursor = await client.get_history_page(
+                binding.tracearr_server_id, cursor=cursor
+            )
+            rows.extend(page)
+            for row in page:
+                row_server_id = str(row.get("server_id") or "").strip()
+                row_server_type = str(row.get("server_type") or "").strip().lower()
+                if row_server_id != binding.tracearr_server_id:
+                    raise ValueError(
+                        "Tracearr history returned a row for a different server"
+                    )
+                if row_server_type != binding.observed_service.value:
+                    raise ValueError(
+                        "Tracearr server type no longer matches its Reclaimerr binding"
+                    )
+                row_id = str(row.get("id") or "").strip()
+                if not row_id:
+                    continue
+                event_key = f"{prefix}{row_id}"
+                unresolved_unfinished.discard(event_key)
+                if event_key in known_event_keys:
+                    reached_known_history = True
+                if row.get("stopped_at") is None:
+                    current_unfinished.add(event_key)
+
+            if not next_cursor or (reached_known_history and not unresolved_unfinished):
+                if not next_cursor and unresolved_unfinished:
+                    LOG.warning(
+                        "Tracearr no longer returned "
+                        f"{len(unresolved_unfinished)} unfinished play chain(s) for "
+                        f"{binding.tracearr_server_name}; retaining their last snapshot"
+                    )
+                break
+            if next_cursor in seen_cursors:
+                raise ValueError("Tracearr history cursor repeated before completion")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        events = _normalize_tracearr_events(
+            rows,
+            usernames_by_identity,
+            server_id=binding.tracearr_server_id,
+            movie_min_seconds=movie_min_seconds,
+            episode_min_seconds=episode_min_seconds,
+        )
+    except Exception as exc:
+        error = _provider_error_message(exc)
+        LOG.warning(
+            f"Tracearr history refresh failed for {binding.tracearr_server_name}: {error}"
+        )
+        return await _persist_tracearr_unavailable_status(config, binding, error)
+
+    async with async_db() as session:
+        db_config = await session.get(ServiceConfig, config.id)
+        if db_config is None:
+            raise ValueError(f"Service config {config.id} no longer exists")
+        await _backfill_event_usernames(
+            session,
+            config_id=db_config.id,
+            usernames_by_id=usernames_by_identity,
+            source_event_prefix=f"{binding.tracearr_server_id}:",
+        )
+        imported = await _upsert_events(
+            session,
+            config=db_config,
+            provider=Service.TRACEARR,
+            observed_service=binding.observed_service,
+            events=events,
+        )
+        _set_tracearr_binding_state(
+            db_config,
+            binding,
+            available=True,
+            error=None,
+            imported_events=imported,
+            last_event_at=max((event.played_at for event in events), default=None),
+            unfinished_event_keys=current_unfinished,
+        )
+        await session.commit()
+    return PlaybackProviderStatus(
+        config_id=config.id,
+        provider=Service.TRACEARR,
+        observed_service=binding.observed_service,
+        available=True,
+        imported_events=imported,
+    )
+
+
+async def _refresh_tracearr_config(
+    config: ServiceConfig,
+    *,
+    bindings: list[_TracearrBinding] | None = None,
+    force: bool,
+    movie_min_seconds: int,
+    episode_min_seconds: int,
+) -> tuple[list[PlaybackProviderStatus], bool]:
+    bindings = list(bindings) if bindings is not None else _tracearr_bindings(config)
+    if not bindings:
+        return [], False
+    client = TracearrClient(
+        api_key=_config_api_key(config),
+        base_url=config.base_url,
+        timeout=int((config.extra_settings or {}).get("timeout", 30)),
+    )
+    statuses: list[PlaybackProviderStatus] = []
+    refreshed = False
+    try:
+        for binding in bindings:
+            if not force:
+                recent = _recent_tracearr_binding_status(config, binding)
+                if recent is not None:
+                    statuses.append(recent)
+                    continue
+            statuses.append(
+                await _refresh_tracearr_binding(
+                    config,
+                    binding,
+                    client,
+                    movie_min_seconds=movie_min_seconds,
+                    episode_min_seconds=episode_min_seconds,
+                )
+            )
+            refreshed = True
+    finally:
+        await client.session.close()
+    return statuses, refreshed
+
+
 async def refresh_playback_history(*, force: bool = False) -> PlaybackRefreshResult:
     """Serialize playback refreshes so providers and aggregates cannot race."""
     async with _playback_refresh_lock:
@@ -1185,7 +1699,12 @@ async def _refresh_playback_history_once(
                     select(ServiceConfig).where(
                         ServiceConfig.enabled.is_(True),
                         ServiceConfig.service_type.in_(
-                            [Service.JELLYFIN, Service.EMBY, Service.TAUTULLI]
+                            [
+                                Service.JELLYFIN,
+                                Service.EMBY,
+                                Service.TAUTULLI,
+                                Service.TRACEARR,
+                            ]
                         ),
                     )
                 )
@@ -1193,16 +1712,19 @@ async def _refresh_playback_history_once(
             .scalars()
             .all()
         )
-        has_plex = (
-            await session.scalar(
-                select(ServiceConfig.id)
-                .where(
-                    ServiceConfig.enabled.is_(True),
-                    ServiceConfig.service_type == Service.PLEX,
+        media_configs = list(
+            (
+                await session.execute(
+                    select(ServiceConfig).where(
+                        ServiceConfig.enabled.is_(True),
+                        ServiceConfig.service_type.in_(
+                            [Service.PLEX, Service.JELLYFIN, Service.EMBY]
+                        ),
+                    )
                 )
-                .limit(1)
             )
-            is not None
+            .scalars()
+            .all()
         )
         general_settings = (
             (await session.execute(select(GeneralSettings))).scalars().first()
@@ -1218,13 +1740,51 @@ async def _refresh_playback_history_once(
             else PLAYBACK_EPISODE_MIN_SECONDS
         )
 
+    media_configs_by_id = {config.id: config for config in media_configs}
+    tracearr_bindings_by_config: dict[int, list[_TracearrBinding]] = {}
+    selected_tracearr_media_config_ids: set[int] = set()
+    for config in configs:
+        if config.service_type is not Service.TRACEARR:
+            continue
+        valid_bindings = [
+            binding
+            for binding in _tracearr_bindings(config)
+            if (
+                (media_config := media_configs_by_id.get(binding.service_config_id))
+                is not None
+                and media_config.service_type is binding.observed_service
+            )
+        ]
+        tracearr_bindings_by_config[config.id] = valid_bindings
+        selected_tracearr_media_config_ids.update(
+            binding.service_config_id for binding in valid_bindings
+        )
+
+    selected_tracearr_services = {
+        media_configs_by_id[config_id].service_type
+        for config_id in selected_tracearr_media_config_ids
+    }
+    has_plex = any(config.service_type is Service.PLEX for config in media_configs)
+
     statuses: list[PlaybackProviderStatus] = []
     refreshed = False
     for config in configs:
-        if not force and (recent_status := _recent_status_from(config)) is not None:
-            statuses.append(recent_status)
+        if (
+            config.service_type in {Service.JELLYFIN, Service.EMBY}
+            and config.id in selected_tracearr_media_config_ids
+        ) or (
+            config.service_type is Service.TAUTULLI
+            and Service.PLEX in selected_tracearr_services
+        ):
             continue
+        if config.service_type is not Service.TRACEARR and not force:
+            recent_status = _recent_status_from(config)
+            if recent_status is not None:
+                statuses.append(recent_status)
+                continue
         if config.service_type in {Service.JELLYFIN, Service.EMBY}:
+            if config.id in selected_tracearr_media_config_ids:
+                continue
             statuses.append(
                 await _refresh_reporting_config(
                     config,
@@ -1234,6 +1794,8 @@ async def _refresh_playback_history_once(
             )
             refreshed = True
         elif config.service_type == Service.TAUTULLI and has_plex:
+            if Service.PLEX in selected_tracearr_services:
+                continue
             statuses.append(
                 await _refresh_tautulli_config(
                     config,
@@ -1242,6 +1804,16 @@ async def _refresh_playback_history_once(
                 )
             )
             refreshed = True
+        elif config.service_type is Service.TRACEARR:
+            tracearr_statuses, tracearr_refreshed = await _refresh_tracearr_config(
+                config,
+                bindings=tracearr_bindings_by_config.get(config.id, []),
+                force=force,
+                movie_min_seconds=movie_min_seconds,
+                episode_min_seconds=episode_min_seconds,
+            )
+            statuses.extend(tracearr_statuses)
+            refreshed = refreshed or tracearr_refreshed
 
     if force or refreshed:
         await rebuild_playback_history_aggregates()
@@ -1488,15 +2060,22 @@ async def _load_native_playback_statuses(
     return [_native_status_from_config(config) for config in configs]
 
 
-def _observed_service_for_provider(provider: Service) -> Service:
-    """Return the media server whose playback a provider observes."""
+def _observed_service_for_event(event: PlaybackHistoryEvent) -> Service:
+    """Return the media server whose playback an imported event observes."""
 
-    return Service.PLEX if provider is Service.TAUTULLI else provider
+    if event.observed_service is not None:
+        return event.observed_service
+    return (
+        Service.PLEX
+        if event.source_service is Service.TAUTULLI
+        else event.source_service
+    )
 
 
 async def rebuild_playback_history_aggregates() -> None:
     """Remap retained events to current media rows and rebuild rule aggregates."""
     async with async_db() as session:
+        active_tracearr_sources = await load_active_tracearr_sources(session)
         movie_rows = (
             await session.execute(
                 select(Movie.id, Movie.tmdb_id, Movie.added_at).where(
@@ -1595,6 +2174,8 @@ async def rebuild_playback_history_aggregates() -> None:
             (await session.execute(select(PlaybackHistoryEvent))).scalars().all()
         )
         for event in events:
+            if not _playback_event_is_active(event, active_tracearr_sources):
+                continue
             target_keys: list[PlaybackTargetKey] = []
             previous_ids = (
                 event.movie_id,
@@ -1602,7 +2183,7 @@ async def rebuild_playback_history_aggregates() -> None:
                 event.season_id,
                 event.episode_id,
             )
-            observed_service = _observed_service_for_provider(event.source_service)
+            observed_service = _observed_service_for_event(event)
             movie_map, episode_map = identity_maps.get(observed_service, ({}, {}))
 
             if event.provider_media_type == "movie":
@@ -2212,6 +2793,8 @@ async def load_user_playback_totals(
     "play_count", "last_activity_at"}}``.
     """
     totals: dict[PlaybackTargetKey, dict[str, dict[str, object]]] = {}
+    active_tracearr_sources = await load_active_tracearr_sources(db)
+    active_event_clause = active_playback_event_clause(active_tracearr_sources)
 
     def _merge(
         scope: str,
@@ -2259,6 +2842,7 @@ async def load_user_playback_totals(
             .where(
                 PlaybackHistoryEvent.movie_id.is_not(None),
                 PlaybackHistoryEvent.source_username.is_not(None),
+                active_event_clause,
             )
             .group_by(
                 PlaybackHistoryEvent.movie_id, PlaybackHistoryEvent.source_username
@@ -2312,6 +2896,7 @@ async def load_user_playback_totals(
                 .where(
                     column.is_not(None),
                     PlaybackHistoryEvent.source_username.is_not(None),
+                    active_event_clause,
                 )
                 .group_by(column, PlaybackHistoryEvent.source_username)
             )

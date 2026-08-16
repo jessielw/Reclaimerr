@@ -39,9 +39,6 @@ server {
 
 ## Notes
 
-- If SWAG proxies via container DNS, you do not need to publish the
-  app port to the host.
+- If SWAG proxies via container DNS, you do not need to publish the app port to the host.
 - Ensure the proxy forwards `X-Forwarded-For` and `X-Forwarded-Proto`.
-- Use `Application URL` in General Settings for the public base URL used by
-  OIDC and Plex callbacks. Keep `redirect_uri_override` for OIDC-only cases.
-
+- Use `Application URL` in General Settings for the public base URL used by OIDC and Plex callbacks. Keep `redirect_uri_override` for OIDC-only cases.

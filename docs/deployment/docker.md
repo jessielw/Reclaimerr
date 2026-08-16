@@ -45,18 +45,8 @@ RECLAIMERR_COMMAND_WORKERS=2
 
 ## When You Are Behind A Proxy
 
-If the API sits behind SWAG or another reverse proxy, make sure forwarded
-headers are preserved and `PROXY_TRUSTED_HOSTS` points at the proxy IP or CIDR.
-Set `Application URL` in General Settings if you want Plex and OIDC callbacks
-to use a fixed public base URL.
+If the API sits behind SWAG or another reverse proxy, make sure forwarded headers are preserved and `PROXY_TRUSTED_HOSTS` points at the proxy IP or CIDR. Set `Application URL` in General Settings if you want Plex and OIDC callbacks to use a fixed public base URL.
 
-For Authelia or another forward-auth provider, enable the core
-`FORWARD_AUTH_*` settings shown above and make sure the asserted username
-already exists in Reclaimerr. `FORWARD_AUTH_TRUSTED_PROXIES` is deliberately separate
-from `PROXY_TRUSTED_HOSTS` and rejects both `*` and all-address ranges such as
-`0.0.0.0/0`. The two optional settings add a local-login recovery path and an
-identity provider sign-out link for the UI; see
-[Trusted Proxy Authentication](../getting-started/configuration.md#trusted-proxy-authentication)
-for details.
+For Authelia or another forward-auth provider, enable the core `FORWARD_AUTH_*` settings shown above and make sure the asserted username already exists in Reclaimerr. `FORWARD_AUTH_TRUSTED_PROXIES` is deliberately separate from `PROXY_TRUSTED_HOSTS` and rejects both `*` and all-address ranges such as `0.0.0.0/0`. The two optional settings add a local-login recovery path and an identity provider sign-out link for the UI; see [Trusted Proxy Authentication](../getting-started/configuration.md#trusted-proxy-authentication) for details.
 
 See the [production guide](production.md) for the hardening checklist.

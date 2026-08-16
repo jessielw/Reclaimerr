@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Tracearr 2.0+ playback history with multi-server discovery, binding, users, durations, and watched-state support
+
+### Changed
+
+- Tracearr bindings now select one authoritative durable history source per media server without double-counting or silent fallback
+
 ## [0.3.5] - 2026-08-07
 
 ### Added

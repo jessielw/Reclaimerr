@@ -1,19 +1,15 @@
 # Reclaimerr Docs
 
-Reclaimerr scans media libraries for eligible items, tracks protection and
-deletion requests, and routes the final action through the appropriate service.
+Reclaimerr scans media libraries for eligible items, tracks protection and deletion requests, and routes the final action through the appropriate service.
 
 Documentation for setup, usage, deployment, and development.
 
 ## Sections
 
-- [Getting Started](getting-started/index.md) - install Reclaimerr and complete
-  initial setup.
+- [Getting Started](getting-started/index.md) - install Reclaimerr and complete initial setup.
 - [Features](features.md) - review the core workflow and supported services.
-- [Using Reclaimerr](usage/how-it-works.md) - candidates, requests, and
-  deletion flow.
-- [Deployment](deployment/docker.md) - run Reclaimerr in Docker or behind a
-  proxy.
+- [Using Reclaimerr](usage/how-it-works.md) - candidates, requests, and deletion flow.
+- [Deployment](deployment/docker.md) - run Reclaimerr in Docker or behind a proxy.
 
 ## Capabilities
 

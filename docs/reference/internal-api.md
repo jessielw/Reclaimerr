@@ -13,9 +13,7 @@ The running application exposes its complete FastAPI schema at:
 - `GET /redoc`
 - `GET /openapi.json`
 
-These generated documents include internal UI routes as well as the mounted
-external API. Contributors can use them for the exact internal request and
-response models.
+These generated documents include internal UI routes as well as the mounted external API. Contributors can use them for the exact internal request and response models.
 
 ## Status And Setup
 
@@ -92,28 +90,16 @@ response models.
 - `GET /api/rules/media-server-collections`
 - `GET /api/rules/check-synced`
 
-The lookup endpoints are admin-only helpers used by the rule editor. Language
-results use canonical ISO 639-3 codes. Country results use the codes currently
-stored in local TMDB metadata. Both endpoints support media-type filtering,
-search, and pagination.
+The lookup endpoints are admin-only helpers used by the rule editor. Language results use canonical ISO 639-3 codes. Country results use the codes currently stored in local TMDB metadata. Both endpoints support media-type filtering, search, and pagination.
 
-Rule actions support `outcome: "candidate"` and `outcome: "protect"`. Existing
-rules without an outcome remain candidate rules for compatibility. Protection
-previews include items that are already protected because the preview reports
-what the rule itself matches.
+Rule actions support `outcome: "candidate"` and `outcome: "protect"`. Existing rules without an outcome remain candidate rules for compatibility. Protection previews include items that are already protected because the preview reports what the rule itself matches.
 
-Protected-entry responses include `source`, `source_rule_id`, and
-`source_rule_name`. Entries with `source: "rule"` are managed by cleanup scans;
-duration updates and direct deletion return `409 Conflict`.
+Protected-entry responses include `source`, `source_rule_id`, and `source_rule_name`. Entries with `source: "rule"` are managed by cleanup scans; duration updates and direct deletion return `409 Conflict`.
 
 ## Internal Behavior Notes
 
 - Most routes require the frontend's session-cookie authentication.
 - Some routes are admin-only, especially settings and task management.
-- Saving an existing service with `enabled: false` does not require the
-  external service to be reachable. Enabling it still performs connection
-  validation.
-- Deleting the active main media server returns a conflict until another main
-  server is assigned.
-- Task execution and file operations are queued when appropriate, so internal
-  routes often return a queued-job response instead of completing work inline.
+- Saving an existing service with `enabled: false` does not require the external service to be reachable. Enabling it still performs connection validation.
+- Deleting the active main media server returns a conflict until another main server is assigned.
+- Task execution and file operations are queued when appropriate, so internal routes often return a queued-job response instead of completing work inline.

@@ -54,6 +54,21 @@ class ServiceConfigUpdate(BaseModel):
         return self
 
 
+class TracearrDiscoveryRequest(BaseModel):
+    """Credentials used to discover and match Tracearr media servers."""
+
+    id: int | None = None
+    base_url: str
+    api_key: str | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> TracearrDiscoveryRequest:
+        self.base_url = self.base_url.strip()
+        if self.api_key is not None:
+            self.api_key = self.api_key.strip() or None
+        return self
+
+
 class UpdateMediaLibrariesRequest(BaseModel):
     service_type: MediaServerType | None = None
 
