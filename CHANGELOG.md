@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Tracearr 2.0+ playback history with multi-server discovery, binding, users, durations, and watched-state support
+- Now displays deeplinks for arrs on candidates/info pages of media
 
 ### Changed
 
