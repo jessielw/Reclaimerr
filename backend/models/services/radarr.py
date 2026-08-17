@@ -10,6 +10,7 @@ from typing import Any
 class RadarrMovie:
     id: int
     title: str
+    title_slug: str | None
     tmdb_id: int | None
     imdb_id: str | None
     year: int | None
@@ -45,6 +46,7 @@ def build_radarr_movie_from_dict(data: Mapping[str, Any]) -> RadarrMovie:
     return RadarrMovie(
         id=data["id"],
         title=data.get("title", ""),
+        title_slug=str(data.get("titleSlug") or "").strip() or None,
         tmdb_id=data.get("tmdbId"),
         imdb_id=data.get("imdbId"),
         year=data.get("year"),

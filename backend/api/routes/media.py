@@ -18,7 +18,6 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     Movie,
-    MovieArrRef,
     MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
@@ -27,7 +26,6 @@ from backend.database.models import (
     ReclaimRule,
     Season,
     Series,
-    SeriesArrRef,
     SeriesServiceRef,
     ServiceMediaLibrary,
     User,
@@ -44,7 +42,6 @@ from backend.enums import (
 from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.media import (
-    ArrRefResponse,
     CandidateDisplayGroup,
     CandidateEntry,
     CandidateLibraryRef,
@@ -65,6 +62,7 @@ from backend.models.media import (
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
+from backend.services.media_origins import load_media_origin_lookup
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -554,6 +552,7 @@ async def get_movies(
 
     # fetch status information for all movies
     movie_ids = [m.id for m in movies]
+    origin_lookup = await load_media_origin_lookup(db, movie_ids=movie_ids)
 
     # get candidates
     candidates_result = await db.execute(
@@ -622,11 +621,6 @@ async def get_movies(
             delete_request_reason=delete_request.reason if delete_request else None,
         )
 
-        movie_arr_refs_result = await db.execute(
-            select(MovieArrRef).where(MovieArrRef.movie_id == movie.id)
-        )
-        movie_arr_refs = movie_arr_refs_result.scalars().all()
-
         movie_dict: dict[str, Any] = {
             "id": movie.id,
             "title": movie.title,
@@ -680,14 +674,12 @@ async def get_movies(
                 )
                 for v in movie.versions
             ],
-            "arr_refs": [
-                ArrRefResponse(
-                    service_type="radarr",
-                    service_config_id=ref.service_config_id,
-                    arr_id=ref.arr_movie_id,
-                )
-                for ref in movie_arr_refs
-            ],
+            "arr_refs": origin_lookup.arr_refs(MediaType.MOVIE, movie.id),
+            "arr_tags": movie.arr_tags or [],
+            "seerr_url": origin_lookup.seerr_url(MediaType.MOVIE, movie.tmdb_id),
+            "seerr_requesters": origin_lookup.seerr_requesters(
+                MediaType.MOVIE, movie.tmdb_id
+            ),
             "imdb_id": movie.imdb_id,
             "imdb_rating": movie.imdb_rating,
             "imdb_vote_count": movie.imdb_vote_count,
@@ -826,6 +818,7 @@ async def get_series(
 
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
+    origin_lookup = await load_media_origin_lookup(db, series_ids=series_ids)
 
     # count library seasons per series (one GROUP BY query for the whole page)
     season_counts_result = await db.execute(
@@ -929,11 +922,6 @@ async def get_series(
             delete_request_reason=delete_request.reason if delete_request else None,
         )
 
-        series_arr_refs_result = await db.execute(
-            select(SeriesArrRef).where(SeriesArrRef.series_id == series.id)
-        )
-        series_arr_refs = series_arr_refs_result.scalars().all()
-
         series_dict: dict[str, Any] = {
             "id": series.id,
             "title": series.title,
@@ -950,14 +938,12 @@ async def get_series(
                 )
                 for ref in series.service_refs
             ],
-            "arr_refs": [
-                ArrRefResponse(
-                    service_type="sonarr",
-                    service_config_id=ref.service_config_id,
-                    arr_id=ref.arr_series_id,
-                )
-                for ref in series_arr_refs
-            ],
+            "arr_refs": origin_lookup.arr_refs(MediaType.SERIES, series.id),
+            "arr_tags": series.arr_tags or [],
+            "seerr_url": origin_lookup.seerr_url(MediaType.SERIES, series.tmdb_id),
+            "seerr_requesters": origin_lookup.seerr_requesters(
+                MediaType.SERIES, series.tmdb_id
+            ),
             "imdb_id": series.imdb_id,
             "imdb_rating": series.imdb_rating,
             "imdb_vote_count": series.imdb_vote_count,
@@ -1405,6 +1391,7 @@ async def get_candidates(
             Movie.arr_added_at.label("movie_arr_added_at"),
             Movie.last_viewed_at.label("movie_last_viewed_at"),
             Movie.view_count.label("movie_view_count"),
+            Movie.arr_tags.label("movie_arr_tags"),
             # movie version
             MovieVersion.service.label("version_service"),
             MovieVersion.library_id.label("version_library_id"),
@@ -1483,6 +1470,7 @@ async def get_candidates(
             Series.arr_added_at.label("series_arr_added_at"),
             Series.last_viewed_at.label("series_last_viewed_at"),
             Series.view_count.label("series_view_count"),
+            Series.arr_tags.label("series_arr_tags"),
             Season.added_at.label("season_added_at"),
             Season.arr_added_at.label("season_arr_added_at"),
             Season.view_count.label("season_view_count"),
@@ -1578,6 +1566,9 @@ async def get_candidates(
     series_ids = [
         r.ReclaimCandidate.series_id for r in rows if r.ReclaimCandidate.series_id
     ]
+    origin_lookup = await load_media_origin_lookup(
+        db, movie_ids=movie_ids, series_ids=series_ids
+    )
 
     pending_movies_whole: set[int] = set()
     pending_movie_versions: set[tuple[int, int]] = set()
@@ -1922,6 +1913,20 @@ async def get_candidates(
                 media_arr_added_at=to_utc_isoformat(media_arr_added_at),
                 media_last_viewed_at=to_utc_isoformat(media_last_viewed_at),
                 media_view_count=media_view_count,
+                arr_refs=origin_lookup.arr_refs(c.media_type, media_id),
+                arr_tags=(row.movie_arr_tags if is_movie else row.series_arr_tags)
+                or [],
+                seerr_url=origin_lookup.seerr_url(c.media_type, tmdb_id),
+                seerr_requesters=origin_lookup.seerr_requesters(
+                    c.media_type,
+                    tmdb_id,
+                    season_number=(
+                        row.season_number
+                        if c.media_type is MediaType.SERIES
+                        and (c.season_id is not None or c.episode_id is not None)
+                        else None
+                    ),
+                ),
                 movie_version_id=c.movie_version_id,
                 version_service=row.version_service
                 if row.version_service is not None

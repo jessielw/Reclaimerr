@@ -102,6 +102,7 @@ def build_sonarr_series_from_dict(data: Mapping[str, object]) -> SonarrSeries:
     return SonarrSeries(
         id=as_int(data.get("id")) or 0,
         title=_as_optional_str(data.get("title")) or "",
+        title_slug=_as_optional_str(data.get("titleSlug")),
         tvdb_id=as_int(data.get("tvdbId")),
         tmdb_id=as_int(data.get("tmdbId")),
         imdb_id=_as_optional_str(data.get("imdbId")),

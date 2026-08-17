@@ -1,8 +1,48 @@
 import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
 import { fileNameFromPath } from "$lib/utils/candidate-rules";
-import type { ReclaimCandidateEntry } from "$lib/types/shared";
+import type {
+  ArrRef,
+  ReclaimCandidateEntry,
+  SeerrRequester,
+} from "$lib/types/shared";
 
 export const UNKNOWN_VALUE = "Unknown";
+
+export type CandidateOriginMetadata = {
+  arrRefs: ArrRef[];
+  arrTags: string[];
+  seerrUrl: string | null;
+  seerrRequesters: SeerrRequester[];
+};
+
+export const candidateOriginMetadata = (
+  entries: ReclaimCandidateEntry[],
+): CandidateOriginMetadata => {
+  const arrRefs = new Map<string, ArrRef>();
+  const arrTags = new Set<string>();
+  const seerrRequesters = new Map<number, SeerrRequester>();
+  let seerrUrl: string | null = null;
+
+  for (const entry of entries) {
+    for (const ref of entry.arr_refs) {
+      arrRefs.set(`${ref.service_config_id}-${ref.arr_id}`, ref);
+    }
+    for (const tag of entry.arr_tags) arrTags.add(tag);
+    for (const requester of entry.seerr_requesters) {
+      seerrRequesters.set(requester.user_id, requester);
+    }
+    seerrUrl ??= entry.seerr_url;
+  }
+
+  return {
+    arrRefs: [...arrRefs.values()],
+    arrTags: [...arrTags].sort((left, right) => left.localeCompare(right)),
+    seerrUrl,
+    seerrRequesters: [...seerrRequesters.values()].sort((left, right) =>
+      left.display_name.localeCompare(right.display_name),
+    ),
+  };
+};
 
 const candidateCreatedAtEpoch = (createdAt: string): number => {
   const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(createdAt);

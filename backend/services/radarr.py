@@ -81,6 +81,7 @@ def _movie_from_mapping(data: Mapping[str, object]) -> RadarrMovie:
     return RadarrMovie(
         id=as_int(data.get("id")) or 0,
         title=_as_optional_str(data.get("title")) or "",
+        title_slug=_as_optional_str(data.get("titleSlug")),
         tmdb_id=as_int(data.get("tmdbId")),
         imdb_id=_as_optional_str(data.get("imdbId")),
         year=as_int(data.get("year")),

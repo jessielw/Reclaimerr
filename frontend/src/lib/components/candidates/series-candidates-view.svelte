@@ -3,6 +3,7 @@
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
   import {
@@ -17,6 +18,7 @@
   import {
     UNKNOWN_VALUE,
     candidateMediaMetaFields,
+    candidateOriginMetadata,
     earliestAutoDeleteEntry,
     groupEpisodesBySeason,
     newestCandidateCreatedAt,
@@ -134,6 +136,7 @@
         : row.seasons}
       {@const groupAutoDelete =
         earliestAutoDeleteEntry(groupEntries) ?? groupMetaSource}
+      {@const groupOrigin = candidateOriginMetadata(groupEntries)}
       {@const groupMetaFields = candidateMediaMetaFields(
         {
           ...groupMetaSource,
@@ -219,6 +222,14 @@
             </div>
           </button>
         </div>
+        <OriginMetadata
+          arrRefs={groupOrigin.arrRefs}
+          arrTags={groupOrigin.arrTags}
+          seerrUrl={groupOrigin.seerrUrl}
+          seerrRequesters={groupOrigin.seerrRequesters}
+          compact
+          class={canBulkSelect ? "ml-7" : ""}
+        />
         {#if expanded}
           {@const seasonItems = row.seasons.filter(
             (s) => s.episode_number == null,

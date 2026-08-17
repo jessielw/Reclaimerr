@@ -20,6 +20,7 @@ class SonarrSeries:
 
     id: int
     title: str
+    title_slug: str | None
     tvdb_id: int | None
     tmdb_id: int | None
     imdb_id: str | None

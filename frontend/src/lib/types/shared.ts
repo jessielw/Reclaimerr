@@ -662,6 +662,9 @@ export interface MovieWithStatus {
   size: number | null;
   versions: MovieVersion[];
   arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
@@ -724,6 +727,9 @@ export interface SeriesWithStatus {
   size: number | null;
   service_refs: SeriesServiceRef[];
   arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
@@ -803,6 +809,14 @@ export interface ArrRef {
   service_type: string;
   service_config_id: number;
   arr_id: number;
+  service_name: string | null;
+  item_url: string | null;
+}
+
+export interface SeerrRequester {
+  user_id: number;
+  display_name: string;
+  username: string | null;
 }
 
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
@@ -1044,6 +1058,10 @@ export interface ReclaimCandidateEntry {
   media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
+  arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   version_service: string | null;
   version_library_id: string | null;
   version_library_name: string | null;

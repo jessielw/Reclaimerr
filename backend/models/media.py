@@ -293,6 +293,16 @@ class ArrRefResponse(BaseModel):
     service_type: str
     service_config_id: int
     arr_id: int
+    service_name: str | None = None
+    item_url: str | None = None
+
+
+class SeerrRequesterResponse(BaseModel):
+    """Display-safe Seerr requester identity attached to a media item."""
+
+    user_id: int
+    display_name: str
+    username: str | None = None
 
 
 class MovieWithStatus(BaseModel):
@@ -310,6 +320,9 @@ class MovieWithStatus(BaseModel):
 
     # arr instance refs
     arr_refs: list[ArrRefResponse]
+    arr_tags: list[str] = Field(default_factory=list)
+    seerr_url: str | None = None
+    seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     imdb_id: str | None
     imdb_rating: float | None = None
     imdb_vote_count: int | None = None
@@ -389,6 +402,9 @@ class SeriesWithStatus(BaseModel):
 
     # arr instance refs
     arr_refs: list[ArrRefResponse]
+    arr_tags: list[str] = Field(default_factory=list)
+    seerr_url: str | None = None
+    seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     imdb_id: str | None
     imdb_rating: float | None = None
     imdb_vote_count: int | None = None
@@ -588,6 +604,10 @@ class CandidateEntryBase(BaseModel):
     media_arr_added_at: str | None = None
     media_last_viewed_at: str | None = None
     media_view_count: int | None = None
+    arr_refs: list[ArrRefResponse] = Field(default_factory=list)
+    arr_tags: list[str] = Field(default_factory=list)
+    seerr_url: str | None = None
+    seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     movie_version_id: int | None = None
     version_service: str | None = None
     version_library_id: str | None = None

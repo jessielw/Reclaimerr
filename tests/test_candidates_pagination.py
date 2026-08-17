@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TypedDict
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -11,20 +13,27 @@ from backend.database import Base
 from backend.database.models import (
     Episode,
     Movie,
+    MovieArrRef,
     MovieVersion,
     ReclaimCandidate,
     ReclaimRule,
     Season,
     Series,
+    SeriesArrRef,
     SeriesServiceRef,
+    ServiceConfig,
     User,
 )
 from backend.enums import MediaType, Service, UserRole
+from backend.models.services.seerr import SeerrUser
+from backend.services.seerr_cache import SeerrRequestSnapshot
 
 
 class SeededCandidateIds(TypedDict):
+    alpha_movie_id: int
     alpha_candidate_id: int
     bravo_candidate_ids: list[int]
+    charlie_series_id: int
     charlie_candidate_ids: list[int]
     delta_candidate_id: int
 
@@ -249,8 +258,10 @@ async def _seed_candidates(db: AsyncSession) -> SeededCandidateIds:
     await db.commit()
 
     return {
+        "alpha_movie_id": alpha.id,
         "alpha_candidate_id": alpha_candidate.id,
         "bravo_candidate_ids": [entry.id for entry in bravo_candidates],
+        "charlie_series_id": charlie.id,
         "charlie_candidate_ids": [entry.id for entry in charlie_candidates],
         "delta_candidate_id": delta_candidate.id,
     }
@@ -518,6 +529,147 @@ def test_get_candidates_includes_media_page_metadata() -> None:
             assert charlie_episode.media_added_at is None
             assert charlie_episode.media_last_viewed_at == "2025-05-06T10:00:00+00:00"
             assert charlie_episode.media_view_count == 8
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_includes_origin_metadata() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+            alpha = await db_session.get(Movie, ids["alpha_movie_id"])
+            charlie = await db_session.get(Series, ids["charlie_series_id"])
+            assert alpha is not None
+            assert charlie is not None
+            alpha.arr_tags = ["requested", "keep"]
+            charlie.arr_tags = ["anime"]
+
+            radarr_config = ServiceConfig(
+                service_type=Service.RADARR,
+                base_url="https://radarr.example/radarr/",
+                api_key="radarr-key",
+                name="4K Radarr",
+                enabled=True,
+            )
+            sonarr_config = ServiceConfig(
+                service_type=Service.SONARR,
+                base_url="https://sonarr.example/sonarr",
+                api_key="sonarr-key",
+                name="Anime Sonarr",
+                enabled=True,
+            )
+            seerr_config = ServiceConfig(
+                service_type=Service.SEERR,
+                base_url="https://seerr.example/seerr/",
+                api_key="seerr-key",
+                name="Seerr",
+                enabled=True,
+            )
+            db_session.add_all([radarr_config, sonarr_config, seerr_config])
+            await db_session.flush()
+            db_session.add_all(
+                [
+                    MovieArrRef(
+                        movie_id=alpha.id,
+                        service_config_id=radarr_config.id,
+                        arr_movie_id=11,
+                        arr_title_slug="alpha-movie-101",
+                        tmdb_id=alpha.tmdb_id,
+                    ),
+                    SeriesArrRef(
+                        series_id=charlie.id,
+                        service_config_id=sonarr_config.id,
+                        arr_series_id=22,
+                        arr_title_slug="charlie-show",
+                        tmdb_id=charlie.tmdb_id,
+                    ),
+                ]
+            )
+            await db_session.commit()
+
+            snapshot = SeerrRequestSnapshot(
+                requester_ids_by_key={
+                    (MediaType.MOVIE, 101): {7, 8},
+                    (MediaType.SERIES, 201): {9},
+                },
+                latest_request_at_by_key_user={},
+                requester_identity_keys_by_user_id={},
+                latest_active_request_at_by_key={},
+                requester_ids_by_series_season={(201, 1): {10}},
+                requester_users_by_id={
+                    7: SeerrUser(
+                        id=7,
+                        username="alex",
+                        display_name="Alex Smith",
+                    ),
+                    8: SeerrUser(id=8, username="bea", display_name=None),
+                    9: SeerrUser(id=9, username="casey", display_name="Casey"),
+                    10: SeerrUser(id=10, username="devon", display_name="Devon"),
+                },
+            )
+            get_snapshot = AsyncMock(return_value=(snapshot, None))
+            with patch(
+                "backend.services.media_origins.seerr_snapshot_cache",
+                new=SimpleNamespace(get_request_snapshot=get_snapshot),
+            ):
+                response = await get_candidates(
+                    _admin_user(),
+                    db_session,
+                    page=1,
+                    per_page=10,
+                    sort_by="created_at",
+                    sort_order="desc",
+                    search=None,
+                    media_type=None,
+                )
+
+            by_id = {item.id: item for item in response.items}
+            alpha_entry = by_id[ids["alpha_candidate_id"]]
+            assert alpha_entry.arr_tags == ["requested", "keep"]
+            assert alpha_entry.seerr_url == "https://seerr.example/seerr/movie/101"
+            assert [item.display_name for item in alpha_entry.seerr_requesters] == [
+                "Alex Smith",
+                "bea",
+            ]
+            assert len(alpha_entry.arr_refs) == 1
+            assert alpha_entry.arr_refs[0].service_name == "4K Radarr"
+            assert (
+                alpha_entry.arr_refs[0].item_url
+                == "https://radarr.example/radarr/movie/alpha-movie-101"
+            )
+
+            charlie_whole = by_id[ids["charlie_candidate_ids"][0]]
+            assert charlie_whole.arr_tags == ["anime"]
+            assert charlie_whole.seerr_url == "https://seerr.example/seerr/tv/201"
+            assert [item.display_name for item in charlie_whole.seerr_requesters] == [
+                "Casey"
+            ]
+            assert charlie_whole.arr_refs[0].service_name == "Anime Sonarr"
+            assert (
+                charlie_whole.arr_refs[0].item_url
+                == "https://sonarr.example/sonarr/series/charlie-show"
+            )
+
+            charlie_season = by_id[ids["charlie_candidate_ids"][1]]
+            charlie_episode = by_id[ids["charlie_candidate_ids"][2]]
+            assert [item.display_name for item in charlie_season.seerr_requesters] == [
+                "Devon"
+            ]
+            assert [item.display_name for item in charlie_episode.seerr_requesters] == [
+                "Devon"
+            ]
+            get_snapshot.assert_awaited_once_with(
+                require_fresh=False,
+                allow_stale_on_failure=True,
+            )
 
         await engine.dispose()
 

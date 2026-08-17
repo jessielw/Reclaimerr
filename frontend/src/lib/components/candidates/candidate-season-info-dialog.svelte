@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
   import SeasonMediaInfoWidget from "$lib/components/candidates/season-mediainfo.svelte";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
   import { formatFileSize } from "$lib/utils/formatters";
   import X from "@lucide/svelte/icons/x";
@@ -50,8 +51,14 @@
           <X class="size-4" />
         </Button>
       </div>
-      <div class="max-h-[75vh] overflow-y-auto p-4">
+      <div class="max-h-[75vh] space-y-3 overflow-y-auto p-4">
         <SeasonMediaInfoWidget {entry} {formatDate} />
+        <OriginMetadata
+          arrRefs={entry.arr_refs}
+          arrTags={entry.arr_tags}
+          seerrUrl={entry.seerr_url}
+          seerrRequesters={entry.seerr_requesters}
+        />
       </div>
     </div>
   </div>

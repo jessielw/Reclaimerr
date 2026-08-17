@@ -126,6 +126,8 @@ def test_seerr_snapshot_enriches_requester_identity_from_user_directory() -> Non
             "n wilson",
             "nwilson@example.com",
         }
+        assert snapshot.requester_users_by_id[16].display_name == "N Wilson"
+        assert snapshot.requester_users_by_id[16].username == "nwilson3000"
 
     asyncio.run(run())
 

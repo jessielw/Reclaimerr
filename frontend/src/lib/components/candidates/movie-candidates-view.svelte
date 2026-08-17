@@ -5,6 +5,7 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
   import {
     rulePreview,
@@ -16,6 +17,7 @@
   import CandidateFlatCard from "$lib/components/candidates/candidate-flat-card.svelte";
   import {
     candidateMediaMetaFields,
+    candidateOriginMetadata,
     earliestAutoDeleteEntry,
     movieSummaryChips,
     newestCandidateCreatedAt,
@@ -114,6 +116,7 @@
       {@const groupDateAdded = newestCandidateCreatedAt(row.versions)}
       {@const groupAutoDelete =
         earliestAutoDeleteEntry(row.versions) ?? row.versions[0]}
+      {@const groupOrigin = candidateOriginMetadata(row.versions)}
       {@const groupMetaFields = candidateMediaMetaFields(
         {
           ...row.versions[0],
@@ -213,6 +216,14 @@
             </div>
           </button>
         </div>
+        <OriginMetadata
+          arrRefs={groupOrigin.arrRefs}
+          arrTags={groupOrigin.arrTags}
+          seerrUrl={groupOrigin.seerrUrl}
+          seerrRequesters={groupOrigin.seerrRequesters}
+          compact
+          class={canBulkSelect ? "ml-7" : ""}
+        />
         {#if expanded}
           <div class="pl-7 space-y-2">
             <h2>Versions</h2>
