@@ -11,10 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Tracearr 2.0+ playback history with multi-server discovery, binding, users, durations, and watched-state support
 - Now displays deeplinks for arrs on candidates/info pages of media
+- Added exact JSON containment filtering via rule_id to internal and /api/v1/candidates APIs.
+- Added /api/media/candidates/rules for enabled/disabled candidate-rule options.
+- Added a persisted, media-aware rule dropdown.
+- Added API documentation and regression coverage, including [6] vs [16] containment.
 
 ### Changed
 
 - Tracearr bindings now select one authoritative durable history source per media server without double-counting or silent fallback
+- Candidate cards now show all matched-rule badges and full “Why matched” explanations.
 
 ## [0.3.5] - 2026-08-07
 

@@ -1017,6 +1017,8 @@ export interface ProtectedEntry {
 
 export interface ReclaimCandidateEntry {
   id: number;
+  matched_rule_ids: number[];
+  reason: string;
   media_type: MediaType;
   media_id: number;
   movie_version_id: number | null;
@@ -1143,9 +1145,21 @@ export interface ReclaimCandidateEntry {
     | null;
 }
 
+export interface CandidateRuleFilterOption {
+  id: number;
+  name: string;
+  media_type: MediaType;
+  enabled: boolean;
+}
+
 export type RulePreviewEntry = Omit<
   ReclaimCandidateEntry,
-  "id" | "has_pending_request" | "created_at" | "delete_operation"
+  | "id"
+  | "matched_rule_ids"
+  | "reason"
+  | "has_pending_request"
+  | "created_at"
+  | "delete_operation"
 >;
 
 export interface RulePreviewMetadata {

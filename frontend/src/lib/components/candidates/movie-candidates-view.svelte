@@ -8,13 +8,13 @@
   import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
   import {
-    rulePreview,
     groupRuleNames,
     extractPathNoFile,
   } from "$lib/utils/candidate-rules";
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import CandidateVersionInfoDialog from "$lib/components/candidates/candidate-version-info-dialog.svelte";
   import CandidateFlatCard from "$lib/components/candidates/candidate-flat-card.svelte";
+  import CandidateMatchDetails from "$lib/components/candidates/candidate-match-details.svelte";
   import {
     candidateMediaMetaFields,
     candidateOriginMetadata,
@@ -228,15 +228,11 @@
           <div class="pl-7 space-y-2">
             <h2>Versions</h2>
             {#each row.versions as version (version.id)}
-              {@const previewRules = rulePreview(version)}
               {@const metaFields = candidateMediaMetaFields(
                 version,
                 formatDate,
                 false,
               )}
-              <!-- {@const extraCount = extraRuleCount(version)}
-              {@const reasons = detailReasons(version)} -->
-              <!-- {console.log(version)} -->
               <div
                 class="flex gap-3 rounded-md border border-border bg-muted/30 p-3"
               >
@@ -321,29 +317,7 @@
                     </div>
                   {/each}
 
-                  <!-- matched rules -->
-                  {#if previewRules.length > 0}
-                    <div class="space-y-1">
-                      <div
-                        class="text-[11px] uppercase tracking-wide text-muted-foreground"
-                      >
-                        Matched rules
-                      </div>
-                      <div class="flex flex-wrap gap-1.5">
-                        {#each previewRules as rule}
-                          <Badge class="border-primary" variant="secondary"
-                            >{rule}</Badge
-                          >
-                        {/each}
-                      </div>
-                    </div>
-                  {/if}
-
-                  <!-- {#if reasons.length > 0}
-                  <div class="text-xs text-muted-foreground leading-5">
-                    {reasons[0]}
-                  </div>
-                {/if} -->
+                  <CandidateMatchDetails entry={version} />
 
                   <div class="flex justify-end gap-2">
                     <CandidateActionButtons

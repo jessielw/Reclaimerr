@@ -37,13 +37,16 @@ Available scopes are:
 - `POST /api/v1/candidates/{candidate_id}/reset-timer`
 - `POST /api/v1/candidates/{candidate_id}/protect`
 
-List queries can filter by media type, TMDB ID, internal series ID, season or episode number, and auto-delete state. Mutating requests may include an `Idempotency-Key` header so an automation retry receives the original response without repeating the action.
+List queries can filter by media type, matched cleanup rule ID (`rule_id`), TMDB ID, internal series ID, season or episode number, and auto-delete state. A rule filter matches candidates whose `matched_rule_ids` array contains that ID. Mutating requests may include an `Idempotency-Key` header so an automation retry receives the original response without repeating the action.
 
 Canceling suppresses automatic deletion only while the same candidate continuously qualifies. It does not prevent an administrator from manually deleting it. Permanent protection uses the separate `protect` action and blocks both automatic and manual candidate operations.
 
 ```bash
 curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
   "https://reclaimerr.example/api/v1/candidates?media_type=movie&tmdb_id=550"
+
+curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  "https://reclaimerr.example/api/v1/candidates?rule_id=6"
 
 curl -X POST \
   -H "Authorization: Bearer $RECLAIMERR_TOKEN" \

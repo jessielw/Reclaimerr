@@ -7,6 +7,7 @@
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
   import { candidateMediaMetaFields } from "$lib/components/candidates/view-utils";
   import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
+  import CandidateMatchDetails from "$lib/components/candidates/candidate-match-details.svelte";
 
   type PosterSize =
     | "92"
@@ -109,6 +110,7 @@
             compact
             class="mt-2"
           />
+          <CandidateMatchDetails {entry} />
         </div>
       </div>
     </div>

@@ -6,9 +6,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.api.candidate_filters import candidate_matches_rule_clause
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.rule_engine import RULE_OUTCOME_CANDIDATE, normalize_rule_outcome
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
@@ -46,6 +48,7 @@ from backend.models.media import (
     CandidateEntry,
     CandidateLibraryRef,
     CandidateOperationQueuedResponse,
+    CandidateRuleFilterOption,
     CandidatesPresenceResponse,
     DeleteCandidatesRequest,
     EpisodeWithStatus,
@@ -133,7 +136,10 @@ def _candidate_delete_operation(
 
 
 def _apply_candidate_filters(
-    query: Any, media_type: MediaType | None, search: str | None
+    query: Any,
+    media_type: MediaType | None,
+    search: str | None,
+    rule_id: int | None = None,
 ) -> Any:
     if media_type is not None:
         query = query.where(ReclaimCandidate.media_type == media_type)
@@ -147,6 +153,9 @@ def _apply_candidate_filters(
                 ReclaimCandidate.reason.ilike(search_term),
             )
         )
+
+    if rule_id is not None:
+        query = query.where(candidate_matches_rule_clause(rule_id))
 
     return query
 
@@ -300,6 +309,7 @@ async def _get_candidate_page_groups(
     *,
     media_type: MediaType | None,
     search: str | None,
+    rule_id: int | None,
     sort_by: str,
     sort_order: str,
     page: int,
@@ -333,7 +343,9 @@ async def _get_candidate_page_groups(
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
-    descriptor_query = _apply_candidate_filters(descriptor_query, media_type, search)
+    descriptor_query = _apply_candidate_filters(
+        descriptor_query, media_type, search, rule_id
+    )
     descriptor_rows = (await db.execute(descriptor_query)).all()
 
     deletion_movie_delay_days = 14
@@ -1336,6 +1348,7 @@ async def get_candidates(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     media_type: MediaType | None = Query(None),
+    rule_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> PaginatedCandidatesResponse:
     """Get reclaim candidates paginated by display group, with media info and request status."""
     base_query = (
@@ -1489,12 +1502,13 @@ async def get_candidates(
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
-    base_query = _apply_candidate_filters(base_query, media_type, search)
+    base_query = _apply_candidate_filters(base_query, media_type, search, rule_id)
 
     total, page_groups = await _get_candidate_page_groups(
         db,
         media_type=media_type,
         search=search,
+        rule_id=rule_id,
         sort_by=sort_by,
         sort_order=sort_order,
         page=page,
@@ -1871,6 +1885,8 @@ async def get_candidates(
         items_out.append(
             CandidateEntry(
                 id=c.id,
+                matched_rule_ids=list(c.matched_rule_ids or []),
+                reason=c.reason,
                 media_type=c.media_type.value,
                 media_id=media_id,
                 media_title=media_title,
@@ -2012,6 +2028,33 @@ async def get_candidates(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.get("/candidates/rules", response_model=list[CandidateRuleFilterOption])
+async def get_candidate_rule_filter_options(
+    _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
+    db: AsyncSession = Depends(get_db),
+) -> list[CandidateRuleFilterOption]:
+    """Return configured rules that can produce reclaim candidates."""
+    rules = (
+        (
+            await db.execute(
+                select(ReclaimRule).order_by(ReclaimRule.name, ReclaimRule.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        CandidateRuleFilterOption(
+            id=rule.id,
+            name=rule.name,
+            media_type=rule.media_type,
+            enabled=rule.enabled,
+        )
+        for rule in rules
+        if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+    ]
 
 
 @router.get("/candidates/presence", response_model=CandidatesPresenceResponse)

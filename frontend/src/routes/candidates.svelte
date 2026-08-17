@@ -16,6 +16,7 @@
     UserRole,
     Permission,
     type BackgroundJobRecord,
+    type CandidateRuleFilterOption,
     type EpisodeWithStatus,
     type ReclaimCandidateEntry,
     type SeasonWithStatus,
@@ -70,6 +71,7 @@
   ] as const;
   type CandidateSortBy = (typeof sortByOptions)[number]["value"];
   type CandidateMediaFilter = "all" | MediaType.Movie | MediaType.Series;
+  type CandidateRuleFilter = "all" | `${number}`;
 
   const isCandidateSortBy = (value: unknown): value is CandidateSortBy =>
     sortByOptions.some((option) => option.value === value);
@@ -79,12 +81,17 @@
     value: unknown,
   ): value is CandidateMediaFilter =>
     value === "all" || value === MediaType.Movie || value === MediaType.Series;
+  const isCandidateRuleFilter = (
+    value: unknown,
+  ): value is CandidateRuleFilter =>
+    value === "all" || (typeof value === "string" && /^[1-9]\d*$/.test(value));
 
   // state
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
   let searchQuery = $state("");
+  let ruleOptions = $state<CandidateRuleFilterOption[]>([]);
   const _mediaFilterStore = createFilterState<CandidateMediaFilter>(
     "candidates_media_filter",
     "all",
@@ -100,11 +107,17 @@
     "desc",
     isCandidateSortOrder,
   );
+  const _ruleFilterStore = createFilterState<CandidateRuleFilter>(
+    "candidates_rule_filter",
+    "all",
+    isCandidateRuleFilter,
+  );
   let mediaFilter = $state<CandidateMediaFilter>(
     _mediaFilterStore.getInitial(),
   );
   let sortBy = $state(_sortByStore.getInitial());
   let sortOrder = $state(_sortOrderStore.getInitial());
+  let ruleFilter = $state<CandidateRuleFilter>(_ruleFilterStore.getInitial());
   let currentPage = $state(1);
 
   const _perPageStore = createPerPageState("candidates_per_page");
@@ -161,6 +174,21 @@
   ];
 
   const entries = $derived(data?.items ?? []);
+  const selectedRuleOption = $derived(
+    ruleFilter === "all"
+      ? undefined
+      : ruleOptions.find((rule) => rule.id === Number(ruleFilter)),
+  );
+  const visibleRuleOptions = $derived(
+    mediaFilter === "all"
+      ? ruleOptions
+      : ruleOptions.filter((rule) => rule.media_type === mediaFilter),
+  );
+
+  const ruleOptionLabel = (rule: CandidateRuleFilterOption): string => {
+    const mediaLabel = rule.media_type === MediaType.Movie ? "Movie" : "Series";
+    return `${rule.name} (${mediaLabel})${rule.enabled ? "" : " — disabled"}`;
+  };
 
   // build grouped display rows from the flat API response
   const displayRows = $derived((): DisplayRow[] => {
@@ -342,11 +370,13 @@
   $effect(() => _mediaFilterStore.save(mediaFilter));
   $effect(() => _sortByStore.save(sortBy));
   $effect(() => _sortOrderStore.save(sortOrder));
+  $effect(() => _ruleFilterStore.save(ruleFilter));
 
   $effect(() => {
     mediaFilter;
     sortBy;
     sortOrder;
+    ruleFilter;
     perPage;
     if (mounted) loadCandidates(1);
   });
@@ -372,6 +402,7 @@
 
       if (searchQuery.trim()) params.append("search", searchQuery.trim());
       if (mediaFilter !== "all") params.append("media_type", mediaFilter);
+      if (ruleFilter !== "all") params.append("rule_id", ruleFilter);
 
       const response = await get_api<PaginatedResponse<ReclaimCandidateEntry>>(
         `/api/media/candidates?${params.toString()}`,
@@ -984,6 +1015,24 @@
   );
 
   onMount(async () => {
+    try {
+      ruleOptions = await get_api<CandidateRuleFilterOption[]>(
+        "/api/media/candidates/rules",
+      );
+      const selected =
+        ruleFilter === "all"
+          ? undefined
+          : ruleOptions.find((rule) => rule.id === Number(ruleFilter));
+      if (
+        !selected ||
+        (mediaFilter !== "all" && selected.media_type !== mediaFilter)
+      ) {
+        ruleFilter = "all";
+      }
+    } catch (e: any) {
+      ruleFilter = "all";
+      toast.error(e.message ?? "Failed to load candidate rule filters.");
+    }
     mounted = true;
     await loadCandidates();
     // load move destination availability from general settings
@@ -1288,8 +1337,20 @@
             type="single"
             value={mediaFilter}
             onValueChange={(v) => {
-              mediaFilter =
+              const nextMediaFilter =
                 v === MediaType.Movie || v === MediaType.Series ? v : "all";
+              mediaFilter = nextMediaFilter;
+              const selected =
+                ruleFilter === "all"
+                  ? undefined
+                  : ruleOptions.find((rule) => rule.id === Number(ruleFilter));
+              if (
+                selected &&
+                nextMediaFilter !== "all" &&
+                selected.media_type !== nextMediaFilter
+              ) {
+                ruleFilter = "all";
+              }
               selectedIds = new Set();
               expandedGroups = new Set();
             }}
@@ -1362,8 +1423,34 @@
           </Select.Root>
         </div>
 
-        <!-- row 2 on mobile: per page -->
+        <!-- row 2 on mobile: rule + per page -->
         <div class="flex flex-1 gap-2">
+          <Select.Root type="single" bind:value={ruleFilter}>
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {selectedRuleOption
+                ? ruleOptionLabel(selectedRuleOption)
+                : "All rules"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="all"
+                label="All rules"
+                class="text-card-foreground"
+              >
+                All rules
+              </Select.Item>
+              {#each visibleRuleOptions as rule}
+                <Select.Item
+                  value={rule.id.toString()}
+                  label={ruleOptionLabel(rule)}
+                  class="text-card-foreground"
+                >
+                  {ruleOptionLabel(rule)}
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+
           <Select.Root
             type="single"
             value={perPage.toString()}
@@ -1390,7 +1477,6 @@
               {/each}
             </Select.Content>
           </Select.Root>
-          <div class="flex-1"></div>
         </div>
       </div>
     </div>

@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.api.routes.media import get_candidates, get_candidates_presence
+from backend.api.routes.media import (
+    get_candidate_rule_filter_options,
+    get_candidates,
+    get_candidates_presence,
+)
 from backend.database import Base
 from backend.database.models import (
     Episode,
@@ -386,6 +390,142 @@ def test_get_candidates_search_keeps_series_group_intact() -> None:
             assert {item.id for item in response.items} == set(
                 ids["charlie_candidate_ids"]
             )
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_rule_filter_uses_exact_json_containment_before_grouping() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            movie = Movie(title="Rule Filter Movie", tmdb_id=301, size=1000)
+            db_session.add(movie)
+            await db_session.flush()
+            versions = [
+                MovieVersion(
+                    movie_id=movie.id,
+                    service=Service.PLEX,
+                    service_item_id=f"rule-filter-item-{index}",
+                    service_media_id=f"rule-filter-media-{index}",
+                    library_id="movies",
+                    library_name="Movies",
+                    size=500,
+                )
+                for index in range(2)
+            ]
+            db_session.add_all(versions)
+            await db_session.flush()
+            matches_rule_six = ReclaimCandidate(
+                media_type=MediaType.MOVIE,
+                movie_id=movie.id,
+                movie_version_id=versions[0].id,
+                matched_rule_ids=[6, 8],
+                matched_criteria={},
+                reason="Rule Six: Days since added >= 365 (940)",
+                reason_data=[],
+                estimated_space_bytes=500,
+            )
+            only_matches_rule_sixteen = ReclaimCandidate(
+                media_type=MediaType.MOVIE,
+                movie_id=movie.id,
+                movie_version_id=versions[1].id,
+                matched_rule_ids=[16],
+                matched_criteria={},
+                reason="Rule Sixteen: Days since added >= 365 (941)",
+                reason_data=[],
+                estimated_space_bytes=500,
+            )
+            db_session.add_all([matches_rule_six, only_matches_rule_sixteen])
+            await db_session.commit()
+
+            response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search=None,
+                media_type=None,
+                rule_id=6,
+            )
+
+            assert response.total == 1
+            assert [item.id for item in response.items] == [matches_rule_six.id]
+            assert response.items[0].matched_rule_ids == [6, 8]
+            assert response.items[0].reason == matches_rule_six.reason
+
+            empty_response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search=None,
+                media_type=None,
+                rule_id=999,
+            )
+            assert empty_response.total == 0
+            assert empty_response.items == []
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_candidate_rule_filter_options_include_disabled_candidate_rules_only() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            db_session.add_all(
+                [
+                    ReclaimRule(
+                        name="Enabled candidate",
+                        media_type=MediaType.MOVIE,
+                        enabled=True,
+                        target_scope="movie_version",
+                        definition=None,
+                        action={"outcome": "candidate"},
+                    ),
+                    ReclaimRule(
+                        name="Disabled candidate",
+                        media_type=MediaType.SERIES,
+                        enabled=False,
+                        target_scope="series",
+                        definition=None,
+                        action={"outcome": "candidate"},
+                    ),
+                    ReclaimRule(
+                        name="Protection rule",
+                        media_type=MediaType.MOVIE,
+                        enabled=True,
+                        target_scope="movie_version",
+                        definition=None,
+                        action={"outcome": "protect"},
+                    ),
+                ]
+            )
+            await db_session.commit()
+
+            options = await get_candidate_rule_filter_options(
+                _admin_user(), db_session
+            )
+
+            assert [(option.name, option.enabled) for option in options] == [
+                ("Disabled candidate", False),
+                ("Enabled candidate", True),
+            ]
         await engine.dispose()
 
     asyncio.run(run())

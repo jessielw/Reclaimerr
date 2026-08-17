@@ -11,12 +11,15 @@ from starlette.requests import Request
 
 from backend.api.routes.v1.candidates import (
     cancel_candidate_deletion,
+    list_candidates,
     permanently_protect_candidate,
     postpone_candidate_deletion,
     reset_candidate_timer,
 )
 from backend.core.api_tokens import (
     API_TOKEN_CANDIDATES_MANAGE_SCOPE,
+    API_TOKEN_CANDIDATES_READ_SCOPE,
+    ApiPrincipal,
     generate_api_token,
     get_api_principal,
 )
@@ -194,3 +197,64 @@ def test_cancelled_candidate_policy_survives_rule_reconciliation() -> None:
     assert policy.is_enabled is False
     assert policy.is_eligible is False
     assert policy.state == "canceled"
+
+
+def test_external_candidate_list_filters_by_exact_rule_id() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        principal = ApiPrincipal(
+            token_id=1,
+            name="Reader",
+            scopes=frozenset({API_TOKEN_CANDIDATES_READ_SCOPE}),
+        )
+        async with session_maker() as db:
+            movies = [
+                Movie(title="Rule Six", tmdb_id=601, size=100),
+                Movie(title="Rule Sixteen", tmdb_id=1601, size=100),
+            ]
+            db.add_all(movies)
+            await db.flush()
+            candidates = [
+                ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=movies[0].id,
+                    matched_rule_ids=[6, 8],
+                    matched_criteria={},
+                    reason="Rule Six: matched",
+                ),
+                ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=movies[1].id,
+                    matched_rule_ids=[16],
+                    matched_criteria={},
+                    reason="Rule Sixteen: matched",
+                ),
+            ]
+            db.add_all(candidates)
+            await db.commit()
+
+            response = await list_candidates(
+                principal,
+                db,
+                page=1,
+                per_page=50,
+                media_type=None,
+                tmdb_id=None,
+                series_id=None,
+                season_number=None,
+                episode_number=None,
+                auto_delete_state=None,
+                rule_id=6,
+            )
+
+            assert response.total == 1
+            assert [item.id for item in response.items] == [candidates[0].id]
+            assert response.items[0].matched_rule_ids == [6, 8]
+        await engine.dispose()
+
+    asyncio.run(run())

@@ -652,6 +652,8 @@ class CandidateEntry(CandidateEntryBase):
     """A single reclaim candidate with enough info to display and act on."""
 
     id: int
+    matched_rule_ids: list[int]
+    reason: str
     has_pending_request: bool
     created_at: str
     auto_delete_delay_days: int
@@ -691,6 +693,13 @@ class PaginatedCandidatesResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class CandidateRuleFilterOption(BaseModel):
+    id: int
+    name: str
+    media_type: MediaType
+    enabled: bool
 
 
 class CandidatesPresenceResponse(BaseModel):
