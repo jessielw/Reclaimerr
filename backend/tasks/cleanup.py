@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
+from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import (
     ARR_ID_RULE_FIELDS,
     COLLECTION_RULE_FIELDS,
@@ -5025,6 +5026,41 @@ def _rule_action(rule: ReclaimRule) -> dict[str, Any]:
     return rule.action or {}
 
 
+def _rule_arr_config_ids(
+    rule: ReclaimRule, service: Literal["radarr", "sonarr"]
+) -> set[int]:
+    """Return the explicitly selected ARR configs for one rule."""
+    return set(get_arr_service_config_ids(_rule_action(rule), service))
+
+
+def _candidate_arr_config_ids(
+    candidate: "ReclaimCandidate",
+    rules: Mapping[int, ReclaimRule],
+    service: Literal["radarr", "sonarr"],
+) -> set[int] | None:
+    """Return configs eligible for a candidate, or None for automatic routing.
+
+    Empty/unset targets preserve the historical behavior of routing to any
+    matching active instance. When all matched rules explicitly select targets,
+    their selections are combined.
+    """
+    matched_rules = [
+        rules[rule_id]
+        for rule_id in candidate.matched_rule_ids or []
+        if rule_id in rules
+    ]
+    if not matched_rules:
+        return None
+
+    selected: set[int] = set()
+    for rule in matched_rules:
+        rule_targets = _rule_arr_config_ids(rule, service)
+        if not rule_targets:
+            return None
+        selected.update(rule_targets)
+    return selected
+
+
 def _coerce_arr_delete_fallback(value: str | None) -> ArrDeleteFallback:
     if value == "remove_if_empty":
         return "remove_if_empty"
@@ -5150,15 +5186,16 @@ async def _sync_rule_radarr_tags() -> tuple[int, int]:
             if not rule:
                 continue
             tag = _managed_tag_for_rule(rule)
-            config_id = _rule_action(rule).get("radarr_service_config_id")
-            if not tag or not isinstance(config_id, int):
+            config_ids = _rule_arr_config_ids(rule, "radarr")
+            if not tag or not config_ids:
                 continue
-            if ref_config_id == config_id and arr_movie_id is not None:
-                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
-                    arr_movie_id
-                )
-            elif tmdb_id:
-                fallback_tmdb.setdefault(config_id, set()).add((tag, tmdb_id))
+            for config_id in config_ids:
+                if ref_config_id == config_id and arr_movie_id is not None:
+                    by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                        arr_movie_id
+                    )
+                elif tmdb_id:
+                    fallback_tmdb.setdefault(config_id, set()).add((tag, tmdb_id))
 
     total_tagged = 0
     total_untagged = 0
@@ -5224,15 +5261,16 @@ async def _sync_rule_sonarr_tags() -> tuple[int, int]:
             if not rule:
                 continue
             tag = _managed_tag_for_rule(rule)
-            config_id = _rule_action(rule).get("sonarr_service_config_id")
-            if not tag or not isinstance(config_id, int):
+            config_ids = _rule_arr_config_ids(rule, "sonarr")
+            if not tag or not config_ids:
                 continue
-            if ref_config_id == config_id and arr_series_id is not None:
-                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
-                    arr_series_id
-                )
-            elif tmdb_id:
-                fallback_tmdb.setdefault(config_id, set()).add((tag, int(tmdb_id)))
+            for config_id in config_ids:
+                if ref_config_id == config_id and arr_series_id is not None:
+                    by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                        arr_series_id
+                    )
+                elif tmdb_id:
+                    fallback_tmdb.setdefault(config_id, set()).add((tag, int(tmdb_id)))
 
     total_tagged = 0
     total_untagged = 0
@@ -5968,9 +6006,14 @@ async def _delete_movie_version_candidates(
                                 ).where(MovieArrRef.movie_id == ver_db.movie_id)
                             )
                         ).all()
+                        eligible_config_ids = _candidate_arr_config_ids(
+                            candidate, rules or {}, "radarr"
+                        )
                         remove_arr_refs = [
                             (config_id, arr_movie_id)
                             for config_id, arr_movie_id in arr_ref_rows
+                            if eligible_config_ids is None
+                            or config_id in eligible_config_ids
                         ]
 
                 db.add(
@@ -6231,6 +6274,7 @@ async def _delete_movie_candidates(
         version_path: str | None,
         version_service: Service | None,
         refs: list[tuple[Any, ...]],
+        allowed_config_ids: set[int] | None,
     ) -> set[tuple[int, int]]:
         """Return (config_id, arr_movie_id) pairs whose folder path contains this version.
 
@@ -6242,6 +6286,7 @@ async def _delete_movie_candidates(
             (config_id, arr_movie_id, arr_movie_path)
             for config_id, arr_movie_id, arr_movie_path in refs
             if config_id in radarr_clients
+            and (allowed_config_ids is None or config_id in allowed_config_ids)
         ]
         if not active_refs:
             return set()
@@ -6258,8 +6303,12 @@ async def _delete_movie_candidates(
                 matched.add((config_id, arr_movie_id))
         if not matched:
             if len(active_refs) == 1:
-                config_id, arr_movie_id, _arr_movie_path = active_refs[0]
-                matched.add((config_id, arr_movie_id))
+                config_id, arr_movie_id, arr_movie_path = active_refs[0]
+                # Preserve the legacy automatic single-instance fallback. For
+                # explicitly targeted rules, a known non-matching folder is
+                # negative proof and must not be overridden by selection.
+                if allowed_config_ids is None or not version_path or not arr_movie_path:
+                    matched.add((config_id, arr_movie_id))
         return matched
 
     def _candidate_covers_full_radarr_entry(
@@ -6336,7 +6385,18 @@ async def _delete_movie_candidates(
                 continue
             ver_path = version_path_by_id.get(cand.movie_version_id)
             ver_service = version_service_by_id.get(cand.movie_version_id)
-            matched = _match_version_to_arr(ver_path, ver_service, movie_info["refs"])
+            allowed_config_ids = _candidate_arr_config_ids(cand, rules_by_id, "radarr")
+            eligible_refs = [
+                ref
+                for ref in movie_info["refs"]
+                if allowed_config_ids is None or ref[0] in allowed_config_ids
+            ]
+            matched = _match_version_to_arr(
+                ver_path,
+                ver_service,
+                eligible_refs,
+                allowed_config_ids,
+            )
             cand_action = movie_arr_action.get(cand.movie_id or 0, "delete")
             if matched and cand_action == "unmonitor":
                 # version-level unmonitor: Radarr un-monitors the whole movie;
@@ -6355,7 +6415,7 @@ async def _delete_movie_candidates(
                     cand.movie_id,
                     selected_version_ids,
                     matched,
-                    movie_info["refs"],
+                    eligible_refs,
                 ):
                     movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                     all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
@@ -6377,8 +6437,11 @@ async def _delete_movie_candidates(
             if not movie_info:
                 continue
             # whole-movie candidates go to ALL arr instances that know this movie
+            allowed_config_ids = _candidate_arr_config_ids(cand, rules_by_id, "radarr")
             for config_id, arr_movie_id, _ in movie_info["refs"]:
-                if config_id in radarr_clients:
+                if config_id in radarr_clients and (
+                    allowed_config_ids is None or config_id in allowed_config_ids
+                ):
                     movie_arr_routing.setdefault(cand.movie_id, set()).add(
                         (config_id, arr_movie_id)
                     )
@@ -7050,8 +7113,13 @@ async def _delete_series_candidates(
             series_info = series_data.get(candidate.series_id)
             if not series_info:
                 continue
+            allowed_config_ids = _candidate_arr_config_ids(
+                candidate, series_rules_by_id, "sonarr"
+            )
             for config_id, arr_series_id, _ in series_info["refs"]:
-                if config_id in sonarr_clients:
+                if config_id in sonarr_clients and (
+                    allowed_config_ids is None or config_id in allowed_config_ids
+                ):
                     series_arr_routing.setdefault(candidate.series_id, set()).add(
                         (config_id, arr_series_id)
                     )
@@ -7530,6 +7598,15 @@ async def _delete_season_candidates(
             path_mappings,
             media_service_type=_main_media_server_type(),
         )
+        allowed_config_ids = _candidate_arr_config_ids(
+            candidate, season_rules_by_id, "sonarr"
+        )
+        if allowed_config_ids is not None:
+            ordered_refs = [
+                ref
+                for ref in ordered_refs
+                if ref.service_config_id in allowed_config_ids
+            ]
         last_sonarr_error: str | None = None
 
         for ref in ordered_refs:
@@ -8003,6 +8080,15 @@ async def _delete_episode_candidates(
             path_mappings,
             media_service_type=_main_media_server_type(),
         )
+        allowed_config_ids = _candidate_arr_config_ids(
+            candidate, episode_rules_by_id, "sonarr"
+        )
+        if allowed_config_ids is not None:
+            ordered_refs = [
+                ref
+                for ref in ordered_refs
+                if ref.service_config_id in allowed_config_ids
+            ]
 
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
@@ -9003,8 +9089,16 @@ async def _move_specific_candidates_impl(
                             )
                         ).all()
                     arr_action = movie_arr_actions.get(movie.id, "unmonitor")
+                    allowed_config_ids = _candidate_arr_config_ids(
+                        candidate, rules_by_id, "radarr"
+                    )
                     for config_id, arr_movie_id, arr_movie_path in arr_refs:
                         if config_id not in radarr_clients or arr_movie_id is None:
+                            continue
+                        if (
+                            allowed_config_ids is not None
+                            and config_id not in allowed_config_ids
+                        ):
                             continue
                         if (
                             version.path
@@ -9364,8 +9458,16 @@ async def _move_specific_candidates_impl(
                 if sonarr_clients and candidate.series_id:
                     try:
                         refs = series_arr_refs.get(candidate.series_id, [])
+                        allowed_config_ids = _candidate_arr_config_ids(
+                            candidate, rules_by_id, "sonarr"
+                        )
                         for config_id, arr_s_id, _arr_s_path in refs:
                             if config_id not in sonarr_clients or arr_s_id is None:
+                                continue
+                            if (
+                                allowed_config_ids is not None
+                                and config_id not in allowed_config_ids
+                            ):
                                 continue
                             if is_episode:
                                 move_sonarr_refresh.setdefault(config_id, set()).add(

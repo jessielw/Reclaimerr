@@ -2,8 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -15,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added /api/media/candidates/rules for enabled/disabled candidate-rule options.
 - Added a persisted, media-aware rule dropdown.
 - Added API documentation and regression coverage, including [6] vs [16] containment.
+- Cleanup rules can now target multiple Radarr or Sonarr instances from one rule, with safe path-based deletion routing and managed-tag synchronization across the selected instances.
 
 ### Changed
 
@@ -493,8 +493,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Missing Jellyfin IDs are skipped and logged
 - HTTP failures now include status, method, endpoint, and response context
 - Falsey 404 responses correctly trigger compatibility fallback
-- Sonarr series metadata is fetched once per instance and reused across rule
-  evaluation within each cleanup scan or preview
+- Sonarr series metadata is fetched once per instance and reused across rule evaluation within each cleanup scan or preview
 - Improved language handling:
   - Tags like `en`, `eng`, and case variants now normalize to `eng`
   - Regional tags like `en-US` and `fr-FR` now normalize to `fra`
@@ -506,11 +505,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Playback-history provider refreshes now decrypt stored service API keys, use
-  Tautulli's incremental history date filter, and redact API keys from provider
-  HTTP errors.
-- New Jellyfin/Emby media-login users now inherit admin role on first
-  provisioning when the media server reports them as administrators.
+- Playback-history provider refreshes now decrypt stored service API keys, use Tautulli's incremental history date filter, and redact API keys from provider HTTP errors.
+- New Jellyfin/Emby media-login users now inherit admin role on first provisioning when the media server reports them as administrators.
 - Dev
   - Ruff not targeting desktop/scripts
 

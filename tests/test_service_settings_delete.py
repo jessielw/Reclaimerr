@@ -353,6 +353,64 @@ def test_delete_arr_config_cleans_dependencies_with_foreign_keys(
     asyncio.run(run())
 
 
+def test_delete_arr_service_keeps_rule_enabled_when_other_targets_remain(monkeypatch):
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            configs = [
+                ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url=f"http://radarr-{index}",
+                    api_key="secret",
+                    name=f"Radarr {index}",
+                    enabled=True,
+                    is_main=False,
+                )
+                for index in (1, 2)
+            ]
+            rule = ReclaimRule(
+                name="Multi-target rule",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition={
+                    "version": 1,
+                    "root": {"type": "group", "op": "and", "children": []},
+                },
+                action={"arr_action": "delete"},
+            )
+            db_session.add_all([*configs, rule])
+            await db_session.flush()
+            rule.action = {
+                "arr_action": "delete",
+                "radarr_service_config_ids": [configs[0].id, configs[1].id],
+            }
+            await db_session.commit()
+
+            clear_mock = AsyncMock()
+            monkeypatch.setattr(
+                service_runtime, "clear_deleted_service_runtime", clear_mock
+            )
+
+            response = await delete_service_settings(
+                configs[0].id, _admin_user(), db_session
+            )
+
+            await db_session.refresh(rule)
+            assert response["data"]["disabled_rule_count"] == 0
+            assert rule.enabled is True
+            assert rule.action["radarr_service_config_ids"] == [configs[1].id]
+            assert rule.action["radarr_service_config_id"] == configs[1].id
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_stale_service_toggle_cannot_restore_deleted_config(monkeypatch):
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)

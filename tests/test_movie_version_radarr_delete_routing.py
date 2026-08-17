@@ -461,6 +461,11 @@ def test_single_version_multi_radarr_uses_path_mapping_to_target_ref(
                         tmdb_id=101,
                     )
                 )
+                rule = (await db.execute(select(ReclaimRule))).scalar_one()
+                rule.action = {
+                    **(rule.action or {}),
+                    "radarr_service_config_ids": [config_id, second_config.id],
+                }
                 await db.commit()
 
             primary = FakeRadarr()
@@ -484,6 +489,75 @@ def test_single_version_multi_radarr_uses_path_mapping_to_target_ref(
                 }
             ]
             assert secondary.deleted == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_multi_radarr_rule_targets_exclude_unselected_matching_instance(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                (
+                    movie_id,
+                    candidate_ids,
+                    primary_config_id,
+                ) = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/data/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                )
+                secondary_config = ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url="http://radarr-4k",
+                    api_key="secret",
+                    name="Radarr 4K",
+                    enabled=True,
+                )
+                db.add(secondary_config)
+                await db.flush()
+                db.add(
+                    MovieArrRef(
+                        movie_id=movie_id,
+                        service_config_id=secondary_config.id,
+                        arr_movie_id=66,
+                        arr_movie_path="/data/movies4k/Movie1",
+                        tmdb_id=101,
+                    )
+                )
+                rule = (await db.execute(select(ReclaimRule))).scalar_one()
+                rule.action = {
+                    **(rule.action or {}),
+                    "radarr_service_config_ids": [secondary_config.id],
+                }
+                await db.commit()
+
+            primary = FakeRadarr()
+            secondary = FakeRadarr()
+            _patch_services(
+                monkeypatch,
+                {
+                    primary_config_id: primary,
+                    secondary_config.id: secondary,
+                },
+            )
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 0
+            assert primary.deleted == []
+            assert secondary.deleted == []
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_ids[0])
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
         finally:
             await engine.dispose()
 

@@ -15,6 +15,10 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from backend.core.auth import require_admin
 from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
+from backend.core.rule_actions import (
+    get_arr_service_config_ids,
+    normalize_arr_service_config_ids,
+)
 from backend.core.service_manager import service_manager
 from backend.core.task_runtime import enqueue_task_run
 from backend.core.utils.datetime_utils import to_utc_isoformat
@@ -766,6 +770,7 @@ async def delete_service_settings(
     service_type = config.service_type
     config_id = config.id
     affected_rules: list[dict[str, Any]] = []
+    disabled_rule_count = 0
     removed_path_mappings = 0
 
     if service_type is Service.RADARR:
@@ -778,19 +783,21 @@ async def delete_service_settings(
         )
 
     if service_type in ARR_SERVICES:
-        action_key = (
-            "radarr_service_config_id"
-            if service_type is Service.RADARR
-            else "sonarr_service_config_id"
-        )
+        arr_service = "radarr" if service_type is Service.RADARR else "sonarr"
+        plural_action_key = f"{arr_service}_service_config_ids"
         rules = (await db.execute(select(ReclaimRule))).scalars().all()
         for rule in rules:
             action = dict(rule.action or {})
-            if action.get(action_key) != config_id:
+            selected_ids = get_arr_service_config_ids(action, arr_service)
+            if config_id not in selected_ids:
                 continue
-            action[action_key] = None
+            remaining_ids = [item for item in selected_ids if item != config_id]
+            action[plural_action_key] = remaining_ids
+            normalize_arr_service_config_ids(action, arr_service)
             rule.action = action
-            rule.enabled = False
+            if not remaining_ids:
+                rule.enabled = False
+                disabled_rule_count += 1
             affected_rules.append({"id": rule.id, "name": rule.name})
 
     settings = (await db.execute(select(GeneralSettings))).scalars().first()
@@ -838,6 +845,7 @@ async def delete_service_settings(
             "service_type": service_type.value,
             "deleted": True,
             "affected_rules": affected_rules,
+            "disabled_rule_count": disabled_rule_count,
             "removed_path_mappings": removed_path_mappings,
         },
     }

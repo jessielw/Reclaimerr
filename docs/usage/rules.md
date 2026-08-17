@@ -25,6 +25,8 @@ Cleanup-candidate rules can optionally enable automatic deletion. Rules that do 
 
 Cleanup-candidate rules can also enable Move Instead of Delete. Delete actions for candidates matched by those rules move media to the configured destination folder instead of deleting the file. Destination folders are configured in General Settings. If multiple matched cleanup rules disagree, move wins.
 
+Cleanup-candidate rules can target one or more Radarr or Sonarr instances. Reclaimerr applies the rule's managed tag to every selected instance where the item exists and limits ARR deletion or unmonitor actions to those selections. For movie versions, the synchronized Radarr movie folder must match the media-server file path before an explicitly selected instance is used. Configure instance-scoped Path Mappings in General Settings when the services report different container path prefixes. Leaving every instance unselected preserves automatic path-based routing across all matching active instances.
+
 When automatic deletion is enabled for a rule, the rule can also override the review period. Leave the override empty to inherit the default movie or TV delay. Values from `0` through `3650` days are supported, with `0` meaning immediately eligible. When multiple auto-delete-enabled cleanup rules match the same item, Reclaimerr uses the longest applicable delay so a shorter rule cannot reduce another rule's review period.
 
 ## Target Scopes

@@ -115,10 +115,10 @@ A binding selects the single durable history provider for that media server: Tra
 Deleting a Radarr or Sonarr instance also performs local dependency cleanup:
 
 - stored media references for that instance are removed;
-- rules explicitly assigned to the instance are disabled and their instance selection is cleared;
+- the instance is removed from explicitly assigned rules; a rule is disabled only when that removal leaves it with no selected ARR instances;
 - path mappings scoped only to that instance are removed.
 
-The Settings page reports when dependent rules or path mappings were changed. Review disabled rules before enabling them again and select the intended ARR instance.
+The Settings page reports when dependent rules or path mappings were changed. Review any disabled rules before enabling them again and select the intended ARR instances.
 
 ## Safety Settings Worth Reviewing
 

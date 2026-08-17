@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
+  import { Checkbox } from "$lib/components/ui/checkbox/index.js";
   import { get_api, post_api } from "$lib/api";
   import { onMount } from "svelte";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -121,11 +122,17 @@
   const arrAction = $derived(
     targetScope === "movie_version" ? radarrArrAction : sonarrArrAction,
   );
-  let radarrServiceConfigId = $state<number | null>(
-    initial.action?.radarr_service_config_id ?? null,
+  let radarrServiceConfigIds = $state<number[]>(
+    initial.action?.radarr_service_config_ids ??
+      (initial.action?.radarr_service_config_id != null
+        ? [initial.action.radarr_service_config_id]
+        : []),
   );
-  let sonarrServiceConfigId = $state<number | null>(
-    initial.action?.sonarr_service_config_id ?? null,
+  let sonarrServiceConfigIds = $state<number[]>(
+    initial.action?.sonarr_service_config_ids ??
+      (initial.action?.sonarr_service_config_id != null
+        ? [initial.action.sonarr_service_config_id]
+        : []),
   );
   let radarrInstances = $state<ArrInstance[]>([]);
   let sonarrInstances = $state<ArrInstance[]>([]);
@@ -165,21 +172,29 @@
   const selectedArrInstances = $derived(
     targetScope === "movie_version" ? radarrInstances : sonarrInstances,
   );
-  const NO_INSTANCE_VALUE = "__none";
   const selectedArrName = $derived(
     targetScope === "movie_version" ? "Radarr" : "Sonarr",
   );
-  const selectedArrInstanceName = $derived.by(() => {
-    const selectedId =
+  const selectedArrConfigIds = $derived(
+    targetScope === "movie_version"
+      ? radarrServiceConfigIds
+      : sonarrServiceConfigIds,
+  );
+
+  const toggleArrInstance = (instanceId: number, checked: boolean) => {
+    const current =
       targetScope === "movie_version"
-        ? radarrServiceConfigId
-        : sonarrServiceConfigId;
-    if (selectedId === null) return null;
-    return (
-      selectedArrInstances.find((instance) => instance.id === selectedId)
-        ?.name ?? null
-    );
-  });
+        ? radarrServiceConfigIds
+        : sonarrServiceConfigIds;
+    const next = checked
+      ? Array.from(new Set([...current, instanceId]))
+      : current.filter((id) => id !== instanceId);
+    if (targetScope === "movie_version") {
+      radarrServiceConfigIds = next;
+    } else {
+      sonarrServiceConfigIds = next;
+    }
+  };
 
   const normalizedTag = $derived(sanitizeTagInput(arrTag || name));
 
@@ -624,13 +639,25 @@
           move_instead_of_delete:
             outcome === "candidate" ? moveInsteadOfDelete : false,
           radarr_service_config_id:
-            outcome === "candidate" && targetScope === "movie_version"
-              ? radarrServiceConfigId
+            outcome === "candidate" &&
+            targetScope === "movie_version" &&
+            radarrServiceConfigIds.length === 1
+              ? radarrServiceConfigIds[0]
               : null,
           sonarr_service_config_id:
-            outcome === "candidate" && targetScope !== "movie_version"
-              ? sonarrServiceConfigId
+            outcome === "candidate" &&
+            targetScope !== "movie_version" &&
+            sonarrServiceConfigIds.length === 1
+              ? sonarrServiceConfigIds[0]
               : null,
+          radarr_service_config_ids:
+            outcome === "candidate" && targetScope === "movie_version"
+              ? radarrServiceConfigIds
+              : [],
+          sonarr_service_config_ids:
+            outcome === "candidate" && targetScope !== "movie_version"
+              ? sonarrServiceConfigIds
+              : [],
         },
       });
     } finally {
@@ -1064,67 +1091,53 @@
           {/if}
         </h3>
         <p class="mt-1 text-sm text-muted-foreground">
-          Select a {selectedArrName} instance to enable routing and actions for matched
-          items.
+          Select one or more {selectedArrName} instances for managed tags and ARR
+          actions. With none selected, deletion keeps automatic path-based routing
+          across matching instances.
         </p>
       </div>
 
       <!-- instance -->
       <div class="space-y-2">
         <Label class="text-sm font-medium text-foreground"
-          >{selectedArrName} Instance</Label
+          >{selectedArrName} Instances</Label
         >
-        <Select.Root
-          type="single"
-          value={targetScope === "movie_version"
-            ? radarrServiceConfigId !== null
-              ? String(radarrServiceConfigId)
-              : NO_INSTANCE_VALUE
-            : sonarrServiceConfigId !== null
-              ? String(sonarrServiceConfigId)
-              : NO_INSTANCE_VALUE}
-          onValueChange={(value) => {
-            const nextValue =
-              value == null || value === NO_INSTANCE_VALUE || value === ""
-                ? null
-                : Number(value);
-            if (targetScope === "movie_version") {
-              radarrServiceConfigId = nextValue;
-            } else {
-              sonarrServiceConfigId = nextValue;
-            }
-          }}
-        >
-          <Select.Trigger
-            class="w-full max-w-sm bg-card text-card-foreground cursor-pointer"
-          >
-            {#if selectedArrInstanceName}
-              {selectedArrInstanceName}
-            {:else}
-              No instance selected
-            {/if}
-          </Select.Trigger>
-          <Select.Content>
-            <Select.Item value={NO_INSTANCE_VALUE} label="No instance selected">
-              No instance selected
-            </Select.Item>
-            {#each selectedArrInstances as instance}
-              <Select.Item
-                value={String(instance.id)}
-                label={`${instance.name}${instance.enabled ? "" : " (disabled)"}`}
-              >
+        <div class="grid gap-2 sm:grid-cols-2">
+          {#each selectedArrInstances as instance}
+            <Label
+              class="flex items-center gap-2 rounded-md border border-border bg-background/40 p-3 text-sm
+                text-foreground cursor-pointer {instance.enabled
+                ? ''
+                : 'opacity-60'}"
+            >
+              <Checkbox
+                checked={selectedArrConfigIds.includes(instance.id)}
+                onCheckedChange={(checked) =>
+                  toggleArrInstance(instance.id, checked === true)}
+              />
+              <span class="font-medium">
                 {instance.name}{instance.enabled ? "" : " (disabled)"}
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+              </span>
+            </Label>
+          {/each}
+        </div>
+        {#if selectedArrInstances.length === 0}
+          <p class="text-xs text-muted-foreground">
+            No configured {selectedArrName} instances are available.
+          </p>
+        {:else if selectedArrConfigIds.length === 0}
+          <p class="text-xs text-muted-foreground">
+            Automatic routing is enabled; managed ARR tagging is disabled for
+            this rule.
+          </p>
+        {/if}
       </div>
 
-      {#if (targetScope === "movie_version" && radarrServiceConfigId !== null) || (targetScope !== "movie_version" && sonarrServiceConfigId !== null)}
-        <!-- action: keyed on active instance so UI re-initializes when instance changes -->
+      {#if selectedArrConfigIds.length > 0}
+        <!-- re-key the action control when the selected instance set changes -->
         <div class="space-y-2">
           <Label class="text-sm font-medium text-foreground">Action</Label>
-          {#key `${targetScope}-${targetScope === "movie_version" ? radarrServiceConfigId : sonarrServiceConfigId}`}
+          {#key `${targetScope}-${selectedArrConfigIds.join(",")}`}
             <Select.Root
               type="single"
               value={arrAction}

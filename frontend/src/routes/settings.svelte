@@ -504,6 +504,7 @@
         message: string;
         data: {
           affected_rules?: Array<{ id: number; name: string }>;
+          disabled_rule_count?: number;
           removed_path_mappings?: number;
         };
       } = await delete_api(`/api/settings/service/${current.id}`);
@@ -518,12 +519,17 @@
       }
       toast.success(response.message);
       const affectedRules = response.data.affected_rules ?? [];
+      const disabledRuleCount = response.data.disabled_rule_count ?? 0;
       const removedMappings = response.data.removed_path_mappings ?? 0;
       if (affectedRules.length || removedMappings) {
         toast.warning(
           [
             affectedRules.length
-              ? `${affectedRules.length} dependent rule(s) were disabled`
+              ? `${affectedRules.length} dependent rule target(s) were updated${
+                  disabledRuleCount
+                    ? `; ${disabledRuleCount} rule(s) with no targets were disabled`
+                    : ""
+                }`
               : "",
             removedMappings
               ? `${removedMappings} scoped path mapping(s) were removed`

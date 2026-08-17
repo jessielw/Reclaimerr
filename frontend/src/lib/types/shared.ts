@@ -512,6 +512,8 @@ export interface RuleAction {
   move_instead_of_delete: boolean;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;
+  radarr_service_config_ids: number[];
+  sonarr_service_config_ids: number[];
 }
 
 export enum ScheduleType {

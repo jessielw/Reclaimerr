@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.candidate_views import build_rule_preview_items
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
+from backend.core.rule_actions import normalize_arr_service_config_ids
 from backend.core.rule_engine import (
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
@@ -157,10 +158,14 @@ def _normalize_rule_action(
     normalized["arr_tag"] = _slugify_rule_tag(
         str(normalized.get("arr_tag") or rule_name)
     )
+    normalize_arr_service_config_ids(normalized, "radarr")
+    normalize_arr_service_config_ids(normalized, "sonarr")
     if target_scope == TARGET_MOVIE_VERSION:
         normalized["sonarr_service_config_id"] = None
+        normalized["sonarr_service_config_ids"] = []
     else:
         normalized["radarr_service_config_id"] = None
+        normalized["radarr_service_config_ids"] = []
     if outcome == RULE_OUTCOME_PROTECT:
         normalized["tag_enabled"] = False
         normalized["arr_tag"] = None
@@ -171,6 +176,8 @@ def _normalize_rule_action(
         normalized["move_instead_of_delete"] = False
         normalized["radarr_service_config_id"] = None
         normalized["sonarr_service_config_id"] = None
+        normalized["radarr_service_config_ids"] = []
+        normalized["sonarr_service_config_ids"] = []
     return normalized
 
 
