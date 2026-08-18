@@ -422,7 +422,17 @@
 
   const historyActionLabel = (entry: ReclaimHistoryEntry) => {
     if (!canViewDetailedHistory) return "Reclaimed";
-    return entry.action === "moved" ? "Moved" : "Deleted";
+    switch (entry.action) {
+      case "moved":
+        return "Moved";
+      // "unmonitored" still deletes the file (only the ARR call differs from
+      // a plain delete), so it's grouped with "Deleted" here. Only
+      // "unmonitored_only" leaves the file untouched.
+      case "unmonitored_only":
+        return "Unmonitored (file kept)";
+      default:
+        return "Deleted";
+    }
   };
 
   const historyActorLabel = (entry: ReclaimHistoryEntry) => {

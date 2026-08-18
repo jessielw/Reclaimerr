@@ -265,7 +265,10 @@ export interface GeneralSettings {
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
-  default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
+  default_arr_delete_behavior:
+    | "unmonitor"
+    | "unmonitor_only"
+    | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
@@ -315,6 +318,8 @@ export type LifecycleEventType =
   | "candidate.protected"
   | "candidate.deleted"
   | "candidate.moved"
+  | "candidate.unmonitored"
+  | "candidate.unmonitored_only"
   | "protection.created"
   | "protection.removed";
 
@@ -505,7 +510,7 @@ export interface RuleAction {
   candidate: boolean;
   tag_enabled: boolean;
   arr_tag: string | null;
-  arr_action: "delete" | "unmonitor";
+  arr_action: "delete" | "unmonitor" | "unmonitor_only";
   media_server_action: "delete" | null;
   auto_delete_enabled: boolean;
   auto_delete_delay_days: number | null;

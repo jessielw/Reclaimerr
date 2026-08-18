@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added a persisted, media-aware rule dropdown.
 - Added API documentation and regression coverage, including [6] vs [16] containment.
 - Cleanup rules can now target multiple Radarr or Sonarr instances from one rule, with safe path-based deletion routing and managed-tag synchronization across the selected instances.
+- Added an "Unmonitor Only" ARR delete behavior (default fallback and per-rule) that unmonitors the Radarr/Sonarr entry without touching files, letting content be reviewed on disk before a manual delete.
 
 ### Changed
 

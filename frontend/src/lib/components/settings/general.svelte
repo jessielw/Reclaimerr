@@ -69,9 +69,9 @@
   ]);
   let leavingSoonEnabled = $state(false);
   let leavingSoonCollectionTitle = $state("Leaving Soon");
-  let defaultArrDeleteBehavior = $state<"unmonitor" | "remove_if_empty">(
-    "unmonitor",
-  );
+  let defaultArrDeleteBehavior = $state<
+    "unmonitor" | "unmonitor_only" | "remove_if_empty"
+  >("unmonitor");
   let pathSuggestions = $state<string[]>([]);
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   const serviceTypeOptions = ["plex", "jellyfin", "emby", "radarr", "sonarr"];
@@ -908,11 +908,16 @@
           >
             {defaultArrDeleteBehavior === "remove_if_empty"
               ? "Remove from ARR when empty"
-              : "Unmonitor after deletion"}
+              : defaultArrDeleteBehavior === "unmonitor_only"
+                ? "Unmonitor only (keep files)"
+                : "Unmonitor after deletion"}
           </Select.Trigger>
           <Select.Content>
             <Select.Item value="unmonitor" class="cursor-pointer">
               Unmonitor after deletion
+            </Select.Item>
+            <Select.Item value="unmonitor_only" class="cursor-pointer">
+              Unmonitor only (keep files)
             </Select.Item>
             <Select.Item value="remove_if_empty" class="cursor-pointer">
               Remove from ARR when empty
@@ -921,7 +926,9 @@
         </Select.Root>
       </div>
       <p class="text-xs text-muted-foreground mt-2">
-        <code>Unmonitor</code> keeps the ARR entry but prevents re-grabs.
+        <code>Unmonitor</code> keeps the ARR entry but prevents re-grabs, and
+        still deletes the files. <code>Unmonitor only</code> unmonitors the ARR
+        entry and leaves the files on disk untouched for manual review.
         <code>Remove when empty</code> removes the ARR item only after the last remaining
         file for that movie or series is gone.
       </p>

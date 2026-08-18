@@ -109,12 +109,12 @@
     initial.action?.auto_delete_delay_days?.toString() ?? "",
   );
 
-  let radarrArrAction = $state<"delete" | "unmonitor">(
+  let radarrArrAction = $state<"delete" | "unmonitor" | "unmonitor_only">(
     initial.targetScope === "movie_version"
       ? (initial.action?.arr_action ?? "delete")
       : "delete",
   );
-  let sonarrArrAction = $state<"delete" | "unmonitor">(
+  let sonarrArrAction = $state<"delete" | "unmonitor" | "unmonitor_only">(
     initial.targetScope !== "movie_version"
       ? (initial.action?.arr_action ?? "delete")
       : "delete",
@@ -1142,7 +1142,11 @@
               type="single"
               value={arrAction}
               onValueChange={(value) => {
-                if (value === "delete" || value === "unmonitor") {
+                if (
+                  value === "delete" ||
+                  value === "unmonitor" ||
+                  value === "unmonitor_only"
+                ) {
                   if (targetScope === "movie_version") {
                     radarrArrAction = value;
                   } else {
@@ -1156,12 +1160,20 @@
               >
                 {arrAction === "unmonitor"
                   ? "Unmonitor + Delete File"
-                  : "Delete"}
+                  : arrAction === "unmonitor_only"
+                    ? "Unmonitor Only (Keep File)"
+                    : "Delete"}
               </Select.Trigger>
               <Select.Content>
                 <Select.Item value="delete" label="Delete">Delete</Select.Item>
                 <Select.Item value="unmonitor" label="Unmonitor + Delete File">
                   Unmonitor + Delete File
+                </Select.Item>
+                <Select.Item
+                  value="unmonitor_only"
+                  label="Unmonitor Only (Keep File)"
+                >
+                  Unmonitor Only (Keep File)
                 </Select.Item>
               </Select.Content>
             </Select.Root>
@@ -1170,6 +1182,11 @@
             <p class="text-xs text-muted-foreground">
               Files are deleted from disk but the entry remains in {selectedArrName}
               as unmonitored. Requires filesystem access on the Reclaimerr host.
+            </p>
+          {:else if arrAction === "unmonitor_only"}
+            <p class="text-xs text-muted-foreground">
+              The entry is set to unmonitored in {selectedArrName} and nothing is
+              deleted - files are left on disk for manual review later.
             </p>
           {:else}
             <p class="text-xs text-muted-foreground">

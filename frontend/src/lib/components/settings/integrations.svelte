@@ -35,6 +35,8 @@
     { value: "candidate.protected", label: "Protected" },
     { value: "candidate.deleted", label: "Deleted" },
     { value: "candidate.moved", label: "Moved" },
+    { value: "candidate.unmonitored", label: "Unmonitored" },
+    { value: "candidate.unmonitored_only", label: "Unmonitored (file kept)" },
     { value: "protection.created", label: "Protection created" },
     { value: "protection.removed", label: "Protection removed" },
   ];
