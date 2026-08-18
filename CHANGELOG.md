@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Cleanup rules can now target multiple Radarr or Sonarr instances from one rule, with safe path-based deletion routing and managed-tag synchronization across the selected instances.
 - Added an "Unmonitor Only" ARR delete behavior (default fallback and per-rule) that unmonitors the Radarr/Sonarr entry without touching files, letting content be reviewed on disk before a manual delete.
 - Added TMDB ID, IMDb ID, and TVDB ID as basic rule condition options for matching media by external ID.
+- Support for Plex hama metadata engine
+  - Harden guid to check for legacy metadata engines
 
 ### Changed
 

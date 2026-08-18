@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any, TypeAlias
 from xml.etree import ElementTree as ET
@@ -48,6 +51,30 @@ JsonPayload: TypeAlias = JsonDict | JsonList
 _METADATA_BATCH_SIZE = 50
 _EPISODE_METADATA_BATCH_SIZE = 100
 _SECTION_METADATA_PAGE_SIZE = 1000
+_ANIME_LIST_URL = (
+    "https://raw.githubusercontent.com/Anime-Lists/anime-lists/"
+    "master/anime-list-full.xml"
+)
+_HAMA_ID_RE = re.compile(
+    r"^(?P<provider>anidb[2-9]?|tvdb[2-9]?|tmdb|tsdb|imdb)-(?P<id>[^/?]+)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalIDCandidates:
+    tmdb: int | None = None
+    imdb: str | None = None
+    tvdb: str | None = None
+    anidb: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AnimeListIDs:
+    tmdb_movie: int | None = None
+    tmdb_series: int | None = None
+    imdb: str | None = None
+    tvdb: str | None = None
 
 
 def _history_record_rating_key(record: Mapping[str, object], field: str) -> str:
@@ -102,6 +129,9 @@ class PlexService:
         "_history_records_cache",
         "_history_records_cache_expires_at",
         "_history_records_ttl",
+        "_anidb_mappings",
+        "_anidb_mappings_expires_at",
+        "_external_id_resolution_cache",
     )
 
     def __init__(self, token: str, plex_url: str) -> None:
@@ -116,6 +146,9 @@ class PlexService:
             tuple[tuple[str, ...], int], datetime
         ] = {}
         self._history_records_ttl = timedelta(minutes=2)
+        self._anidb_mappings: dict[str, _AnimeListIDs] | None = None
+        self._anidb_mappings_expires_at: datetime | None = None
+        self._external_id_resolution_cache: dict[tuple[MediaType, str, str], int] = {}
 
         self.session = niquests.AsyncSession(timeout=300)
         self.session.headers.update(
@@ -1154,7 +1187,7 @@ class PlexService:
                 if item.get("type") != "movie":
                     continue
 
-                ext_ids = self._parse_external_ids(item)
+                ext_ids = await self._resolve_external_ids(item, MediaType.MOVIE)
                 if not ext_ids:
                     continue
 
@@ -1455,19 +1488,7 @@ class PlexService:
                 total_size = series_sizes.get(rating_key, 0)
                 series_path = series_paths.get(rating_key)
 
-                ext_ids = self._parse_external_ids(item)
-                if not ext_ids:
-                    # fallback (legacy TVDB agent, we'll resolve to TMDB via API)
-                    tvdb_id = self._extract_legacy_tvdb_id(item)
-                    if tvdb_id:
-                        tmdb_id = await self._resolve_tvdb_to_tmdb(tvdb_id)
-                        if tmdb_id:
-                            ext_ids = ExternalIDs(
-                                tmdb=tmdb_id,
-                                imdb=None,
-                                tmdb_collection=None,
-                                tvdb=tvdb_id,
-                            )
+                ext_ids = await self._resolve_external_ids(item, MediaType.SERIES)
                 if not ext_ids:
                     continue
 
@@ -1992,64 +2013,244 @@ class PlexService:
 
     async def _resolve_tvdb_to_tmdb(self, tvdb_id: str) -> int | None:
         """Resolve a TVDB series ID to a TMDB series ID via the TMDB /find endpoint."""
-        try:
-            async with AsyncTMDBClient() as tmdb:
-                data = await tmdb.find_by_external_id(tvdb_id, "tvdb_id")
-            if not isinstance(data, dict):
-                return None
-            results = data.get("tv_results", [])
-            if results:
-                return int(results[0]["id"])
-        except Exception:
-            LOG.warning(f"Failed to resolve TVDB ID {tvdb_id!r} to TMDB ID")
-        return None
+        resolved = await self._resolve_tmdb_external_id(
+            provider="tvdb", provider_id=tvdb_id, media_type=MediaType.SERIES
+        )
+        return resolved.tmdb if resolved else None
 
-    @staticmethod
-    def _parse_external_ids(media: JsonDict) -> ExternalIDs | None:
-        imdb_id = None
-        tmdb_id = None
-        tvdb_id = None
-
-        guids = media.get("Guid", [])
-        if guids:
-            # newer plex agent format
-            for guid in guids:
-                guid_id = guid.get("id", "")
-                if guid_id.startswith("imdb://"):
-                    imdb_id = guid_id.replace("imdb://", "")
-                elif guid_id.startswith("tmdb://"):
-                    raw = guid_id.replace("tmdb://", "")
-                    if not raw.isdigit():
-                        LOG.warning(
-                            f"Skipping media item: invalid TMDb ID '{raw}' in Plex GUID"
-                        )
-                        continue
-                    tmdb_id = int(raw)
-                elif guid_id.startswith("tvdb://"):
-                    tvdb_id = guid_id.replace("tvdb://", "")
-        else:
-            # legacy plex agent format (single top level guid attribute)
-            legacy_guid = media.get("guid", "")
-            if "agents.themoviedb://" in legacy_guid:
-                raw = legacy_guid.split("://", 1)[1].split("?")[0].strip("/")
-                if raw.isdigit():
-                    tmdb_id = int(raw)
-                else:
-                    LOG.warning(
-                        f"Skipping media item: invalid legacy TMDb ID '{raw}' in Plex GUID"
-                    )
-
-        if not tmdb_id:
-            return None
-
-        if tmdb_id or imdb_id or tvdb_id:
+    async def _resolve_tmdb_external_id(
+        self,
+        *,
+        provider: str,
+        provider_id: str,
+        media_type: MediaType,
+        imdb_id: str | None = None,
+        tvdb_id: str | None = None,
+    ) -> ExternalIDs | None:
+        """Resolve an IMDb or TVDB identifier through TMDB's find endpoint."""
+        cache_key = (media_type, provider, provider_id)
+        cached_tmdb_id = self._external_id_resolution_cache.get(cache_key)
+        if cached_tmdb_id is not None:
             return ExternalIDs(
-                tmdb=tmdb_id,
+                tmdb=cached_tmdb_id,
                 imdb=imdb_id,
                 tmdb_collection=None,
                 tvdb=tvdb_id,
             )
+
+        tmdb_id: int | None = None
+        try:
+            async with AsyncTMDBClient() as tmdb:
+                data = await tmdb.find_by_external_id(provider_id, f"{provider}_id")
+            if isinstance(data, dict):
+                result_key = (
+                    "movie_results" if media_type is MediaType.MOVIE else "tv_results"
+                )
+                results = data.get(result_key, [])
+                if isinstance(results, list) and results:
+                    raw_tmdb_id = results[0].get("id")
+                    if raw_tmdb_id is not None:
+                        tmdb_id = int(raw_tmdb_id)
+        except Exception:
+            LOG.warning(
+                f"Failed to resolve {provider.upper()} ID {provider_id!r} "
+                f"to a TMDB {media_type.value} ID"
+            )
+
+        if tmdb_id is None:
+            return None
+        self._external_id_resolution_cache[cache_key] = tmdb_id
+        return ExternalIDs(
+            tmdb=tmdb_id,
+            imdb=imdb_id,
+            tmdb_collection=None,
+            tvdb=tvdb_id,
+        )
+
+    async def _resolve_external_ids(
+        self, media: JsonDict, media_type: MediaType
+    ) -> ExternalIDs | None:
+        """Parse Plex GUIDs and resolve non-TMDB agents to Reclaimerr's TMDB key."""
+        candidates = self._parse_external_id_candidates(media)
+        if candidates.tmdb is not None:
+            return ExternalIDs(
+                tmdb=candidates.tmdb,
+                imdb=candidates.imdb,
+                tmdb_collection=None,
+                tvdb=candidates.tvdb,
+            )
+
+        if candidates.anidb:
+            mappings = await self._load_anidb_mappings()
+            mapped = mappings.get(candidates.anidb)
+            if mapped:
+                mapped_tmdb = (
+                    mapped.tmdb_movie
+                    if media_type is MediaType.MOVIE
+                    else mapped.tmdb_series
+                )
+                candidates = _ExternalIDCandidates(
+                    tmdb=mapped_tmdb,
+                    imdb=candidates.imdb or mapped.imdb,
+                    tvdb=candidates.tvdb or mapped.tvdb,
+                    anidb=candidates.anidb,
+                )
+                if candidates.tmdb is not None:
+                    return ExternalIDs(
+                        tmdb=candidates.tmdb,
+                        imdb=candidates.imdb,
+                        tmdb_collection=None,
+                        tvdb=candidates.tvdb,
+                    )
+
+        if candidates.tvdb and media_type is MediaType.SERIES:
+            return await self._resolve_tmdb_external_id(
+                provider="tvdb",
+                provider_id=candidates.tvdb,
+                media_type=media_type,
+                imdb_id=candidates.imdb,
+                tvdb_id=candidates.tvdb,
+            )
+        if candidates.imdb:
+            return await self._resolve_tmdb_external_id(
+                provider="imdb",
+                provider_id=candidates.imdb,
+                media_type=media_type,
+                imdb_id=candidates.imdb,
+                tvdb_id=candidates.tvdb,
+            )
         return None
+
+    async def _load_anidb_mappings(self) -> dict[str, _AnimeListIDs]:
+        """Load the AniDB cross-references used by Hama itself once per service."""
+        now = datetime.now(UTC)
+        if (
+            self._anidb_mappings is not None
+            and self._anidb_mappings_expires_at is not None
+            and now < self._anidb_mappings_expires_at
+        ):
+            return self._anidb_mappings
+
+        try:
+            async with niquests.AsyncSession() as session:
+                response = await session.get(_ANIME_LIST_URL, timeout=120)
+                response.raise_for_status()
+                payload = response.content
+            if payload is None:
+                raise ValueError("Anime-Lists response did not contain a body")
+            if not isinstance(payload, bytes):
+                payload = bytes(payload)
+            self._anidb_mappings = self._parse_anidb_mappings(payload)
+            self._anidb_mappings_expires_at = now + timedelta(days=1)
+            LOG.info(
+                "Loaded AniDB mappings for Plex Hama compatibility "
+                f"({len(self._anidb_mappings)} entries)"
+            )
+        except Exception as exc:
+            LOG.warning(
+                f"Failed to load AniDB mappings for Plex Hama compatibility: {exc}"
+            )
+            self._anidb_mappings = {}
+            self._anidb_mappings_expires_at = now + timedelta(minutes=5)
+        return self._anidb_mappings
+
+    @staticmethod
+    def _parse_anidb_mappings(payload: bytes) -> dict[str, _AnimeListIDs]:
+        mappings: dict[str, _AnimeListIDs] = {}
+        for _, element in ET.iterparse(BytesIO(payload), events=("end",)):
+            if element.tag != "anime":
+                continue
+            anidb_id = str(element.get("anidbid") or "").strip()
+            if not anidb_id.isdigit():
+                element.clear()
+                continue
+
+            tmdb_movie_raw = str(element.get("tmdbid") or "").strip()
+            tmdb_series_raw = str(element.get("tmdbtv") or "").strip()
+            imdb_raw = str(element.get("imdbid") or "").strip()
+            tvdb_raw = str(element.get("tvdbid") or "").strip()
+            mappings[anidb_id] = _AnimeListIDs(
+                tmdb_movie=(int(tmdb_movie_raw) if tmdb_movie_raw.isdigit() else None),
+                tmdb_series=(
+                    int(tmdb_series_raw) if tmdb_series_raw.isdigit() else None
+                ),
+                imdb=imdb_raw if re.fullmatch(r"tt\d+", imdb_raw) else None,
+                tvdb=tvdb_raw if tvdb_raw.isdigit() else None,
+            )
+            element.clear()
+        return mappings
+
+    @staticmethod
+    def _parse_external_ids(media: JsonDict) -> ExternalIDs | None:
+        candidates = PlexService._parse_external_id_candidates(media)
+        if candidates.tmdb is None:
+            return None
+        return ExternalIDs(
+            tmdb=candidates.tmdb,
+            imdb=candidates.imdb,
+            tmdb_collection=None,
+            tvdb=candidates.tvdb,
+        )
+
+    @staticmethod
+    def _parse_external_id_candidates(media: JsonDict) -> _ExternalIDCandidates:
+        """Parse modern, legacy, and Hama Plex GUIDs without network lookups."""
+        raw_guids: list[str] = []
+        guids = media.get("Guid", [])
+        if isinstance(guids, list):
+            for guid in guids:
+                if isinstance(guid, dict):
+                    raw_guids.append(str(guid.get("id") or ""))
+                elif isinstance(guid, str):
+                    raw_guids.append(guid)
+        legacy_guid = media.get("guid")
+        if legacy_guid:
+            raw_guids.append(str(legacy_guid))
+
+        tmdb_id: int | None = None
+        imdb_id: str | None = None
+        tvdb_id: str | None = None
+        anidb_id: str | None = None
+
+        for raw_guid in raw_guids:
+            guid = raw_guid.strip()
+            if "://" not in guid:
+                continue
+            scheme, payload = guid.split("://", 1)
+            provider = scheme.rsplit(".", 1)[-1].lower()
+            payload = payload.split("?", 1)[0].strip("/")
+
+            if provider == "hama":
+                match = _HAMA_ID_RE.match(payload)
+                if not match:
+                    continue
+                hama_provider = match.group("provider").lower()
+                value = match.group("id")
+                if hama_provider.startswith("anidb") and value.isdigit():
+                    anidb_id = value
+                elif hama_provider.startswith("tvdb") and value.isdigit():
+                    tvdb_id = value
+                elif hama_provider in {"tmdb", "tsdb"} and value.isdigit():
+                    tmdb_id = int(value)
+                elif hama_provider == "imdb" and re.fullmatch(r"tt\d+", value):
+                    imdb_id = value
+                continue
+
+            value = payload.split("/", 1)[0]
+            if provider in {"tmdb", "themoviedb"} and value.isdigit():
+                tmdb_id = int(value)
+            elif provider in {"tvdb", "thetvdb", "thetvdbdvdorder"}:
+                if value.isdigit():
+                    tvdb_id = value
+            elif provider == "imdb" and re.fullmatch(r"tt\d+", value):
+                imdb_id = value
+
+        return _ExternalIDCandidates(
+            tmdb=tmdb_id,
+            imdb=imdb_id,
+            tvdb=tvdb_id,
+            anidb=anidb_id,
+        )
 
     @staticmethod
     def _is_hdr(stream: JsonDict) -> bool:
