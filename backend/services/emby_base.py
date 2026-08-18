@@ -770,8 +770,9 @@ class EmbyServiceBase:
     ) -> dict[str, set[int]]:
         """Return favorite TMDB IDs grouped by username for a media type.
 
-        This intentionally queries each user directly via ``Users/{id}/Items`` so
-        favorites remain user scoped and we can build a cross user snapshot.
+        The user-scoped ``Items`` query works for both Emby and Jellyfin. Jellyfin
+        v12 removed the older ``Users/{id}/Items`` route, so keep the user scope in
+        the query instead of embedding it in the path.
         """
         include_item_types = "Movie" if media_type == "movie" else "Series"
         users = await self.get_users()
@@ -800,8 +801,8 @@ class EmbyServiceBase:
                     "Limit": page_size,
                 }
                 data = await self._make_request(
-                    f"Users/{user.id}/Items",
-                    params=params,
+                    "Items",
+                    params={"userId": user.id, **params},
                     timeout=300,
                 )
                 if not isinstance(data, dict):
@@ -2322,8 +2323,9 @@ class EmbyServiceBase:
                 chunk = candidate_ids[i : i + _CHUNK]
                 try:
                     data = await self._make_request(
-                        f"Users/{user.id}/Items",
+                        "Items",
                         params={
+                            "userId": user.id,
                             "Ids": ",".join(chunk),
                             "Fields": "SeriesId,SeasonId",
                             "EnableUserData": "false",
@@ -2344,8 +2346,8 @@ class EmbyServiceBase:
                         f"for user {user.id}: {e}"
                     )
 
-        # fallback to non user scoped lookup for servers where user visibility
-        # prevents `Users/{id}/Items` from returning complete parent metadata.
+        # Fallback to a non-user-scoped lookup for servers where user visibility
+        # prevents the user-scoped query from returning complete parent metadata.
         if unresolved_ids:
             candidate_ids = list(unresolved_ids)
             for i in range(0, len(candidate_ids), _CHUNK):

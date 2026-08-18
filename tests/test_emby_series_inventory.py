@@ -9,6 +9,47 @@ from backend.services.jellyfin import JellyfinService
 
 
 class EmbyFamilySeriesInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_scoped_lookup_uses_items_route_for_jellyfin_v12(self) -> None:
+        client = JellyfinService(api_key="key", base_url="http://jellyfin")
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(
+            endpoint: str, *, params: dict[str, Any] | None = None, timeout: int = 300
+        ) -> dict[str, Any] | list[dict[str, str]]:
+            params = params or {}
+            calls.append((endpoint, params))
+            if endpoint == "Users":
+                return [{"Id": "user-1", "Name": "Alice"}]
+            if endpoint == "Items" and params.get("IsFavorite") == "true":
+                return {
+                    "Items": [{"ProviderIds": {"Tmdb": "123"}}],
+                    "TotalRecordCount": 1,
+                }
+            if endpoint == "Items":
+                return {
+                    "Items": [
+                        {
+                            "Id": "episode-1",
+                            "SeriesId": "series-1",
+                            "SeasonId": "season-1",
+                        }
+                    ]
+                }
+            raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+        try:
+            with patch.object(JellyfinService, "_make_request", side_effect=request):
+                favorites = await client.get_favorite_tmdb_ids_by_user("movie")
+                parents = await client.get_parent_ids_for_episode_ids(["episode-1"])
+        finally:
+            await client.session.close()
+
+        self.assertEqual(favorites, {"Alice": {123}})
+        self.assertEqual(parents, {"episode-1": ("series-1", "season-1")})
+        item_calls = [call for call in calls if call[0] == "Items"]
+        self.assertEqual(len(item_calls), 2)
+        self.assertTrue(all(call[1].get("userId") == "user-1" for call in item_calls))
+
     async def test_inventory_only_aggregates_physical_path_backed_episodes(
         self,
     ) -> None:
