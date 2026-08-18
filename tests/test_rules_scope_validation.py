@@ -128,6 +128,26 @@ def test_protection_rule_action_disables_destructive_settings() -> None:
     assert action["auto_delete_delay_days"] is None
     assert action["move_instead_of_delete"] is False
     assert action["radarr_service_config_id"] is None
+    assert action["radarr_service_config_ids"] == []
+
+
+def test_rule_action_normalizes_legacy_and_multi_arr_targets() -> None:
+    legacy = _normalize_rule_action(
+        {"radarr_service_config_id": 7},
+        "Legacy Rule",
+        "movie_version",
+    )
+    multiple = _normalize_rule_action(
+        {"radarr_service_config_ids": [7, 9, 7, "invalid"]},
+        "Multi Rule",
+        "movie_version",
+    )
+
+    assert legacy["radarr_service_config_ids"] == [7]
+    assert legacy["radarr_service_config_id"] == 7
+    assert multiple["radarr_service_config_ids"] == [7, 9]
+    assert multiple["radarr_service_config_id"] is None
+    assert multiple["sonarr_service_config_ids"] == []
 
 
 def test_create_rule_rejects_incompatible_field_for_target_scope() -> None:

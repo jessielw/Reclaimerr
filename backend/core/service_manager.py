@@ -13,6 +13,7 @@ from backend.services.radarr import RadarrClient
 from backend.services.seerr import SeerrClient
 from backend.services.sonarr import SonarrClient
 from backend.services.tautulli import TautulliClient
+from backend.services.tracearr import TracearrClient
 
 
 class ServiceManager:
@@ -36,6 +37,7 @@ class ServiceManager:
         self._sonarr_clients: dict[int, SonarrClient] = {}
         self._seerr: SeerrClient | None = None
         self._tautulli: TautulliClient | None = None
+        self._tracearr: TracearrClient | None = None
 
         LOG.info("ServiceManager initialized")
 
@@ -108,6 +110,11 @@ class ServiceManager:
         """Get Tautulli service (must be initialized first)."""
         return self._tautulli
 
+    @property
+    def tracearr(self) -> TracearrClient | None:
+        """Get Tracearr service (must be initialized first)."""
+        return self._tracearr
+
     async def get_status(self) -> dict[str, bool]:
         """Get connection status of all clients."""
         return {
@@ -118,6 +125,7 @@ class ServiceManager:
             "sonarr": self.sonarr is not None,
             "seerr": self._seerr is not None,
             "tautulli": self._tautulli is not None,
+            "tracearr": self._tracearr is not None,
         }
 
     async def test_service(
@@ -139,6 +147,8 @@ class ServiceManager:
                 return await SeerrClient.test_service(url, api_key), ""
             elif service_type is Service.TAUTULLI:
                 return await TautulliClient.test_service(url, api_key), ""
+            elif service_type is Service.TRACEARR:
+                return await TracearrClient.test_service(url, api_key), ""
             elif service_type is Service.MDBLIST:
                 return await MDBListClient.test_service(url, api_key), ""
             elif service_type is Service.OMDB:
@@ -172,6 +182,7 @@ class ServiceManager:
         | SonarrClient
         | SeerrClient
         | TautulliClient
+        | TracearrClient
         | None
     ):
         """Return the requested service instance."""
@@ -189,6 +200,8 @@ class ServiceManager:
             return self._seerr
         elif service_type is Service.TAUTULLI:
             return self._tautulli
+        elif service_type is Service.TRACEARR:
+            return self._tracearr
         return None
 
     async def initialize_jellyfin(
@@ -338,6 +351,30 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Tautulli service: {e}")
             return None
 
+    async def initialize_tracearr(
+        self, base_url: str, api_key: str, timeout: int = 30
+    ) -> TracearrClient | None:
+        """Initialize Tracearr with a public API v2 key."""
+        client: TracearrClient | None = None
+        try:
+            client = TracearrClient(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+            )
+            if not await client.health():
+                LOG.error(f"Tracearr service health check failed: {base_url}")
+                raise ValueError(f"Tracearr service health check failed: {base_url}")
+            self._tracearr = client
+            LOG.info(f"Tracearr service initialized: {base_url}")
+            return self._tracearr
+        except Exception as e:
+            if client is not None:
+                await client.session.close()
+            self._tracearr = None
+            LOG.error(f"Failed to initialize Tracearr service: {e}")
+            return None
+
     async def clear_jellyfin(self) -> None:
         """Clear Jellyfin service (call before reinitializing)."""
         if self._main_media_server is self._jellyfin:
@@ -417,6 +454,13 @@ class ServiceManager:
             LOG.info("Tautulli service cleared")
         self._tautulli = None
 
+    async def clear_tracearr(self) -> None:
+        """Clear Tracearr service (call before reinitializing)."""
+        if self._tracearr and self._tracearr.session:
+            await self._tracearr.session.close()
+            LOG.info("Tracearr service cleared")
+        self._tracearr = None
+
     async def clear_all(self) -> None:
         """Clear all clients (call before reinitializing from database)."""
         LOG.info("Clearing all clients")
@@ -427,6 +471,7 @@ class ServiceManager:
         await self.clear_sonarr()
         await self.clear_seerr()
         await self.clear_tautulli()
+        await self.clear_tracearr()
 
     def clear_transient_caches(self) -> None:
         """Clear large transient caches on long-lived service clients."""

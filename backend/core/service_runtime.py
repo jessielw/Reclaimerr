@@ -113,6 +113,11 @@ async def _apply_service_runtime_state(data: ServiceConfigUpdate) -> None:
         await service_manager.initialize_tautulli(
             data.base_url, data.api_key or "", timeout
         )
+    elif data.service_type is Service.TRACEARR:
+        timeout = int((data.extra_settings or {}).get("timeout", 30))
+        await service_manager.initialize_tracearr(
+            data.base_url, data.api_key or "", timeout
+        )
 
 
 async def _clear_service_runtime(service_type: Service, config_id: int | None) -> None:
@@ -130,3 +135,5 @@ async def _clear_service_runtime(service_type: Service, config_id: int | None) -
         await service_manager.clear_seerr()
     elif service_type is Service.TAUTULLI:
         await service_manager.clear_tautulli()
+    elif service_type is Service.TRACEARR:
+        await service_manager.clear_tracearr()

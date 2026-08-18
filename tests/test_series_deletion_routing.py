@@ -275,6 +275,48 @@ def test_whole_series_without_active_ref_records_failure_when_fallback_disabled(
     asyncio.run(run())
 
 
+def test_whole_series_multi_target_rule_routes_only_to_selected_sonarr(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="series",
+                    media_server_fallback_enabled=False,
+                    arr_series_paths=["/data/Show", "/data4k/Show"],
+                    arr_series_ids=[11, 22],
+                )
+                rule = (await db.execute(select(ReclaimRule))).scalar_one()
+                rule.action = {
+                    **(rule.action or {}),
+                    "sonarr_service_config_ids": [config_ids[1]],
+                }
+                await db.commit()
+
+            first = FakeSonarr({})
+            second = FakeSonarr({})
+            _patch_services(
+                monkeypatch,
+                {config_ids[0]: first, config_ids[1]: second},
+            )
+
+            deleted = await cleanup._delete_series_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert first.deleted_series_requests == []
+            assert second.deleted_series_requests == [(arr_ids[1], True, True)]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_whole_series_move_removes_sonarr_entry_without_deleting_archive(
     monkeypatch, tmp_path
 ) -> None:

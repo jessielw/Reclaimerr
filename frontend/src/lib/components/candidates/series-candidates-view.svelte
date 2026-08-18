@@ -3,20 +3,19 @@
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import CandidateTmdbMeta from "$lib/components/candidates/candidate-tmdb-meta.svelte";
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
   import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
-  import {
-    rulePreview,
-    extraRuleCount,
-    groupRuleNames,
-  } from "$lib/utils/candidate-rules";
+  import { groupRuleNames } from "$lib/utils/candidate-rules";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import CandidateFlatCard from "$lib/components/candidates/candidate-flat-card.svelte";
   import CandidateSeasonInfoDialog from "$lib/components/candidates/candidate-season-info-dialog.svelte";
+  import CandidateMatchDetails from "$lib/components/candidates/candidate-match-details.svelte";
   import {
     UNKNOWN_VALUE,
     candidateMediaMetaFields,
+    candidateOriginMetadata,
     earliestAutoDeleteEntry,
     groupEpisodesBySeason,
     newestCandidateCreatedAt,
@@ -123,7 +122,9 @@
       {@const expanded = expandedGroups.has(row.media_id)}
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
-      {@const allRules = groupRuleNames(row.seasons)}
+      {@const allRules = groupRuleNames(
+        row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
+      )}
       {@const groupCountLabel = seriesGroupCountLabel(row.seasons)}
       {@const groupDateAdded = newestCandidateCreatedAt(
         row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
@@ -134,6 +135,7 @@
         : row.seasons}
       {@const groupAutoDelete =
         earliestAutoDeleteEntry(groupEntries) ?? groupMetaSource}
+      {@const groupOrigin = candidateOriginMetadata(groupEntries)}
       {@const groupMetaFields = candidateMediaMetaFields(
         {
           ...groupMetaSource,
@@ -219,6 +221,14 @@
             </div>
           </button>
         </div>
+        <OriginMetadata
+          arrRefs={groupOrigin.arrRefs}
+          arrTags={groupOrigin.arrTags}
+          seerrUrl={groupOrigin.seerrUrl}
+          seerrRequesters={groupOrigin.seerrRequesters}
+          compact
+          class={canBulkSelect ? "ml-7" : ""}
+        />
         {#if expanded}
           {@const seasonItems = row.seasons.filter(
             (s) => s.episode_number == null,
@@ -233,8 +243,6 @@
                 Seasons
               </h2>
               {#each seasonItems as season (season.id)}
-                {@const preview = rulePreview(season)}
-                {@const extraCount = extraRuleCount(season)}
                 {@const metaFields = candidateMediaMetaFields(
                   season,
                   formatDate,
@@ -310,30 +318,7 @@
                       </div>
                     {/each}
 
-                    {#if preview.length > 0}
-                      <div class="space-y-1">
-                        <div
-                          class="text-[11px] uppercase tracking-wide text-muted-foreground"
-                        >
-                          Matched rules
-                        </div>
-                        <div class="flex flex-wrap gap-1.5">
-                          {#each preview as rule}
-                            <Badge class="border-primary" variant="secondary"
-                              >{rule}</Badge
-                            >
-                          {/each}
-                          {#if extraCount > 0}
-                            <span
-                              class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card
-                            text-muted-foreground"
-                            >
-                              +{extraCount} more
-                            </span>
-                          {/if}
-                        </div>
-                      </div>
-                    {/if}
+                    <CandidateMatchDetails entry={season} />
                     <div class="flex justify-end gap-2">
                       <CandidateActionButtons
                         entry={season}
@@ -391,8 +376,6 @@
                 {#if isSeasonOpen}
                   <div class="pl-4 space-y-2">
                     {#each episodes as ep (ep.id)}
-                      {@const preview = rulePreview(ep)}
-                      {@const extraCount = extraRuleCount(ep)}
                       {@const epLabel = `S${String(ep.season_number ?? 0).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`}
                       {@const metaFields = candidateMediaMetaFields(
                         ep,
@@ -459,30 +442,7 @@
                             </div>
                           {/each}
 
-                          {#if preview.length > 0}
-                            <div class="space-y-1">
-                              <div
-                                class="text-[11px] uppercase tracking-wide text-muted-foreground"
-                              >
-                                Matched rules
-                              </div>
-                              <div class="flex flex-wrap gap-1.5">
-                                {#each preview as rule}
-                                  <Badge
-                                    class="border-primary"
-                                    variant="secondary">{rule}</Badge
-                                  >
-                                {/each}
-                                {#if extraCount > 0}
-                                  <span
-                                    class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card text-muted-foreground"
-                                  >
-                                    +{extraCount} more
-                                  </span>
-                                {/if}
-                              </div>
-                            </div>
-                          {/if}
+                          <CandidateMatchDetails entry={ep} />
                           <div class="flex justify-end gap-2">
                             <CandidateActionButtons
                               entry={ep}

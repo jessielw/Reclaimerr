@@ -1,7 +1,6 @@
 # Contributing
 
-Reclaimerr accepts focused, understandable contributions. The goal is to keep
-the codebase maintainable.
+Reclaimerr accepts focused, understandable contributions. The goal is to keep the codebase maintainable.
 
 ## Development Setup
 
@@ -36,17 +35,14 @@ npm run dev
 
 ## Architecture
 
-Read the [architecture overview](architecture.md) before changing scheduler,
-worker, or deletion behavior.
+Read the [architecture overview](architecture.md) before changing scheduler, worker, or deletion behavior.
 
 ## Code Style
 
 - Backend: `ruff check .` and `ruff format .`
 - Frontend: `npm run format` and `npm run check`
 
-CI runs `ruff check` and `ruff format --check`, so run `ruff format .` (not just
-`ruff check`) before pushing. Use `ruff format --check .` to verify formatting the
-same way CI does, without modifying files.
+CI runs `ruff check` and `ruff format --check`, so run `ruff format .` (not just `ruff check`) before pushing. Use `ruff format --check .` to verify formatting the same way CI does, without modifying files.
 
 ## Desktop
 
@@ -54,5 +50,4 @@ same way CI does, without modifying files.
 
 ## AI Contributions
 
-AI can help with search, boilerplate, and debugging, but large AI-generated
-submissions are not accepted.
+AI can help with search, boilerplate, and debugging, but large AI-generated submissions are not accepted.

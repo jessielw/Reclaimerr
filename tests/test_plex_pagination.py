@@ -7,7 +7,190 @@ from typing import Any
 
 from backend.enums import MediaType
 from backend.models.media import MediaWatchSnapshot
-from backend.services.plex import PlexService, _history_record_rating_key
+from backend.services.plex import (
+    PlexService,
+    _AnimeListIDs,
+    _history_record_rating_key,
+)
+
+
+def test_external_id_parser_supports_modern_and_legacy_plex_agents() -> None:
+    cases = [
+        ({"Guid": [{"id": "tmdb://123"}]}, {"tmdb": 123}),
+        (
+            {"guid": "com.plexapp.agents.themoviedb://456?lang=en"},
+            {"tmdb": 456},
+        ),
+        (
+            {"guid": "com.plexapp.agents.tmdb://789?lang=en"},
+            {"tmdb": 789},
+        ),
+        (
+            {"guid": "com.plexapp.agents.thetvdb://321?lang=en"},
+            {"tvdb": "321"},
+        ),
+        (
+            {"guid": "com.plexapp.agents.imdb://tt0123456?lang=en"},
+            {"imdb": "tt0123456"},
+        ),
+    ]
+
+    for media, expected in cases:
+        parsed = PlexService._parse_external_id_candidates(media)
+        for field, value in expected.items():
+            assert getattr(parsed, field) == value
+
+
+def test_external_id_parser_supports_hama_guid_modes() -> None:
+    cases = [
+        ("anidb-11638", {"anidb": "11638"}),
+        ("anidb4-11638", {"anidb": "11638"}),
+        ("tvdb-305074", {"tvdb": "305074"}),
+        ("tvdb4-305074", {"tvdb": "305074"}),
+        ("tmdb-372058", {"tmdb": 372058}),
+        ("tsdb-65930", {"tmdb": 65930}),
+        ("imdb-tt0988824", {"imdb": "tt0988824"}),
+    ]
+
+    for hama_id, expected in cases:
+        parsed = PlexService._parse_external_id_candidates(
+            {"guid": f"com.plexapp.agents.hama://{hama_id}?lang=en"}
+        )
+        for field, value in expected.items():
+            assert getattr(parsed, field) == value
+
+
+def test_external_id_parser_always_checks_top_level_legacy_guid() -> None:
+    parsed = PlexService._parse_external_id_candidates(
+        {
+            "Guid": [{"id": "plex://show/5d9c086c7d06d9001ffd27aa"}],
+            "guid": "com.plexapp.agents.hama://anidb-11638?lang=en",
+        }
+    )
+
+    assert parsed.anidb == "11638"
+
+
+def test_parse_anidb_mappings_extracts_movie_and_series_ids() -> None:
+    mappings = PlexService._parse_anidb_mappings(
+        b"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
+        <anime-list>
+          <anime anidbid=\"1\" tvdbid=\"72025\" tmdbtv=\"26209\" />
+          <anime anidbid=\"7\" tvdbid=\"movie\" imdbid=\"tt0119698\" />
+          <anime anidbid=\"11\" tvdbid=\"70900\" tmdbid=\"1390599\"
+                 imdbid=\"tt7941838\" />
+        </anime-list>"""
+    )
+
+    assert mappings["1"] == _AnimeListIDs(tmdb_series=26209, tvdb="72025")
+    assert mappings["7"] == _AnimeListIDs(imdb="tt0119698")
+    assert mappings["11"] == _AnimeListIDs(
+        tmdb_movie=1390599,
+        imdb="tt7941838",
+        tvdb="70900",
+    )
+
+
+def test_hama_anidb_guid_resolves_to_tmdb_without_per_item_api_call(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        async def fake_load_mappings(
+            self: PlexService,
+        ) -> dict[str, _AnimeListIDs]:
+            return {
+                "11638": _AnimeListIDs(
+                    tmdb_series=65930,
+                    imdb="tt0988824",
+                    tvdb="305074",
+                )
+            }
+
+        monkeypatch.setattr(PlexService, "_load_anidb_mappings", fake_load_mappings)
+        service = PlexService("token", "http://plex.local")
+
+        resolved = await service._resolve_external_ids(
+            {"guid": ("com.plexapp.agents.hama://anidb-11638?lang=en")},
+            MediaType.SERIES,
+        )
+
+        assert resolved is not None
+        assert resolved.tmdb == 65930
+        assert resolved.imdb == "tt0988824"
+        assert resolved.tvdb == "305074"
+
+    asyncio.run(run())
+
+
+def test_get_series_keeps_hama_items_in_scan_results(monkeypatch) -> None:
+    async def run() -> None:
+        async def fake_get_sections(self: PlexService) -> list[dict[str, object]]:
+            return [
+                {
+                    "key": "2",
+                    "uuid": "anime-library-uuid",
+                    "title": "Anime",
+                    "type": "show",
+                }
+            ]
+
+        async def fake_get_collections(
+            self: PlexService, section_id: str
+        ) -> dict[str, list[str]]:
+            assert section_id == "2"
+            return {}
+
+        async def fake_get_episode_data(
+            self: PlexService, section_id: str
+        ) -> tuple[dict[str, int], dict[str, str], dict[object, object]]:
+            assert section_id == "2"
+            return {"99": 1234}, {"99": "/anime/Example"}, {}
+
+        async def fake_get_items(
+            self: PlexService,
+            section_id: str,
+            **kwargs: object,
+        ) -> list[dict[str, object]]:
+            assert section_id == "2"
+            return [
+                {
+                    "type": "show",
+                    "ratingKey": "99",
+                    "title": "Example Anime",
+                    "year": 2024,
+                    "guid": "com.plexapp.agents.hama://anidb-11638?lang=en",
+                }
+            ]
+
+        async def fake_load_mappings(
+            self: PlexService,
+        ) -> dict[str, _AnimeListIDs]:
+            return {
+                "11638": _AnimeListIDs(
+                    tmdb_series=65930,
+                    imdb="tt0988824",
+                    tvdb="305074",
+                )
+            }
+
+        monkeypatch.setattr(PlexService, "get_library_sections", fake_get_sections)
+        monkeypatch.setattr(
+            PlexService, "_get_collection_names_by_item_id", fake_get_collections
+        )
+        monkeypatch.setattr(
+            PlexService, "_get_episode_data_for_section", fake_get_episode_data
+        )
+        monkeypatch.setattr(PlexService, "_get_section_metadata_items", fake_get_items)
+        monkeypatch.setattr(PlexService, "_load_anidb_mappings", fake_load_mappings)
+
+        series = await PlexService("token", "http://plex.local").get_series()
+
+        assert len(series) == 1
+        assert series[0].name == "Example Anime"
+        assert series[0].external_ids.tmdb == 65930
+        assert series[0].size == 1234
+
+    asyncio.run(run())
 
 
 def test_get_section_metadata_items_paginates_until_total_size(monkeypatch) -> None:

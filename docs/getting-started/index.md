@@ -1,7 +1,6 @@
 # Quick Start
 
-This page covers the steps from a fresh checkout to a working Reclaimerr
-instance.
+This page covers the steps from a fresh checkout to a working Reclaimerr instance.
 
 ## Runtime Options
 
@@ -21,6 +20,4 @@ instance.
 
 - Protection and pending requests are respected automatically.
 - Automatic cleanup deletion is disabled until you explicitly opt in.
-- The `Delete Cleanup Candidates` task still needs to be enabled separately in
-  the Tasks page.
-
+- The `Delete Cleanup Candidates` task still needs to be enabled separately in the Tasks page.

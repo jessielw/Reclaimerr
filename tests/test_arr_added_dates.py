@@ -24,6 +24,7 @@ def test_radarr_movie_includes_file_path_and_utc_added_date() -> None:
         {
             "id": 12,
             "title": "Example",
+            "titleSlug": "example-12",
             "movieFile": {
                 "path": r"D:\Movies\Example\Example.mkv",
                 "dateAdded": "2026-06-28T18:30:00-04:00",
@@ -31,6 +32,7 @@ def test_radarr_movie_includes_file_path_and_utc_added_date() -> None:
         }
     )
 
+    assert movie.title_slug == "example-12"
     assert movie.file_path == r"D:\Movies\Example\Example.mkv"
     assert movie.file_added_at == datetime(2026, 6, 28, 22, 30)
 

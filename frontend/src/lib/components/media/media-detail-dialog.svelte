@@ -18,6 +18,7 @@
     SeriesWithStatus,
   } from "$lib/types/shared";
   import MetadataSources from "$lib/components/media/metadata-sources.svelte";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
   import { Permission } from "$lib/types/shared";
   import { formatFileSize, formatRuntime } from "$lib/utils/formatters";
   import { formatDateToLocaleString } from "$lib/utils/date";
@@ -564,6 +565,13 @@
                 {/if}
               </div>
             </div>
+
+            <OriginMetadata
+              arrRefs={media.arr_refs}
+              arrTags={media.arr_tags}
+              seerrUrl={media.seerr_url}
+              seerrRequesters={media.seerr_requesters}
+            />
           </div>
 
           <div

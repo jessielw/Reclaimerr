@@ -1036,6 +1036,9 @@ class PlaybackHistoryEvent(Base):
     provider_media_type: Mapped[str] = mapped_column(String(16))
     played_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     duration_seconds: Mapped[int] = mapped_column(Integer)
+    observed_service: Mapped[Service | None] = mapped_column(
+        Enum(Service), default=None, index=True
+    )
     completed: Mapped[bool | None] = mapped_column(Boolean, default=None, index=True)
     source_user_id: Mapped[str | None] = mapped_column(
         String(255), default=None, index=True
@@ -1072,6 +1075,16 @@ class PlaybackHistoryEvent(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
+
+    def __post_init__(self) -> None:
+        """Infer the observed server for callers using the pre-Tracearr constructor."""
+
+        if self.observed_service is None:
+            self.observed_service = (
+                Service.PLEX
+                if self.source_service is Service.TAUTULLI
+                else self.source_service
+            )
 
 
 class PlaybackHistoryAggregate(Base):
@@ -1432,6 +1445,7 @@ class MovieArrRef(Base):
         ForeignKey("service_configs.id"), index=True
     )
     arr_movie_id: Mapped[int] = mapped_column(Integer)
+    arr_title_slug: Mapped[str | None] = mapped_column(String(255), default=None)
     arr_movie_path: Mapped[str | None] = mapped_column(String(2048), default=None)
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1459,6 +1473,7 @@ class SeriesArrRef(Base):
         ForeignKey("service_configs.id"), index=True
     )
     arr_series_id: Mapped[int] = mapped_column(Integer)
+    arr_title_slug: Mapped[str | None] = mapped_column(String(255), default=None)
     arr_series_path: Mapped[str | None] = mapped_column(String(2048), default=None)
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     updated_at: Mapped[datetime] = mapped_column(

@@ -20,6 +20,14 @@ def test_sonarr_series_status_is_normalized() -> None:
         assert series.status == expected
 
 
+def test_sonarr_series_includes_title_slug() -> None:
+    series = build_sonarr_series_from_dict(
+        {"id": 1, "title": "Series", "titleSlug": "example-series"}
+    )
+
+    assert series.title_slug == "example-series"
+
+
 def test_get_episodes_filters_by_season_when_requested() -> None:
     async def run() -> None:
         client = SonarrClient(api_key="key", base_url="http://sonarr")

@@ -1,7 +1,6 @@
 # Backups
 
-Back up the full `DATA_DIR`. That directory contains the app state you need to
-recover a Reclaimerr instance.
+Back up the full `DATA_DIR`. That directory contains the app state you need to recover a Reclaimerr instance.
 
 ## Backup Contents
 
@@ -35,4 +34,3 @@ recover a Reclaimerr instance.
 
 - [Production](production.md)
 - [Docker](docker.md)
-

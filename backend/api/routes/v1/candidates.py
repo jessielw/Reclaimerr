@@ -8,6 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.api.candidate_filters import candidate_matches_rule_clause
 from backend.api.routes.v1.dependencies import (
     candidate_or_404,
     ensure_no_active_file_operation,
@@ -116,6 +117,7 @@ async def list_candidates(
         default=None,
         pattern="^(disabled|scheduled|eligible|postponed|canceled)$",
     ),
+    rule_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> CandidateListResponse:
     query = (
         select(ReclaimCandidate)
@@ -135,6 +137,8 @@ async def list_candidates(
         query = query.where(Season.season_number == season_number)
     if episode_number is not None:
         query = query.where(Episode.episode_number == episode_number)
+    if rule_id is not None:
+        query = query.where(candidate_matches_rule_clause(rule_id))
 
     candidates = (await db.execute(query)).scalars().unique().all()
     payloads: list[dict[str, Any]] = []

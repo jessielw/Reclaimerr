@@ -48,6 +48,7 @@ from backend.services.playback_history import (
     _last_success_from,
     _normalize_reporting_events,
     _normalize_tautulli_events,
+    _normalize_tracearr_events,
     _playback_unavailable_reason,
     _recent_status_from,
     _refresh_reporting_config,
@@ -58,9 +59,43 @@ from backend.services.playback_history import (
     rebuild_playback_history_aggregates,
 )
 from backend.services.tautulli import TautulliClient
+from backend.services.tracearr import _is_supported_version
 
 
 class PlaybackHistoryNormalizationTests(unittest.TestCase):
+    def test_tracearr_requires_stable_v2(self) -> None:
+        self.assertTrue(_is_supported_version("2.0.0"))
+        self.assertTrue(_is_supported_version("2.4.1+build.7"))
+        self.assertFalse(_is_supported_version("2.0.0-beta.1"))
+        self.assertFalse(_is_supported_version("1.9.9"))
+
+    def test_tracearr_normalizes_watched_chain_and_identity(self) -> None:
+        events = _normalize_tracearr_events(
+            [
+                {
+                    "id": "play-1",
+                    "server_id": "server-1",
+                    "server_type": "plex",
+                    "media_type": "episode",
+                    "rating_key": "episode-1",
+                    "duration_ms": 125_900,
+                    "watched": True,
+                    "started_at": "2026-08-10T12:00:00.000Z",
+                    "stopped_at": "2026-08-10T12:02:05.900Z",
+                    "user": {"id": "identity-1"},
+                }
+            ],
+            {"identity-1": "Alice"},
+            server_id="server-1",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].source_event_key, "server-1:play-1")
+        self.assertEqual(events[0].duration_seconds, 125)
+        self.assertEqual(events[0].source_username, "Alice")
+        self.assertTrue(events[0].completed)
+        self.assertIsNone(events[0].played_at.tzinfo)
+
     def test_config_api_key_decrypts_stored_key(self) -> None:
         config = ServiceConfig(
             service_type=Service.TAUTULLI,
@@ -620,6 +655,120 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
         if self.db_path.exists():
             self.db_path.unlink()
+
+    async def test_tracearr_binding_selects_one_durable_history_source(self) -> None:
+        async with self.sessionmaker() as db:
+            movie = Movie(title="Movie", tmdb_id=101)
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+            )
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                name="Tautulli",
+                enabled=True,
+            )
+            tracearr = ServiceConfig(
+                service_type=Service.TRACEARR,
+                base_url="http://tracearr",
+                api_key="key",
+                name="Tracearr",
+                enabled=True,
+            )
+            db.add_all([movie, plex, tautulli, tracearr])
+            await db.flush()
+            tracearr.extra_settings = {
+                "server_bindings": [
+                    {
+                        "service_config_id": plex.id,
+                        "tracearr_server_id": "server-1",
+                        "tracearr_server_name": "Plex",
+                        "server_type": "plex",
+                    }
+                ]
+            }
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="plex-item",
+                service_media_id="plex-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            db.add(version)
+            await db.flush()
+            db.add_all(
+                [
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tautulli.id,
+                        source_event_key="legacy-play",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 8, 1),
+                        duration_seconds=60,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TRACEARR,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tracearr.id,
+                        source_event_key="server-1:trace-play",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 8, 2),
+                        duration_seconds=90,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TRACEARR,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tracearr.id,
+                        source_event_key="previous-server:old-trace-play",
+                        source_item_id="plex-item",
+                        provider_media_type="movie",
+                        played_at=datetime(2026, 7, 31),
+                        duration_seconds=120,
+                    ),
+                ]
+            )
+            await db.commit()
+            version_id = version.id
+            tracearr_id = tracearr.id
+
+        await rebuild_playback_history_aggregates()
+        async with self.sessionmaker() as db:
+            aggregate = (
+                await db.execute(
+                    select(PlaybackHistoryAggregate).where(
+                        PlaybackHistoryAggregate.target_scope == "movie_version",
+                        PlaybackHistoryAggregate.target_id == version_id,
+                    )
+                )
+            ).scalar_one()
+            self.assertEqual(aggregate.play_count, 1)
+            self.assertEqual(aggregate.total_duration_seconds, 90)
+            tracearr = await db.get(ServiceConfig, tracearr_id)
+            assert tracearr is not None
+            tracearr.enabled = False
+            await db.commit()
+
+        await rebuild_playback_history_aggregates()
+        async with self.sessionmaker() as db:
+            aggregate = (
+                await db.execute(
+                    select(PlaybackHistoryAggregate).where(
+                        PlaybackHistoryAggregate.target_scope == "movie_version",
+                        PlaybackHistoryAggregate.target_id == version_id,
+                    )
+                )
+            ).scalar_one()
+            self.assertEqual(aggregate.play_count, 1)
+            self.assertEqual(aggregate.total_duration_seconds, 60)
 
     async def test_snapshot_logs_mixed_service_unknown_reason(self) -> None:
         async with self.sessionmaker() as db:

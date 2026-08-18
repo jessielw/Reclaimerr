@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
+from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import (
     ARR_ID_RULE_FIELDS,
     COLLECTION_RULE_FIELDS,
@@ -123,6 +124,8 @@ from backend.services.playback_history import (
     IMPORTED_PLAYBACK_DURATION_FIELDS,
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
+    active_playback_event_clause,
+    load_active_tracearr_sources,
     load_playback_rule_snapshot,
     load_user_playback_totals,
     log_playback_rule_coverage,
@@ -141,8 +144,13 @@ __all__ = [
     "collect_rule_preview_matches_with_metadata",
 ]
 
-ArrDeleteFallback: TypeAlias = Literal["unmonitor", "remove_if_empty"]
-ArrDeleteAction: TypeAlias = Literal["delete", "unmonitor", "remove_if_empty"]
+ArrDeleteFallback: TypeAlias = Literal["unmonitor", "unmonitor_only", "remove_if_empty"]
+ArrDeleteAction: TypeAlias = Literal[
+    "delete", "unmonitor", "unmonitor_only", "remove_if_empty"
+]
+# actions that unmonitor the arr entry rather than deleting it outright.
+# "unmonitor_only" additionally skips touching the underlying files.
+UNMONITOR_LIKE_ARR_ACTIONS: frozenset[str] = frozenset({"unmonitor", "unmonitor_only"})
 SonarrProtectionPreserveKey: TypeAlias = tuple[int, int]
 
 SONARR_UNAIRED_FIELD = "sonarr.latest_season_has_unaired_episodes"
@@ -1629,7 +1637,9 @@ def _playback_unavailable_target_count(
             return True
         # per-user totals are not tracked per field in the snapshot; they come
         # from the same imported events the aggregate duration fields do
-        return scope in user_scoped_scopes and (scope, target_id) not in imported_targets
+        return (
+            scope in user_scoped_scopes and (scope, target_id) not in imported_targets
+        )
 
     return sum(
         1
@@ -2791,10 +2801,12 @@ async def _activate_seerr_request_resolver_for_rules(
     )
     mappings = [m for m in raw_mappings if isinstance(m, dict)]
 
+    active_tracearr_sources = await load_active_tracearr_sources(db)
     durable_rows = (
         await db.execute(
             select(
                 PlaybackHistoryEvent.source_service,
+                PlaybackHistoryEvent.observed_service,
                 PlaybackHistoryEvent.provider_media_type,
                 PlaybackHistoryEvent.tmdb_id,
                 PlaybackHistoryEvent.season_number,
@@ -2806,6 +2818,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 PlaybackHistoryEvent.completed.is_(True),
                 PlaybackHistoryEvent.tmdb_id.is_not(None),
                 PlaybackHistoryEvent.provider_media_type.in_(("movie", "episode")),
+                active_playback_event_clause(active_tracearr_sources),
             )
         )
     ).all()
@@ -2815,6 +2828,7 @@ async def _activate_seerr_request_resolver_for_rules(
     durable_event_count = 0
     for (
         source_service,
+        observed_service,
         provider_media_type,
         tmdb_id,
         season_number,
@@ -2826,7 +2840,7 @@ async def _activate_seerr_request_resolver_for_rules(
         watch_key = _normalize_watch_key(source_username or source_user_id)
         if not watch_key or played_at is None or tmdb_id is None:
             continue
-        watch_service = (
+        watch_service = observed_service or (
             Service.PLEX if source_service is Service.TAUTULLI else source_service
         )
         watched_at = ensure_utc(played_at)
@@ -5019,9 +5033,46 @@ def _rule_action(rule: ReclaimRule) -> dict[str, Any]:
     return rule.action or {}
 
 
+def _rule_arr_config_ids(
+    rule: ReclaimRule, service: Literal["radarr", "sonarr"]
+) -> set[int]:
+    """Return the explicitly selected ARR configs for one rule."""
+    return set(get_arr_service_config_ids(_rule_action(rule), service))
+
+
+def _candidate_arr_config_ids(
+    candidate: "ReclaimCandidate",
+    rules: Mapping[int, ReclaimRule],
+    service: Literal["radarr", "sonarr"],
+) -> set[int] | None:
+    """Return configs eligible for a candidate, or None for automatic routing.
+
+    Empty/unset targets preserve the historical behavior of routing to any
+    matching active instance. When all matched rules explicitly select targets,
+    their selections are combined.
+    """
+    matched_rules = [
+        rules[rule_id]
+        for rule_id in candidate.matched_rule_ids or []
+        if rule_id in rules
+    ]
+    if not matched_rules:
+        return None
+
+    selected: set[int] = set()
+    for rule in matched_rules:
+        rule_targets = _rule_arr_config_ids(rule, service)
+        if not rule_targets:
+            return None
+        selected.update(rule_targets)
+    return selected
+
+
 def _coerce_arr_delete_fallback(value: str | None) -> ArrDeleteFallback:
     if value == "remove_if_empty":
         return "remove_if_empty"
+    if value == "unmonitor_only":
+        return "unmonitor_only"
     return "unmonitor"
 
 
@@ -5033,8 +5084,10 @@ def _get_arr_action(
     """Resolve ARR behavior for a candidate.
 
     Matched rules remain authoritative: if any matched rule requests
-    ``unmonitor`` we honor that, otherwise any matched rule implies ``delete``.
-    Synthetic/no-rule candidates fall back to the global delete behavior.
+    ``unmonitor_only`` we honor that first (it is the most conservative -
+    files are never touched), then ``unmonitor``, otherwise any matched rule
+    implies ``delete``. Synthetic/no-rule candidates fall back to the global
+    delete behavior.
     """
     matched_rules = [
         (rule_id, rules[rule_id])
@@ -5042,11 +5095,13 @@ def _get_arr_action(
         if rule_id in rules
     ]
     matched_rule_ids = [rule_id for rule_id, _rule in matched_rules]
-    if any(
-        _rule_action(rule).get("arr_action") == "unmonitor"
-        for _rule_id, rule in matched_rules
-    ):
-        resolved_action: ArrDeleteAction = "unmonitor"
+    matched_arr_actions = {
+        _rule_action(rule).get("arr_action") for _rule_id, rule in matched_rules
+    }
+    if "unmonitor_only" in matched_arr_actions:
+        resolved_action: ArrDeleteAction = "unmonitor_only"
+    elif "unmonitor" in matched_arr_actions:
+        resolved_action = "unmonitor"
     else:
         resolved_action = "delete" if matched_rule_ids else default_behavior
 
@@ -5091,11 +5146,14 @@ def _merge_arr_action(
 ) -> ArrDeleteAction:
     """Merge multiple candidate actions for the same parent media.
 
-    Precedence is strict:
-    1. ``unmonitor`` wins
-    2. explicit rule ``delete`` beats fallback ``remove_if_empty``
-    3. ``remove_if_empty`` applies only if nothing stronger exists
+    Precedence is strict, most conservative (files kept) to least:
+    1. ``unmonitor_only`` wins - files are never touched
+    2. ``unmonitor`` wins over delete
+    3. explicit rule ``delete`` beats fallback ``remove_if_empty``
+    4. ``remove_if_empty`` applies only if nothing stronger exists
     """
+    if current == "unmonitor_only" or candidate_action == "unmonitor_only":
+        return "unmonitor_only"
     if current == "unmonitor" or candidate_action == "unmonitor":
         return "unmonitor"
     if current == "delete" or candidate_action == "delete":
@@ -5144,15 +5202,16 @@ async def _sync_rule_radarr_tags() -> tuple[int, int]:
             if not rule:
                 continue
             tag = _managed_tag_for_rule(rule)
-            config_id = _rule_action(rule).get("radarr_service_config_id")
-            if not tag or not isinstance(config_id, int):
+            config_ids = _rule_arr_config_ids(rule, "radarr")
+            if not tag or not config_ids:
                 continue
-            if ref_config_id == config_id and arr_movie_id is not None:
-                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
-                    arr_movie_id
-                )
-            elif tmdb_id:
-                fallback_tmdb.setdefault(config_id, set()).add((tag, tmdb_id))
+            for config_id in config_ids:
+                if ref_config_id == config_id and arr_movie_id is not None:
+                    by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                        arr_movie_id
+                    )
+                elif tmdb_id:
+                    fallback_tmdb.setdefault(config_id, set()).add((tag, tmdb_id))
 
     total_tagged = 0
     total_untagged = 0
@@ -5218,15 +5277,16 @@ async def _sync_rule_sonarr_tags() -> tuple[int, int]:
             if not rule:
                 continue
             tag = _managed_tag_for_rule(rule)
-            config_id = _rule_action(rule).get("sonarr_service_config_id")
-            if not tag or not isinstance(config_id, int):
+            config_ids = _rule_arr_config_ids(rule, "sonarr")
+            if not tag or not config_ids:
                 continue
-            if ref_config_id == config_id and arr_series_id is not None:
-                by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
-                    arr_series_id
-                )
-            elif tmdb_id:
-                fallback_tmdb.setdefault(config_id, set()).add((tag, int(tmdb_id)))
+            for config_id in config_ids:
+                if ref_config_id == config_id and arr_series_id is not None:
+                    by_config.setdefault(config_id, {}).setdefault(tag, set()).add(
+                        arr_series_id
+                    )
+                elif tmdb_id:
+                    fallback_tmdb.setdefault(config_id, set()).add((tag, int(tmdb_id)))
 
     total_tagged = 0
     total_untagged = 0
@@ -5874,6 +5934,18 @@ async def _delete_movie_version_candidates(
         cand_arr_action = _get_arr_action(
             candidate, rules or {}, default_arr_delete_behavior
         )
+        if cand_arr_action == "unmonitor_only":
+            # Radarr can't isolate a single quality version to unmonitor, and
+            # this fallback path only runs when no Radarr instance could be
+            # routed for the whole movie either - there's nothing to unmonitor,
+            # so the file is left untouched by design rather than deleted.
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                "Unmonitor Only: no Radarr instance covers this quality version, "
+                "so nothing could be unmonitored; the file was left untouched by "
+                "design",
+            )
+            continue
         version = versions.get(candidate.movie_version_id)
         if version is None:
             await _mark_candidate_delete_failure(
@@ -5962,9 +6034,14 @@ async def _delete_movie_version_candidates(
                                 ).where(MovieArrRef.movie_id == ver_db.movie_id)
                             )
                         ).all()
+                        eligible_config_ids = _candidate_arr_config_ids(
+                            candidate, rules or {}, "radarr"
+                        )
                         remove_arr_refs = [
                             (config_id, arr_movie_id)
                             for config_id, arr_movie_id in arr_ref_rows
+                            if eligible_config_ids is None
+                            or config_id in eligible_config_ids
                         ]
 
                 db.add(
@@ -6225,6 +6302,7 @@ async def _delete_movie_candidates(
         version_path: str | None,
         version_service: Service | None,
         refs: list[tuple[Any, ...]],
+        allowed_config_ids: set[int] | None,
     ) -> set[tuple[int, int]]:
         """Return (config_id, arr_movie_id) pairs whose folder path contains this version.
 
@@ -6236,6 +6314,7 @@ async def _delete_movie_candidates(
             (config_id, arr_movie_id, arr_movie_path)
             for config_id, arr_movie_id, arr_movie_path in refs
             if config_id in radarr_clients
+            and (allowed_config_ids is None or config_id in allowed_config_ids)
         ]
         if not active_refs:
             return set()
@@ -6252,8 +6331,12 @@ async def _delete_movie_candidates(
                 matched.add((config_id, arr_movie_id))
         if not matched:
             if len(active_refs) == 1:
-                config_id, arr_movie_id, _arr_movie_path = active_refs[0]
-                matched.add((config_id, arr_movie_id))
+                config_id, arr_movie_id, arr_movie_path = active_refs[0]
+                # Preserve the legacy automatic single-instance fallback. For
+                # explicitly targeted rules, a known non-matching folder is
+                # negative proof and must not be overridden by selection.
+                if allowed_config_ids is None or not version_path or not arr_movie_path:
+                    matched.add((config_id, arr_movie_id))
         return matched
 
     def _candidate_covers_full_radarr_entry(
@@ -6330,11 +6413,23 @@ async def _delete_movie_candidates(
                 continue
             ver_path = version_path_by_id.get(cand.movie_version_id)
             ver_service = version_service_by_id.get(cand.movie_version_id)
-            matched = _match_version_to_arr(ver_path, ver_service, movie_info["refs"])
+            allowed_config_ids = _candidate_arr_config_ids(cand, rules_by_id, "radarr")
+            eligible_refs = [
+                ref
+                for ref in movie_info["refs"]
+                if allowed_config_ids is None or ref[0] in allowed_config_ids
+            ]
+            matched = _match_version_to_arr(
+                ver_path,
+                ver_service,
+                eligible_refs,
+                allowed_config_ids,
+            )
             cand_action = movie_arr_action.get(cand.movie_id or 0, "delete")
-            if matched and cand_action == "unmonitor":
+            if matched and cand_action in UNMONITOR_LIKE_ARR_ACTIONS:
                 # version-level unmonitor: Radarr un-monitors the whole movie;
-                # file deletion is scoped to just this version in the unmonitor block
+                # file deletion (if any - "unmonitor_only" skips it) is scoped
+                # to just this version in the unmonitor block
                 movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                 all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
             elif matched and cand_action == "delete":
@@ -6349,7 +6444,7 @@ async def _delete_movie_candidates(
                     cand.movie_id,
                     selected_version_ids,
                     matched,
-                    movie_info["refs"],
+                    eligible_refs,
                 ):
                     movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                     all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
@@ -6371,8 +6466,11 @@ async def _delete_movie_candidates(
             if not movie_info:
                 continue
             # whole-movie candidates go to ALL arr instances that know this movie
+            allowed_config_ids = _candidate_arr_config_ids(cand, rules_by_id, "radarr")
             for config_id, arr_movie_id, _ in movie_info["refs"]:
-                if config_id in radarr_clients:
+                if config_id in radarr_clients and (
+                    allowed_config_ids is None or config_id in allowed_config_ids
+                ):
                     movie_arr_routing.setdefault(cand.movie_id, set()).add(
                         (config_id, arr_movie_id)
                     )
@@ -6424,7 +6522,7 @@ async def _delete_movie_candidates(
         all_cand_ids = all_cand_ids_by_movie.get(movie_id, [])
         target = (
             movies_to_unmonitor_by_config
-            if movie_arr_action.get(movie_id) == "unmonitor"
+            if movie_arr_action.get(movie_id) in UNMONITOR_LIKE_ARR_ACTIONS
             else movies_to_delete_by_config
         )
         for config_id, arr_movie_id in config_arr_set:
@@ -6662,6 +6760,7 @@ async def _delete_movie_candidates(
                     movie_id = movie_info["movie_id"]
                     already_processed = movie_id in seen_unmonitor_ids
                     seen_unmonitor_ids.add(movie_id)
+                    keep_files = movie_arr_action.get(movie_id) == "unmonitor_only"
 
                     result = await db.execute(
                         select(Movie)
@@ -6676,95 +6775,94 @@ async def _delete_movie_candidates(
                             unmonitor_target_version_ids: set[int | None] = (
                                 movie_info.get("target_version_ids") or set()
                             )
-                            concrete_unmonitor_target_version_ids: set[int] = set()
                             is_whole_movie = (
                                 not unmonitor_target_version_ids
                                 or None in unmonitor_target_version_ids
                             )
+                            concrete_unmonitor_target_version_ids: set[int] = {
+                                ver_id
+                                for ver_id in unmonitor_target_version_ids
+                                if ver_id is not None
+                            }
 
-                            # delete files from disk (only for candidate version(s)).
-                            # sibling_cleanup matches by file stem so it naturally scopes
-                            # to subtitles/nfo files belonging to that specific version.
-                            for ver in movie.versions:
-                                if not ver.path:
-                                    continue
-                                if (
-                                    not is_whole_movie
-                                    and ver.id not in unmonitor_target_version_ids
-                                ):
-                                    continue  # preserve non candidate version files
-                                local_path = resolve_path(
-                                    ver.path,
-                                    path_mappings,
-                                    service_type=unmonitor_service_type.value
-                                    if unmonitor_service_type
-                                    else None,
-                                )
-                                if local_path:
-                                    try:
-                                        sibling_cleanup(local_path)
-                                    except Exception as fs_err:
-                                        LOG.warning(
-                                            f"sibling_cleanup failed for '{ver.path}': {fs_err}"
-                                        )
-
-                            # remove from media server
-                            if (
-                                media_server_fallback_enabled
-                                and main_service is not None
-                                and unmonitor_service_type is not None
-                            ):
-                                if is_whole_movie:
-                                    service_versions: list[MovieVersion] = [
-                                        v
-                                        for v in movie.versions
-                                        if v.service == unmonitor_service_type
-                                    ]
-                                else:
-                                    # version only (only include candidate versions)
-                                    service_versions = [
-                                        v
-                                        for v in movie.versions
-                                        if v.service == unmonitor_service_type
-                                        and v.id in unmonitor_target_version_ids
-                                    ]
-                                deleted_item_ids: set[str] = set()
-                                for ver in service_versions:
-                                    if ver.service_item_id in deleted_item_ids:
+                            if not keep_files:
+                                # delete files from disk (only for candidate version(s)).
+                                # sibling_cleanup matches by file stem so it naturally scopes
+                                # to subtitles/nfo files belonging to that specific version.
+                                for ver in movie.versions:
+                                    if not ver.path:
                                         continue
-                                    if not is_whole_movie:
-                                        # skip if a non candidate version still uses this item id
-                                        # (e.g. multi version Plex entry sharing one ratingKey)
-                                        if any(
-                                            v.service_item_id == ver.service_item_id
+                                    if (
+                                        not is_whole_movie
+                                        and ver.id not in unmonitor_target_version_ids
+                                    ):
+                                        continue  # preserve non candidate version files
+                                    local_path = resolve_path(
+                                        ver.path,
+                                        path_mappings,
+                                        service_type=unmonitor_service_type.value
+                                        if unmonitor_service_type
+                                        else None,
+                                    )
+                                    if local_path:
+                                        try:
+                                            sibling_cleanup(local_path)
+                                        except Exception as fs_err:
+                                            LOG.warning(
+                                                f"sibling_cleanup failed for '{ver.path}': {fs_err}"
+                                            )
+
+                                # remove from media server
+                                if (
+                                    media_server_fallback_enabled
+                                    and main_service is not None
+                                    and unmonitor_service_type is not None
+                                ):
+                                    if is_whole_movie:
+                                        service_versions: list[MovieVersion] = [
+                                            v
                                             for v in movie.versions
                                             if v.service == unmonitor_service_type
-                                            and v.id not in unmonitor_target_version_ids
-                                        ):
+                                        ]
+                                    else:
+                                        # version only (only include candidate versions)
+                                        service_versions = [
+                                            v
+                                            for v in movie.versions
+                                            if v.service == unmonitor_service_type
+                                            and v.id in unmonitor_target_version_ids
+                                        ]
+                                    deleted_item_ids: set[str] = set()
+                                    for ver in service_versions:
+                                        if ver.service_item_id in deleted_item_ids:
                                             continue
-                                    try:
-                                        await main_service.delete_item(
-                                            ver.service_item_id
-                                        )
-                                        deleted_item_ids.add(ver.service_item_id)
-                                    except Exception as ms_err:
-                                        LOG.warning(
-                                            f"Media server delete_item failed for "
-                                            f"'{movie.title}': {ms_err}"
-                                        )
+                                        if not is_whole_movie:
+                                            # skip if a non candidate version still uses this item id
+                                            # (e.g. multi version Plex entry sharing one ratingKey)
+                                            if any(
+                                                v.service_item_id == ver.service_item_id
+                                                for v in movie.versions
+                                                if v.service == unmonitor_service_type
+                                                and v.id
+                                                not in unmonitor_target_version_ids
+                                            ):
+                                                continue
+                                        try:
+                                            await main_service.delete_item(
+                                                ver.service_item_id
+                                            )
+                                            deleted_item_ids.add(ver.service_item_id)
+                                        except Exception as ms_err:
+                                            LOG.warning(
+                                                f"Media server delete_item failed for "
+                                                f"'{movie.title}': {ms_err}"
+                                            )
 
-                            # only soft delete the movie record when all versions are removed
-                            if is_whole_movie:
-                                movie.removed_at = datetime.now(UTC)
-                                movie.added_at = None
-                            else:
-                                concrete_unmonitor_target_version_ids = {
-                                    ver_id
-                                    for ver_id in unmonitor_target_version_ids
-                                    if ver_id is not None
-                                }
-                                deleted_size = 0
-                                if concrete_unmonitor_target_version_ids:
+                                # only soft delete the movie record when all versions are removed
+                                if is_whole_movie:
+                                    movie.removed_at = datetime.now(UTC)
+                                    movie.added_at = None
+                                elif concrete_unmonitor_target_version_ids:
                                     target_versions = [
                                         v
                                         for v in movie.versions
@@ -6784,6 +6882,9 @@ async def _delete_movie_candidates(
                                     )
                                     await db.flush()
                                     await _soft_remove_movie_if_empty(db, movie.id)
+                            # "unmonitor_only" leaves the movie/version records and
+                            # files exactly as-is - only the Radarr entry (unmonitored
+                            # above) changes.
                             event_versions = [
                                 v
                                 for v in movie.versions
@@ -6796,6 +6897,9 @@ async def _delete_movie_candidates(
                             for version in event_versions:
                                 unmonitor_events.append(
                                     {
+                                        "action": "unmonitored_only"
+                                        if keep_files
+                                        else "unmonitored",
                                         "title": movie.title,
                                         "tmdb_id": movie.tmdb_id,
                                         "candidate_id": movie_info["candidate_id"],
@@ -6837,7 +6941,9 @@ async def _delete_movie_candidates(
                                 tmdb_id=movie_info.get("tmdb_id"),
                                 name=movie_info.get("title"),
                                 size=movie.size if movie else None,
-                                action="unmonitored",
+                                action="unmonitored_only"
+                                if keep_files
+                                else "unmonitored",
                             )
                         )
 
@@ -6845,13 +6951,9 @@ async def _delete_movie_candidates(
 
             unique_unmonitored = len(seen_unmonitor_ids)
             deleted_count += unique_unmonitored
-            LOG.info(
-                f"Successfully unmonitored {unique_unmonitored} movies via Radarr "
-                f"and cleaned up files"
-            )
+            LOG.info(f"Successfully unmonitored {unique_unmonitored} movies via Radarr")
             for event in unmonitor_events:
                 await _dispatch_reclaim_event(
-                    action="unmonitored",
                     media_type=MediaType.MOVIE,
                     **event,
                 )
@@ -6864,34 +6966,58 @@ async def _delete_movie_candidates(
 
     # fallback to media server for whole-movie candidates not handled by any arr instance
     if whole_movie_candidates:
-        if media_server_fallback_enabled:
-            deleted_count += await _delete_movies_via_media_server(
-                whole_movie_candidates,
-                movies_to_delete + movies_to_unmonitor,
-                approved_by,
+        movies_handled_ids = {
+            m["movie_id"] for m in movies_to_delete + movies_to_unmonitor
+        }
+        unhandled = [
+            c for c in whole_movie_candidates if c.movie_id not in movies_handled_ids
+        ]
+        # "unmonitor_only" never deletes files, including via the media server
+        # fallback - if no Radarr instance could be found to unmonitor, there
+        # is nothing safe to do, so leave the file untouched.
+        unmonitor_only_unhandled = [
+            c
+            for c in unhandled
+            if movie_arr_action.get(c.movie_id or 0) == "unmonitor_only"
+        ]
+        for cand in unmonitor_only_unhandled:
+            title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
+            await _mark_unexplained_delete_failures(
+                [cand.id],
+                (
+                    "Unmonitor Only: no active Radarr instance is tracking this "
+                    "movie, so there is nothing to unmonitor; the file was left "
+                    "untouched by design"
+                ),
             )
-        else:
-            movies_handled_ids = {
-                m["movie_id"] for m in movies_to_delete + movies_to_unmonitor
-            }
-            unhandled = [
-                c
-                for c in whole_movie_candidates
-                if c.movie_id not in movies_handled_ids
-            ]
-            for cand in unhandled:
-                title = movie_data.get(cand.movie_id or 0, {}).get("title", "unknown")
-                await _mark_unexplained_delete_failures(
-                    [cand.id],
-                    (
-                        "Media server fallback disabled and movie was not handled "
-                        "by any active Radarr instance"
-                    ),
+            LOG.info(
+                f"Unmonitor Only - skipping '{title}' (not tracked by any Radarr "
+                f"instance, file left untouched)"
+            )
+        media_fallback_candidates = [
+            c for c in unhandled if c not in unmonitor_only_unhandled
+        ]
+        if media_fallback_candidates:
+            if media_server_fallback_enabled:
+                deleted_count += await _delete_movies_via_media_server(
+                    media_fallback_candidates, [], approved_by
                 )
-                LOG.warning(
-                    f"Media server fallback disabled - skipping deletion for "
-                    f"'{title}' (not handled by any Radarr instance)"
-                )
+            else:
+                for cand in media_fallback_candidates:
+                    title = movie_data.get(cand.movie_id or 0, {}).get(
+                        "title", "unknown"
+                    )
+                    await _mark_unexplained_delete_failures(
+                        [cand.id],
+                        (
+                            "Media server fallback disabled and movie was not handled "
+                            "by any active Radarr instance"
+                        ),
+                    )
+                    LOG.warning(
+                        f"Media server fallback disabled - skipping deletion for "
+                        f"'{title}' (not handled by any Radarr instance)"
+                    )
 
     return deleted_count
 
@@ -7044,8 +7170,13 @@ async def _delete_series_candidates(
             series_info = series_data.get(candidate.series_id)
             if not series_info:
                 continue
+            allowed_config_ids = _candidate_arr_config_ids(
+                candidate, series_rules_by_id, "sonarr"
+            )
             for config_id, arr_series_id, _ in series_info["refs"]:
-                if config_id in sonarr_clients:
+                if config_id in sonarr_clients and (
+                    allowed_config_ids is None or config_id in allowed_config_ids
+                ):
                     series_arr_routing.setdefault(candidate.series_id, set()).add(
                         (config_id, arr_series_id)
                     )
@@ -7059,7 +7190,7 @@ async def _delete_series_candidates(
         )
         target = (
             series_to_unmonitor_by_config
-            if series_arr_action.get(series_id) == "unmonitor"
+            if series_arr_action.get(series_id) in UNMONITOR_LIKE_ARR_ACTIONS
             else series_to_delete_by_config
         )
         for config_id, arr_series_id in config_arr_set:
@@ -7232,6 +7363,7 @@ async def _delete_series_candidates(
                     if series_id in seen_series_unmonitor:
                         continue
                     seen_series_unmonitor.add(series_id)
+                    keep_files = series_arr_action.get(series_id) == "unmonitor_only"
 
                     result = await db.execute(
                         select(Series)
@@ -7241,59 +7373,66 @@ async def _delete_series_candidates(
                     series = result.scalar_one_or_none()
 
                     if series:
-                        # delete series folder from disk using arr_series_path
-                        s_refs = series_data.get(series_id, {}).get("refs", [])
-                        for _, _, arr_series_path in s_refs:
-                            if not arr_series_path:
-                                continue
-                            initial_path = Path(arr_series_path)
-                            local_path: Path | None = initial_path
-                            if not initial_path.exists():
-                                local_path = resolve_path(
-                                    arr_series_path,
-                                    path_mappings_series,
-                                    service_type="sonarr",
+                        if not keep_files:
+                            # delete series folder from disk using arr_series_path
+                            s_refs = series_data.get(series_id, {}).get("refs", [])
+                            for _, _, arr_series_path in s_refs:
+                                if not arr_series_path:
+                                    continue
+                                initial_path = Path(arr_series_path)
+                                local_path: Path | None = initial_path
+                                if not initial_path.exists():
+                                    local_path = resolve_path(
+                                        arr_series_path,
+                                        path_mappings_series,
+                                        service_type="sonarr",
+                                    )
+                                if local_path and local_path.exists():
+                                    try:
+                                        shutil.rmtree(str(local_path))
+                                        LOG.info(f"Removed series folder: {local_path}")
+                                    except Exception as fs_err:
+                                        LOG.warning(
+                                            f"shutil.rmtree failed for series '{series.title}' "
+                                            f"at '{local_path}': {fs_err}"
+                                        )
+                                    break  # only delete the matched folder once
+
+                            # remove from media server
+                            if (
+                                media_server_fallback_enabled
+                                and main_service_s is not None
+                                and unmonitor_svc_type is not None
+                            ):
+                                ref = next(
+                                    (
+                                        r
+                                        for r in series.service_refs
+                                        if r.service == unmonitor_svc_type
+                                    ),
+                                    None,
                                 )
-                            if local_path and local_path.exists():
-                                try:
-                                    shutil.rmtree(str(local_path))
-                                    LOG.info(f"Removed series folder: {local_path}")
-                                except Exception as fs_err:
-                                    LOG.warning(
-                                        f"shutil.rmtree failed for series '{series.title}' "
-                                        f"at '{local_path}': {fs_err}"
-                                    )
-                                break  # only delete the matched folder once
+                                if ref:
+                                    try:
+                                        await main_service_s.delete_item(ref.service_id)
+                                    except Exception as ms_err:
+                                        LOG.warning(
+                                            f"Media server delete_item failed for series "
+                                            f"'{series.title}': {ms_err}"
+                                        )
 
-                        # remove from media server
-                        if (
-                            media_server_fallback_enabled
-                            and main_service_s is not None
-                            and unmonitor_svc_type is not None
-                        ):
-                            ref = next(
-                                (
-                                    r
-                                    for r in series.service_refs
-                                    if r.service == unmonitor_svc_type
-                                ),
-                                None,
-                            )
-                            if ref:
-                                try:
-                                    await main_service_s.delete_item(ref.service_id)
-                                except Exception as ms_err:
-                                    LOG.warning(
-                                        f"Media server delete_item failed for series "
-                                        f"'{series.title}': {ms_err}"
-                                    )
-
-                        series.removed_at = datetime.now(UTC)
-                        series.added_at = None
+                            series.removed_at = datetime.now(UTC)
+                            series.added_at = None
+                        # "unmonitor_only" leaves the series record and its files
+                        # exactly as-is - only the Sonarr entry (unmonitored above)
+                        # changes.
                         for ref in series.service_refs:
                             if ref.path:
                                 unmonitor_series_events.append(
                                     {
+                                        "action": "unmonitored_only"
+                                        if keep_files
+                                        else "unmonitored",
                                         "title": series.title,
                                         "tmdb_id": series.tmdb_id,
                                         "candidate_id": series_info["candidate_id"],
@@ -7327,7 +7466,7 @@ async def _delete_series_candidates(
                             tmdb_id=series_info.get("tmdb_id"),
                             name=series_info.get("title"),
                             size=series.size if series else None,
-                            action="unmonitored",
+                            action="unmonitored_only" if keep_files else "unmonitored",
                         )
                     )
 
@@ -7336,12 +7475,10 @@ async def _delete_series_candidates(
             unique_unmonitored_series = len(seen_series_unmonitor)
             deleted_count += unique_unmonitored_series
             LOG.info(
-                f"Successfully unmonitored {unique_unmonitored_series} series via Sonarr "
-                f"and cleaned up files"
+                f"Successfully unmonitored {unique_unmonitored_series} series via Sonarr"
             )
             for event in unmonitor_series_events:
                 await _dispatch_reclaim_event(
-                    action="unmonitored",
                     media_type=MediaType.SERIES,
                     **event,
                 )
@@ -7353,28 +7490,54 @@ async def _delete_series_candidates(
         )
 
     # fallback to media server deletion for candidates not handled by any Sonarr instance
-    if media_server_fallback_enabled:
-        deleted_count += await _delete_series_via_media_server(
-            candidates, series_to_delete + series_to_unmonitor, approved_by
+    series_handled_ids = {
+        s["series_id"] for s in series_to_delete + series_to_unmonitor
+    }
+    unhandled = [c for c in candidates if c.series_id not in series_handled_ids]
+    # "unmonitor_only" never deletes files, including via the media server
+    # fallback - if no Sonarr instance could be found to unmonitor, there is
+    # nothing safe to do, so leave the file untouched.
+    unmonitor_only_unhandled = [
+        c
+        for c in unhandled
+        if series_arr_action.get(c.series_id or 0) == "unmonitor_only"
+    ]
+    for cand in unmonitor_only_unhandled:
+        title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
+        await _mark_unexplained_delete_failures(
+            [cand.id],
+            (
+                "Unmonitor Only: no active Sonarr instance is tracking this "
+                "series, so there is nothing to unmonitor; the files were left "
+                "untouched by design"
+            ),
         )
-    else:
-        series_handled_ids = {
-            s["series_id"] for s in series_to_delete + series_to_unmonitor
-        }
-        unhandled = [c for c in candidates if c.series_id not in series_handled_ids]
-        for cand in unhandled:
-            title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
-            await _mark_unexplained_delete_failures(
-                [cand.id],
-                (
-                    "Media server fallback disabled and series was not handled "
-                    "by any active Sonarr instance"
-                ),
+        LOG.info(
+            f"Unmonitor Only - skipping '{title}' (not tracked by any Sonarr "
+            f"instance, files left untouched)"
+        )
+    media_fallback_candidates = [
+        c for c in unhandled if c not in unmonitor_only_unhandled
+    ]
+    if media_fallback_candidates:
+        if media_server_fallback_enabled:
+            deleted_count += await _delete_series_via_media_server(
+                media_fallback_candidates, [], approved_by
             )
-            LOG.warning(
-                f"Media server fallback disabled - skipping deletion for "
-                f"'{title}' (not handled by any Sonarr instance)"
-            )
+        else:
+            for cand in media_fallback_candidates:
+                title = series_data.get(cand.series_id or 0, {}).get("title", "unknown")
+                await _mark_unexplained_delete_failures(
+                    [cand.id],
+                    (
+                        "Media server fallback disabled and series was not handled "
+                        "by any active Sonarr instance"
+                    ),
+                )
+                LOG.warning(
+                    f"Media server fallback disabled - skipping deletion for "
+                    f"'{title}' (not handled by any Sonarr instance)"
+                )
 
     return deleted_count
 
@@ -7524,6 +7687,15 @@ async def _delete_season_candidates(
             path_mappings,
             media_service_type=_main_media_server_type(),
         )
+        allowed_config_ids = _candidate_arr_config_ids(
+            candidate, season_rules_by_id, "sonarr"
+        )
+        if allowed_config_ids is not None:
+            ordered_refs = [
+                ref
+                for ref in ordered_refs
+                if ref.service_config_id in allowed_config_ids
+            ]
         last_sonarr_error: str | None = None
 
         for ref in ordered_refs:
@@ -7582,6 +7754,13 @@ async def _delete_season_candidates(
             arr_series_path = ref.arr_series_path
             sonarr_client = ref_client
 
+            if cand_arr_action == "unmonitor_only":
+                # Sonarr side is done - the season is unmonitored above. Files
+                # are left untouched by design, so there's nothing else to do
+                # for this ref.
+                deleted_via_sonarr = True
+                break
+
             if cand_arr_action == "unmonitor":
                 season_folder: Path | None = None
                 if arr_series_path:
@@ -7639,7 +7818,11 @@ async def _delete_season_candidates(
             if deleted_via_sonarr:
                 break
 
-        if deleted_via_sonarr and media_server_fallback_enabled:
+        if (
+            deleted_via_sonarr
+            and media_server_fallback_enabled
+            and cand_arr_action != "unmonitor_only"
+        ):
             media_svc = service_manager.main_media_server
             media_svc_type = _main_media_server_type()
             season_service_id = _season_media_server_id(season, media_svc_type)
@@ -7655,7 +7838,7 @@ async def _delete_season_candidates(
         # if no files remain across all seasons (delete path only), remove series
         if (
             deleted_via_sonarr
-            and cand_arr_action != "unmonitor"
+            and cand_arr_action not in UNMONITOR_LIKE_ARR_ACTIONS
             and sonarr_client is not None
             and sonarr_ref_id is not None
         ):
@@ -7686,6 +7869,24 @@ async def _delete_season_candidates(
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
+            if cand_arr_action == "unmonitor_only":
+                # never delete files for "unmonitor_only" - no Sonarr instance
+                # could unmonitor this season, so there's nothing safe to do.
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error
+                    or (
+                        "Unmonitor Only: no active Sonarr instance is tracking "
+                        "this season, so there is nothing to unmonitor; the "
+                        "files were left untouched by design"
+                    ),
+                )
+                LOG.info(
+                    f"Unmonitor Only - skipping '{series_obj.title}' "
+                    f"S{season_number:02d} (not tracked by any Sonarr instance, "
+                    f"files left untouched)"
+                )
+                continue
             if not media_server_fallback_enabled:
                 await _mark_candidate_delete_failure(
                     candidate.id,
@@ -7731,69 +7932,79 @@ async def _delete_season_candidates(
 
         # remove candidate and update series size in DB
         async with async_db() as db:
-            result = await db.execute(
-                select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
-            )
-            cand = result.scalar_one_or_none()
-            if cand:
-                await db.delete(cand)
-
-            # reduce series stored size by the season's size
-            if season.size:
-                series_result = await db.execute(
-                    select(Series).where(Series.id == candidate.series_id)
-                )
-                series_db = series_result.scalar_one_or_none()
-                if series_db and series_db.size:
-                    series_db.size = max(0, series_db.size - season.size)
-
-            # delete the season row so it doesn't show stale data
-            result = await db.execute(
-                select(Season).where(Season.id == candidate.season_id)
-            )
-            season_db = result.scalar_one_or_none()
-            if season_db:
+            if cand_arr_action == "unmonitor_only":
+                # "unmonitor_only" leaves the season/series records and files
+                # exactly as-is - only the Sonarr entry (unmonitored above)
+                # changes. Just clear the candidate(s) queued for this season.
                 await db.execute(
                     delete(ReclaimCandidate).where(
-                        ReclaimCandidate.season_id == season_db.id
+                        ReclaimCandidate.season_id == candidate.season_id
                     )
                 )
-                await db.execute(
-                    delete(ProtectionRequest).where(
-                        ProtectionRequest.season_id == season_db.id,
-                        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
-                    )
+            else:
+                result = await db.execute(
+                    select(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
                 )
-                await db.execute(
-                    update(ProtectionRequest)
-                    .where(
-                        ProtectionRequest.season_id == season_db.id,
-                        ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                cand = result.scalar_one_or_none()
+                if cand:
+                    await db.delete(cand)
+
+                # reduce series stored size by the season's size
+                if season.size:
+                    series_result = await db.execute(
+                        select(Series).where(Series.id == candidate.series_id)
                     )
-                    .values(season_id=None, episode_id=None)
+                    series_db = series_result.scalar_one_or_none()
+                    if series_db and series_db.size:
+                        series_db.size = max(0, series_db.size - season.size)
+
+                # delete the season row so it doesn't show stale data
+                result = await db.execute(
+                    select(Season).where(Season.id == candidate.season_id)
                 )
-                await db.execute(
-                    delete(DeleteRequest).where(
-                        DeleteRequest.season_id == season_db.id,
-                        DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                season_db = result.scalar_one_or_none()
+                if season_db:
+                    await db.execute(
+                        delete(ReclaimCandidate).where(
+                            ReclaimCandidate.season_id == season_db.id
+                        )
                     )
-                )
-                await db.execute(
-                    update(DeleteRequest)
-                    .where(
-                        DeleteRequest.season_id == season_db.id,
-                        DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                    await db.execute(
+                        delete(ProtectionRequest).where(
+                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.status == ProtectionRequestStatus.PENDING,
+                        )
                     )
-                    .values(season_id=None, episode_id=None)
-                )
-                await db.execute(
-                    delete(ProtectedMedia).where(
-                        ProtectedMedia.season_id == season_db.id
+                    await db.execute(
+                        update(ProtectionRequest)
+                        .where(
+                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.status != ProtectionRequestStatus.PENDING,
+                        )
+                        .values(season_id=None, episode_id=None)
                     )
-                )
-                await db.delete(season_db)
-                await db.flush()
-                await _soft_remove_series_if_empty(db, candidate.series_id)
+                    await db.execute(
+                        delete(DeleteRequest).where(
+                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                        )
+                    )
+                    await db.execute(
+                        update(DeleteRequest)
+                        .where(
+                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                        )
+                        .values(season_id=None, episode_id=None)
+                    )
+                    await db.execute(
+                        delete(ProtectedMedia).where(
+                            ProtectedMedia.season_id == season_db.id
+                        )
+                    )
+                    await db.delete(season_db)
+                    await db.flush()
+                    await _soft_remove_series_if_empty(db, candidate.series_id)
 
             db.add(
                 ReclaimHistory(
@@ -7803,7 +8014,9 @@ async def _delete_season_candidates(
                     name=f"{series_obj.title} S{season_number:02d}",
                     size=season.size,
                     attributes=_build_reclaim_history_attributes(season=season),
-                    action="unmonitored"
+                    action="unmonitored_only"
+                    if cand_arr_action == "unmonitor_only"
+                    else "unmonitored"
                     if cand_arr_action == "unmonitor"
                     else "deleted",
                 )
@@ -7821,7 +8034,11 @@ async def _delete_season_candidates(
                 Service.PLEX if service_manager.main_media_server else None
             )
         await _dispatch_reclaim_event(
-            action="unmonitored" if cand_arr_action == "unmonitor" else "deleted",
+            action="unmonitored_only"
+            if cand_arr_action == "unmonitor_only"
+            else "unmonitored"
+            if cand_arr_action == "unmonitor"
+            else "deleted",
             media_type=MediaType.SERIES,
             title=series_obj.title,
             tmdb_id=series_obj.tmdb_id,
@@ -7997,6 +8214,15 @@ async def _delete_episode_candidates(
             path_mappings,
             media_service_type=_main_media_server_type(),
         )
+        allowed_config_ids = _candidate_arr_config_ids(
+            candidate, episode_rules_by_id, "sonarr"
+        )
+        if allowed_config_ids is not None:
+            ordered_refs = [
+                ref
+                for ref in ordered_refs
+                if ref.service_config_id in allowed_config_ids
+            ]
 
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
@@ -8042,18 +8268,25 @@ async def _delete_episode_candidates(
                 continue
 
             try:
-                if cand_arr_action == "unmonitor" and sonarr_ep_id:
+                if cand_arr_action in UNMONITOR_LIKE_ARR_ACTIONS and sonarr_ep_id:
                     await ref_client.unmonitor_episode(sonarr_ep_id)
                     LOG.debug(f"Unmonitored '{series_obj.title}' {ep_label} in Sonarr")
-                await ref_client.delete_episode_file(sonarr_ep_file_id)
+                if cand_arr_action != "unmonitor_only":
+                    await ref_client.delete_episode_file(sonarr_ep_file_id)
                 deleted_via_sonarr = True
                 sonarr_ref_id = ref.arr_series_id
                 sonarr_ref_config_id = ref.service_config_id
                 sonarr_client = ref_client
-                LOG.info(
-                    f"Deleted '{series_obj.title}' {ep_label} via Sonarr"
-                    f" (file_id={sonarr_ep_file_id})"
-                )
+                if cand_arr_action == "unmonitor_only":
+                    LOG.info(
+                        f"Unmonitored '{series_obj.title}' {ep_label} via Sonarr "
+                        f"(file left untouched)"
+                    )
+                else:
+                    LOG.info(
+                        f"Deleted '{series_obj.title}' {ep_label} via Sonarr"
+                        f" (file_id={sonarr_ep_file_id})"
+                    )
                 break
             except Exception as e:
                 last_sonarr_error = str(e)
@@ -8062,7 +8295,7 @@ async def _delete_episode_candidates(
                     f"'{series_obj.title}' {ep_label}: {e}"
                 )
 
-        if deleted_via_sonarr:
+        if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
             # remove from media server to keep library in sync
             media_svc = service_manager.main_media_server
             ep_svc_id = _episode_media_server_id(episode, _main_media_server_type())
@@ -8105,6 +8338,23 @@ async def _delete_episode_candidates(
                     )
 
         if not deleted_via_sonarr:
+            if cand_arr_action == "unmonitor_only":
+                # never delete files for "unmonitor_only" - no Sonarr instance
+                # could unmonitor this episode, so there's nothing safe to do.
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error
+                    or (
+                        "Unmonitor Only: no active Sonarr instance is tracking "
+                        "this episode, so there is nothing to unmonitor; the "
+                        "file was left untouched by design"
+                    ),
+                )
+                LOG.info(
+                    f"Unmonitor Only - skipping '{series_obj.title}' {ep_label} "
+                    f"(not tracked by any Sonarr instance, file left untouched)"
+                )
+                continue
             if not media_server_fallback_enabled:
                 await _mark_candidate_delete_failure(
                     candidate.id,
@@ -8155,127 +8405,139 @@ async def _delete_episode_candidates(
             if cand_obj:
                 await db.delete(cand_obj)
 
-            episode_db = (
-                await db.execute(
-                    select(Episode).where(Episode.id == candidate.episode_id)
-                )
-            ).scalar_one_or_none()
-            season_db = (
-                await db.execute(select(Season).where(Season.id == candidate.season_id))
-            ).scalar_one_or_none()
-            series_db = (
-                await db.execute(select(Series).where(Series.id == candidate.series_id))
-            ).scalar_one_or_none()
-
-            deleted_episode_size = (
-                episode_db.size
-                if episode_db and episode_db.size is not None
-                else episode.size
-            )
-
-            if episode_db:
-                await db.execute(
-                    delete(ProtectedMedia).where(
-                        ProtectedMedia.episode_id == episode_db.id
-                    )
-                )
-                await db.execute(
-                    delete(ProtectionRequest).where(
-                        ProtectionRequest.episode_id == episode_db.id,
-                        ProtectionRequest.status == ProtectionRequestStatus.PENDING,
-                    )
-                )
-                await db.execute(
-                    update(ProtectionRequest)
-                    .where(
-                        ProtectionRequest.episode_id == episode_db.id,
-                        ProtectionRequest.status != ProtectionRequestStatus.PENDING,
-                    )
-                    .values(episode_id=None)
-                )
-                await db.execute(
-                    delete(DeleteRequest).where(
-                        DeleteRequest.episode_id == episode_db.id,
-                        DeleteRequest.status == ProtectionRequestStatus.PENDING,
-                    )
-                )
-                await db.execute(
-                    update(DeleteRequest)
-                    .where(
-                        DeleteRequest.episode_id == episode_db.id,
-                        DeleteRequest.status != ProtectionRequestStatus.PENDING,
-                    )
-                    .values(episode_id=None)
-                )
-                await db.delete(episode_db)
-
-            if (
-                deleted_episode_size is not None
-                and season_db is not None
-                and season_db.size is not None
-            ):
-                season_db.size = max(0, season_db.size - deleted_episode_size)
-            if season_db is not None and season_db.episode_count is not None:
-                season_db.episode_count = max(0, season_db.episode_count - 1)
-            if (
-                deleted_episode_size is not None
-                and series_db is not None
-                and series_db.size is not None
-            ):
-                series_db.size = max(0, series_db.size - deleted_episode_size)
-
-            await db.flush()
-
-            if season_db is not None:
-                remaining_episode = (
+            if cand_arr_action == "unmonitor_only":
+                # "unmonitor_only" leaves the episode/season/series records and
+                # files exactly as-is - only the Sonarr entry (unmonitored
+                # above) changes.
+                deleted_episode_size = None
+            else:
+                episode_db = (
                     await db.execute(
-                        select(Episode.id)
-                        .where(Episode.season_id == season_db.id)
-                        .limit(1)
+                        select(Episode).where(Episode.id == candidate.episode_id)
                     )
                 ).scalar_one_or_none()
-                if remaining_episode is None:
+                season_db = (
                     await db.execute(
-                        delete(ReclaimCandidate).where(
-                            ReclaimCandidate.season_id == season_db.id
+                        select(Season).where(Season.id == candidate.season_id)
+                    )
+                ).scalar_one_or_none()
+                series_db = (
+                    await db.execute(
+                        select(Series).where(Series.id == candidate.series_id)
+                    )
+                ).scalar_one_or_none()
+
+                deleted_episode_size = (
+                    episode_db.size
+                    if episode_db and episode_db.size is not None
+                    else episode.size
+                )
+
+                if episode_db:
+                    await db.execute(
+                        delete(ProtectedMedia).where(
+                            ProtectedMedia.episode_id == episode_db.id
                         )
                     )
                     await db.execute(
                         delete(ProtectionRequest).where(
-                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.episode_id == episode_db.id,
                             ProtectionRequest.status == ProtectionRequestStatus.PENDING,
                         )
                     )
                     await db.execute(
                         update(ProtectionRequest)
                         .where(
-                            ProtectionRequest.season_id == season_db.id,
+                            ProtectionRequest.episode_id == episode_db.id,
                             ProtectionRequest.status != ProtectionRequestStatus.PENDING,
                         )
-                        .values(season_id=None, episode_id=None)
+                        .values(episode_id=None)
                     )
                     await db.execute(
                         delete(DeleteRequest).where(
-                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.episode_id == episode_db.id,
                             DeleteRequest.status == ProtectionRequestStatus.PENDING,
                         )
                     )
                     await db.execute(
                         update(DeleteRequest)
                         .where(
-                            DeleteRequest.season_id == season_db.id,
+                            DeleteRequest.episode_id == episode_db.id,
                             DeleteRequest.status != ProtectionRequestStatus.PENDING,
                         )
-                        .values(season_id=None, episode_id=None)
+                        .values(episode_id=None)
                     )
-                    await db.execute(
-                        delete(ProtectedMedia).where(
-                            ProtectedMedia.season_id == season_db.id
+                    await db.delete(episode_db)
+
+                if (
+                    deleted_episode_size is not None
+                    and season_db is not None
+                    and season_db.size is not None
+                ):
+                    season_db.size = max(0, season_db.size - deleted_episode_size)
+                if season_db is not None and season_db.episode_count is not None:
+                    season_db.episode_count = max(0, season_db.episode_count - 1)
+                if (
+                    deleted_episode_size is not None
+                    and series_db is not None
+                    and series_db.size is not None
+                ):
+                    series_db.size = max(0, series_db.size - deleted_episode_size)
+
+                await db.flush()
+
+                if season_db is not None:
+                    remaining_episode = (
+                        await db.execute(
+                            select(Episode.id)
+                            .where(Episode.season_id == season_db.id)
+                            .limit(1)
                         )
-                    )
-                    await db.delete(season_db)
-                    await db.flush()
-                    await _soft_remove_series_if_empty(db, candidate.series_id)
+                    ).scalar_one_or_none()
+                    if remaining_episode is None:
+                        await db.execute(
+                            delete(ReclaimCandidate).where(
+                                ReclaimCandidate.season_id == season_db.id
+                            )
+                        )
+                        await db.execute(
+                            delete(ProtectionRequest).where(
+                                ProtectionRequest.season_id == season_db.id,
+                                ProtectionRequest.status
+                                == ProtectionRequestStatus.PENDING,
+                            )
+                        )
+                        await db.execute(
+                            update(ProtectionRequest)
+                            .where(
+                                ProtectionRequest.season_id == season_db.id,
+                                ProtectionRequest.status
+                                != ProtectionRequestStatus.PENDING,
+                            )
+                            .values(season_id=None, episode_id=None)
+                        )
+                        await db.execute(
+                            delete(DeleteRequest).where(
+                                DeleteRequest.season_id == season_db.id,
+                                DeleteRequest.status == ProtectionRequestStatus.PENDING,
+                            )
+                        )
+                        await db.execute(
+                            update(DeleteRequest)
+                            .where(
+                                DeleteRequest.season_id == season_db.id,
+                                DeleteRequest.status != ProtectionRequestStatus.PENDING,
+                            )
+                            .values(season_id=None, episode_id=None)
+                        )
+                        await db.execute(
+                            delete(ProtectedMedia).where(
+                                ProtectedMedia.season_id == season_db.id
+                            )
+                        )
+                        await db.delete(season_db)
+                        await db.flush()
+                        await _soft_remove_series_if_empty(db, candidate.series_id)
 
             db.add(
                 ReclaimHistory(
@@ -8285,7 +8547,9 @@ async def _delete_episode_candidates(
                     name=f"{series_obj.title} {ep_label}",
                     size=deleted_episode_size,
                     attributes=_build_reclaim_history_attributes(season=season),
-                    action="unmonitored"
+                    action="unmonitored_only"
+                    if cand_arr_action == "unmonitor_only"
+                    else "unmonitored"
                     if cand_arr_action == "unmonitor"
                     else "deleted",
                 )
@@ -8997,8 +9261,16 @@ async def _move_specific_candidates_impl(
                             )
                         ).all()
                     arr_action = movie_arr_actions.get(movie.id, "unmonitor")
+                    allowed_config_ids = _candidate_arr_config_ids(
+                        candidate, rules_by_id, "radarr"
+                    )
                     for config_id, arr_movie_id, arr_movie_path in arr_refs:
                         if config_id not in radarr_clients or arr_movie_id is None:
+                            continue
+                        if (
+                            allowed_config_ids is not None
+                            and config_id not in allowed_config_ids
+                        ):
                             continue
                         if (
                             version.path
@@ -9034,7 +9306,7 @@ async def _move_specific_candidates_impl(
                                 f"arr_id={arr_movie_id})"
                             )
                         else:
-                            if arr_action != "unmonitor":
+                            if arr_action not in UNMONITOR_LIKE_ARR_ACTIONS:
                                 LOG.info(
                                     f"move: retained '{movie.title}' in Radarr because "
                                     "the source folder still contains other content; "
@@ -9358,8 +9630,16 @@ async def _move_specific_candidates_impl(
                 if sonarr_clients and candidate.series_id:
                     try:
                         refs = series_arr_refs.get(candidate.series_id, [])
+                        allowed_config_ids = _candidate_arr_config_ids(
+                            candidate, rules_by_id, "sonarr"
+                        )
                         for config_id, arr_s_id, _arr_s_path in refs:
                             if config_id not in sonarr_clients or arr_s_id is None:
+                                continue
+                            if (
+                                allowed_config_ids is not None
+                                and config_id not in allowed_config_ids
+                            ):
                                 continue
                             if is_episode:
                                 move_sonarr_refresh.setdefault(config_id, set()).add(
@@ -9405,7 +9685,7 @@ async def _move_specific_candidates_impl(
                                         f"(config_id={config_id}, arr_id={arr_s_id})"
                                     )
                                 else:
-                                    if arr_action != "unmonitor":
+                                    if arr_action not in UNMONITOR_LIKE_ARR_ACTIONS:
                                         LOG.info(
                                             f"move: retained '{series_obj.title}' in "
                                             "Sonarr because its source folder still "

@@ -1707,6 +1707,7 @@ async def sync_movies(
                                 movie_id=movie_id,
                                 service_config_id=config_id,
                                 arr_movie_id=arr_movie.id,
+                                arr_title_slug=arr_movie.title_slug,
                                 arr_movie_path=arr_path,
                                 tmdb_id=arr_movie.tmdb_id,
                             )
@@ -2224,6 +2225,7 @@ async def sync_series(
                                 series_id=series_id,
                                 service_config_id=config_id,
                                 arr_series_id=arr_series.id,
+                                arr_title_slug=arr_series.title_slug,
                                 arr_series_path=arr_path,
                                 tmdb_id=arr_series.tmdb_id,
                             )

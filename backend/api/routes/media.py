@@ -6,9 +6,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.api.candidate_filters import candidate_matches_rule_clause
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.rule_engine import RULE_OUTCOME_CANDIDATE, normalize_rule_outcome
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
@@ -18,7 +20,6 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     Movie,
-    MovieArrRef,
     MovieVersion,
     ProtectedMedia,
     ProtectionRequest,
@@ -27,7 +28,6 @@ from backend.database.models import (
     ReclaimRule,
     Season,
     Series,
-    SeriesArrRef,
     SeriesServiceRef,
     ServiceMediaLibrary,
     User,
@@ -44,11 +44,11 @@ from backend.enums import (
 from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.media import (
-    ArrRefResponse,
     CandidateDisplayGroup,
     CandidateEntry,
     CandidateLibraryRef,
     CandidateOperationQueuedResponse,
+    CandidateRuleFilterOption,
     CandidatesPresenceResponse,
     DeleteCandidatesRequest,
     EpisodeWithStatus,
@@ -65,6 +65,7 @@ from backend.models.media import (
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
+from backend.services.media_origins import load_media_origin_lookup
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -135,7 +136,10 @@ def _candidate_delete_operation(
 
 
 def _apply_candidate_filters(
-    query: Any, media_type: MediaType | None, search: str | None
+    query: Any,
+    media_type: MediaType | None,
+    search: str | None,
+    rule_id: int | None = None,
 ) -> Any:
     if media_type is not None:
         query = query.where(ReclaimCandidate.media_type == media_type)
@@ -149,6 +153,9 @@ def _apply_candidate_filters(
                 ReclaimCandidate.reason.ilike(search_term),
             )
         )
+
+    if rule_id is not None:
+        query = query.where(candidate_matches_rule_clause(rule_id))
 
     return query
 
@@ -302,6 +309,7 @@ async def _get_candidate_page_groups(
     *,
     media_type: MediaType | None,
     search: str | None,
+    rule_id: int | None,
     sort_by: str,
     sort_order: str,
     page: int,
@@ -335,7 +343,9 @@ async def _get_candidate_page_groups(
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
-    descriptor_query = _apply_candidate_filters(descriptor_query, media_type, search)
+    descriptor_query = _apply_candidate_filters(
+        descriptor_query, media_type, search, rule_id
+    )
     descriptor_rows = (await db.execute(descriptor_query)).all()
 
     deletion_movie_delay_days = 14
@@ -554,6 +564,7 @@ async def get_movies(
 
     # fetch status information for all movies
     movie_ids = [m.id for m in movies]
+    origin_lookup = await load_media_origin_lookup(db, movie_ids=movie_ids)
 
     # get candidates
     candidates_result = await db.execute(
@@ -622,11 +633,6 @@ async def get_movies(
             delete_request_reason=delete_request.reason if delete_request else None,
         )
 
-        movie_arr_refs_result = await db.execute(
-            select(MovieArrRef).where(MovieArrRef.movie_id == movie.id)
-        )
-        movie_arr_refs = movie_arr_refs_result.scalars().all()
-
         movie_dict: dict[str, Any] = {
             "id": movie.id,
             "title": movie.title,
@@ -680,14 +686,12 @@ async def get_movies(
                 )
                 for v in movie.versions
             ],
-            "arr_refs": [
-                ArrRefResponse(
-                    service_type="radarr",
-                    service_config_id=ref.service_config_id,
-                    arr_id=ref.arr_movie_id,
-                )
-                for ref in movie_arr_refs
-            ],
+            "arr_refs": origin_lookup.arr_refs(MediaType.MOVIE, movie.id),
+            "arr_tags": movie.arr_tags or [],
+            "seerr_url": origin_lookup.seerr_url(MediaType.MOVIE, movie.tmdb_id),
+            "seerr_requesters": origin_lookup.seerr_requesters(
+                MediaType.MOVIE, movie.tmdb_id
+            ),
             "imdb_id": movie.imdb_id,
             "imdb_rating": movie.imdb_rating,
             "imdb_vote_count": movie.imdb_vote_count,
@@ -826,6 +830,7 @@ async def get_series(
 
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
+    origin_lookup = await load_media_origin_lookup(db, series_ids=series_ids)
 
     # count library seasons per series (one GROUP BY query for the whole page)
     season_counts_result = await db.execute(
@@ -929,11 +934,6 @@ async def get_series(
             delete_request_reason=delete_request.reason if delete_request else None,
         )
 
-        series_arr_refs_result = await db.execute(
-            select(SeriesArrRef).where(SeriesArrRef.series_id == series.id)
-        )
-        series_arr_refs = series_arr_refs_result.scalars().all()
-
         series_dict: dict[str, Any] = {
             "id": series.id,
             "title": series.title,
@@ -950,14 +950,12 @@ async def get_series(
                 )
                 for ref in series.service_refs
             ],
-            "arr_refs": [
-                ArrRefResponse(
-                    service_type="sonarr",
-                    service_config_id=ref.service_config_id,
-                    arr_id=ref.arr_series_id,
-                )
-                for ref in series_arr_refs
-            ],
+            "arr_refs": origin_lookup.arr_refs(MediaType.SERIES, series.id),
+            "arr_tags": series.arr_tags or [],
+            "seerr_url": origin_lookup.seerr_url(MediaType.SERIES, series.tmdb_id),
+            "seerr_requesters": origin_lookup.seerr_requesters(
+                MediaType.SERIES, series.tmdb_id
+            ),
             "imdb_id": series.imdb_id,
             "imdb_rating": series.imdb_rating,
             "imdb_vote_count": series.imdb_vote_count,
@@ -1350,6 +1348,7 @@ async def get_candidates(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     media_type: MediaType | None = Query(None),
+    rule_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> PaginatedCandidatesResponse:
     """Get reclaim candidates paginated by display group, with media info and request status."""
     base_query = (
@@ -1405,6 +1404,7 @@ async def get_candidates(
             Movie.arr_added_at.label("movie_arr_added_at"),
             Movie.last_viewed_at.label("movie_last_viewed_at"),
             Movie.view_count.label("movie_view_count"),
+            Movie.arr_tags.label("movie_arr_tags"),
             # movie version
             MovieVersion.service.label("version_service"),
             MovieVersion.library_id.label("version_library_id"),
@@ -1483,6 +1483,7 @@ async def get_candidates(
             Series.arr_added_at.label("series_arr_added_at"),
             Series.last_viewed_at.label("series_last_viewed_at"),
             Series.view_count.label("series_view_count"),
+            Series.arr_tags.label("series_arr_tags"),
             Season.added_at.label("season_added_at"),
             Season.arr_added_at.label("season_arr_added_at"),
             Season.view_count.label("season_view_count"),
@@ -1501,12 +1502,13 @@ async def get_candidates(
         .outerjoin(Season, ReclaimCandidate.season_id == Season.id)
         .outerjoin(Episode, ReclaimCandidate.episode_id == Episode.id)
     )
-    base_query = _apply_candidate_filters(base_query, media_type, search)
+    base_query = _apply_candidate_filters(base_query, media_type, search, rule_id)
 
     total, page_groups = await _get_candidate_page_groups(
         db,
         media_type=media_type,
         search=search,
+        rule_id=rule_id,
         sort_by=sort_by,
         sort_order=sort_order,
         page=page,
@@ -1578,6 +1580,9 @@ async def get_candidates(
     series_ids = [
         r.ReclaimCandidate.series_id for r in rows if r.ReclaimCandidate.series_id
     ]
+    origin_lookup = await load_media_origin_lookup(
+        db, movie_ids=movie_ids, series_ids=series_ids
+    )
 
     pending_movies_whole: set[int] = set()
     pending_movie_versions: set[tuple[int, int]] = set()
@@ -1880,6 +1885,8 @@ async def get_candidates(
         items_out.append(
             CandidateEntry(
                 id=c.id,
+                matched_rule_ids=list(c.matched_rule_ids or []),
+                reason=c.reason,
                 media_type=c.media_type.value,
                 media_id=media_id,
                 media_title=media_title,
@@ -1922,6 +1929,20 @@ async def get_candidates(
                 media_arr_added_at=to_utc_isoformat(media_arr_added_at),
                 media_last_viewed_at=to_utc_isoformat(media_last_viewed_at),
                 media_view_count=media_view_count,
+                arr_refs=origin_lookup.arr_refs(c.media_type, media_id),
+                arr_tags=(row.movie_arr_tags if is_movie else row.series_arr_tags)
+                or [],
+                seerr_url=origin_lookup.seerr_url(c.media_type, tmdb_id),
+                seerr_requesters=origin_lookup.seerr_requesters(
+                    c.media_type,
+                    tmdb_id,
+                    season_number=(
+                        row.season_number
+                        if c.media_type is MediaType.SERIES
+                        and (c.season_id is not None or c.episode_id is not None)
+                        else None
+                    ),
+                ),
                 movie_version_id=c.movie_version_id,
                 version_service=row.version_service
                 if row.version_service is not None
@@ -2007,6 +2028,33 @@ async def get_candidates(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.get("/candidates/rules", response_model=list[CandidateRuleFilterOption])
+async def get_candidate_rule_filter_options(
+    _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
+    db: AsyncSession = Depends(get_db),
+) -> list[CandidateRuleFilterOption]:
+    """Return configured rules that can produce reclaim candidates."""
+    rules = (
+        (
+            await db.execute(
+                select(ReclaimRule).order_by(ReclaimRule.name, ReclaimRule.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        CandidateRuleFilterOption(
+            id=rule.id,
+            name=rule.name,
+            media_type=rule.media_type,
+            enabled=rule.enabled,
+        )
+        for rule in rules
+        if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+    ]
 
 
 @router.get("/candidates/presence", response_model=CandidatesPresenceResponse)

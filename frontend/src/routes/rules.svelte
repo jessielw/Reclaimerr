@@ -379,7 +379,9 @@
 
         if (
           rule.action?.radarr_service_config_id != null ||
-          rule.action?.sonarr_service_config_id != null
+          rule.action?.sonarr_service_config_id != null ||
+          (rule.action?.radarr_service_config_ids?.length ?? 0) > 0 ||
+          (rule.action?.sonarr_service_config_ids?.length ?? 0) > 0
         ) {
           hasArrWarning = true;
         }

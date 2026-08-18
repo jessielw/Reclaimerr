@@ -6,6 +6,8 @@
   import CandidateActionButtons from "$lib/components/candidates/candidate-action-buttons.svelte";
   import type { ReclaimCandidateEntry } from "$lib/types/shared";
   import { candidateMediaMetaFields } from "$lib/components/candidates/view-utils";
+  import OriginMetadata from "$lib/components/media/origin-metadata.svelte";
+  import CandidateMatchDetails from "$lib/components/candidates/candidate-match-details.svelte";
 
   type PosterSize =
     | "92"
@@ -100,6 +102,15 @@
             {/each}
           </div>
           <CandidateTmdbMeta {entry} />
+          <OriginMetadata
+            arrRefs={entry.arr_refs}
+            arrTags={entry.arr_tags}
+            seerrUrl={entry.seerr_url}
+            seerrRequesters={entry.seerr_requesters}
+            compact
+            class="mt-2"
+          />
+          <CandidateMatchDetails {entry} />
         </div>
       </div>
     </div>

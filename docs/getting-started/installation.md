@@ -8,14 +8,11 @@
 
 ## Docker
 
-Docker is the production deployment path. See the
-[Docker deployment guide](../deployment/docker.md) for compose examples and
-volume guidance.
+Docker is the production deployment path. See the [Docker deployment guide](../deployment/docker.md) for compose examples and volume guidance.
 
 ## Desktop
 
-Desktop builds are available from project releases. They launch the backend and
-start the UI locally.
+Desktop builds are available from project releases. They launch the backend and start the UI locally.
 
 ## Source
 
@@ -42,4 +39,3 @@ npm run dev
 
 - Backend: `8000`
 - Frontend dev server: `3000`
-

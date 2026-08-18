@@ -1,12 +1,10 @@
 # Release Process
 
-Reclaimerr does not have a fully automated release pipeline in-repo. Treat
-releases as a deliberate maintainer action with a short checklist.
+Reclaimerr does not have a fully automated release pipeline in-repo. Treat releases as a deliberate maintainer action with a short checklist.
 
 ## Before a Release
 
-- Make sure the version matches in both `pyproject.toml` and
-  `backend/core/__version__.py`.
+- Make sure the version matches in both `pyproject.toml` and `backend/core/__version__.py`.
 - Update `CHANGELOG.md` with an `Unreleased` section or the final release notes.
 - Run the test and lint commands you normally use for the code that changed.
 - Confirm the docs still build with `uv run zensical build --clean`.

@@ -7,8 +7,7 @@ Reclaimerr uses the following flow:
 3. Let users protect, request, or approve items.
 4. Delete or move the item through the appropriate service.
 
-See [Deletion Flow](deletion-flow.md) for routing order.
-Operator reference: [Rules](rules.md).
+See [Deletion Flow](deletion-flow.md) for routing order. Operator reference: [Rules](rules.md).
 
 ## Candidate Scopes
 
@@ -20,8 +19,7 @@ Reclaimerr tracks candidates at several scopes:
 - season
 - episode
 
-The delete engine uses the candidate scope to decide whether Radarr, Sonarr, or
-the media server handles the action.
+The delete engine uses the candidate scope to decide whether Radarr, Sonarr, or the media server handles the action.
 
 ## Protection and Requests
 
@@ -31,6 +29,4 @@ the media server handles the action.
 
 ## History
 
-Successful actions are written to reclaim history with the item, timestamp, and
-approval source.
-
+Successful actions are written to reclaim history with the item, timestamp, and approval source.

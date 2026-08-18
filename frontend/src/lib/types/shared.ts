@@ -106,6 +106,7 @@ export enum SettingsTab {
   Sonarr = "sonarr",
   Seerr = "seerr",
   Tautulli = "tautulli",
+  Tracearr = "tracearr",
   MDBList = "mdblist",
   OMDb = "omdb",
   General = "general",
@@ -264,7 +265,10 @@ export interface GeneralSettings {
   move_destination_movies: string | null;
   move_destination_series: string | null;
   media_server_fallback_enabled: boolean;
-  default_arr_delete_behavior: "unmonitor" | "remove_if_empty";
+  default_arr_delete_behavior:
+    | "unmonitor"
+    | "unmonitor_only"
+    | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
@@ -314,6 +318,8 @@ export type LifecycleEventType =
   | "candidate.protected"
   | "candidate.deleted"
   | "candidate.moved"
+  | "candidate.unmonitored"
+  | "candidate.unmonitored_only"
   | "protection.created"
   | "protection.removed";
 
@@ -504,13 +510,15 @@ export interface RuleAction {
   candidate: boolean;
   tag_enabled: boolean;
   arr_tag: string | null;
-  arr_action: "delete" | "unmonitor";
+  arr_action: "delete" | "unmonitor" | "unmonitor_only";
   media_server_action: "delete" | null;
   auto_delete_enabled: boolean;
   auto_delete_delay_days: number | null;
   move_instead_of_delete: boolean;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;
+  radarr_service_config_ids: number[];
+  sonarr_service_config_ids: number[];
 }
 
 export enum ScheduleType {
@@ -661,6 +669,9 @@ export interface MovieWithStatus {
   size: number | null;
   versions: MovieVersion[];
   arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
@@ -723,6 +734,9 @@ export interface SeriesWithStatus {
   size: number | null;
   service_refs: SeriesServiceRef[];
   arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
   imdb_vote_count: number | null;
@@ -802,6 +816,14 @@ export interface ArrRef {
   service_type: string;
   service_config_id: number;
   arr_id: number;
+  service_name: string | null;
+  item_url: string | null;
+}
+
+export interface SeerrRequester {
+  user_id: number;
+  display_name: string;
+  username: string | null;
 }
 
 export type MediaItem = MovieWithStatus | SeriesWithStatus;
@@ -1002,6 +1024,8 @@ export interface ProtectedEntry {
 
 export interface ReclaimCandidateEntry {
   id: number;
+  matched_rule_ids: number[];
+  reason: string;
   media_type: MediaType;
   media_id: number;
   movie_version_id: number | null;
@@ -1043,6 +1067,10 @@ export interface ReclaimCandidateEntry {
   media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
+  arr_refs: ArrRef[];
+  arr_tags: string[];
+  seerr_url: string | null;
+  seerr_requesters: SeerrRequester[];
   version_service: string | null;
   version_library_id: string | null;
   version_library_name: string | null;
@@ -1124,9 +1152,21 @@ export interface ReclaimCandidateEntry {
     | null;
 }
 
+export interface CandidateRuleFilterOption {
+  id: number;
+  name: string;
+  media_type: MediaType;
+  enabled: boolean;
+}
+
 export type RulePreviewEntry = Omit<
   ReclaimCandidateEntry,
-  "id" | "has_pending_request" | "created_at" | "delete_operation"
+  | "id"
+  | "matched_rule_ids"
+  | "reason"
+  | "has_pending_request"
+  | "created_at"
+  | "delete_operation"
 >;
 
 export interface RulePreviewMetadata {

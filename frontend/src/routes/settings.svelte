@@ -31,6 +31,7 @@
   import SonarrSVG from "$lib/components/svgs/sonarr-svg.svelte";
   import SeerrSVG from "$lib/components/svgs/seerr-svg.svelte";
   import TautulliSVG from "$lib/components/svgs/tautulli-svg.svelte";
+  import TracearrSVG from "$lib/components/svgs/tracearr-svg.svelte";
   import BookAlert from "@lucide/svelte/icons/book-alert";
   import UserCog from "@lucide/svelte/icons/user-cog";
   import KeyRound from "@lucide/svelte/icons/key-round";
@@ -87,6 +88,7 @@
     SettingsTab.Sonarr,
     SettingsTab.Seerr,
     SettingsTab.Tautulli,
+    SettingsTab.Tracearr,
     SettingsTab.MDBList,
     SettingsTab.OMDb,
   ];
@@ -117,6 +119,7 @@
   const DEFAULT_EXTRA_SETTINGS: Partial<Record<string, Record<string, any>>> = {
     [SettingsTab.Radarr]: { timeout: 300 },
     [SettingsTab.Sonarr]: { timeout: 300 },
+    [SettingsTab.Tracearr]: { timeout: 30, server_bindings: [] },
     [SettingsTab.MDBList]: {
       request_limit: 950,
       supporter_mode: false,
@@ -168,6 +171,15 @@
           icon: TautulliSVG,
           desc: "Enable this to improve Plex playback history by supplementing it with data from Tautulli",
           baseUrlPlaceholder: "e.g. http://localhost:8181",
+          adminOnly: true,
+          lockName: true,
+        },
+        {
+          id: SettingsTab.Tracearr,
+          label: "Tracearr",
+          icon: TracearrSVG,
+          desc: "Use Tracearr public API v2 as the authoritative durable playback history source for selected media servers",
+          baseUrlPlaceholder: "e.g. http://localhost:3000",
           adminOnly: true,
           lockName: true,
         },
@@ -290,6 +302,7 @@
     [SettingsTab.Sonarr]: "idle",
     [SettingsTab.Seerr]: "idle",
     [SettingsTab.Tautulli]: "idle",
+    [SettingsTab.Tracearr]: "idle",
     [SettingsTab.MDBList]: "idle",
     [SettingsTab.OMDb]: "idle",
     [SettingsTab.MediaServers]: "idle",
@@ -332,6 +345,7 @@
     [SettingsTab.Sonarr]: emptyServiceState(SettingsTab.Sonarr),
     [SettingsTab.Seerr]: emptyServiceState(SettingsTab.Seerr),
     [SettingsTab.Tautulli]: emptyServiceState(SettingsTab.Tautulli),
+    [SettingsTab.Tracearr]: emptyServiceState(SettingsTab.Tracearr),
     [SettingsTab.MDBList]: emptyServiceState(SettingsTab.MDBList),
     [SettingsTab.OMDb]: emptyServiceState(SettingsTab.OMDb),
   });
@@ -345,6 +359,29 @@
   let confirmActionLabel = $state("Confirm");
   let confirmActionClass = $state("cursor-pointer hover");
   let confirmIntent = $state<ConfirmIntent | null>(null);
+
+  type TracearrCandidate = {
+    id: string;
+    name: string;
+    server_type?: string | null;
+    match: "confirmed" | "conflict" | "unverified";
+    matches: number;
+    contradictions: number;
+    checked: number;
+  };
+
+  type TracearrMediaServer = {
+    service_config_id: number;
+    name: string;
+    server_type: string;
+    candidates: TracearrCandidate[];
+    recommended_tracearr_server_id?: string | null;
+  };
+
+  let tracearrDiscovery = $state<{
+    media_servers: TracearrMediaServer[];
+  } | null>(null);
+  let discoveringTracearr = $state(false);
 
   // helper to get instance name for select trigger
   const getArrInstanceName = (serviceId: string, id: number | null) => {
@@ -467,6 +504,7 @@
         message: string;
         data: {
           affected_rules?: Array<{ id: number; name: string }>;
+          disabled_rule_count?: number;
           removed_path_mappings?: number;
         };
       } = await delete_api(`/api/settings/service/${current.id}`);
@@ -481,12 +519,17 @@
       }
       toast.success(response.message);
       const affectedRules = response.data.affected_rules ?? [];
+      const disabledRuleCount = response.data.disabled_rule_count ?? 0;
       const removedMappings = response.data.removed_path_mappings ?? 0;
       if (affectedRules.length || removedMappings) {
         toast.warning(
           [
             affectedRules.length
-              ? `${affectedRules.length} dependent rule(s) were disabled`
+              ? `${affectedRules.length} dependent rule target(s) were updated${
+                  disabledRuleCount
+                    ? `; ${disabledRuleCount} rule(s) with no targets were disabled`
+                    : ""
+                }`
               : "",
             removedMappings
               ? `${removedMappings} scoped path mapping(s) were removed`
@@ -542,6 +585,12 @@
   const handleServiceChange = (event: CustomEvent) => {
     const { field, value } = event.detail;
     serviceTestStatus[activeTab] = "idle";
+    if (
+      activeTab === SettingsTab.Tracearr &&
+      (field === "baseUrl" || field === "apiKey")
+    ) {
+      tracearrDiscovery = null;
+    }
     if (field === "enabled") serviceState[activeTab].config.enabled = value;
     else if (field === "name") serviceState[activeTab].config.name = value;
     else if (field === "baseUrl")
@@ -553,6 +602,76 @@
         ...(serviceState[activeTab].config.extraSettings ?? {}),
         [key]: value,
       };
+    }
+  };
+
+  const currentTracearrBindings = () =>
+    (serviceState[SettingsTab.Tracearr].config.extraSettings?.server_bindings ??
+      []) as Array<{
+      service_config_id: number;
+      tracearr_server_id: string;
+      tracearr_server_name: string;
+      server_type: string;
+    }>;
+
+  const setTracearrBinding = (
+    mediaServer: TracearrMediaServer,
+    tracearrServerId: string,
+  ) => {
+    const existing = currentTracearrBindings().filter(
+      (binding) => binding.service_config_id !== mediaServer.service_config_id,
+    );
+    const candidate = mediaServer.candidates.find(
+      (item) => item.id === tracearrServerId,
+    );
+    const bindings = candidate
+      ? [
+          ...existing,
+          {
+            service_config_id: mediaServer.service_config_id,
+            tracearr_server_id: candidate.id,
+            tracearr_server_name: candidate.name,
+            server_type: mediaServer.server_type,
+          },
+        ]
+      : existing;
+    serviceState[SettingsTab.Tracearr].config.extraSettings = {
+      ...(serviceState[SettingsTab.Tracearr].config.extraSettings ?? {}),
+      server_bindings: bindings,
+    };
+  };
+
+  const discoverTracearrServers = async () => {
+    const config = serviceState[SettingsTab.Tracearr].config;
+    discoveringTracearr = true;
+    try {
+      const payload: Record<string, unknown> = {
+        id: config.id,
+        base_url: config.baseUrl.replace(/\/+$/, ""),
+      };
+      if (config.apiKey) payload.api_key = config.apiKey;
+      tracearrDiscovery = await post_api(
+        "/api/settings/tracearr/discover",
+        payload,
+      );
+      for (const mediaServer of tracearrDiscovery?.media_servers ?? []) {
+        const hasBinding = currentTracearrBindings().some(
+          (binding) =>
+            binding.service_config_id === mediaServer.service_config_id,
+        );
+        if (!hasBinding && mediaServer.recommended_tracearr_server_id) {
+          setTracearrBinding(
+            mediaServer,
+            mediaServer.recommended_tracearr_server_id,
+          );
+        }
+      }
+      toast.success("Tracearr servers discovered");
+    } catch (err: any) {
+      tracearrDiscovery = null;
+      toast.error(`Tracearr discovery failed: ${err.message}`);
+    } finally {
+      discoveringTracearr = false;
     }
   };
 
@@ -965,6 +1084,109 @@
               extraSettings={serviceState[activeTab].config.extraSettings ?? {}}
               onchange={handleServiceChange}
             />
+            {#if activeTab === SettingsTab.Tracearr}
+              <div class="mt-5 rounded-lg border border-border p-4 space-y-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 class="font-medium text-foreground">
+                      Playback history bindings
+                    </h3>
+                    <p class="mt-1 text-xs text-muted-foreground">
+                      A bound server uses Tracearr only for durable history.
+                      Unbound Jellyfin, Emby, and Plex servers keep using
+                      Playback Reporting or Tautulli. Native watch snapshots
+                      remain available.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    class="cursor-pointer gap-2"
+                    onclick={discoverTracearrServers}
+                    disabled={discoveringTracearr ||
+                      !serviceState[activeTab].config.baseUrl}
+                  >
+                    {#if discoveringTracearr}
+                      <Spinner class="size-4" />
+                    {:else}
+                      <Server class="size-4" />
+                    {/if}
+                    Discover servers
+                  </Button>
+                </div>
+
+                {#if tracearrDiscovery}
+                  {#if tracearrDiscovery.media_servers.length === 0}
+                    <p class="text-sm text-muted-foreground">
+                      Configure and enable a media server before binding
+                      Tracearr.
+                    </p>
+                  {:else}
+                    <div class="space-y-4">
+                      {#each tracearrDiscovery.media_servers as mediaServer}
+                        {@const selectedBinding =
+                          currentTracearrBindings().find(
+                            (binding) =>
+                              binding.service_config_id ===
+                              mediaServer.service_config_id,
+                          )}
+                        <div
+                          class="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(15rem,1.5fr)] md:items-center"
+                        >
+                          <div>
+                            <p class="text-sm font-medium text-foreground">
+                              {mediaServer.name}
+                            </p>
+                            <p class="text-xs text-muted-foreground">
+                              {toTitleCase(mediaServer.server_type)}
+                            </p>
+                          </div>
+                          <select
+                            class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+                            value={selectedBinding?.tracearr_server_id ?? ""}
+                            onchange={(event) =>
+                              setTracearrBinding(
+                                mediaServer,
+                                event.currentTarget.value,
+                              )}
+                          >
+                            <option value=""
+                              >Use existing history provider</option
+                            >
+                            {#each mediaServer.candidates as candidate}
+                              <option value={candidate.id}>
+                                {candidate.name} — {candidate.match ===
+                                "confirmed"
+                                  ? `confirmed (${candidate.matches} matches)`
+                                  : candidate.match === "conflict"
+                                    ? "library conflict — confirm manually"
+                                    : "unverified — confirm manually"}
+                              </option>
+                            {/each}
+                          </select>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                {:else if currentTracearrBindings().length > 0}
+                  <div class="space-y-1 text-sm text-muted-foreground">
+                    {#each currentTracearrBindings() as binding}
+                      <p>
+                        {toTitleCase(binding.server_type)} → {binding.tracearr_server_name}
+                      </p>
+                    {/each}
+                    <p class="pt-1 text-xs">
+                      Discover again to verify or change these bindings.
+                    </p>
+                  </div>
+                {:else}
+                  <p class="text-sm text-muted-foreground">
+                    Discover servers, then confirm which Tracearr server belongs
+                    to each Reclaimerr media server.
+                  </p>
+                {/if}
+              </div>
+            {/if}
             {#if isMetadataProviderTab(activeTab)}
               <div class="mt-4">
                 <MetadataProviderStatusPanel

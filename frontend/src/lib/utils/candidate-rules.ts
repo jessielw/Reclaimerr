@@ -4,6 +4,12 @@ export const parseRuleTokens = (
   tokens: string[] | null | undefined,
 ): string[] => (tokens ?? []).map((token) => token.trim()).filter(Boolean);
 
+const rawReasonTokens = (reason: string | null | undefined): string[] =>
+  (reason ?? "")
+    .split(/\s*\|\s*/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
 export const unique = (values: string[]): string[] => [...new Set(values)];
 
 export const ruleNames = (entry: ReclaimCandidateEntry): string[] => {
@@ -14,7 +20,7 @@ export const ruleNames = (entry: ReclaimCandidateEntry): string[] => {
   );
   if (fromParts.length > 0) return fromParts;
   return unique(
-    parseRuleTokens(entry.reason_tokens)
+    [...parseRuleTokens(entry.reason_tokens), ...rawReasonTokens(entry.reason)]
       .map((token) => token.split(":")[0]?.trim() ?? "")
       .filter(Boolean),
   );
@@ -25,7 +31,10 @@ export const detailReasons = (entry: ReclaimCandidateEntry): string[] => {
     .map((part) => part.text?.trim() ?? "")
     .filter(Boolean);
   if (details.length > 0) return details;
-  return parseRuleTokens(entry.reason_tokens);
+  return unique([
+    ...parseRuleTokens(entry.reason_tokens),
+    ...rawReasonTokens(entry.reason),
+  ]);
 };
 
 export const rulePreview = (entry: ReclaimCandidateEntry): string[] =>

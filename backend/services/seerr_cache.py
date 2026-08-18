@@ -18,6 +18,7 @@ class SeerrRequestSnapshot:
     latest_request_at_by_key_user: dict[tuple[MediaType, int], dict[int, datetime]]
     requester_identity_keys_by_user_id: dict[int, set[str]]
     latest_active_request_at_by_key: dict[tuple[MediaType, int], datetime]
+    requester_users_by_id: dict[int, SeerrUser] = field(default_factory=dict)
     requester_ids_by_series_season: dict[tuple[int, int], set[int]] = field(
         default_factory=dict
     )
@@ -124,9 +125,13 @@ class SeerrSnapshotCache:
             try:
                 requests = await service_manager.seerr.get_all_requests(filter="all")
                 directory_identities: dict[int, set[str]] = {}
+                requester_users_by_id: dict[int, SeerrUser] = {}
                 try:
                     users = await service_manager.seerr.get_all_users()
                     for user in users:
+                        requester_users_by_id[user.id] = self._normalize_user_display(
+                            user
+                        )
                         keys = {
                             normalized
                             for candidate in (
@@ -164,6 +169,30 @@ class SeerrSnapshotCache:
                         if isinstance(req.raw, dict)
                         else {}
                     )
+                    if req.requested_by_id not in requester_users_by_id:
+                        requester_users_by_id[req.requested_by_id] = (
+                            self._normalize_user_display(
+                                SeerrUser(
+                                    id=req.requested_by_id,
+                                    username=(
+                                        str(raw_requested_by.get("username"))
+                                        if raw_requested_by.get("username")
+                                        else None
+                                    ),
+                                    display_name=(
+                                        str(raw_requested_by.get("displayName"))
+                                        if raw_requested_by.get("displayName")
+                                        else None
+                                    ),
+                                    email=(
+                                        str(raw_requested_by.get("email"))
+                                        if raw_requested_by.get("email")
+                                        else None
+                                    ),
+                                    raw=raw_requested_by,
+                                )
+                            )
+                        )
                     identity_bucket = requester_identity_keys_by_user_id.get(
                         req.requested_by_id
                     )
@@ -248,6 +277,7 @@ class SeerrSnapshotCache:
                     latest_request_at_by_key_user=latest_request_at_by_key_user,
                     requester_identity_keys_by_user_id=requester_identity_keys_by_user_id,
                     latest_active_request_at_by_key=(latest_active_request_at_by_key),
+                    requester_users_by_id=requester_users_by_id,
                     requester_ids_by_series_season=requester_ids_by_series_season,
                     latest_request_at_by_series_season_user=(
                         latest_request_at_by_series_season_user
