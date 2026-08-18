@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Candidate cards now show all matched-rule badges and full “Why matched” explanations.
 - Improved Plex SSO back to main browser swap.
 
+### Fixed
+
+- Rule condition **Never watched** now treats either a valid watch timestamp or a positive view count as proof the media was watched
+
 ## [0.3.5] - 2026-08-07
 
 ### Added

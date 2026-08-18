@@ -1234,6 +1234,25 @@ class CleanupMediaRuleTests(unittest.TestCase):
 
         self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
 
+    def test_evaluate_movie_rule_watch_count_without_timestamp_is_watched(
+        self,
+    ) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        movie.view_count = 3
+        movie.last_viewed_at = None
+        movie.versions = [
+            _make_movie_version(service_media_id="m1", service_item_id="i1")
+        ]
+        rule = _make_single_condition_rule(
+            name="movie-watch-count-without-timestamp",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="watch.never_watched",
+            operator="is_false",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, rule, {}, []))
+
     def test_evaluate_movie_rule_watch_never_watched_treats_readded_copy_as_unwatched(
         self,
     ) -> None:
@@ -1271,6 +1290,25 @@ class CleanupMediaRuleTests(unittest.TestCase):
             target_scope="series",
             field="watch.never_watched",
             operator="is_true",
+        )
+
+        self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))
+
+    def test_evaluate_series_rule_watch_timestamp_overrides_zero_view_count(
+        self,
+    ) -> None:
+        now = datetime.now(UTC)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.view_count = 0
+        series.last_viewed_at = now - timedelta(days=19)
+        series.added_at = now - timedelta(days=158)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        rule = _make_single_condition_rule(
+            name="series-valid-watch-timestamp",
+            media_type=MediaType.SERIES,
+            target_scope="series",
+            field="watch.never_watched",
+            operator="is_false",
         )
 
         self.assertTrue(_evaluate_movie_rule(series, rule, {}, []))

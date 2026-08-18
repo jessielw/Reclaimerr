@@ -2163,7 +2163,9 @@ def _build_context(
             "watch.view_count": movie.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
-            "watch.never_watched": movie.view_count == 0 or _last_viewed is None,
+            "watch.never_watched": _never_watched(
+                movie.view_count, movie.last_viewed_at, _added
+            ),
             **_playback_context(_playback_resolver, TARGET_MOVIE_VERSION, version.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver,
@@ -2333,7 +2335,9 @@ def _build_context(
             "watch.view_count": series.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
-            "watch.never_watched": series.view_count == 0 or _last_viewed is None,
+            "watch.never_watched": _never_watched(
+                series.view_count, series.last_viewed_at, series.added_at
+            ),
             **_playback_context(_playback_resolver, TARGET_SERIES, series.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver, TARGET_SERIES, series.id
@@ -2509,8 +2513,9 @@ def _build_context(
             "watch.view_count": season.view_count,
             "watch.last_viewed_at": _last_viewed,
             "watch.days_since_last_watched": _days_between(_last_viewed, now),
-            "watch.never_watched": (season.view_count or 0) == 0
-            or _last_viewed is None,
+            "watch.never_watched": _never_watched(
+                season.view_count, season.last_viewed_at, season.added_at
+            ),
             **_playback_context(_playback_resolver, TARGET_SEASON, season.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver, TARGET_SEASON, season.id
@@ -2723,7 +2728,9 @@ def _build_context(
             "watch.view_count": episode.view_count,
             "watch.last_viewed_at": _last_viewed_ep,
             "watch.days_since_last_watched": _days_between(_last_viewed_ep, now),
-            "watch.never_watched": episode.view_count == 0 or _last_viewed_ep is None,
+            "watch.never_watched": _never_watched(
+                episode.view_count, episode.last_viewed_at, season.added_at
+            ),
             **_playback_context(_playback_resolver, TARGET_EPISODE, episode.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver,
@@ -3220,6 +3227,26 @@ def _effective_last_viewed(
     if last_viewed_at and added_at and added_at > last_viewed_at:
         return None
     return last_viewed_at
+
+
+def _never_watched(
+    view_count: int | None,
+    last_viewed_at: datetime | None,
+    added_at: datetime | None,
+) -> bool:
+    """Return whether neither the view count nor watch timestamp proves a watch.
+
+    Providers can report a valid timestamp with a zero count (notably for series),
+    or a positive count without a timestamp. Either is evidence that the item was
+    watched. A timestamp from before the current copy was added remains stale and
+    intentionally treats that copy as never watched.
+    """
+    effective_last_viewed = _effective_last_viewed(last_viewed_at, added_at)
+    if effective_last_viewed is not None:
+        return False
+    if last_viewed_at is not None:
+        return True
+    return (view_count or 0) == 0
 
 
 def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
