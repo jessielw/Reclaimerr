@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Tracearr bindings now select one authoritative durable history source per media server without double-counting or silent fallback
 - Candidate cards now show all matched-rule badges and full “Why matched” explanations.
+- Improved Plex SSO back to main browser swap.
 
 ## [0.3.5] - 2026-08-07
 
