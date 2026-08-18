@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -73,7 +74,7 @@ class MediaOriginLookup:
         for user_id in requester_ids:
             user = self.seerr_snapshot.requester_users_by_id.get(user_id)
             display_name = (
-                (user.display_name or user.username).strip()
+                (user.display_name or user.username).strip()  # type: ignore[reportOptionalMemberAccess]
                 if user and (user.display_name or user.username)
                 else f"User {user_id}"
             )
@@ -91,8 +92,8 @@ class MediaOriginLookup:
 async def load_media_origin_lookup(
     db: AsyncSession,
     *,
-    movie_ids: set[int] | list[int] = (),
-    series_ids: set[int] | list[int] = (),
+    movie_ids: Collection[int] = (),
+    series_ids: Collection[int] = (),
 ) -> MediaOriginLookup:
     """Load stored Arr origins and cached Seerr request context in bulk."""
 
