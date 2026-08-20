@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added separate Plex, Jellyfin, and Emby genre rule conditions sourced from the configured main media server. Provider genres remain isolated from TMDB genres and include searchable rule pickers.
+
 ### Changed
 
 - Jellyfin v12 user-scoped favorites and episode-parent lookups now use the supported `Items?userId=...` route instead of the removed `Users/{id}/Items` route.

@@ -9,6 +9,47 @@ from backend.services.jellyfin import JellyfinService
 
 
 class EmbyFamilySeriesInventoryTests(unittest.IsolatedAsyncioTestCase):
+    def test_provider_genres_support_both_emby_family_shapes(self) -> None:
+        self.assertEqual(
+            JellyfinService._genre_names(
+                {"Genres": ["Anime", " anime ", "Animation"]}
+            ),
+            ["Animation", "Anime"],
+        )
+        self.assertEqual(
+            EmbyService._genre_names(
+                {"GenreItems": [{"Name": "Drama"}, {"Name": "Mystery"}]}
+            ),
+            ["Drama", "Mystery"],
+        )
+
+    async def test_movie_and_series_queries_request_genres(self) -> None:
+        for service_class in (JellyfinService, EmbyService):
+            with self.subTest(service=service_class.__name__):
+                client = service_class(api_key="key", base_url="http://media-server")
+                fields: list[str] = []
+
+                async def request(
+                    endpoint: str, *, params: dict[str, Any], timeout: int
+                ) -> dict[str, Any]:
+                    self.assertEqual(endpoint, "Items")
+                    fields.append(str(params.get("Fields") or ""))
+                    return {"Items": [], "TotalRecordCount": 0}
+
+                try:
+                    with patch.object(
+                        service_class, "_make_request", side_effect=request
+                    ):
+                        await client.get_movies_for_user(
+                            "user", "movies", "Movies"
+                        )
+                        await client.get_series_for_user("user", "shows", "Shows")
+                finally:
+                    await client.session.close()
+
+                self.assertEqual(len(fields), 2)
+                self.assertTrue(all("Genres" in value for value in fields))
+
     async def test_user_scoped_lookup_uses_items_route_for_jellyfin_v12(self) -> None:
         client = JellyfinService(api_key="key", base_url="http://jellyfin")
         calls: list[tuple[str, dict[str, Any]]] = []

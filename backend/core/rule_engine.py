@@ -88,6 +88,11 @@ class UnavailableRuleValue:
 
 RULE_VALUE_UNAVAILABLE: Final[UnavailableRuleValue] = UnavailableRuleValue()
 SonarrRuleValue: TypeAlias = bool | str | UnavailableRuleValue
+MEDIA_SERVER_GENRE_FIELDS: dict[str, Service] = {
+    "plex.genres": Service.PLEX,
+    "jellyfin.genres": Service.JELLYFIN,
+    "emby.genres": Service.EMBY,
+}
 
 
 def normalize_rule_outcome(rule: ReclaimRule) -> str:
@@ -116,6 +121,9 @@ FIELD_LABELS: dict[str, str] = {
     "tmdb.in_collection": "TMDB in collection",
     "tmdb.collection_name": "TMDB collection name",
     "tmdb.genres": "TMDB genres",
+    "plex.genres": "Plex genres",
+    "jellyfin.genres": "Jellyfin genres",
+    "emby.genres": "Emby genres",
     "tmdb.original_language": "TMDB original language",
     "tmdb.origin_country": "TMDB origin country",
     "tmdb.runtime_minutes": "TMDB runtime (minutes)",
@@ -375,6 +383,7 @@ TEXT_FIELDS = {
     "tvdb.id",
     "tmdb.collection_name",
     "tmdb.genres",
+    *MEDIA_SERVER_GENRE_FIELDS,
     "media.title",
     "tmdb.original_language",
     "tmdb.origin_country",
@@ -410,6 +419,7 @@ MULTI_VALUE_TEXT_FIELDS = {
     "tmdb.original_language",
     "tmdb.origin_country",
     "playback.usernames",
+    *MEDIA_SERVER_GENRE_FIELDS,
 }
 LANGUAGE_FIELDS = {
     "audio.languages",
@@ -540,6 +550,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(TEMPORAL_OPERATORS) for field in TEMPORAL_FIELDS},
     **{field: set(PATH_OPERATORS) for field in PATH_FIELDS},
     "tmdb.genres": set(MULTI_VALUE_TEXT_OPERATORS),
+    **{field: set(MULTI_VALUE_TEXT_OPERATORS) for field in MEDIA_SERVER_GENRE_FIELDS},
     "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "favorites.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
@@ -609,6 +620,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.in_collection",
         "tmdb.collection_name",
         "tmdb.genres",
+        *MEDIA_SERVER_GENRE_FIELDS,
         "tmdb.original_language",
         "tmdb.origin_country",
         "tmdb.popularity",
@@ -691,6 +703,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.first_air_date",
         "tmdb.last_air_date",
         "tmdb.genres",
+        *MEDIA_SERVER_GENRE_FIELDS,
         "tmdb.id",
         "tmdb.original_language",
         "tmdb.origin_country",
@@ -774,6 +787,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.first_air_date",
         "tmdb.last_air_date",
         "tmdb.genres",
+        *MEDIA_SERVER_GENRE_FIELDS,
         "tmdb.id",
         "tmdb.original_language",
         "tmdb.origin_country",
@@ -857,6 +871,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "tmdb.first_air_date",
         "tmdb.last_air_date",
         "tmdb.genres",
+        *MEDIA_SERVER_GENRE_FIELDS,
         "tmdb.id",
         "tmdb.original_language",
         "tmdb.origin_country",
@@ -1848,6 +1863,32 @@ def _collection_names_from_series_refs(refs: Iterable[Any]) -> list[str]:
     return normalize_name_list(names) or []
 
 
+def _media_server_genre_context(items: Iterable[Any]) -> dict[str, Any]:
+    """Return isolated provider genre values for version or service-ref rows."""
+    rows = list(items)
+    context: dict[str, Any] = {}
+    for field, expected_service in MEDIA_SERVER_GENRE_FIELDS.items():
+        matching_rows = [
+            row
+            for row in rows
+            if getattr(
+                getattr(row, "service", None),
+                "value",
+                getattr(row, "service", None),
+            )
+            == expected_service.value
+        ]
+        if not matching_rows:
+            context[field] = RULE_VALUE_UNAVAILABLE
+            continue
+
+        names: list[str] = []
+        for row in matching_rows:
+            names.extend(getattr(row, "media_server_genres", None) or [])
+        context[field] = normalize_name_list(names) or []
+    return context
+
+
 def _media_service_type_for_path(path: str | None, refs: Iterable[Any]) -> str | None:
     """Return the service whose stored series root most specifically contains *path*."""
     normalized_path = normalize_fpath(path or "", strip_ending_slash=True)
@@ -2156,6 +2197,7 @@ def _build_context(
             "media.year": movie.year,
             "media.container": version.container,
             "media_server.collections": version.media_server_collection_names or [],
+            **_media_server_genre_context([version]),
             "media.days_since_added": _days_between(
                 version.added_at or movie.added_at, now
             ),
@@ -2330,6 +2372,7 @@ def _build_context(
             "media.size": series.size,
             "media.year": series.year,
             "media_server.collections": _collections,
+            **_media_server_genre_context(refs),
             "media.days_since_added": _days_between(series.added_at, now),
             "arr.days_since_file_added": _days_between(series.arr_added_at, now),
             "watch.view_count": series.view_count,
@@ -2508,6 +2551,7 @@ def _build_context(
             "media.size": season.size,
             "media.year": series.year,
             "media_server.collections": _collections,
+            **_media_server_genre_context(refs),
             "media.days_since_added": _days_between(season.added_at, now),
             "arr.days_since_file_added": _days_between(season.arr_added_at, now),
             "watch.view_count": season.view_count,
@@ -2723,6 +2767,7 @@ def _build_context(
             "media.size": episode.size,
             "media.year": series.year,
             "media_server.collections": _collections,
+            **_media_server_genre_context(refs),
             "media.days_since_added": _days_between(season.added_at, now),
             "arr.days_since_file_added": _days_between(episode.arr_added_at, now),
             "watch.view_count": episode.view_count,

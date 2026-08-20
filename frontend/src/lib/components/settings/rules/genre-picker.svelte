@@ -13,6 +13,7 @@
   interface Props {
     open?: boolean;
     mediaType: MediaType;
+    service?: "plex" | "jellyfin" | "emby";
     initialSelectedNames?: string[];
     onApply: (names: string[]) => void;
   }
@@ -20,6 +21,7 @@
   let {
     open = $bindable(false),
     mediaType,
+    service = undefined,
     initialSelectedNames = [],
     onApply,
   }: Props = $props();
@@ -53,10 +55,11 @@
       params.set("media_type", mediaType);
       params.set("page", String(nextPage));
       params.set("per_page", String(perPage));
+      if (service) params.set("service", service);
       if (needle) params.set("q", needle);
 
       const resp = await get_api<PaginatedGenresResponse>(
-        `/api/rules/genres?${params.toString()}`,
+        `/api/rules/${service ? "media-server-genres" : "genres"}?${params.toString()}`,
       );
       page = resp.page;
       totalPages = resp.total_pages;
@@ -136,7 +139,9 @@
     <Dialog.Header class="px-6 pt-5 pb-3 shrink-0 border-b border-border">
       <Dialog.Title>Select Genres</Dialog.Title>
       <Dialog.Description>
-        Search local TMDB genres and apply them to this rule condition.
+        Search local {service
+          ? `${service === "plex" ? "Plex" : service === "jellyfin" ? "Jellyfin" : "Emby"} genres`
+          : "TMDB genres"} and apply them to this rule condition.
       </Dialog.Description>
     </Dialog.Header>
 

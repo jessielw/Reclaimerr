@@ -40,6 +40,7 @@ class EmbyMovieBase:
     versions: list[MovieVersionData]
     user_data: EmbyUserDataBase | None
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,3 +58,4 @@ class EmbySeriesBase:
     size: int
     user_data: EmbyUserDataBase | None
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None

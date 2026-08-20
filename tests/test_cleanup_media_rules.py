@@ -1627,6 +1627,81 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(_evaluate_movie_rule(movie, exists_rule, {}, []))
         self.assertTrue(_evaluate_movie_rule(movie, missing_rule, {}, []))
 
+    def test_provider_genres_are_source_isolated_and_fail_closed(self) -> None:
+        movie = Movie(title="Movie", tmdb_id=1, size=10 * 1024**3)
+        version = _make_movie_version(service_media_id="m1", service_item_id="i1")
+        version.media_server_genres = ["Animation", "Anime"]
+        movie.versions = [version]
+
+        plex_rule = _make_single_condition_rule(
+            name="plex-genre",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="plex.genres",
+            operator="contains_any",
+            value=["anime"],
+        )
+        wrong_provider_negative = _make_single_condition_rule(
+            name="jellyfin-genre-negative",
+            media_type=MediaType.MOVIE,
+            target_scope="movie_version",
+            field="jellyfin.genres",
+            operator="not_contains_any",
+            value=["Drama"],
+        )
+
+        self.assertTrue(_evaluate_movie_rule(movie, plex_rule, {}, []))
+        self.assertFalse(
+            _evaluate_movie_rule(movie, wrong_provider_negative, {}, [])
+        )
+
+    def test_series_scopes_inherit_provider_genres_from_matching_ref(self) -> None:
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        ref = _make_series_ref(service_id="series-1")
+        ref.media_server_genres = ["Drama", "Mystery"]
+        series.service_refs = [ref]
+        season = Season(
+            series_id=1,
+            season_number=1,
+            episode_count=1,
+            size=5 * 1024**3,
+            view_count=0,
+        )
+        episode = Episode(
+            season_id=1,
+            episode_number=1,
+            size=1024,
+            view_count=0,
+        )
+        series.seasons = [season]
+        season.episodes = [episode]
+
+        for scope, evaluator in (
+            ("series", lambda rule: _evaluate_movie_rule(series, rule, {}, [])),
+            (
+                "season",
+                lambda rule: _evaluate_rule_for_season(
+                    series, season, rule, {}, []
+                ),
+            ),
+            (
+                "episode",
+                lambda rule: _evaluate_rule_for_episode(
+                    series, season, episode, rule, {}, []
+                ),
+            ),
+        ):
+            rule = _make_single_condition_rule(
+                name=f"plex-genre-{scope}",
+                media_type=MediaType.SERIES,
+                target_scope=scope,
+                field="plex.genres",
+                operator="contains_all",
+                value=["Drama", "Mystery"],
+            )
+            with self.subTest(scope=scope):
+                self.assertTrue(evaluator(rule))
+
     def test_evaluate_movie_rule_media_server_collections_matches_version(
         self,
     ) -> None:

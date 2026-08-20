@@ -7,6 +7,7 @@ from pathlib import Path
 from backend.core.rule_engine import (
     FIELD_LABELS,
     FIELD_NUMERIC_BOUNDS,
+    MEDIA_SERVER_GENRE_FIELDS,
     USER_SCOPED_PLAYBACK_FIELDS,
 )
 
@@ -89,3 +90,11 @@ class FrontendBoundsParityTests(unittest.TestCase):
             label, kind = entries[field]
             self.assertEqual(label, FIELD_LABELS[field])
             self.assertEqual(kind, "user_scoped_number")
+
+    def test_provider_genre_fields_match_frontend(self) -> None:
+        entries = _frontend_field_entries()
+        for field in MEDIA_SERVER_GENRE_FIELDS:
+            self.assertIn(field, entries, f"{field} missing from frontend fields")
+            label, kind = entries[field]
+            self.assertEqual(label, FIELD_LABELS[field])
+            self.assertEqual(kind, "text")

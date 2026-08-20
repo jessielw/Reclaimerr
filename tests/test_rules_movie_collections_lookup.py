@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.api.routes.rules import (
     get_genres,
+    get_media_server_genres,
     get_media_server_collections,
     get_movie_collections,
     get_origin_countries,
@@ -501,6 +502,107 @@ def test_get_media_server_collections_counts_distinct_media() -> None:
             )
             assert series_response.total == 1
             assert series_response.items[0].name == "Leaving Soon"
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_media_server_genres_filters_provider_and_counts_distinct_media() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            movie = Movie(title="One", tmdb_id=7001)
+            series = Series(title="Show", tmdb_id=8001)
+            db.add_all([admin, movie, series])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.PLEX,
+                        service_item_id="p1",
+                        service_media_id="pv1",
+                        library_id="movies",
+                        library_name="Movies",
+                        media_server_genres=["Anime", "Animation"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.PLEX,
+                        service_item_id="p1",
+                        service_media_id="pv2",
+                        library_id="movies",
+                        library_name="Movies",
+                        media_server_genres=["anime"],
+                    ),
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.JELLYFIN,
+                        service_item_id="j1",
+                        service_media_id="jv1",
+                        library_id="movies",
+                        library_name="Movies",
+                        media_server_genres=["Drama"],
+                    ),
+                    SeriesServiceRef(
+                        series_id=series.id,
+                        service=Service.EMBY,
+                        service_id="e1",
+                        library_id="shows",
+                        library_name="Shows",
+                        media_server_genres=["Mystery"],
+                    ),
+                ]
+            )
+            await db.commit()
+
+            plex = await get_media_server_genres(
+                admin,
+                db,
+                service="plex",
+                media_type=MediaType.MOVIE,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert [(item.name, item.media_count) for item in plex.items] == [
+                ("Animation", 1),
+                ("Anime", 1),
+            ]
+
+            jellyfin = await get_media_server_genres(
+                admin,
+                db,
+                service="jellyfin",
+                media_type=MediaType.MOVIE,
+                q="dra",
+                page=1,
+                per_page=50,
+            )
+            assert [(item.name, item.media_count) for item in jellyfin.items] == [
+                ("Drama", 1)
+            ]
+
+            emby = await get_media_server_genres(
+                admin,
+                db,
+                service="emby",
+                media_type=MediaType.SERIES,
+                q="",
+                page=1,
+                per_page=50,
+            )
+            assert [(item.name, item.media_count) for item in emby.items] == [
+                ("Mystery", 1)
+            ]
 
         await engine.dispose()
 

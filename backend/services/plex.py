@@ -1195,6 +1195,7 @@ class PlexService:
                 # when Part/Stream is missing in section list responses, use pre-fetched
                 # batched details from /library/metadata/{id1,id2,...}.
                 source_item = details_by_key.get(str(item["ratingKey"]), item)
+                genre_names = self._genre_names(source_item.get("Genre"))
                 media_entries = (
                     source_item.get("Media", [])
                     if source_item
@@ -1334,6 +1335,7 @@ class PlexService:
                                 else None
                             ),
                             media_server_collection_names=collection_names,
+                            media_server_genres=genre_names,
                             media_server_user_rating=as_float(
                                 source_item.get("userRating")
                                 if source_item
@@ -1357,6 +1359,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         str(item["ratingKey"])
                     ),
+                    media_server_genres=genre_names,
                     media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_movies.append(movie)
@@ -1511,6 +1514,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         rating_key
                     ),
+                    media_server_genres=self._genre_names(item.get("Genre")),
                     media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_series.append(series)
@@ -2005,6 +2009,7 @@ class PlexService:
                     last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
                     played_by_user_count=s_hist[2] if s_hist else None,
                     media_server_collection_names=s.media_server_collection_names,
+                    media_server_genres=s.media_server_genres,
                     media_server_user_rating=s.media_server_user_rating,
                     season_data=merged_seasons,
                 )
@@ -2290,6 +2295,19 @@ class PlexService:
                 or stream.get("languageTag")
                 or stream.get("language")
                 for stream in streams
+            ]
+        )
+
+    @staticmethod
+    def _genre_names(raw_genres: Any) -> list[str] | None:
+        """Normalize Plex ``Genre`` tag objects without mixing in TMDB genres."""
+        if not isinstance(raw_genres, list):
+            return None
+        return normalize_name_list(
+            [
+                genre.get("tag") or genre.get("name")
+                for genre in raw_genres
+                if isinstance(genre, dict)
             ]
         )
 

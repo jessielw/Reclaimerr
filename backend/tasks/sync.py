@@ -979,6 +979,7 @@ async def _upsert_series_service_ref(
         existing.library_name = data.library_name
         existing.path = data.path
         existing.media_server_collection_names = data.media_server_collection_names
+        existing.media_server_genres = data.media_server_genres
     else:
         session.add(
             SeriesServiceRef(
@@ -989,6 +990,7 @@ async def _upsert_series_service_ref(
                 library_name=data.library_name,
                 path=data.path,
                 media_server_collection_names=data.media_server_collection_names,
+                media_server_genres=data.media_server_genres,
             )
         )
 
@@ -1119,6 +1121,7 @@ async def _upsert_movie_versions(
                         subtitle_languages=ver.subtitle_languages,
                         has_chapters=ver.has_chapters,
                         media_server_collection_names=ver.media_server_collection_names,
+                        media_server_genres=ver.media_server_genres,
                         media_server_user_rating=ver.media_server_user_rating,
                     )
                 )
@@ -1162,6 +1165,7 @@ async def _upsert_movie_versions(
         ev.subtitle_languages = ver.subtitle_languages
         ev.has_chapters = ver.has_chapters
         ev.media_server_collection_names = ver.media_server_collection_names
+        ev.media_server_genres = ver.media_server_genres
         ev.media_server_user_rating = ver.media_server_user_rating
         if ver.added_at:
             ev.added_at = ver.added_at
@@ -1629,6 +1633,7 @@ async def sync_movies(
                                     subtitle_languages=ver.subtitle_languages,
                                     has_chapters=ver.has_chapters,
                                     media_server_collection_names=ver.media_server_collection_names,
+                                    media_server_genres=ver.media_server_genres,
                                     media_server_user_rating=ver.media_server_user_rating,
                                 )
                             )

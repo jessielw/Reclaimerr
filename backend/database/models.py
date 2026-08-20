@@ -737,6 +737,7 @@ class MovieVersion(Base):
     media_server_collection_names: Mapped[list[str] | None] = mapped_column(
         JSON, default=None
     )
+    media_server_genres: Mapped[list[str] | None] = mapped_column(JSON, default=None)
     media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
@@ -776,6 +777,7 @@ class SeriesServiceRef(Base):
     media_server_collection_names: Mapped[list[str] | None] = mapped_column(
         JSON, default=None
     )
+    media_server_genres: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False

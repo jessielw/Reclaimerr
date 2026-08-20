@@ -102,6 +102,8 @@ For example, given tags that pair a base name with a `-stale` variant (such as `
 
 Missing metadata does not automatically prove a negative condition. Language and origin-country rules therefore fail closed: if the item's value is unknown, `matches none` and `does not match all` do not match it. Use a separate `does not exist` condition when you specifically want to identify missing metadata.
 
+Provider-specific media-server genres also fail closed when their provider is not the configured main media server. For example, `Plex genres matches none Drama` does not match an item whose main server is Jellyfin, because Plex metadata is unavailable rather than empty.
+
 ## Field Reference
 
 The rule editor only displays fields valid for the selected scope. The following fields have behavior or units that are important when constructing a rule.
@@ -125,6 +127,20 @@ Size and disk-free conditions use an amount and unit selector in the editor. Rul
 Arr file-added dates are populated during Radarr and Sonarr syncs. They remain empty when an item cannot be matched or an Arr service is not configured; the existing media-server added date is not replaced or backfilled.
 
 Media-server user ratings are stored during media sync when the provider reports a user-specific rating for the item. Missing ratings do not match numeric comparisons; use `does not exist` to find unrated media.
+
+### Media-Server Genres
+
+| Field | Scope | Value |
+| --- | --- | --- |
+| Plex genres | All scopes | Genre tags reported by Plex |
+| Jellyfin genres | All scopes | Genre names reported by Jellyfin |
+| Emby genres | All scopes | Genre names reported by Emby |
+
+Media-server genres are separate from TMDB genres. Reclaimerr does not merge names between providers, even when the same name appears in both sources. This makes it possible to combine them explicitly with `AND` or `OR` groups and keeps locally edited or provider-specific genres attributable to their source.
+
+Only genres from the configured main media server are stored. Linked media servers continue to contribute supplemental watch data, not library metadata. A condition for a different provider is unavailable and does not match, including with negative list operators. If the main provider reports an item but gives it no genres, `does not exist` can match that empty provider value.
+
+Run a full media sync after upgrading to populate provider genres for existing media. Series-level media-server genres are inherited by series, season, and episode rule scopes; movie genres are evaluated per movie version.
 
 ### Arr Identifiers
 
@@ -174,7 +190,7 @@ The current movie is excluded from the sibling calculation. Reclaimerr-managed L
 | Original language | All scopes | Canonical ISO 639-3 language code |
 | Origin country | All scopes | Case-insensitive country code such as `US` or `JP` |
 | Runtime | Movie version | TMDB movie runtime in minutes |
-| Genres | All scopes | TMDB genre names |
+| Genres | All scopes | TMDB genre names; never merged with media-server genres |
 | Rating / Votes / Popularity | All scopes | TMDB rating uses the raw 0-10 `vote_average` scale; votes and popularity use current stored TMDB metadata |
 | Release date | Movie version | Movie release date |
 | First / last air date | Series, season, episode | Dates inherited from the parent series |

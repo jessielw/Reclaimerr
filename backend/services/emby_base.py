@@ -118,6 +118,7 @@ class _SeriesAggregate:
     last_viewed_at: datetime | None
     played_by_user_count: int
     media_server_collection_names: list[str] | None
+    media_server_genres: list[str] | None
     season_data: list[AggregatedSeasonData]
     media_server_user_rating: float | None = None
 
@@ -865,7 +866,7 @@ class EmbyServiceBase:
             "enableTotalRecordCount": "true",
             "Fields": (
                 "ProviderIds,MediaSources,MediaStreams,Chapters,DateCreated,Path,UserData,"
-                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate"
+                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate,Genres"
             ),
             "ParentId": library_id,
         }
@@ -1019,6 +1020,7 @@ class EmbyServiceBase:
                             )
                         ),
                         media_server_collection_names=collection_names,
+                        media_server_genres=self._genre_names(item),
                         media_server_user_rating=user_data.rating,
                     )
                 )
@@ -1033,6 +1035,7 @@ class EmbyServiceBase:
                 versions=versions,
                 user_data=user_data,
                 media_server_collection_names=collection_names,
+                media_server_genres=self._genre_names(item),
             )
             data.append(movie)
         return data
@@ -1062,7 +1065,7 @@ class EmbyServiceBase:
             "enableTotalRecordCount": "true",
             "Fields": (
                 "ProviderIds,Path,UserData,UserDataLastPlayedDate,UserDataPlayCount,"
-                "ProductionYear,PremiereDate,DateCreated"
+                "ProductionYear,PremiereDate,DateCreated,Genres"
             ),
             "ParentId": library_id,
         }
@@ -1128,6 +1131,7 @@ class EmbyServiceBase:
                 media_server_collection_names=(collection_names_by_item_id or {}).get(
                     item["Id"]
                 ),
+                media_server_genres=self._genre_names(item),
             )
             data.append(series)
         return data
@@ -2051,6 +2055,7 @@ class EmbyServiceBase:
                             media_server_collection_names=(
                                 series.media_server_collection_names
                             ),
+                            media_server_genres=series.media_server_genres,
                             season_data=[
                                 v
                                 for k, v in season_data_map.items()
@@ -2099,6 +2104,7 @@ class EmbyServiceBase:
                 last_viewed_at=data.last_viewed_at,
                 played_by_user_count=data.played_by_user_count,
                 media_server_collection_names=data.media_server_collection_names,
+                media_server_genres=data.media_server_genres,
                 media_server_user_rating=data.media_server_user_rating,
                 season_data=data.season_data,
             )
@@ -2401,6 +2407,26 @@ class EmbyServiceBase:
     @staticmethod
     def _unique_languages(streams: JsonList) -> list[str] | None:
         return normalize_languages([stream.get("Language") for stream in streams])
+
+    @staticmethod
+    def _genre_names(item: Mapping[str, Any]) -> list[str] | None:
+        """Normalize Emby/Jellyfin genres without mixing in TMDB metadata."""
+        raw_genres = item.get("Genres")
+        if isinstance(raw_genres, list):
+            names = normalize_name_list(raw_genres)
+            if names:
+                return names
+
+        genre_items = item.get("GenreItems")
+        if not isinstance(genre_items, list):
+            return None
+        return normalize_name_list(
+            [
+                genre.get("Name") or genre.get("name")
+                for genre in genre_items
+                if isinstance(genre, dict)
+            ]
+        )
 
     @staticmethod
     def _is_hdr(stream: JsonDict) -> bool:
