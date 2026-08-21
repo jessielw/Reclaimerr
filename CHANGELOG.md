@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added separate Plex, Jellyfin, and Emby genre rule conditions sourced from the configured main media server. Provider genres remain isolated from TMDB genres and include searchable rule pickers.
+- Rule descriptions:
+  - Added editor textarea, rule-card display, import/export/API support.
+  - Candidate and protected detail views now show current rule descriptions; deleted rules omit them.
 
 ### Changed
 

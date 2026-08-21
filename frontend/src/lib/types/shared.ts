@@ -433,6 +433,7 @@ export interface PaginatedFavoritesMediaResponse {
 export interface ReclaimRule {
   id: number;
   name: string;
+  description: string | null;
   media_type: MediaType;
   enabled: boolean;
   target_scope: "movie_version" | "series" | "season" | "episode" | null;
@@ -1016,6 +1017,7 @@ export interface ProtectedEntry {
   source: "manual" | "rule";
   source_rule_id: number | null;
   source_rule_name: string | null;
+  source_rule_description: string | null;
   permanent: boolean;
   expires_at: string | null;
   created_at: string;
@@ -1090,6 +1092,7 @@ export interface ReclaimCandidateEntry {
   reason_parts: {
     rule_id: number | null;
     rule_name: string;
+    rule_description: string | null;
     target_scope: string;
     season_label: string | null;
     conditions: {

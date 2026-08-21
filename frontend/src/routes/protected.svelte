@@ -622,6 +622,11 @@
                       <span class="font-medium text-foreground">
                         {entry.source_rule_name ?? "Deleted rule"}
                       </span>
+                      {#if entry.source_rule_description}
+                        <div class="mt-1 whitespace-pre-line">
+                          {entry.source_rule_description}
+                        </div>
+                      {/if}
                     </div>
                   {/if}
                 </td>

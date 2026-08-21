@@ -6,6 +6,7 @@
   import { onMount } from "svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Textarea } from "$lib/components/ui/textarea/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -79,6 +80,7 @@
     const currentRule = initialRule;
     return {
       name: currentRule?.name ?? "",
+      description: currentRule?.description ?? "",
       enabled: currentRule?.enabled ?? true,
       targetScope:
         currentRule?.target_scope ??
@@ -91,6 +93,7 @@
   })();
 
   let name = $state(initial.name);
+  let description = $state(initial.description);
   let enabled = $state(initial.enabled);
   let targetScope = $state<"movie_version" | "series" | "season" | "episode">(
     initial.targetScope,
@@ -619,6 +622,7 @@
       }
       await onSave({
         name: name.trim(),
+        description: description.trim() || null,
         enabled,
         media_type: selectedMediaType,
         target_scope: targetScope,
@@ -887,6 +891,22 @@
           </Select.Content>
         </Select.Root>
       </div>
+    </div>
+
+    <div class="space-y-2">
+      <Label
+        for="rule-description"
+        class="block text-sm font-medium text-foreground"
+        >Description <span class="font-normal text-muted-foreground"
+          >(optional)</span
+        ></Label
+      >
+      <Textarea
+        id="rule-description"
+        class="input-hover-el text-foreground"
+        bind:value={description}
+        placeholder="Describe what this rule is for"
+      />
     </div>
 
     <div class="space-y-2">

@@ -13,6 +13,7 @@ class CleanupRuleBase(BaseModel):
     """Advanced cleanup rule payload."""
 
     name: str
+    description: str | None = None
     media_type: MediaType
     enabled: bool = True
     target_scope: str
@@ -34,6 +35,7 @@ class CleanupRuleUpdate(BaseModel):
     """
 
     name: str | None = None
+    description: str | None = None
     media_type: MediaType | None = None
     enabled: bool | None = None
     target_scope: str | None = None

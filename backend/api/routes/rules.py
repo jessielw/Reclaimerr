@@ -130,6 +130,14 @@ def _slugify_rule_tag(value: str) -> str:
     return f"rec-{slug or 'rule'}"
 
 
+def _normalize_rule_description(value: str | None) -> str | None:
+    """Normalize optional rule notes while preserving intentional line breaks."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def _normalize_rule_action(
     action: dict[str, Any] | None, rule_name: str, target_scope: str | None
 ) -> dict[str, Any]:
@@ -194,6 +202,7 @@ def _rule_response(rule: ReclaimRule) -> CleanupRuleResponse:
         {
             "id": rule.id,
             "name": rule.name,
+            "description": rule.description,
             "media_type": rule.media_type,
             "enabled": rule.enabled,
             "target_scope": target_scope,
@@ -1045,6 +1054,7 @@ async def create_rule(
     _validate_definition_tag_regex_syntax(rule_data.definition)
     new_rule = ReclaimRule(
         name=rule_data.name,
+        description=_normalize_rule_description(rule_data.description),
         media_type=effective_media_type,
         enabled=rule_data.enabled,
         target_scope=rule_data.target_scope,
@@ -1262,6 +1272,7 @@ async def import_rules(
             )
             new_rule = ReclaimRule(
                 name=name,
+                description=_normalize_rule_description(rule_data.description),
                 media_type=effective_media_type,
                 enabled=rule_data.enabled,
                 target_scope=rule_data.target_scope,
@@ -1303,6 +1314,10 @@ async def update_rule(
 
     # update only the fields that were provided
     update_data = rule_data.model_dump(exclude_unset=True)
+    if "description" in update_data:
+        update_data["description"] = _normalize_rule_description(
+            update_data["description"]
+        )
     if "definition" in update_data and update_data["definition"] is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

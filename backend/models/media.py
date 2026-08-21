@@ -557,6 +557,7 @@ class CandidateReasonCondition(BaseModel):
 class CandidateReasonPart(BaseModel):
     rule_id: int | None = None
     rule_name: str
+    rule_description: str | None = None
     target_scope: str
     season_label: str | None = None
     conditions: list[CandidateReasonCondition]

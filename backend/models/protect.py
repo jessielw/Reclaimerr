@@ -48,6 +48,7 @@ class ProtectedEntryResponse(BaseModel):
     source: Literal["manual", "rule"] = "manual"
     source_rule_id: int | None = None
     source_rule_name: str | None = None
+    source_rule_description: str | None = None
     permanent: bool
     expires_at: str | None
     created_at: str

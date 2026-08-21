@@ -2,6 +2,7 @@
 
 Rules determine which media becomes a reclaim candidate or receives an automated protection. A rule has:
 
+- a short name and optional plain-text description for identifying it throughout the app
 - a target scope
 - one or more conditions
 - nested `AND` or `OR` groups
@@ -130,11 +131,11 @@ Media-server user ratings are stored during media sync when the provider reports
 
 ### Media-Server Genres
 
-| Field | Scope | Value |
-| --- | --- | --- |
-| Plex genres | All scopes | Genre tags reported by Plex |
+| Field           | Scope      | Value                            |
+| --------------- | ---------- | -------------------------------- |
+| Plex genres     | All scopes | Genre tags reported by Plex      |
 | Jellyfin genres | All scopes | Genre names reported by Jellyfin |
-| Emby genres | All scopes | Genre names reported by Emby |
+| Emby genres     | All scopes | Genre names reported by Emby     |
 
 Media-server genres are separate from TMDB genres. Reclaimerr does not merge names between providers, even when the same name appears in both sources. This makes it possible to combine them explicitly with `AND` or `OR` groups and keeps locally edited or provider-specific genres attributable to their source.
 

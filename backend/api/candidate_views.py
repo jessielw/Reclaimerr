@@ -94,6 +94,7 @@ def _format_reason_condition(
 def normalize_reason_parts(
     reason_data: Any,
     library_name_by_id: dict[str, str],
+    rule_descriptions_by_id: dict[int, str | None] | None = None,
 ) -> list[CandidateReasonPart]:
     """Normalize raw reason data into structured CandidateReasonPart objects."""
     parts_raw = reason_data if isinstance(reason_data, list) else []
@@ -101,6 +102,12 @@ def normalize_reason_parts(
     for part in parts_raw:
         if not isinstance(part, dict):
             continue
+        rule_id = part.get("rule_id")
+        rule_description = (
+            rule_descriptions_by_id.get(rule_id)
+            if isinstance(rule_id, int) and rule_descriptions_by_id is not None
+            else None
+        )
         rule_name = str(part.get("rule_name") or "Rule")
         target_scope = str(part.get("target_scope") or "")
         season_label = (
@@ -146,8 +153,9 @@ def normalize_reason_parts(
         text = f"{label}: {summary}" if summary else label
         normalized_parts.append(
             CandidateReasonPart(
-                rule_id=part.get("rule_id"),
+                rule_id=rule_id,
                 rule_name=rule_name,
+                rule_description=rule_description,
                 target_scope=target_scope,
                 season_label=season_label,
                 conditions=conditions_out,

@@ -1493,6 +1493,7 @@ class ReclaimRule(Base):
     )
     name: Mapped[str] = mapped_column(String(100))  # rule name
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    description: Mapped[str | None] = mapped_column(Text, default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # advanced rule engine fields
