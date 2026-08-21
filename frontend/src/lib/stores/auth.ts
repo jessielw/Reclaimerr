@@ -1,6 +1,7 @@
 import { writable } from "svelte/store";
 import type { UserProfile } from "$lib/types/shared";
 import type { AuthState } from "$lib/types/auth";
+import { setDateFormat } from "$lib/stores/date-format";
 
 function createAuthStore() {
   const { subscribe, set, update } = writable<AuthState>({
@@ -19,6 +20,7 @@ function createAuthStore() {
 
       if (response.ok) {
         const user = await response.json();
+        setDateFormat(user.date_format);
         set({
           isAuthenticated: true,
           user,
@@ -60,6 +62,7 @@ function createAuthStore() {
   }
 
   const applyAuthResponse = (data: { user: UserProfile }) => {
+    setDateFormat(data.user.date_format);
     set({
       isAuthenticated: true,
       user: data.user,

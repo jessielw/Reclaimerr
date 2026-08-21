@@ -60,6 +60,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), init=True)
     email: Mapped[str | None] = mapped_column(String(120), unique=True, default=None)
     display_name: Mapped[str | None] = mapped_column(String(32), default=None)
+    # Personal presentation preference; deliberately not an instance-wide setting.
+    date_format: Mapped[str] = mapped_column(String(8), default="mdy")
     oidc_issuer: Mapped[str | None] = mapped_column(
         String(255), default=None, index=True
     )

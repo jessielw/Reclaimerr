@@ -8,6 +8,7 @@ export interface User {
   username: string;
   display_name: string | null;
   email: string | null;
+  date_format: "mdy" | "dmy" | "iso";
   role: UserRole;
   permissions: Permission[];
   allowed_pages: PageAccess[] | null;

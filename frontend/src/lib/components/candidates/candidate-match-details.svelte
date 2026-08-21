@@ -27,9 +27,7 @@
                 variant="secondary">{rule.name}</Badge
               >
               {#if rule.description}
-                <p
-                  class="mt-1 whitespace-pre-line text-xs text-foreground"
-                >
+                <p class="mt-1 whitespace-pre-line text-xs text-foreground">
                   {rule.description}
                 </p>
               {/if}

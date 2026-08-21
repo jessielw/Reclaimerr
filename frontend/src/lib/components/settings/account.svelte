@@ -18,6 +18,12 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import Info from "@lucide/svelte/icons/info";
   import Appearance from "$lib/components/settings/appearance.svelte";
+  import { formatDate, formatDateTimeToLocaleString } from "$lib/utils/date";
+  import {
+    dateFormat,
+    setDateFormat,
+    type DateFormat,
+  } from "$lib/stores/date-format";
 
   interface Props {
     svgIcon: Component | null;
@@ -33,6 +39,7 @@
   let loading = $state(false);
   let profile: UserProfile | null = $state(null);
   let profileUpdating = $state(false);
+  let dateFormatSaving = $state(false);
   let passwordUpdating = $state(false);
   let profileError = $state("");
   let sessionsError = $state("");
@@ -68,6 +75,7 @@
       loading = true;
       profileError = "";
       profile = await get_api<UserProfile>("/api/account/me");
+      setDateFormat(profile.date_format);
       profileForm.display_name = profile.display_name || "";
       profileForm.email = profile.email || "";
       avatarPreview = profile.avatar_url;
@@ -96,6 +104,33 @@
       toast.error(`Error updating profile: ${err.message}`);
     } finally {
       profileUpdating = false;
+    }
+  }
+
+  async function updateDateFormat(format: DateFormat) {
+    if (dateFormatSaving || format === $dateFormat) return;
+
+    const previousFormat = $dateFormat;
+    setDateFormat(format);
+    dateFormatSaving = true;
+    try {
+      const response = await post_api<{ date_format: DateFormat }>(
+        "/api/account/me",
+        { date_format: format },
+      );
+      setDateFormat(response.date_format);
+      if (profile) {
+        profile = { ...profile, date_format: response.date_format };
+      }
+      if ($auth.user) {
+        auth.updateUser({ ...$auth.user, date_format: response.date_format });
+      }
+      toast.success("Date format saved");
+    } catch (err: any) {
+      setDateFormat(previousFormat);
+      toast.error(`Error saving date format: ${err.message}`);
+    } finally {
+      dateFormatSaving = false;
     }
   }
 
@@ -198,14 +233,7 @@
   }
 
   function formatSessionDate(date: string | null): string {
-    if (!date) return "Never";
-    return new Date(date).toLocaleString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return date ? formatDateTimeToLocaleString(date) : "Never";
   }
 
   function isSessionBeingRevoked(sessionId: string): boolean {
@@ -460,7 +488,7 @@
       </form>
     </div>
 
-    <Appearance />
+    <Appearance onDateFormatChange={updateDateFormat} {dateFormatSaving} />
 
     <!-- password change -->
     <div class="bg-card rounded-lg border border-border p-6">
@@ -662,11 +690,7 @@
         <div class="flex justify-between">
           <span class="text-muted-foreground">Account Created:</span>
           <span class="text-foreground">
-            {new Date(profile.created_at).toLocaleDateString("en-US", {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
+            {formatDate(profile.created_at)}
           </span>
         </div>
         <div class="flex justify-between">

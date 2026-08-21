@@ -1,3 +1,7 @@
+import { get } from "svelte/store";
+
+import { dateFormat, type DateFormat } from "$lib/stores/date-format";
+
 /**
  * Parse API timestamps, treating timezone-less ISO strings as UTC.
  * SQLite-backed timestamps often arrive without a timezone suffix.
@@ -8,16 +12,32 @@ const parseApiDate = (dateString: string): Date => {
 };
 
 /**
- * Formats a date string into a more readable format.
+ * Formats a date string using the selected display format.
  * @param dateString The date string to format.
  * @returns A formatted date string.
  */
+const formatDateValue = (date: Date, format: DateFormat): string => {
+  const year = date.getFullYear().toString().padStart(4, "0");
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const day = date.getDate().toString().padStart(2, "0");
+
+  switch (format) {
+    case "dmy":
+      return `${day}/${month}/${year}`;
+    case "iso":
+      return `${year}-${month}-${day}`;
+    case "mdy":
+      return `${month}/${day}/${year}`;
+  }
+};
+
+/** Formats a date using the signed-in user's display preference. */
 const formatDate = (dateString: string): string => {
-  return parseApiDate(dateString).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  try {
+    return formatDateValue(parseApiDate(dateString), get(dateFormat));
+  } catch {
+    return dateString;
+  }
 };
 
 /**
@@ -58,24 +78,22 @@ const formatDistanceToNow = (dateString: string): string => {
  */
 const formatDateToLocaleString = (dateStr: string | null): string => {
   if (!dateStr) return "Unknown";
-  try {
-    return parseApiDate(dateStr).toLocaleDateString();
-  } catch {
-    return dateStr;
-  }
+  return formatDate(dateStr);
 };
 
 /**
- * Formats a date string into a locale-specific date and time string.
- * Uses browser locale/timezone and treats timezone-less API strings as UTC.
+ * Formats a date string using the selected date format and browser time format.
+ * Timezone-less API strings are treated as UTC.
  */
 const formatDateTimeToLocaleString = (dateStr: string | null): string => {
   if (!dateStr) return "Unknown";
   try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(parseApiDate(dateStr));
+    const date = parseApiDate(dateStr);
+    const time = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+    return `${formatDateValue(date, get(dateFormat))} ${time}`;
   } catch {
     return dateStr;
   }
