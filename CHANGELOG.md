@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rule descriptions:
   - Added editor textarea, rule-card display, import/export/API support.
   - Candidate and protected detail views now show current rule descriptions; deleted rules omit them.
+- Per user control for datetime format
 
 ### Changed
 
