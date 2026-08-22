@@ -1263,15 +1263,19 @@ class EmbyServiceBase:
                         pass
 
                 # season added_at = earliest episode date created
+                ep_added_at: datetime | None = None
                 created_date = episode.get("DateCreated")
                 if created_date:
                     try:
-                        dt = datetime.fromisoformat(created_date.replace("Z", "+00:00"))
-                        prev = season_added_at.get(sk)
-                        if prev is None or dt < prev:
-                            season_added_at[sk] = dt
+                        ep_added_at = datetime.fromisoformat(
+                            created_date.replace("Z", "+00:00")
+                        )
                     except (TypeError, ValueError):
-                        pass
+                        ep_added_at = None
+                if ep_added_at is not None:
+                    prev = season_added_at.get(sk)
+                    if prev is None or ep_added_at < prev:
+                        season_added_at[sk] = ep_added_at
 
                 # store Emby/Jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
@@ -1372,6 +1376,7 @@ class EmbyServiceBase:
                                 else None,
                                 media_server_user_rating=episode_user_rating,
                                 runtime_seconds=ep_runtime_seconds,
+                                added_at=ep_added_at,
                             )
                         )
 
