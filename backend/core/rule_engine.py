@@ -114,7 +114,7 @@ FIELD_LABELS: dict[str, str] = {
     "media.container": "Container",
     "media.days_since_added": "Days since added",
     "arr.days_since_file_added": "Days since latest Arr file added",
-    "watch.view_count": "Views",
+    "watch.view_count": "View count",
     "watch.days_since_last_watched": "Days since watched",
     "watch.last_viewed_at": "Last watched",
     "tmdb.release_date": "TMDB release date",
@@ -155,13 +155,13 @@ FIELD_LABELS: dict[str, str] = {
     "playback.days_since_last_activity": "Days since playback activity",
     "playback.user_watched_duration_minutes": "Playback duration by user (minutes)",
     "playback.user_watched_percent": "Playback watched by user (%)",
-    "tmdb.popularity": "Popularity",
+    "tmdb.popularity": "TMDB popularity",
     "tmdb.vote_average": "TMDB rating",
-    "tmdb.vote_count": "Vote count",
+    "tmdb.vote_count": "TMDB votes",
     "tmdb.id": "TMDB ID",
     "imdb.id": "IMDb ID",
     "imdb.rating": "IMDb rating",
-    "imdb.vote_count": "IMDb vote count",
+    "imdb.vote_count": "IMDb votes",
     "tvdb.id": "TVDB ID",
     "anilist.score": "AniList score",
     "anilist.popularity": "AniList popularity",
@@ -182,8 +182,8 @@ FIELD_LABELS: dict[str, str] = {
     "series.tmdb_season_count": "TMDB season count",
     "series.library_season_count": "Library season count",
     "movie.version_count": "Movie version count",
-    "video.codec_family": "Video codec",
-    "audio.codec_family": "Audio codec",
+    "video.codec_family": "Video codec family",
+    "audio.codec_family": "Audio codec family",
     "video.hdr": "HDR",
     "video.dolby_vision": "Dolby Vision",
     "video.width": "Video width",
@@ -192,28 +192,26 @@ FIELD_LABELS: dict[str, str] = {
     "video.bit_depth": "Video bit depth",
     "video.resolution": "Resolution",
     "audio.channels": "Audio channels",
-    "audio.track_count": "Audio tracks",
+    "audio.track_count": "Audio track count",
     "audio.bitrate_kbps": "Audio bitrate (kbps)",
     "audio.languages": "Audio languages",
     "subtitle.languages": "Subtitle languages",
-    "subtitle.track_count": "Subtitle tracks",
+    "subtitle.track_count": "Subtitle track count",
     "subtitle.has_forced": "Has forced subtitles",
-    "video.color_space": "Color space",
-    "video.color_transfer": "Color transfer",
-    "video.color_primaries": "Color primaries",
-    "media.duration": "Duration",
+    "video.color_space": "Video color space",
+    "video.color_transfer": "Video color transfer",
+    "video.color_primaries": "Video color primaries",
+    "media.duration": "Duration (ms)",
     "media_server.collections": "Media server collections",
     "arr.tags": "Arr tags",
     "arr.movie_ids": "Radarr movie IDs",
     "arr.series_ids": "Sonarr series IDs",
     "arr.monitored": "Arr monitored",
-    "sonarr.latest_season_has_unaired_episodes": (
-        "Sonarr latest season has unaired episodes"
-    ),
-    "sonarr.latest_season_has_finale": "Sonarr latest season has finale",
+    "sonarr.latest_season_has_unaired_episodes": "Latest season has unaired episodes",
+    "sonarr.latest_season_has_finale": "Latest season has finale",
     "sonarr.series_status": "Sonarr series status",
     "seerr.requested": "Seerr requested",
-    "seerr.requested_by_user_ids": "Seerr requested by user IDs",
+    "seerr.requested_by_user_ids": "Seerr requester IDs",
     "seerr.requester_has_watched": "Seerr requester has watched",
     "seerr.last_requested_at": "Seerr latest active request",
     "seerr.days_since_last_requested": "Days since latest active Seerr request",
@@ -227,7 +225,7 @@ FIELD_LABELS: dict[str, str] = {
         "Days since collection sibling watched"
     ),
     "media_server.user_rating": "Media server user rating",
-    "disk.free_bytes": "Disk free (bytes)",
+    "disk.free_bytes": "Disk free",
     "disk.free_percent": "Disk free (%)",
 }
 
@@ -3300,6 +3298,9 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     Sonarr's canonical episode inventory is the denominator. This prevents a season
     with every downloaded episode watched from appearing complete while Sonarr knows
     about missing or future episodes.
+
+    Staleness is judged per episode, since replacing one file must not discard the
+    recorded watch state of the rest of the season.
     """
     expected_episode_numbers = set(season.sonarr_episode_numbers or [])
     if not expected_episode_numbers:
@@ -3310,8 +3311,11 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     for episode in episodes:
         if episode.episode_number not in expected_episode_numbers:
             continue
+        # Compare against this episode's own added date. Using the season's
+        # would let one upgraded episode mark every other episode in the season
+        # as never watched. Fall back to the season only when unknown.
         effective_last_viewed = _effective_last_viewed(
-            episode.last_viewed_at, season.added_at
+            episode.last_viewed_at, episode.added_at or season.added_at
         )
         if effective_last_viewed is not None:
             watched_episode_numbers.add(episode.episode_number)
@@ -3403,22 +3407,66 @@ def _normalize(value: Any) -> str:
     return str(value).strip().lower()
 
 
+# Numeric fields whose raw value is meaningless without a unit. Reason strings
+# render these in human units so the labels do not have to carry a hint.
+BYTE_VALUE_FIELDS = frozenset({"media.size", "disk.free_bytes"})
+MILLISECOND_VALUE_FIELDS = frozenset({"media.duration"})
+
+
+def format_rule_value(field: str, value: Any) -> str:
+    """Render one condition value the way a person would read it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if field in BYTE_VALUE_FIELDS:
+        return _format_bytes(float(value))
+    if field in MILLISECOND_VALUE_FIELDS:
+        return _format_milliseconds(float(value))
+    return str(value)
+
+
+def _format_bytes(value: float) -> str:
+    negative = value < 0
+    remaining = abs(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if remaining < 1024 or unit == "TiB":
+            rendered = (
+                f"{remaining:.0f}"
+                if unit == "B"
+                else f"{remaining:.2f}".rstrip("0").rstrip(".")
+            )
+            return f"{'-' if negative else ''}{rendered} {unit}"
+        remaining /= 1024
+    return str(value)
+
+
+def _format_milliseconds(value: float) -> str:
+    total_seconds = int(abs(value) // 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    sign = "-" if value < 0 else ""
+    if hours:
+        return f"{sign}{hours}h {minutes}m"
+    if minutes:
+        return f"{sign}{minutes}m {seconds}s"
+    return f"{sign}{seconds}s"
+
+
 def _format_reason(field: str, operator: str, expected: Any, actual: Any) -> str:
     """Format the reason for a rule evaluation, including the field, operator, expected, and actual values."""
     label = FIELD_LABELS.get(field, field)
     op = OPERATOR_LABELS.get(operator, operator)
     if operator in VALUELESS_OPERATORS:
         return f"{label} {op}"
-    value = ", ".join(str(item) for item in _as_list(expected))
-    return f"{label} {op} {value} ({_format_actual(actual)})"
+    value = ", ".join(format_rule_value(field, item) for item in _as_list(expected))
+    return f"{label} {op} {value} ({_format_actual(field, actual)})"
 
 
-def _format_actual(actual: Any) -> str:
+def _format_actual(field: str, actual: Any) -> str:
     """Format the actual value for a rule evaluation, returning a string representation."""
     values = _as_list(actual)
     if not values:
         return "missing"
-    return ", ".join(str(value) for value in values[:4])
+    return ", ".join(format_rule_value(field, value) for value in values[:4])
 
 
 def _build_reason_condition(
