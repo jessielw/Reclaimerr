@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from backend.enums import MediaType
+from backend.enums import MediaType, Service
 from backend.user_types import AudioCodecFamily, MediaServerType, VideoCodecFamily
 
 
@@ -112,6 +112,9 @@ class AggregatedEpisodeData:
     name: str | None = None
     air_date: datetime | None = None
     last_viewed_at: datetime | None = None
+    # When the media server first saw this episode file. Used to tell a stale
+    # watch timestamp (file replaced after being watched) from a current one.
+    added_at: datetime | None = None
     size: int | None = None
     path: str | None = None
     plex_rating_key: str | None = None
@@ -120,6 +123,14 @@ class AggregatedEpisodeData:
     media_server_user_rating: float | None = None
     # file runtime in whole seconds, from the media server's item metadata
     runtime_seconds: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class WatchUserDirectoryEntry:
+    """One playback-provider account and every name that provider knows it by."""
+
+    provider_user_id: str
+    aliases: tuple[str, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -687,7 +698,49 @@ class RulePreviewMetadata(BaseModel):
     season_inventory_unavailable_examples: list[str] = Field(default_factory=list)
     playback_unavailable_count: int = 0
     playback_error: str | None = None
+    seerr_unavailable: bool = False
+    seerr_error: str | None = None
+    requester_watch_unavailable_count: int = 0
     matched_count: int = 0
+
+
+class RequesterWatchRequesterDetail(BaseModel):
+    """One Seerr requester and the identities matching tried on their behalf."""
+
+    seerr_user_id: int
+    display_name: str | None = None
+    identity_keys: list[str] = Field(default_factory=list)
+    requested_at: datetime | None = None
+    requested_seasons: dict[int, datetime] = Field(default_factory=dict)
+    candidate_watch_keys: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class RequesterWatchEvidence(BaseModel):
+    """One playback-user key that recorded completed watches for this media."""
+
+    source_service: Service
+    watch_user_key: str
+    matched_requester_ids: list[int] = Field(default_factory=list)
+    watched_at: datetime | None = None
+    episodes: list[str] = Field(default_factory=list)
+
+
+class RequesterWatchExplainResponse(BaseModel):
+    """Why `Seerr requester has watched` resolved the way it did for one item."""
+
+    media_type: MediaType
+    tmdb_id: int
+    title: str | None = None
+    target_scope: str
+    season_number: int | None = None
+    episode_number: int | None = None
+    result: bool | None = None
+    reason: str
+    holding_services: list[Service] = Field(default_factory=list)
+    unobservable_services: list[Service] = Field(default_factory=list)
+    requesters: list[RequesterWatchRequesterDetail] = Field(default_factory=list)
+    expected_episodes: list[str] = Field(default_factory=list)
+    evidence: list[RequesterWatchEvidence] = Field(default_factory=list)
 
 
 class PaginatedCandidatesResponse(BaseModel):
