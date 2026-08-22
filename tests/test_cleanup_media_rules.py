@@ -24,6 +24,7 @@ from backend.core.rule_engine import (
     RankRuleDataResolver,
     SeerrRequestResolver,
     SonarrRuleDataResolver,
+    _season_watch_progress,
     evaluate_advanced_rule,
 )
 from backend.database import Base
@@ -32,6 +33,7 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     MediaFavorite,
+    MediaWatchUser,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -47,6 +49,7 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, Service
+from backend.models.cleanup import RulePreviewMatchMetadata
 from backend.services.seerr_cache import SeerrRequestSnapshot
 from backend.tasks import cleanup as cleanup_tasks
 from backend.tasks.cleanup import (
@@ -65,6 +68,7 @@ from backend.tasks.cleanup import (
     _SonarrRefRuleState,
     collect_rule_preview_matches,
     collect_rule_preview_matches_with_metadata,
+    explain_requester_watch,
 )
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
@@ -2354,6 +2358,60 @@ class CleanupMediaRuleTests(unittest.TestCase):
             _evaluate_rule_for_season(series, season, watched_percent_zero_rule, {}, [])
         )
 
+    def test_upgrading_one_episode_keeps_the_rest_of_the_season_watched(
+        self,
+    ) -> None:
+        """Replacing one file must not discard the season's other watch state.
+
+        Staleness used to be judged against the season added date, which a
+        single upgraded episode bumps, so an otherwise fully watched season
+        silently read as unwatched.
+        """
+        now = datetime.now(UTC)
+        watched_at = now - timedelta(days=10)
+        series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
+        series.service_refs = [_make_series_ref(service_id="sr-1")]
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1, 2, 3]
+        # One episode was re-added today, which bumps the season added date.
+        season.added_at = now
+        season.episodes = []
+        for number in (1, 2, 3):
+            episode = Episode(
+                season_id=1,
+                episode_number=number,
+                view_count=1,
+                last_viewed_at=watched_at,
+            )
+            episode.added_at = now if number == 3 else now - timedelta(days=30)
+            season.episodes.append(episode)
+
+        fully_watched, watched_percent = _season_watch_progress(season)
+
+        # Episode 3 is genuinely stale; 1 and 2 keep their recorded watches.
+        self.assertFalse(fully_watched)
+        self.assertEqual(watched_percent, 66.67)
+
+    def test_season_watch_progress_falls_back_to_season_added_date(self) -> None:
+        """Episodes synced before the per-episode date existed still work."""
+        now = datetime.now(UTC)
+        season = Season(series_id=1, season_number=1, size=4 * 1024**3)
+        season.sonarr_episode_numbers = [1]
+        season.added_at = now
+        stale = Episode(
+            season_id=1,
+            episode_number=1,
+            view_count=1,
+            last_viewed_at=now - timedelta(days=1),
+        )
+        stale.added_at = None
+        season.episodes = [stale]
+
+        fully_watched, watched_percent = _season_watch_progress(season)
+
+        self.assertFalse(fully_watched)
+        self.assertEqual(watched_percent, 0.0)
+
     def test_season_watch_progress_includes_missing_sonarr_episodes(self) -> None:
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
         series.service_refs = [_make_series_ref(service_id="sr-1")]
@@ -2869,6 +2927,159 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(result[(TARGET_SEASON, 5920, 3, None)])
         self.assertFalse(result[(TARGET_SERIES, 5920, None, None)])
 
+    def test_requester_watch_counts_local_episodes_not_sonarr_inventory(self) -> None:
+        """A requester can only watch the episodes that exist.
+
+        `season.fully_watched` intentionally counts Sonarr's full inventory so a
+        season with missing episodes never reads as complete. Requester watch
+        state must not: an unaired episode would make a season the requester did
+        finish report as unwatched, which an `is false` rule turns into a
+        deletion.
+        """
+        media_key = (MediaType.SERIES, 5920)
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        watched_at = datetime(2026, 7, 2, tzinfo=UTC)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            requester_identity_keys_by_user_id={101: {"alice"}},
+            latest_active_request_at_by_key={},
+        )
+        # Sonarr knows about episodes 1-10; only 1-8 exist locally.
+        local_episodes = {(1, episode) for episode in range(1, 9)}
+
+        result = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user={
+                Service.PLEX: {
+                    "alice": {coordinate: watched_at for coordinate in local_episodes}
+                }
+            },
+            mappings=[],
+            expected_episodes=local_episodes,
+        )
+
+        self.assertTrue(result[(TARGET_SEASON, 5920, 1, None)])
+        self.assertTrue(result[(TARGET_SERIES, 5920, None, None)])
+
+    def test_requester_tv_watch_targets_bridge_identities_through_aliases(
+        self,
+    ) -> None:
+        """Reproduces discussion #359: Seerr name differs from the Plex one.
+
+        The requester is known to Seerr as a display name, while Plex history is
+        keyed by the Plex account username. Before the alias registry the two
+        never met and a fully watched season reported as unwatched.
+        """
+        media_key = (MediaType.SERIES, 5920)
+        requested_at = datetime(2023, 8, 23, tzinfo=UTC)
+        watched_at = datetime(2025, 1, 6, tzinfo=UTC)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            requester_identity_keys_by_user_id={101: {"black widow"}},
+            latest_active_request_at_by_key={},
+        )
+        episodes = {(1, episode) for episode in range(1, 9)}
+        plex_watches = {
+            Service.PLEX: {
+                "natasha": {coordinate: watched_at for coordinate in episodes}
+            }
+        }
+
+        without_aliases = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=plex_watches,
+            mappings=[],
+            expected_episodes=episodes,
+        )
+        self.assertFalse(without_aliases[(TARGET_SEASON, 5920, 1, None)])
+
+        aliases = frozenset({"black widow", "natasha", "12345"})
+        alias_index = {
+            Service.PLEX: {
+                "black widow": aliases,
+                "natasha": aliases,
+                "12345": aliases,
+            }
+        }
+        with_aliases = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=plex_watches,
+            mappings=[],
+            expected_episodes=episodes,
+            alias_index=alias_index,
+        )
+
+        self.assertTrue(with_aliases[(TARGET_SEASON, 5920, 1, None)])
+        self.assertTrue(with_aliases[(TARGET_SERIES, 5920, None, None)])
+        self.assertTrue(with_aliases[(TARGET_EPISODE, 5920, 1, 8)])
+
+    def test_requester_movie_watch_bridges_identities_through_aliases(self) -> None:
+        media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={
+                media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
+            },
+            requester_identity_keys_by_user_id={101: {"black widow"}},
+            latest_active_request_at_by_key={},
+        )
+        watches: dict[tuple[MediaType, int], dict[Service, dict[str, datetime]]] = {
+            media_key: {Service.PLEX: {"natasha": datetime(2026, 2, 1, tzinfo=UTC)}}
+        }
+        aliases = frozenset({"black widow", "natasha"})
+
+        self.assertFalse(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watches,
+                mappings=[],
+            )
+        )
+        self.assertTrue(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watches,
+                mappings=[],
+                alias_index={
+                    Service.PLEX: {"black widow": aliases, "natasha": aliases}
+                },
+            )
+        )
+
+    def test_alias_expansion_is_scoped_to_the_observed_service(self) -> None:
+        """A Jellyfin alias must not vouch for a Plex watch key."""
+        media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            latest_request_at_by_key_user={
+                media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
+            },
+            requester_identity_keys_by_user_id={101: {"black widow"}},
+            latest_active_request_at_by_key={},
+        )
+        aliases = frozenset({"black widow", "natasha"})
+
+        self.assertFalse(
+            _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user={
+                    media_key: {
+                        Service.PLEX: {"natasha": datetime(2026, 2, 1, tzinfo=UTC)}
+                    }
+                },
+                mappings=[],
+                alias_index={Service.JELLYFIN: {"black widow": aliases}},
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -3173,6 +3384,271 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         resolver = SeerrRequestResolver.current()
         assert resolver is not None
         self.assertTrue(resolver.resolve_requester_has_watched(MediaType.MOVIE, 123))
+
+    async def _run_requester_watch_resolver(
+        self, rule: ReclaimRule, snapshot: SeerrRequestSnapshot
+    ) -> RulePreviewMatchMetadata:
+        metadata = RulePreviewMatchMetadata()
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot",
+                new=AsyncMock(return_value=(snapshot, None)),
+            ),
+            patch.object(
+                type(cleanup_tasks.media_watch_snapshot_cache),
+                "ensure_fresh_snapshot",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                await _activate_seerr_request_resolver_for_rules(
+                    db,
+                    [rule],
+                    require_fresh=False,
+                    allow_stale_on_failure=True,
+                    metadata=metadata,
+                )
+        return metadata
+
+    async def test_requester_watch_is_unknown_when_its_server_cannot_be_read(
+        self,
+    ) -> None:
+        """An unreadable media server must not read as "nobody watched it".
+
+        Both used to be False, so an `is false` cleanup rule would delete media
+        purely because the server that knew about the plays was unavailable.
+        """
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        rule = _make_single_condition_rule(
+            name="requester-unknown",
+            media_type=MediaType.MOVIE,
+            target_scope=TARGET_MOVIE_VERSION,
+            field="seerr.requester_has_watched",
+            operator="is_false",
+        )
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
+            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            requester_identity_keys_by_user_id={7: {"alice"}},
+            latest_active_request_at_by_key={},
+        )
+        async with self._sessionmaker() as db:
+            movie = Movie(title="Movie", tmdb_id=123)
+            # Configured but never synced, so its watch state is unreadable.
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([rule, movie, plex])
+            await db.flush()
+            db.add(
+                MovieVersion(
+                    movie_id=movie.id,
+                    service=Service.PLEX,
+                    service_item_id="plex-item",
+                    service_media_id="plex-media",
+                    library_id="lib-1",
+                    library_name="Movies",
+                )
+            )
+            await db.commit()
+
+        metadata = await self._run_requester_watch_resolver(rule, snapshot)
+
+        resolver = SeerrRequestResolver.current()
+        assert resolver is not None
+        self.assertIsNone(resolver.resolve_requester_has_watched(MediaType.MOVIE, 123))
+        self.assertEqual(metadata.requester_watch_unavailable_count, 1)
+
+    async def test_requester_watch_answers_when_its_server_is_readable(self) -> None:
+        """A readable server still gives a definite "not watched"."""
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        rule = _make_single_condition_rule(
+            name="requester-known",
+            media_type=MediaType.MOVIE,
+            target_scope=TARGET_MOVIE_VERSION,
+            field="seerr.requester_has_watched",
+            operator="is_false",
+        )
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
+            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            requester_identity_keys_by_user_id={7: {"alice"}},
+            latest_active_request_at_by_key={},
+        )
+        async with self._sessionmaker() as db:
+            movie = Movie(title="Movie", tmdb_id=123)
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            plex.extra_settings = {
+                "watch_snapshot_sync": {
+                    "available": True,
+                    "last_success_at": "2026-07-05T00:00:00Z",
+                }
+            }
+            db.add_all([rule, movie, plex])
+            await db.flush()
+            db.add(
+                MovieVersion(
+                    movie_id=movie.id,
+                    service=Service.PLEX,
+                    service_item_id="plex-item",
+                    service_media_id="plex-media",
+                    library_id="lib-1",
+                    library_name="Movies",
+                )
+            )
+            await db.commit()
+
+        metadata = await self._run_requester_watch_resolver(rule, snapshot)
+
+        resolver = SeerrRequestResolver.current()
+        assert resolver is not None
+        self.assertIs(
+            resolver.resolve_requester_has_watched(MediaType.MOVIE, 123), False
+        )
+        self.assertEqual(metadata.requester_watch_unavailable_count, 0)
+
+    async def test_explain_requester_watch_agrees_with_the_resolver(self) -> None:
+        """The explanation must never disagree with what a rule would do."""
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        rule = _make_single_condition_rule(
+            name="requester-explain",
+            media_type=MediaType.MOVIE,
+            target_scope=TARGET_MOVIE_VERSION,
+            field="seerr.requester_has_watched",
+            operator="is_true",
+        )
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
+            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            requester_identity_keys_by_user_id={7: {"alice"}},
+            latest_active_request_at_by_key={},
+        )
+        async with self._sessionmaker() as db:
+            movie = Movie(title="Movie", tmdb_id=123)
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            plex.extra_settings = {
+                "watch_snapshot_sync": {
+                    "available": True,
+                    "last_success_at": "2026-07-05T00:00:00Z",
+                }
+            }
+            db.add_all([rule, movie, plex])
+            await db.flush()
+            db.add_all(
+                [
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.PLEX,
+                        service_item_id="plex-item",
+                        service_media_id="plex-media",
+                        library_id="lib-1",
+                        library_name="Movies",
+                    ),
+                    MediaWatchUser(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=123,
+                        watch_user_key="Alice",
+                        watch_user_key_normalized="alice",
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=datetime(2026, 7, 2),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        await self._run_requester_watch_resolver(rule, snapshot)
+        resolver = SeerrRequestResolver.current()
+        assert resolver is not None
+        resolver_result = resolver.resolve_requester_has_watched(MediaType.MOVIE, 123)
+
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot",
+                new=AsyncMock(return_value=(snapshot, None)),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                explanation = await explain_requester_watch(
+                    db, media_type=MediaType.MOVIE, tmdb_id=123
+                )
+
+        self.assertTrue(resolver_result)
+        self.assertIs(explanation.result, resolver_result)
+        self.assertEqual(explanation.title, "Movie")
+        self.assertEqual([r.seerr_user_id for r in explanation.requesters], [7])
+        self.assertIn("alice", explanation.requesters[0].identity_keys)
+        self.assertEqual(
+            [(e.watch_user_key, e.matched_requester_ids) for e in explanation.evidence],
+            [("alice", [7])],
+        )
+        self.assertEqual(explanation.holding_services, [Service.PLEX])
+        self.assertEqual(explanation.unobservable_services, [])
+
+    async def test_explain_requester_watch_reports_an_unreadable_server(self) -> None:
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
+            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            requester_identity_keys_by_user_id={7: {"alice"}},
+            latest_active_request_at_by_key={},
+        )
+        async with self._sessionmaker() as db:
+            movie = Movie(title="Movie", tmdb_id=123)
+            # Configured but never synced.
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([movie, plex])
+            await db.flush()
+            db.add(
+                MovieVersion(
+                    movie_id=movie.id,
+                    service=Service.PLEX,
+                    service_item_id="plex-item",
+                    service_media_id="plex-media",
+                    library_id="lib-1",
+                    library_name="Movies",
+                )
+            )
+            await db.commit()
+
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot",
+                new=AsyncMock(return_value=(snapshot, None)),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                explanation = await explain_requester_watch(
+                    db, media_type=MediaType.MOVIE, tmdb_id=123
+                )
+
+        self.assertIsNone(explanation.result)
+        self.assertIn("Unknown", explanation.reason)
+        self.assertEqual(explanation.unobservable_services, [Service.PLEX])
 
     async def test_scan_ends_notice_transaction_before_nested_provider_write(
         self,

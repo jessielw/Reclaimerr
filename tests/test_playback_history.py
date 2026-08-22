@@ -53,13 +53,16 @@ from backend.services.playback_history import (
     _recent_status_from,
     _refresh_reporting_config,
     _upsert_events,
+    completion_evidence_event_clause,
+    load_active_tracearr_sources,
     load_playback_rule_snapshot,
     load_user_playback_totals,
     log_playback_rule_coverage,
     rebuild_playback_history_aggregates,
+    resolve_unmapped_event_identities,
 )
 from backend.services.tautulli import TautulliClient
-from backend.services.tracearr import _is_supported_version
+from backend.services.tracearr import _is_supported_version, _retry_after_seconds
 
 
 class PlaybackHistoryNormalizationTests(unittest.TestCase):
@@ -95,6 +98,79 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         self.assertEqual(events[0].source_username, "Alice")
         self.assertTrue(events[0].completed)
         self.assertIsNone(events[0].played_at.tzinfo)
+
+    def test_tracearr_retry_after_header_is_parsed(self) -> None:
+        """The parsing body used to sit unreachable inside another function."""
+        self.assertEqual(
+            _retry_after_seconds(SimpleNamespace(headers={"Retry-After": "5"})), 5.0
+        )
+        self.assertEqual(
+            _retry_after_seconds(SimpleNamespace(headers={"retry-after": "900"})), 60.0
+        )
+        self.assertIsNone(
+            _retry_after_seconds(SimpleNamespace(headers={"Retry-After": "soon"}))
+        )
+        self.assertIsNone(_retry_after_seconds(SimpleNamespace(headers=None)))
+
+    def test_tracearr_completion_survives_non_boolean_watched_flags(self) -> None:
+        """A bound Tracearr server is the only completion signal for its server.
+
+        Treating anything but a JSON boolean as unknown erased requester watch
+        evidence for the whole media server rather than for one row.
+        """
+        for raw, expected in (
+            (True, True),
+            (1, True),
+            ("true", True),
+            ("Yes", True),
+            (False, False),
+            (0, False),
+            ("false", False),
+            (None, None),
+            ("maybe", None),
+            # A partial progress fraction is not proof of completion.
+            (0.5, None),
+        ):
+            with self.subTest(watched=raw):
+                events = _normalize_tracearr_events(
+                    [
+                        {
+                            "id": "play-1",
+                            "server_id": "server-1",
+                            "media_type": "episode",
+                            "rating_key": "episode-1",
+                            "duration_ms": 125_900,
+                            "watched": raw,
+                            "stopped_at": "2026-08-10T12:02:05.900Z",
+                            "user": {"id": "identity-1", "username": "alice"},
+                        }
+                    ],
+                    None,
+                    server_id="server-1",
+                )
+                self.assertEqual(len(events), 1)
+                self.assertIs(events[0].completed, expected)
+
+    def test_tracearr_completion_falls_back_to_alternate_keys(self) -> None:
+        events = _normalize_tracearr_events(
+            [
+                {
+                    "id": "play-1",
+                    "server_id": "server-1",
+                    "media_type": "movie",
+                    "rating_key": "movie-1",
+                    "duration_ms": 3_600_000,
+                    "watched_status": 1,
+                    "stopped_at": "2026-08-10T12:02:05.900Z",
+                    "user": {"id": "identity-1", "username": "alice"},
+                }
+            ],
+            None,
+            server_id="server-1",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0].completed)
 
     def test_config_api_key_decrypts_stored_key(self) -> None:
         config = ServiceConfig(
@@ -769,6 +845,182 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
             self.assertEqual(aggregate.play_count, 1)
             self.assertEqual(aggregate.total_duration_seconds, 60)
+
+    async def test_completion_evidence_keeps_superseded_provider_history(
+        self,
+    ) -> None:
+        """Binding Tracearr to Plex must not erase older Tautulli completions.
+
+        Aggregates pick one provider per server so plays are not counted twice,
+        but completion is a boolean: a finished play Tautulli recorded before
+        Tracearr existed is still proof the item was watched.
+        """
+        async with self.sessionmaker() as db:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+            )
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                name="Tautulli",
+                enabled=True,
+            )
+            tracearr = ServiceConfig(
+                service_type=Service.TRACEARR,
+                base_url="http://tracearr",
+                api_key="key",
+                name="Tracearr",
+                enabled=True,
+            )
+            db.add_all([plex, tautulli, tracearr])
+            await db.flush()
+            tracearr.extra_settings = {
+                "server_bindings": [
+                    {
+                        "service_config_id": plex.id,
+                        "tracearr_server_id": "server-1",
+                        "tracearr_server_name": "Plex",
+                        "server_type": "plex",
+                    }
+                ]
+            }
+            db.add_all(
+                [
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tautulli.id,
+                        source_event_key="old-tautulli-play",
+                        source_item_id="plex-item",
+                        provider_media_type="episode",
+                        played_at=datetime(2025, 1, 6),
+                        duration_seconds=2400,
+                        completed=True,
+                        tmdb_id=5920,
+                        season_number=1,
+                        episode_number=8,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TRACEARR,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tracearr.id,
+                        source_event_key="server-1:new-play",
+                        source_item_id="plex-item",
+                        provider_media_type="episode",
+                        played_at=datetime(2026, 8, 2),
+                        duration_seconds=2400,
+                        completed=True,
+                        tmdb_id=5920,
+                        season_number=1,
+                        episode_number=1,
+                    ),
+                    PlaybackHistoryEvent(
+                        source_service=Service.TRACEARR,
+                        observed_service=Service.PLEX,
+                        source_service_config_id=tracearr.id,
+                        source_event_key="retired-server:stale-play",
+                        source_item_id="plex-item",
+                        provider_media_type="episode",
+                        played_at=datetime(2026, 7, 31),
+                        duration_seconds=2400,
+                        completed=True,
+                        tmdb_id=5920,
+                        season_number=1,
+                        episode_number=2,
+                    ),
+                ]
+            )
+            await db.commit()
+
+            active = await load_active_tracearr_sources(db)
+            keys = {
+                key
+                for (key,) in (
+                    await db.execute(
+                        select(PlaybackHistoryEvent.source_event_key).where(
+                            completion_evidence_event_clause(active)
+                        )
+                    )
+                ).all()
+            }
+
+        # The superseded Tautulli row counts; a Tracearr row from a server this
+        # install no longer binds does not.
+        self.assertIn("old-tautulli-play", keys)
+        self.assertIn("server-1:new-play", keys)
+        self.assertNotIn("retired-server:stale-play", keys)
+
+    async def test_unmapped_event_identities_are_resolved_later(self) -> None:
+        """History imported before a media sync must not stay orphaned.
+
+        Providers are read incrementally, so an event whose media server IDs
+        were unknown at import time is never handed over again.
+        """
+        async with self.sessionmaker() as db:
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                name="Tautulli",
+                enabled=True,
+            )
+            series = Series(title="Ahsoka", tmdb_id=5920)
+            db.add_all([tautulli, series])
+            await db.flush()
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                size=0,
+                episode_count=1,
+                view_count=0,
+                last_viewed_at=None,
+            )
+            db.add(season)
+            await db.flush()
+            episode = Episode(
+                season_id=season.id,
+                episode_number=8,
+                plex_rating_key="plex-episode-8",
+            )
+            db.add(episode)
+            await db.flush()
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TAUTULLI,
+                    observed_service=Service.PLEX,
+                    source_service_config_id=tautulli.id,
+                    source_event_key="orphan-play",
+                    source_item_id="plex-episode-8",
+                    provider_media_type="episode",
+                    played_at=datetime(2025, 1, 6),
+                    duration_seconds=2400,
+                    completed=True,
+                )
+            )
+            await db.commit()
+
+        resolved = await resolve_unmapped_event_identities()
+        self.assertEqual(resolved, 1)
+
+        async with self.sessionmaker() as db:
+            event = (
+                await db.execute(
+                    select(PlaybackHistoryEvent).where(
+                        PlaybackHistoryEvent.source_event_key == "orphan-play"
+                    )
+                )
+            ).scalar_one()
+            self.assertEqual(event.tmdb_id, 5920)
+            self.assertEqual(event.season_number, 1)
+            self.assertEqual(event.episode_number, 8)
+
+        # A second pass has nothing left to do.
+        self.assertEqual(await resolve_unmapped_event_identities(), 0)
 
     async def test_snapshot_logs_mixed_service_unknown_reason(self) -> None:
         async with self.sessionmaker() as db:
