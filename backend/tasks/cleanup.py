@@ -100,6 +100,11 @@ from backend.models.cleanup import (
     RulePreviewMatchResult,
 )
 from backend.models.lifecycle_events import CandidateFileEvent
+from backend.models.media import (
+    RequesterWatchEvidence,
+    RequesterWatchExplainResponse,
+    RequesterWatchRequesterDetail,
+)
 from backend.services.admin_notices import (
     clear_playback_rule_data_notice,
     clear_seerr_rule_skip_notice,
@@ -124,7 +129,7 @@ from backend.services.playback_history import (
     IMPORTED_PLAYBACK_DURATION_FIELDS,
     NATIVE_PLAYBACK_FIELDS,
     PlaybackRuleSnapshot,
-    active_playback_event_clause,
+    completion_evidence_event_clause,
     load_active_tracearr_sources,
     load_playback_rule_snapshot,
     load_user_playback_totals,
@@ -132,6 +137,11 @@ from backend.services.playback_history import (
     refresh_playback_history,
 )
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
+from backend.services.watch_identity import (
+    AliasIndex,
+    expand_watch_keys,
+    load_watch_user_alias_index,
+)
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 __all__ = [
@@ -498,7 +508,13 @@ def _record_target_key(record: MatchedCandidateRecord) -> tuple[str, int] | None
 async def _revalidate_auto_delete_candidate_ids(
     candidate_ids: Sequence[int],
 ) -> _AutoDeleteRevalidationResult:
-    """Re-check playback-sensitive automatic rules against eligible targets."""
+    """Re-check watch-sensitive automatic rules against eligible targets.
+
+    A candidate sits for its auto-delete delay before anything is removed. If
+    somebody watches the media during that window the rule that created it no
+    longer holds, so any rule whose verdict depends on watch state is evaluated
+    again against current data before the deletion is authorized.
+    """
 
     if not candidate_ids:
         return _AutoDeleteRevalidationResult(candidate_ids=[])
@@ -553,7 +569,7 @@ async def _revalidate_auto_delete_candidate_ids(
             }
             applicable_by_candidate[candidate.id] = applicable
             if any(
-                _rule_uses_playback_fields(rules_by_id[rule_id])
+                _rule_uses_watch_sensitive_fields(rules_by_id[rule_id])
                 for rule_id in applicable
             ):
                 affected.append(candidate)
@@ -932,14 +948,19 @@ async def collect_rule_preview_matches_with_metadata(
     )
     await _activate_rank_rule_data_for_rules(db, list(rules))
     await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
-    await _activate_seerr_request_resolver_for_rules(
+    metadata = RulePreviewMatchMetadata()
+    seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
         db,
         list(rules),
         require_fresh=require_fresh,
         allow_stale_on_failure=not require_fresh,
+        metadata=metadata,
     )
+    # Without this a Seerr outage silently evaluates every requester condition
+    # as unknown and the preview looks like a normal empty result.
+    metadata.seerr_unavailable = not seerr_ready
+    metadata.seerr_error = seerr_error
 
-    metadata = RulePreviewMatchMetadata()
     sonarr_result = await _activate_sonarr_rule_data_for_rules(
         db,
         list(rules),
@@ -1588,6 +1609,30 @@ def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
     return any(
         collect_rule_conditions(rule.definition, field=field)
         for field in PLAYBACK_RULE_FIELDS | USER_SCOPED_PLAYBACK_FIELDS
+    )
+
+
+# Fields whose answer can change between a candidate being created and its
+# automatic deletion firing, simply because somebody watched the media in the
+# meantime. They get the same pre-delete recheck the playback fields get.
+WATCH_SENSITIVE_RULE_FIELDS = frozenset(
+    {
+        "seerr.requester_has_watched",
+        "season.fully_watched",
+        "season.watched_percent",
+        "watch.view_count",
+        "watch.last_viewed_at",
+        "watch.days_since_last_watched",
+        "watch.never_watched",
+    }
+)
+
+
+def _rule_uses_watch_sensitive_fields(rule: ReclaimRule) -> bool:
+    """Return whether a rule's verdict depends on who has watched the media."""
+    return _rule_uses_playback_fields(rule) or any(
+        collect_rule_conditions(rule.definition, field=field)
+        for field in WATCH_SENSITIVE_RULE_FIELDS
     )
 
 
@@ -2549,6 +2594,7 @@ def _build_watch_keys_for_requester(
     requester_identity_keys: set[str],
     target_service: Service,
     mappings: list[dict[str, Any]],
+    alias_index: AliasIndex | None = None,
 ) -> set[str]:
     keys: set[str] = set()
     for mapping in mappings:
@@ -2565,7 +2611,12 @@ def _build_watch_keys_for_requester(
 
     # fallback by direct normalized identity keys
     keys.update(requester_identity_keys)
-    return keys
+    if alias_index is None:
+        return keys
+    # One known name is enough: the registry supplies the rest of the names the
+    # same provider account answers to, which is how a Seerr display name
+    # reaches a Plex history key or a Tracearr username.
+    return expand_watch_keys(keys, alias_index, target_service)
 
 
 def _compute_requester_has_watched_for_key(
@@ -2576,6 +2627,7 @@ def _compute_requester_has_watched_for_key(
         tuple[MediaType, int], Mapping[Service, Mapping[str, datetime]]
     ],
     mappings: list[dict[str, Any]],
+    alias_index: AliasIndex | None = None,
 ) -> bool:
     watches_for_key = watch_by_service_and_user.get(media_key)
     if not watches_for_key:
@@ -2598,6 +2650,7 @@ def _compute_requester_has_watched_for_key(
                 requester_identity_keys=requester_identity_keys,
                 target_service=watch_service,
                 mappings=mappings,
+                alias_index=alias_index,
             )
             for watch_key in candidate_keys:
                 watched_at = watch_by_user.get(watch_key)
@@ -2615,6 +2668,7 @@ def _compute_requester_tv_watch_targets_for_key(
     ],
     mappings: list[dict[str, Any]],
     expected_episodes: set[tuple[int, int]],
+    alias_index: AliasIndex | None = None,
 ) -> dict[tuple[str, int, int | None, int | None], bool]:
     """Compute requester-specific episode and completion state for one series."""
     tmdb_id = media_key[1]
@@ -2653,6 +2707,7 @@ def _compute_requester_tv_watch_targets_for_key(
                 requester_identity_keys=requester_identity_keys,
                 target_service=watch_service,
                 mappings=mappings,
+                alias_index=alias_index,
             )
             for watch_key in candidate_keys:
                 for coordinate, watched_at in watch_by_user.get(watch_key, {}).items():
@@ -2685,12 +2740,470 @@ def _compute_requester_tv_watch_targets_for_key(
     return result
 
 
+async def _unobservable_requester_watch_keys(
+    db: AsyncSession,
+    *,
+    movie_tmdb_ids: set[int],
+    series_tmdb_ids: set[int],
+    durable_completion_services: set[Service],
+) -> set[tuple[MediaType, int]]:
+    """Return media whose requester watch state cannot honestly be answered.
+
+    "Nobody watched this" and "we could not read the server that would know"
+    used to be the same False, and an ``is false`` rule deletes on both. An item
+    stops being answerable when a media server known to hold it cannot report
+    completion, from either its own watch snapshot or retained durable history.
+    """
+    (
+        configured,
+        observable,
+    ) = await media_watch_snapshot_cache.load_observable_watch_services(db)
+    trusted = observable | durable_completion_services
+    if not trusted:
+        # Nothing anywhere can report completion, so no answer is honest.
+        return {(MediaType.MOVIE, tmdb_id) for tmdb_id in movie_tmdb_ids} | {
+            (MediaType.SERIES, tmdb_id) for tmdb_id in series_tmdb_ids
+        }
+
+    unobservable_services = configured - trusted
+    if not unobservable_services:
+        return set()
+
+    services_by_key: dict[tuple[MediaType, int], set[Service]] = {}
+    if movie_tmdb_ids:
+        rows = (
+            await db.execute(
+                select(Movie.tmdb_id, MovieVersion.service)
+                .join(MovieVersion, MovieVersion.movie_id == Movie.id)
+                .where(Movie.tmdb_id.in_(movie_tmdb_ids))
+            )
+        ).all()
+        for tmdb_id, service in rows:
+            if tmdb_id is not None:
+                services_by_key.setdefault((MediaType.MOVIE, int(tmdb_id)), set()).add(
+                    service
+                )
+    if series_tmdb_ids:
+        rows = (
+            await db.execute(
+                select(Series.tmdb_id, SeriesServiceRef.service)
+                .join(SeriesServiceRef, SeriesServiceRef.series_id == Series.id)
+                .where(Series.tmdb_id.in_(series_tmdb_ids))
+            )
+        ).all()
+        for tmdb_id, service in rows:
+            if tmdb_id is not None:
+                services_by_key.setdefault((MediaType.SERIES, int(tmdb_id)), set()).add(
+                    service
+                )
+
+    unobservable: set[tuple[MediaType, int]] = set()
+    for media_type, tmdb_ids in (
+        (MediaType.MOVIE, movie_tmdb_ids),
+        (MediaType.SERIES, series_tmdb_ids),
+    ):
+        for tmdb_id in tmdb_ids:
+            key = (media_type, int(tmdb_id))
+            holding = services_by_key.get(key)
+            # An item with no recorded server still has the trusted sources
+            # above to answer for it; only a server we know holds it and cannot
+            # read makes the answer untrustworthy.
+            if holding and holding & unobservable_services:
+                unobservable.add(key)
+    if unobservable:
+        LOG.debug(
+            f"Requester watch state is unknown for {len(unobservable)} item(s); "
+            f"unobservable services: "
+            f"{sorted(service.value for service in unobservable_services) or 'none'}"
+        )
+    return unobservable
+
+
+def _episode_label(season_number: int, episode_number: int) -> str:
+    return f"S{season_number:02d}E{episode_number:02d}"
+
+
+async def explain_requester_watch(
+    db: AsyncSession,
+    *,
+    media_type: MediaType,
+    tmdb_id: int,
+    target_scope: str | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
+) -> RequesterWatchExplainResponse:
+    """Explain how `Seerr requester has watched` resolves for one item.
+
+    Every failure in this area renders as a bare true/false/unknown, which makes
+    reports unanswerable without a screenshot exchange. This reports the whole
+    chain -- who requested it, which names were tried, what completion evidence
+    exists, and which server could not be read -- so a mismatch is visible.
+
+    The verdict comes from the same helpers the scan uses, so it cannot disagree
+    with what a rule would actually do.
+    """
+    is_series = media_type is MediaType.SERIES
+    scope = target_scope or (TARGET_SERIES if is_series else TARGET_MOVIE_VERSION)
+    media_key = (media_type, int(tmdb_id))
+
+    title: str | None = None
+    if is_series:
+        title = await db.scalar(select(Series.title).where(Series.tmdb_id == tmdb_id))
+    else:
+        title = await db.scalar(select(Movie.title).where(Movie.tmdb_id == tmdb_id))
+
+    if not service_manager.seerr:
+        return RequesterWatchExplainResponse(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            title=title,
+            target_scope=scope,
+            season_number=season_number,
+            episode_number=episode_number,
+            result=None,
+            reason="Seerr is not configured, so requester conditions never match.",
+        )
+
+    snapshot, snapshot_error = await seerr_snapshot_cache.get_request_snapshot(
+        require_fresh=False,
+        allow_stale_on_failure=True,
+    )
+    if snapshot is None:
+        return RequesterWatchExplainResponse(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            title=title,
+            target_scope=scope,
+            season_number=season_number,
+            episode_number=episode_number,
+            result=None,
+            reason=(
+                "Seerr request data could not be loaded: "
+                f"{snapshot_error or 'unknown error'}"
+            ),
+        )
+
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    raw_mappings = (
+        settings_row.requester_watch_user_mappings if settings_row is not None else []
+    )
+    mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    alias_index = await load_watch_user_alias_index(db)
+    active_tracearr_sources = await load_active_tracearr_sources(db)
+
+    # Native per-user watch state.
+    watch_by_service_and_user: dict[
+        tuple[MediaType, int], dict[Service, dict[str, datetime]]
+    ] = {}
+    episode_watches: dict[Service, dict[str, dict[tuple[int, int], datetime]]] = {}
+    if is_series:
+        rows = (
+            await db.execute(
+                select(
+                    MediaWatchUserEpisode.source_service,
+                    MediaWatchUserEpisode.watch_user_key_normalized,
+                    MediaWatchUserEpisode.season_number,
+                    MediaWatchUserEpisode.episode_number,
+                    MediaWatchUserEpisode.last_watched_at,
+                ).where(MediaWatchUserEpisode.series_tmdb_id == tmdb_id)
+            )
+        ).all()
+        for source_service, user_key, season_no, episode_no, watched_at in rows:
+            key = _normalize_watch_key(user_key)
+            if key is None or watched_at is None:
+                continue
+            episode_watches.setdefault(source_service, {}).setdefault(key, {})[
+                (int(season_no), int(episode_no))
+            ] = ensure_utc(watched_at)
+    else:
+        rows = (
+            await db.execute(
+                select(
+                    MediaWatchUser.source_service,
+                    MediaWatchUser.watch_user_key_normalized,
+                    MediaWatchUser.last_watched_at,
+                ).where(
+                    MediaWatchUser.media_type == media_type,
+                    MediaWatchUser.tmdb_id == tmdb_id,
+                )
+            )
+        ).all()
+        for source_service, user_key, watched_at in rows:
+            key = _normalize_watch_key(user_key)
+            if key is None or watched_at is None:
+                continue
+            by_user = watch_by_service_and_user.setdefault(media_key, {}).setdefault(
+                source_service, {}
+            )
+            existing = by_user.get(key)
+            watched_at_utc = ensure_utc(watched_at)
+            if existing is None or watched_at_utc > existing:
+                by_user[key] = watched_at_utc
+
+    # Durable completion evidence.
+    durable_completion_services: set[Service] = set()
+    durable_rows = (
+        await db.execute(
+            select(
+                PlaybackHistoryEvent.source_service,
+                PlaybackHistoryEvent.observed_service,
+                PlaybackHistoryEvent.provider_media_type,
+                PlaybackHistoryEvent.season_number,
+                PlaybackHistoryEvent.episode_number,
+                PlaybackHistoryEvent.source_username,
+                PlaybackHistoryEvent.source_user_id,
+                PlaybackHistoryEvent.played_at,
+            ).where(
+                PlaybackHistoryEvent.completed.is_(True),
+                PlaybackHistoryEvent.tmdb_id == tmdb_id,
+                PlaybackHistoryEvent.provider_media_type.in_(("movie", "episode")),
+                completion_evidence_event_clause(active_tracearr_sources),
+            )
+        )
+    ).all()
+    for (
+        source_service,
+        observed_service,
+        provider_media_type,
+        season_no,
+        episode_no,
+        source_username,
+        source_user_id,
+        played_at,
+    ) in durable_rows:
+        key = _normalize_watch_key(source_username or source_user_id)
+        if key is None or played_at is None:
+            continue
+        watch_service = observed_service or (
+            Service.PLEX if source_service is Service.TAUTULLI else source_service
+        )
+        durable_completion_services.add(watch_service)
+        watched_at_utc = ensure_utc(played_at)
+        if provider_media_type == "movie" and not is_series:
+            by_user = watch_by_service_and_user.setdefault(media_key, {}).setdefault(
+                watch_service, {}
+            )
+            existing = by_user.get(key)
+            if existing is None or watched_at_utc > existing:
+                by_user[key] = watched_at_utc
+        elif is_series and season_no is not None and episode_no is not None:
+            coordinates = episode_watches.setdefault(watch_service, {}).setdefault(
+                key, {}
+            )
+            coordinate = (int(season_no), int(episode_no))
+            existing = coordinates.get(coordinate)
+            if existing is None or watched_at_utc > existing:
+                coordinates[coordinate] = watched_at_utc
+
+    expected_episodes: set[tuple[int, int]] = set()
+    if is_series:
+        rows = (
+            await db.execute(
+                select(Season.season_number, Episode.episode_number)
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(Series.tmdb_id == tmdb_id)
+            )
+        ).all()
+        expected_episodes = {
+            (int(season_no), int(episode_no)) for season_no, episode_no in rows
+        }
+
+    unobservable_keys = await _unobservable_requester_watch_keys(
+        db,
+        movie_tmdb_ids=set() if is_series else {int(tmdb_id)},
+        series_tmdb_ids={int(tmdb_id)} if is_series else set(),
+        durable_completion_services=durable_completion_services,
+    )
+
+    holding_services: set[Service] = set()
+    if is_series:
+        holding_services = {
+            service
+            for (service,) in (
+                await db.execute(
+                    select(SeriesServiceRef.service)
+                    .join(Series, SeriesServiceRef.series_id == Series.id)
+                    .where(Series.tmdb_id == tmdb_id)
+                )
+            ).all()
+        }
+    else:
+        holding_services = {
+            service
+            for (service,) in (
+                await db.execute(
+                    select(MovieVersion.service)
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(Movie.tmdb_id == tmdb_id)
+                )
+            ).all()
+        }
+    (
+        configured,
+        observable,
+    ) = await media_watch_snapshot_cache.load_observable_watch_services(db)
+    unobservable_services = configured - (observable | durable_completion_services)
+
+    # Per-requester detail, using the same key expansion the scan performs.
+    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
+    evidence_services = set(episode_watches) | set(
+        watch_by_service_and_user.get(media_key, {})
+    )
+    requesters: list[RequesterWatchRequesterDetail] = []
+    keys_by_requester: dict[int, set[str]] = {}
+    for requester_id, requested_at in sorted(requester_times.items()):
+        identity_keys = snapshot.requester_identity_keys_by_user_id.get(
+            requester_id, set()
+        ) or {str(requester_id)}
+        candidate_keys: dict[str, list[str]] = {}
+        all_keys: set[str] = set()
+        for service in sorted(evidence_services or {Service.PLEX}, key=str):
+            keys = _build_watch_keys_for_requester(
+                requester_id=requester_id,
+                requester_identity_keys=set(identity_keys),
+                target_service=service,
+                mappings=mappings,
+                alias_index=alias_index,
+            )
+            candidate_keys[str(service.value)] = sorted(keys)
+            all_keys |= keys
+        keys_by_requester[requester_id] = all_keys
+        user = snapshot.requester_users_by_id.get(requester_id)
+        requesters.append(
+            RequesterWatchRequesterDetail(
+                seerr_user_id=requester_id,
+                display_name=(user.display_name or user.username) if user else None,
+                identity_keys=sorted(identity_keys),
+                requested_at=ensure_utc(requested_at),
+                requested_seasons={
+                    season_no: ensure_utc(by_user[requester_id])
+                    for (series_tmdb_id, season_no), by_user in (
+                        snapshot.latest_request_at_by_series_season_user.items()
+                    )
+                    if series_tmdb_id == tmdb_id and requester_id in by_user
+                },
+                candidate_watch_keys=candidate_keys,
+            )
+        )
+
+    def matched_requesters(watch_key: str) -> list[int]:
+        return sorted(
+            requester_id
+            for requester_id, keys in keys_by_requester.items()
+            if watch_key in keys
+        )
+
+    evidence: list[RequesterWatchEvidence] = []
+    for service, by_user in sorted(episode_watches.items(), key=lambda item: str(item)):
+        for watch_key, coordinates in sorted(by_user.items()):
+            evidence.append(
+                RequesterWatchEvidence(
+                    source_service=service,
+                    watch_user_key=watch_key,
+                    matched_requester_ids=matched_requesters(watch_key),
+                    watched_at=max(coordinates.values(), default=None),
+                    episodes=sorted(
+                        _episode_label(*coordinate) for coordinate in coordinates
+                    ),
+                )
+            )
+    for service, by_user in sorted(
+        watch_by_service_and_user.get(media_key, {}).items(), key=lambda item: str(item)
+    ):
+        for watch_key, watched_at in sorted(by_user.items()):
+            evidence.append(
+                RequesterWatchEvidence(
+                    source_service=service,
+                    watch_user_key=watch_key,
+                    matched_requester_ids=matched_requesters(watch_key),
+                    watched_at=watched_at,
+                )
+            )
+
+    # Verdict, from the same helpers a scan uses.
+    result: bool | None
+    if media_key in unobservable_keys:
+        result = None
+        reason = (
+            "Unknown: no media server holding this item can report completion "
+            f"({', '.join(sorted(s.value for s in unobservable_services)) or 'none'} "
+            "unreadable)."
+        )
+    elif not requester_times:
+        result = False if not is_series else None
+        reason = "No active Seerr request records a requester for this item."
+        if is_series:
+            result = _compute_requester_tv_watch_targets_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=episode_watches,
+                mappings=mappings,
+                expected_episodes=expected_episodes,
+                alias_index=alias_index,
+            ).get((scope, tmdb_id, season_number, episode_number))
+    elif is_series:
+        targets = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=episode_watches,
+            mappings=mappings,
+            expected_episodes=expected_episodes,
+            alias_index=alias_index,
+        )
+        result = targets.get((scope, tmdb_id, season_number, episode_number))
+        if result is None:
+            reason = (
+                "Unknown: this target has no locally known episodes to judge "
+                "completion against."
+            )
+        elif result:
+            reason = "A requester watched every required episode after requesting it."
+        else:
+            reason = (
+                "No single requester has a completed watch, after their request "
+                "date, for every required episode."
+            )
+    else:
+        result = _compute_requester_has_watched_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=watch_by_service_and_user,
+            mappings=mappings,
+            alias_index=alias_index,
+        )
+        reason = (
+            "A requester has a completed watch after their request date."
+            if result
+            else "No requester has a completed watch after their request date."
+        )
+
+    return RequesterWatchExplainResponse(
+        media_type=media_type,
+        tmdb_id=tmdb_id,
+        title=title,
+        target_scope=scope,
+        season_number=season_number,
+        episode_number=episode_number,
+        result=result,
+        reason=reason,
+        holding_services=sorted(holding_services, key=str),
+        unobservable_services=sorted(unobservable_services, key=str),
+        requesters=requesters,
+        expected_episodes=sorted(
+            _episode_label(*coordinate) for coordinate in expected_episodes
+        ),
+        evidence=evidence,
+    )
+
+
 async def _activate_seerr_request_resolver_for_rules(
     db: AsyncSession,
     rules: list[ReclaimRule],
     *,
     require_fresh: bool,
     allow_stale_on_failure: bool,
+    metadata: RulePreviewMatchMetadata | None = None,
 ) -> tuple[bool, str | None]:
     """Activate scan local Seerr request state for rules that reference Seerr fields."""
     if not _rules_use_seerr_fields(rules):
@@ -2703,6 +3216,27 @@ async def _activate_seerr_request_resolver_for_rules(
         )
         SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, "Seerr service is not configured"
+
+    if any(
+        collect_rule_conditions(rule.definition, field="seerr.requester_has_watched")
+        for rule in rules
+    ):
+        # Requester watch state is read straight out of the persisted watch
+        # tables, so without this it silently reflects whenever Sync Media last
+        # ran. Match the playback path: refresh if stale for previews, require
+        # current data for scans.
+        await db.commit()
+        watch_ok, watch_error = await media_watch_snapshot_cache.ensure_fresh_snapshot(
+            force=require_fresh,
+            allow_stale_on_failure=allow_stale_on_failure,
+        )
+        if not watch_ok and watch_error:
+            LOG.warning(
+                "Watch snapshot refresh failed; requester watch conditions may "
+                f"be evaluated against stale data: {watch_error}"
+            )
+        elif watch_error:
+            LOG.debug(f"Using stale watch snapshot for requester rules: {watch_error}")
 
     movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
     series_targets = any(
@@ -2800,6 +3334,7 @@ async def _activate_seerr_request_resolver_for_rules(
         settings_row.requester_watch_user_mappings if settings_row is not None else []
     )
     mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    alias_index = await load_watch_user_alias_index(db)
 
     active_tracearr_sources = await load_active_tracearr_sources(db)
     durable_rows = (
@@ -2818,7 +3353,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 PlaybackHistoryEvent.completed.is_(True),
                 PlaybackHistoryEvent.tmdb_id.is_not(None),
                 PlaybackHistoryEvent.provider_media_type.in_(("movie", "episode")),
-                active_playback_event_clause(active_tracearr_sources),
+                completion_evidence_event_clause(active_tracearr_sources),
             )
         )
     ).all()
@@ -2826,6 +3361,8 @@ async def _activate_seerr_request_resolver_for_rules(
         int, dict[Service, dict[str, dict[tuple[int, int], datetime]]]
     ] = {}
     durable_event_count = 0
+    # Media servers whose completion state reached us through durable history.
+    durable_completion_services: set[Service] = set()
     for (
         source_service,
         observed_service,
@@ -2845,6 +3382,7 @@ async def _activate_seerr_request_resolver_for_rules(
         )
         watched_at = ensure_utc(played_at)
         durable_event_count += 1
+        durable_completion_services.add(watch_service)
         if provider_media_type == "movie":
             media_key = (MediaType.MOVIE, int(tmdb_id))
             if media_key not in relevant_keys:
@@ -2868,17 +3406,37 @@ async def _activate_seerr_request_resolver_for_rules(
         if existing is None or watched_at > existing:
             by_coordinate[coordinate] = watched_at
 
+    unobservable_keys = await _unobservable_requester_watch_keys(
+        db,
+        movie_tmdb_ids=movie_tmdb_ids,
+        series_tmdb_ids=series_tmdb_ids,
+        durable_completion_services=durable_completion_services,
+    )
+    if metadata is not None:
+        metadata.requester_watch_unavailable_count = len(unobservable_keys)
+
     requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {}
     for key in relevant_keys:
         if key[0] is not MediaType.MOVIE:
+            continue
+        if key in unobservable_keys:
+            # Leaving the key out makes the field unknown. Reporting False here
+            # would let an "is false" cleanup rule delete media purely because
+            # its media server could not be read.
             continue
         requester_has_watched_by_key[key] = _compute_requester_has_watched_for_key(
             media_key=key,
             snapshot=snapshot,
             watch_by_service_and_user=watch_by_service_and_user,
             mappings=mappings,
+            alias_index=alias_index,
         )
 
+    # Deliberately the locally present episodes, not Sonarr's full inventory
+    # (which `season.fully_watched` uses). A requester can only watch what
+    # exists, and widening this to unaired or missing episodes would make
+    # "requester has watched" false for seasons they did finish -- which an
+    # `is false` cleanup rule turns into a deletion.
     expected_episode_rows = (
         await db.execute(
             select(
@@ -2954,13 +3512,14 @@ async def _activate_seerr_request_resolver_for_rules(
         episode_number,
         watched_at,
     ) in episode_watch_rows:
-        if watched_at is None:
+        normalized_user_key = _normalize_watch_key(user_key)
+        if watched_at is None or normalized_user_key is None:
             continue
         coordinate = (int(season_number), int(episode_number))
         by_coordinate = (
             episode_watches.setdefault(int(tmdb_id), {})
             .setdefault(source_service, {})
-            .setdefault(str(user_key), {})
+            .setdefault(normalized_user_key, {})
         )
         watched_at_utc = ensure_utc(watched_at)
         existing = by_coordinate.get(coordinate)
@@ -2984,6 +3543,8 @@ async def _activate_seerr_request_resolver_for_rules(
         tuple[str, int, int | None, int | None], bool
     ] = {}
     for tmdb_id in series_tmdb_ids:
+        if (MediaType.SERIES, tmdb_id) in unobservable_keys:
+            continue
         requester_has_watched_by_target.update(
             _compute_requester_tv_watch_targets_for_key(
                 media_key=(MediaType.SERIES, tmdb_id),
@@ -2991,6 +3552,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 watch_by_service_and_user=episode_watches.get(tmdb_id, {}),
                 mappings=mappings,
                 expected_episodes=expected_by_series.get(tmdb_id, set()),
+                alias_index=alias_index,
             )
         )
 
