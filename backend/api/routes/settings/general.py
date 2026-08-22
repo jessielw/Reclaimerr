@@ -24,6 +24,7 @@ from backend.database.models import (
     SeriesServiceRef,
     ServiceConfig,
     User,
+    WatchUserAlias,
 )
 from backend.enums import MediaType, Service
 from backend.models.settings import (
@@ -221,7 +222,7 @@ async def get_watch_users(
     db: Annotated[AsyncSession, Depends(get_db)],
     refresh: Annotated[bool, Query()] = False,
 ) -> list[WatchUserLookupResponse]:
-    """Get distinct known watch-user keys from media watch snapshots."""
+    """Get every playback-user name a Seerr requester can be mapped to."""
     if refresh:
         ok, error = await media_watch_snapshot_cache.refresh_snapshot()
         if not ok:
@@ -230,7 +231,20 @@ async def get_watch_users(
                 detail=error or "Failed to refresh watch snapshot",
             )
 
-    rows = (
+    # The alias registry knows every provider account, including Tautulli and
+    # Tracearr users who never appear in the watch snapshot tables. Watch
+    # snapshot keys are unioned in so accounts a provider no longer lists are
+    # still selectable.
+    alias_rows = (
+        await db.execute(
+            select(
+                WatchUserAlias.observed_service,
+                WatchUserAlias.alias,
+                WatchUserAlias.alias_normalized,
+            ).distinct()
+        )
+    ).all()
+    snapshot_rows = (
         await db.execute(
             select(
                 MediaWatchUser.source_service,
@@ -245,6 +259,7 @@ async def get_watch_users(
             )
         )
     ).all()
+    rows = [*alias_rows, *snapshot_rows]
 
     by_key: dict[str, WatchUserLookupResponse] = {}
     for source_service, user_key, user_key_normalized in rows:
@@ -269,6 +284,7 @@ async def get_watch_users(
             item.source_services,
             key=lambda service: str(service.value),
         )
+    result.sort(key=lambda item: item.user_key_normalized)
     return result
 
 
