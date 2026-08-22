@@ -36,8 +36,15 @@ class SeerrRequestMediaData(TypedDict):
     tmdbId: int
 
 
-class SeerrRequestedByData(TypedDict):
+class SeerrUserData(TypedDict):
     id: int
+    username: NotRequired[str | None]
+    displayName: NotRequired[str | None]
+    email: NotRequired[str | None]
+    plexUsername: NotRequired[str | None]
+    plexId: NotRequired[int | None]
+    jellyfinUsername: NotRequired[str | None]
+    jellyfinUserId: NotRequired[str | None]
 
 
 class SeerrRequestedSeasonData(TypedDict):
@@ -51,16 +58,9 @@ class SeerrRequestData(TypedDict):
     type: Literal["movie", "tv"]
     media: SeerrRequestMediaData
     createdAt: str
-    requestedBy: SeerrRequestedByData
+    requestedBy: SeerrUserData
     is4k: NotRequired[bool]
     seasons: NotRequired[list[SeerrRequestedSeasonData]]
-
-
-class SeerrUserData(TypedDict):
-    id: int
-    username: NotRequired[str | None]
-    displayName: NotRequired[str | None]
-    email: NotRequired[str | None]
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -95,6 +95,37 @@ def _page_info_from_response(data: Any, *, default_results: int = 0) -> SeerrPag
         pages=_as_int(page_info.get("pages")),
         results=_as_int(page_info.get("results"), default_results),
     )
+
+
+def _identity_fields_from_dict(data: dict[str, Any], user_id: int) -> SeerrUserData:
+    """Copy every identity Seerr exposes for one user onto the shared user shape.
+
+    Plex and Jellyfin usernames matter because playback providers report those,
+    not the Seerr account name, so requester watch matching needs them.
+    """
+    user: SeerrUserData = {"id": user_id}
+    username = _as_optional_str(data.get("username"))
+    if username is not None:
+        user["username"] = username
+    display_name = _as_optional_str(data.get("displayName"))
+    if display_name is not None:
+        user["displayName"] = display_name
+    email = _as_optional_str(data.get("email"))
+    if email is not None:
+        user["email"] = email
+    plex_username = _as_optional_str(data.get("plexUsername"))
+    if plex_username is not None:
+        user["plexUsername"] = plex_username
+    plex_id = _as_int_or_none(data.get("plexId"))
+    if plex_id is not None:
+        user["plexId"] = plex_id
+    jellyfin_username = _as_optional_str(data.get("jellyfinUsername"))
+    if jellyfin_username is not None:
+        user["jellyfinUsername"] = jellyfin_username
+    jellyfin_user_id = _as_optional_str(data.get("jellyfinUserId"))
+    if jellyfin_user_id is not None:
+        user["jellyfinUserId"] = jellyfin_user_id
+    return user
 
 
 def _request_data_from_dict(data: dict[str, Any]) -> SeerrRequestData | None:
@@ -134,7 +165,7 @@ def _request_data_from_dict(data: dict[str, Any]) -> SeerrRequestData | None:
         "type": request_type_literal,
         "media": {"id": media_id, "tmdbId": tmdb_id},
         "createdAt": created_at,
-        "requestedBy": {"id": requested_by_id},
+        "requestedBy": _identity_fields_from_dict(requested_by, requested_by_id),
     }
     if "is4k" in data:
         request["is4k"] = bool(data.get("is4k"))
@@ -163,18 +194,7 @@ def _user_data_from_dict(data: dict[str, Any]) -> SeerrUserData | None:
     user_id = _as_int_or_none(data.get("id"))
     if user_id is None:
         return None
-
-    user: SeerrUserData = {"id": user_id}
-    username = _as_optional_str(data.get("username"))
-    if username is not None:
-        user["username"] = username
-    display_name = _as_optional_str(data.get("displayName"))
-    if display_name is not None:
-        user["displayName"] = display_name
-    email = _as_optional_str(data.get("email"))
-    if email is not None:
-        user["email"] = email
-    return user
+    return _identity_fields_from_dict(data, user_id)
 
 
 def _request_records_from_response(data: Any) -> list[SeerrRequestData]:
@@ -279,6 +299,10 @@ def build_seerr_user_from_dict(data: SeerrUserData) -> SeerrUser:
         username=_as_optional_str(data.get("username")),
         display_name=_as_optional_str(data.get("displayName")),
         email=_as_optional_str(data.get("email")),
+        plex_username=_as_optional_str(data.get("plexUsername")),
+        plex_id=_as_int_or_none(data.get("plexId")),
+        jellyfin_username=_as_optional_str(data.get("jellyfinUsername")),
+        jellyfin_user_id=_as_optional_str(data.get("jellyfinUserId")),
         raw=data,
     )
 

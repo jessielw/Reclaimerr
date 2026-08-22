@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from asyncio import Lock, create_task
 from asyncio import Task as AsyncTask
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -76,6 +77,10 @@ class SeerrSnapshotCache:
             username=user.username,
             display_name=f"User {user.id}",
             email=user.email,
+            plex_username=user.plex_username,
+            plex_id=user.plex_id,
+            jellyfin_username=user.jellyfin_username,
+            jellyfin_user_id=user.jellyfin_user_id,
             raw=user.raw,
         )
 
@@ -117,6 +122,36 @@ class SeerrSnapshotCache:
         value = str(raw or "").strip().lower()
         return value if value else None
 
+    @staticmethod
+    def _user_from_request_payload(user_id: int, raw: Mapping[str, Any]) -> SeerrUser:
+        """Build a requester identity from a request's embedded requestedBy block.
+
+        Used when Seerr's user directory is unreachable; the request payload is
+        then the only place these identities come from.
+        """
+
+        def text(key: str) -> str | None:
+            value = raw.get(key)
+            return str(value) if value else None
+
+        plex_id_raw = raw.get("plexId")
+        try:
+            plex_id = int(plex_id_raw) if plex_id_raw is not None else None
+        except (TypeError, ValueError):
+            plex_id = None
+
+        return SeerrUser(
+            id=user_id,
+            username=text("username"),
+            display_name=text("displayName"),
+            email=text("email"),
+            plex_username=text("plexUsername"),
+            plex_id=plex_id,
+            jellyfin_username=text("jellyfinUsername"),
+            jellyfin_user_id=text("jellyfinUserId"),
+            raw=raw,
+        )
+
     async def _refresh_request_snapshot(self) -> tuple[bool, str | None]:
         async with self._request_lock:
             if not service_manager.seerr:
@@ -134,11 +169,7 @@ class SeerrSnapshotCache:
                         )
                         keys = {
                             normalized
-                            for candidate in (
-                                user.username,
-                                user.display_name,
-                                user.email,
-                            )
+                            for candidate in user.identity_values()
                             if (normalized := self._normalize_identity_key(candidate))
                         }
                         if keys:
@@ -172,24 +203,8 @@ class SeerrSnapshotCache:
                     if req.requested_by_id not in requester_users_by_id:
                         requester_users_by_id[req.requested_by_id] = (
                             self._normalize_user_display(
-                                SeerrUser(
-                                    id=req.requested_by_id,
-                                    username=(
-                                        str(raw_requested_by.get("username"))
-                                        if raw_requested_by.get("username")
-                                        else None
-                                    ),
-                                    display_name=(
-                                        str(raw_requested_by.get("displayName"))
-                                        if raw_requested_by.get("displayName")
-                                        else None
-                                    ),
-                                    email=(
-                                        str(raw_requested_by.get("email"))
-                                        if raw_requested_by.get("email")
-                                        else None
-                                    ),
-                                    raw=raw_requested_by,
+                                self._user_from_request_payload(
+                                    req.requested_by_id, raw_requested_by
                                 )
                             )
                         )
@@ -205,6 +220,10 @@ class SeerrSnapshotCache:
                         raw_requested_by.get("username"),
                         raw_requested_by.get("displayName"),
                         raw_requested_by.get("email"),
+                        raw_requested_by.get("plexUsername"),
+                        raw_requested_by.get("plexId"),
+                        raw_requested_by.get("jellyfinUsername"),
+                        raw_requested_by.get("jellyfinUserId"),
                     ):
                         normalized = self._normalize_identity_key(candidate)
                         if normalized:
@@ -351,19 +370,10 @@ class SeerrSnapshotCache:
             raw_requested_by = (
                 req.raw.get("requestedBy", {}) if isinstance(req.raw, dict) else {}
             )
-            username = raw_requested_by.get("username")
-            display_name = raw_requested_by.get("displayName")
-            email = raw_requested_by.get("email")
+            if not isinstance(raw_requested_by, Mapping):
+                raw_requested_by = {}
             fallback.append(
-                SeerrUser(
-                    id=req.requested_by_id,
-                    username=str(username) if username else None,
-                    display_name=str(display_name) if display_name else None,
-                    email=str(email) if email else None,
-                    raw=raw_requested_by
-                    if isinstance(raw_requested_by, dict)
-                    else None,
-                )
+                self._user_from_request_payload(req.requested_by_id, raw_requested_by)
             )
         return fallback
 
