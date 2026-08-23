@@ -592,10 +592,12 @@
   <div class="p-4 border-b border-border flex flex-wrap items-end gap-3">
     <div class="grow">
       <h3 class="text-base font-semibold text-foreground">
-        Media Identity Links
+        Sign-In Identity Links
       </h3>
       <p class="text-sm text-muted-foreground">
-        Review media server users and link them to local accounts.
+        Review media server users and link them to local accounts. This controls
+        sign-in only; to map a Seerr requester to their playback identity for
+        rules, use Settings &rarr; User Signals.
       </p>
     </div>
     <div class="flex items-center gap-2">
