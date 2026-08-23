@@ -213,6 +213,9 @@ FIELD_LABELS: dict[str, str] = {
     "seerr.requested": "Seerr requested",
     "seerr.requested_by_user_ids": "Seerr requester IDs",
     "seerr.requester_has_watched": "Seerr requester has watched",
+    "seerr.requester_watched_after_request": (
+        "Seerr requester watched after requesting"
+    ),
     "seerr.last_requested_at": "Seerr latest active request",
     "seerr.days_since_last_requested": "Days since latest active Seerr request",
     "favorites.exists": "Favorited or watchlisted",
@@ -442,6 +445,7 @@ BOOLEAN_FIELDS = {
     "sonarr.latest_season_has_finale",
     "seerr.requested",
     "seerr.requester_has_watched",
+    "seerr.requester_watched_after_request",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -606,6 +610,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -685,6 +690,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -771,6 +777,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -856,6 +863,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -1219,6 +1227,8 @@ class SeerrRequestResolver:
         "_requester_ids_by_target",
         "_requester_has_watched_by_key",
         "_requester_has_watched_by_target",
+        "_requester_watched_after_request_by_key",
+        "_requester_watched_after_request_by_target",
     )
 
     def __init__(
@@ -1228,6 +1238,12 @@ class SeerrRequestResolver:
         requester_has_watched_by_key: Mapping[tuple[MediaType, int], bool]
         | None = None,
         requester_has_watched_by_target: Mapping[
+            tuple[str, int, int | None, int | None], bool
+        ]
+        | None = None,
+        requester_watched_after_request_by_key: Mapping[tuple[MediaType, int], bool]
+        | None = None,
+        requester_watched_after_request_by_target: Mapping[
             tuple[str, int, int | None, int | None], bool
         ]
         | None = None,
@@ -1253,6 +1269,15 @@ class SeerrRequestResolver:
         }
         self._requester_has_watched_by_target = dict(
             requester_has_watched_by_target or {}
+        )
+        self._requester_watched_after_request_by_key: dict[
+            tuple[MediaType, int], bool
+        ] = {
+            key: bool(value)
+            for key, value in (requester_watched_after_request_by_key or {}).items()
+        }
+        self._requester_watched_after_request_by_target = dict(
+            requester_watched_after_request_by_target or {}
         )
         self._latest_active_request_at_by_key = dict(
             latest_active_request_at_by_key or {}
@@ -1325,15 +1350,57 @@ class SeerrRequestResolver:
         season_number: int | None = None,
         episode_number: int | None = None,
     ) -> bool | None:
-        """Return requester watched state for the given media key if known."""
+        """Return whether a requester watched this, ignoring when they asked."""
+        return self._resolve_watch_state(
+            self._requester_has_watched_by_key,
+            self._requester_has_watched_by_target,
+            media_type,
+            tmdb_id,
+            target_scope=target_scope,
+            season_number=season_number,
+            episode_number=episode_number,
+        )
+
+    def resolve_requester_watched_after_request(
+        self,
+        media_type: MediaType,
+        tmdb_id: int | None,
+        *,
+        target_scope: str | None = None,
+        season_number: int | None = None,
+        episode_number: int | None = None,
+    ) -> bool | None:
+        """Return requester watched state gated on their earliest request date."""
+        return self._resolve_watch_state(
+            self._requester_watched_after_request_by_key,
+            self._requester_watched_after_request_by_target,
+            media_type,
+            tmdb_id,
+            target_scope=target_scope,
+            season_number=season_number,
+            episode_number=episode_number,
+        )
+
+    @staticmethod
+    def _resolve_watch_state(
+        by_key: Mapping[tuple[MediaType, int], bool],
+        by_target: Mapping[tuple[str, int, int | None, int | None], bool],
+        media_type: MediaType,
+        tmdb_id: int | None,
+        *,
+        target_scope: str | None,
+        season_number: int | None,
+        episode_number: int | None,
+    ) -> bool | None:
+        """Look one watch answer up, keeping a missing key as unknown."""
         if tmdb_id is None:
             return None
         if media_type is MediaType.SERIES and target_scope is not None:
-            value = self._requester_has_watched_by_target.get(
+            value = by_target.get(
                 (target_scope, tmdb_id, season_number, episode_number)
             )
         else:
-            value = self._requester_has_watched_by_key.get((media_type, tmdb_id))
+            value = by_key.get((media_type, tmdb_id))
         if value is None:
             return None
         return bool(value)
@@ -2328,6 +2395,13 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.MOVIE, movie.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -2500,6 +2574,15 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_SERIES,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -2544,7 +2627,13 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.title": series.title,
-            "media.path": [ref.path for ref in refs if ref.path],
+            # The season's own folder, falling back to the series roots only
+            # when the provider does not report one. A merged library holds one
+            # series under two Arr roots, and the series-level paths cannot say
+            # which of them this season's files are actually under.
+            "media.path": (
+                [season.path] if season.path else [ref.path for ref in refs if ref.path]
+            ),
             "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
             "media.year": series.year,
@@ -2702,6 +2791,16 @@ def _build_context(
             ),
             "seerr.requester_has_watched": (
                 _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_SEASON,
+                    season_number=season.season_number,
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
                     MediaType.SERIES,
                     series.tmdb_id,
                     target_scope=TARGET_SEASON,
@@ -2933,6 +3032,17 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_EPISODE,
+                    season_number=season.season_number,
+                    episode_number=episode.episode_number,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -3047,7 +3157,12 @@ def _matches_operator(
         haystacks = [_normalize(item) for item in _as_list(actual) if _exists(item)]
         found = any(needle in haystack for haystack in haystacks for needle in needles)
         return found if operator == "contains_substring" else not found
-    if field in MULTI_VALUE_TEXT_FIELDS and operator in {"equals", "not_equals"}:
+    if (field in MULTI_VALUE_TEXT_FIELDS or field == "media.path") and operator in {
+        "equals",
+        "not_equals",
+    }:
+        # A scope can hold several paths -- one per Arr instance at series
+        # scope. Testing only the first made the result depend on row order.
         list_operator = "contains_any" if operator == "equals" else "not_contains_any"
         return _matches_list_operator(actual, list_operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
