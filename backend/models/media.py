@@ -713,6 +713,11 @@ class RequesterWatchRequesterDetail(BaseModel):
     requested_at: datetime | None = None
     requested_seasons: dict[int, datetime] = Field(default_factory=dict)
     candidate_watch_keys: dict[str, list[str]] = Field(default_factory=dict)
+    # The two ways a requester falls short, kept apart because they call for
+    # opposite fixes: one is "they have not finished it", the other is "the
+    # request date is not what you think".
+    missing_episodes: list[str] = Field(default_factory=list)
+    episodes_watched_before_request: list[str] = Field(default_factory=list)
 
 
 class RequesterWatchEvidence(BaseModel):
@@ -735,6 +740,7 @@ class RequesterWatchExplainResponse(BaseModel):
     season_number: int | None = None
     episode_number: int | None = None
     result: bool | None = None
+    result_after_request: bool | None = None
     reason: str
     holding_services: list[Service] = Field(default_factory=list)
     unobservable_services: list[Service] = Field(default_factory=list)

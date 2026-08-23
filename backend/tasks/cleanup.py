@@ -1618,6 +1618,7 @@ def _rule_uses_playback_fields(rule: ReclaimRule) -> bool:
 WATCH_SENSITIVE_RULE_FIELDS = frozenset(
     {
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "season.fully_watched",
         "season.watched_percent",
         "watch.view_count",
@@ -2527,10 +2528,12 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
         rule.definition, field="seerr.requested_by_user_ids"
     ):
         return True
-    for _ in collect_rule_conditions(
-        rule.definition, field="seerr.requester_has_watched"
+    for field in (
+        "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
     ):
-        return True
+        for _ in collect_rule_conditions(rule.definition, field=field):
+            return True
     for field in ("seerr.last_requested_at", "seerr.days_since_last_requested"):
         for _ in collect_rule_conditions(rule.definition, field=field):
             return True
@@ -2619,6 +2622,71 @@ def _build_watch_keys_for_requester(
     return expand_watch_keys(keys, alias_index, target_service)
 
 
+# (target_scope, tmdb_id, season_number, episode_number) -> watched
+RequesterWatchTargets = dict[tuple[str, int, int | None, int | None], bool]
+
+
+def _requested_seasons_for_requester(
+    *,
+    snapshot: SeerrRequestSnapshot,
+    tmdb_id: int,
+    requester_id: int,
+    series_requested_at: datetime,
+    season_numbers: Iterable[int],
+) -> dict[int, datetime]:
+    """Return the earliest request date this requester has per season.
+
+    Older Seerr responses do not identify requested seasons at all; those fall
+    back to the series request date so the season is still judged rather than
+    silently skipped.
+    """
+    requested_seasons = {
+        season_number: by_user[requester_id]
+        for (series_tmdb_id, season_number), by_user in (
+            snapshot.first_request_at_by_series_season_user.items()
+        )
+        if series_tmdb_id == tmdb_id and requester_id in by_user
+    }
+    if not requested_seasons:
+        requested_seasons = {
+            season_number: series_requested_at for season_number in season_numbers
+        }
+    return requested_seasons
+
+
+def _requester_watched_at_by_coordinate(
+    *,
+    requester_id: int,
+    requester_identity_keys: set[str],
+    watch_by_service_and_user: Mapping[
+        Service, Mapping[str, Mapping[tuple[int, int], datetime]]
+    ],
+    mappings: list[dict[str, Any]],
+    alias_index: AliasIndex | None,
+) -> dict[tuple[int, int], datetime]:
+    """Latest completed play per episode for one requester, across every source.
+
+    One person can be recorded under several names on the same server, so the
+    keys are expanded first and the newest play per episode wins.
+    """
+    watched_at_by_coordinate: dict[tuple[int, int], datetime] = {}
+    for watch_service, watch_by_user in watch_by_service_and_user.items():
+        candidate_keys = _build_watch_keys_for_requester(
+            requester_id=requester_id,
+            requester_identity_keys=requester_identity_keys,
+            target_service=watch_service,
+            mappings=mappings,
+            alias_index=alias_index,
+        )
+        for watch_key in candidate_keys:
+            for coordinate, watched_at in watch_by_user.get(watch_key, {}).items():
+                watched_at_utc = ensure_utc(watched_at)
+                existing = watched_at_by_coordinate.get(coordinate)
+                if existing is None or watched_at_utc > existing:
+                    watched_at_by_coordinate[coordinate] = watched_at_utc
+    return watched_at_by_coordinate
+
+
 def _compute_requester_has_watched_for_key(
     *,
     media_key: tuple[MediaType, int],
@@ -2628,14 +2696,21 @@ def _compute_requester_has_watched_for_key(
     ],
     mappings: list[dict[str, Any]],
     alias_index: AliasIndex | None = None,
-) -> bool:
+) -> tuple[bool, bool]:
+    """Return (a requester watched it, a requester watched it after requesting).
+
+    Both answers come from one pass because they share the expensive half --
+    expanding each requester's identities into the keys providers actually
+    recorded plays under.
+    """
     watches_for_key = watch_by_service_and_user.get(media_key)
     if not watches_for_key:
-        return False
-    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
+        return False, False
+    requester_times = snapshot.first_request_at_by_key_user.get(media_key, {})
     if not requester_times:
-        return False
+        return False, False
 
+    watched_ever = False
     for requester_id, requested_at in requester_times.items():
         requested_at_utc = ensure_utc(requested_at)
         requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
@@ -2654,9 +2729,13 @@ def _compute_requester_has_watched_for_key(
             )
             for watch_key in candidate_keys:
                 watched_at = watch_by_user.get(watch_key)
-                if watched_at is not None and ensure_utc(watched_at) > requested_at_utc:
-                    return True
-    return False
+                if watched_at is None:
+                    continue
+                watched_ever = True
+                if ensure_utc(watched_at) > requested_at_utc:
+                    # Nothing found later can improve either answer.
+                    return True, True
+    return watched_ever, False
 
 
 def _compute_requester_tv_watch_targets_for_key(
@@ -2669,75 +2748,90 @@ def _compute_requester_tv_watch_targets_for_key(
     mappings: list[dict[str, Any]],
     expected_episodes: set[tuple[int, int]],
     alias_index: AliasIndex | None = None,
-) -> dict[tuple[str, int, int | None, int | None], bool]:
-    """Compute requester-specific episode and completion state for one series."""
+) -> tuple[RequesterWatchTargets, RequesterWatchTargets]:
+    """Compute requester-specific episode and completion state for one series.
+
+    Returns two target maps: watched-ever, which asks only whether one requester
+    watched every required episode, and watched-after-request, which also
+    requires each play to postdate that requester's earliest request for the
+    season. They are computed together because the costly half -- expanding
+    identities into provider watch keys -- is shared.
+    """
     tmdb_id = media_key[1]
-    result: dict[tuple[str, int, int | None, int | None], bool] = {
-        (TARGET_EPISODE, tmdb_id, season_number, episode_number): False
-        for season_number, episode_number in expected_episodes
-    }
     expected_by_season: dict[int, set[tuple[int, int]]] = {}
     for coordinate in expected_episodes:
         expected_by_season.setdefault(coordinate[0], set()).add(coordinate)
-    for season_number in expected_by_season:
-        result[(TARGET_SEASON, tmdb_id, season_number, None)] = False
-    result[(TARGET_SERIES, tmdb_id, None, None)] = False
 
-    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
-    for requester_id, series_requested_at in requester_times.items():
-        requested_seasons = {
-            season_number: by_user[requester_id]
-            for (series_tmdb_id, season_number), by_user in (
-                snapshot.latest_request_at_by_series_season_user.items()
-            )
-            if series_tmdb_id == tmdb_id and requester_id in by_user
+    def _blank() -> RequesterWatchTargets:
+        blank: RequesterWatchTargets = {
+            (TARGET_EPISODE, tmdb_id, season_number, episode_number): False
+            for season_number, episode_number in expected_episodes
         }
-        if not requested_seasons:
-            requested_seasons = {
-                season_number: series_requested_at
-                for season_number in expected_by_season
-            }
-        requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
-        ) or {str(requester_id)}
-        watched_at_by_coordinate: dict[tuple[int, int], datetime] = {}
-        for watch_service, watch_by_user in watch_by_service_and_user.items():
-            candidate_keys = _build_watch_keys_for_requester(
-                requester_id=requester_id,
-                requester_identity_keys=requester_identity_keys,
-                target_service=watch_service,
-                mappings=mappings,
-                alias_index=alias_index,
-            )
-            for watch_key in candidate_keys:
-                for coordinate, watched_at in watch_by_user.get(watch_key, {}).items():
-                    watched_at_utc = ensure_utc(watched_at)
-                    existing = watched_at_by_coordinate.get(coordinate)
-                    if existing is None or watched_at_utc > existing:
-                        watched_at_by_coordinate[coordinate] = watched_at_utc
+        for season_number in expected_by_season:
+            blank[(TARGET_SEASON, tmdb_id, season_number, None)] = False
+        blank[(TARGET_SERIES, tmdb_id, None, None)] = False
+        return blank
 
-        watched: set[tuple[int, int]] = set()
-        for coordinate, watched_at in watched_at_by_coordinate.items():
-            requested_at = requested_seasons.get(coordinate[0])
-            if requested_at is not None and watched_at > ensure_utc(requested_at):
-                watched.add(coordinate)
+    def _apply(
+        result: RequesterWatchTargets,
+        watched: set[tuple[int, int]],
+        requested_seasons: Mapping[int, datetime] | None,
+    ) -> None:
+        """Roll one requester's watched episodes up to season and series targets.
 
+        A ``requested_seasons`` of None means "do not require a request record
+        for the season", which is what separates membership from the gated
+        answer.
+        """
         for season_number, episode_number in watched & expected_episodes:
             result[(TARGET_EPISODE, tmdb_id, season_number, episode_number)] = True
         for season_number, season_episodes in expected_by_season.items():
-            if season_number not in requested_seasons:
+            if requested_seasons is not None and season_number not in requested_seasons:
                 continue
             if season_episodes and season_episodes.issubset(watched):
                 result[(TARGET_SEASON, tmdb_id, season_number, None)] = True
         regular_episodes = {
             coordinate
             for coordinate in expected_episodes
-            if coordinate[0] > 0 and coordinate[0] in requested_seasons
+            if coordinate[0] > 0
+            and (requested_seasons is None or coordinate[0] in requested_seasons)
         }
         if regular_episodes and regular_episodes.issubset(watched):
             result[(TARGET_SERIES, tmdb_id, None, None)] = True
 
-    return result
+    ever = _blank()
+    after = _blank()
+
+    requester_times = snapshot.first_request_at_by_key_user.get(media_key, {})
+    for requester_id, series_requested_at in requester_times.items():
+        requested_seasons = _requested_seasons_for_requester(
+            snapshot=snapshot,
+            tmdb_id=tmdb_id,
+            requester_id=requester_id,
+            series_requested_at=series_requested_at,
+            season_numbers=expected_by_season,
+        )
+        requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
+            requester_id, set()
+        ) or {str(requester_id)}
+        watched_at_by_coordinate = _requester_watched_at_by_coordinate(
+            requester_id=requester_id,
+            requester_identity_keys=requester_identity_keys,
+            watch_by_service_and_user=watch_by_service_and_user,
+            mappings=mappings,
+            alias_index=alias_index,
+        )
+
+        watched_after: set[tuple[int, int]] = set()
+        for coordinate, watched_at in watched_at_by_coordinate.items():
+            requested_at = requested_seasons.get(coordinate[0])
+            if requested_at is not None and watched_at > ensure_utc(requested_at):
+                watched_after.add(coordinate)
+
+        _apply(ever, set(watched_at_by_coordinate), None)
+        _apply(after, watched_after, requested_seasons)
+
+    return ever, after
 
 
 async def _unobservable_requester_watch_keys(
@@ -3009,6 +3103,30 @@ async def explain_requester_watch(
             (int(season_no), int(episode_no)) for season_no, episode_no in rows
         }
 
+    # The verdict needs the whole series (a series target rolls every season
+    # up), but "required" as reported to a person means the episodes this
+    # particular target depends on -- a season target listing another season's
+    # episodes reads as a bug.
+    if not is_series:
+        target_episodes: set[tuple[int, int]] = set()
+    elif scope == TARGET_EPISODE and season_number is not None:
+        target_episodes = {
+            coordinate
+            for coordinate in expected_episodes
+            if coordinate == (season_number, episode_number)
+        }
+    elif scope == TARGET_SEASON and season_number is not None:
+        target_episodes = {
+            coordinate
+            for coordinate in expected_episodes
+            if coordinate[0] == season_number
+        }
+    else:
+        # Season 0 never counts toward series completion.
+        target_episodes = {
+            coordinate for coordinate in expected_episodes if coordinate[0] > 0
+        }
+
     unobservable_keys = await _unobservable_requester_watch_keys(
         db,
         movie_tmdb_ids=set() if is_series else {int(tmdb_id)},
@@ -3046,7 +3164,7 @@ async def explain_requester_watch(
     unobservable_services = configured - (observable | durable_completion_services)
 
     # Per-requester detail, using the same key expansion the scan performs.
-    requester_times = snapshot.latest_request_at_by_key_user.get(media_key, {})
+    requester_times = snapshot.first_request_at_by_key_user.get(media_key, {})
     evidence_services = set(episode_watches) | set(
         watch_by_service_and_user.get(media_key, {})
     )
@@ -3070,6 +3188,35 @@ async def explain_requester_watch(
             all_keys |= keys
         keys_by_requester[requester_id] = all_keys
         user = snapshot.requester_users_by_id.get(requester_id)
+
+        missing: list[str] = []
+        too_early: list[str] = []
+        if is_series and target_episodes:
+            requested_seasons = _requested_seasons_for_requester(
+                snapshot=snapshot,
+                tmdb_id=int(tmdb_id),
+                requester_id=requester_id,
+                series_requested_at=requested_at,
+                season_numbers={coordinate[0] for coordinate in expected_episodes},
+            )
+            watched_at_by_coordinate = _requester_watched_at_by_coordinate(
+                requester_id=requester_id,
+                requester_identity_keys=set(identity_keys),
+                watch_by_service_and_user=episode_watches,
+                mappings=mappings,
+                alias_index=alias_index,
+            )
+            for coordinate in sorted(target_episodes):
+                watched_at = watched_at_by_coordinate.get(coordinate)
+                if watched_at is None:
+                    missing.append(_episode_label(*coordinate))
+                    continue
+                season_requested_at = requested_seasons.get(coordinate[0])
+                if season_requested_at is None or watched_at <= ensure_utc(
+                    season_requested_at
+                ):
+                    too_early.append(_episode_label(*coordinate))
+
         requesters.append(
             RequesterWatchRequesterDetail(
                 seerr_user_id=requester_id,
@@ -3079,11 +3226,13 @@ async def explain_requester_watch(
                 requested_seasons={
                     season_no: ensure_utc(by_user[requester_id])
                     for (series_tmdb_id, season_no), by_user in (
-                        snapshot.latest_request_at_by_series_season_user.items()
+                        snapshot.first_request_at_by_series_season_user.items()
                     )
                     if series_tmdb_id == tmdb_id and requester_id in by_user
                 },
                 candidate_watch_keys=candidate_keys,
+                missing_episodes=missing,
+                episodes_watched_before_request=too_early,
             )
         )
 
@@ -3121,29 +3270,21 @@ async def explain_requester_watch(
                 )
             )
 
-    # Verdict, from the same helpers a scan uses.
+    # Both verdicts, from the same helpers a scan uses, so an explanation can
+    # never disagree with what a rule would actually do.
     result: bool | None
+    result_after_request: bool | None
     if media_key in unobservable_keys:
         result = None
+        result_after_request = None
         reason = (
             "Unknown: no media server holding this item can report completion "
             f"({', '.join(sorted(s.value for s in unobservable_services)) or 'none'} "
             "unreadable)."
         )
-    elif not requester_times:
-        result = False if not is_series else None
-        reason = "No active Seerr request records a requester for this item."
-        if is_series:
-            result = _compute_requester_tv_watch_targets_for_key(
-                media_key=media_key,
-                snapshot=snapshot,
-                watch_by_service_and_user=episode_watches,
-                mappings=mappings,
-                expected_episodes=expected_episodes,
-                alias_index=alias_index,
-            ).get((scope, tmdb_id, season_number, episode_number))
     elif is_series:
-        targets = _compute_requester_tv_watch_targets_for_key(
+        target_key = (scope, tmdb_id, season_number, episode_number)
+        ever_targets, after_targets = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user=episode_watches,
@@ -3151,32 +3292,49 @@ async def explain_requester_watch(
             expected_episodes=expected_episodes,
             alias_index=alias_index,
         )
-        result = targets.get((scope, tmdb_id, season_number, episode_number))
-        if result is None:
+        result = ever_targets.get(target_key)
+        result_after_request = after_targets.get(target_key)
+        if not requester_times:
+            reason = "No active Seerr request records a requester for this item."
+        elif result is None:
             reason = (
                 "Unknown: this target has no locally known episodes to judge "
                 "completion against."
             )
-        elif result:
+        elif result and result_after_request:
             reason = "A requester watched every required episode after requesting it."
+        elif result:
+            reason = (
+                "A requester watched every required episode, but not all of it "
+                "after their earliest request for the season."
+            )
         else:
             reason = (
-                "No single requester has a completed watch, after their request "
-                "date, for every required episode."
+                "No single requester has a completed watch for every required "
+                "episode."
             )
     else:
-        result = _compute_requester_has_watched_for_key(
-            media_key=media_key,
-            snapshot=snapshot,
-            watch_by_service_and_user=watch_by_service_and_user,
-            mappings=mappings,
-            alias_index=alias_index,
-        )
-        reason = (
-            "A requester has a completed watch after their request date."
-            if result
-            else "No requester has a completed watch after their request date."
-        )
+        if not requester_times:
+            result = False
+            result_after_request = False
+            reason = "No active Seerr request records a requester for this item."
+        else:
+            result, result_after_request = _compute_requester_has_watched_for_key(
+                media_key=media_key,
+                snapshot=snapshot,
+                watch_by_service_and_user=watch_by_service_and_user,
+                mappings=mappings,
+                alias_index=alias_index,
+            )
+            if result and result_after_request:
+                reason = "A requester has a completed watch after requesting it."
+            elif result:
+                reason = (
+                    "A requester has a completed watch, but only from before "
+                    "their earliest request."
+                )
+            else:
+                reason = "No requester has a completed watch for this item."
 
     return RequesterWatchExplainResponse(
         media_type=media_type,
@@ -3186,12 +3344,13 @@ async def explain_requester_watch(
         season_number=season_number,
         episode_number=episode_number,
         result=result,
+        result_after_request=result_after_request,
         reason=reason,
         holding_services=sorted(holding_services, key=str),
         unobservable_services=sorted(unobservable_services, key=str),
         requesters=requesters,
         expected_episodes=sorted(
-            _episode_label(*coordinate) for coordinate in expected_episodes
+            _episode_label(*coordinate) for coordinate in target_episodes
         ),
         evidence=evidence,
     )
@@ -3416,6 +3575,7 @@ async def _activate_seerr_request_resolver_for_rules(
         metadata.requester_watch_unavailable_count = len(unobservable_keys)
 
     requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {}
+    requester_watched_after_request_by_key: dict[tuple[MediaType, int], bool] = {}
     for key in relevant_keys:
         if key[0] is not MediaType.MOVIE:
             continue
@@ -3424,13 +3584,15 @@ async def _activate_seerr_request_resolver_for_rules(
             # would let an "is false" cleanup rule delete media purely because
             # its media server could not be read.
             continue
-        requester_has_watched_by_key[key] = _compute_requester_has_watched_for_key(
+        watched_ever, watched_after = _compute_requester_has_watched_for_key(
             media_key=key,
             snapshot=snapshot,
             watch_by_service_and_user=watch_by_service_and_user,
             mappings=mappings,
             alias_index=alias_index,
         )
+        requester_has_watched_by_key[key] = watched_ever
+        requester_watched_after_request_by_key[key] = watched_after
 
     # Deliberately the locally present episodes, not Sonarr's full inventory
     # (which `season.fully_watched` uses). A requester can only watch what
@@ -3539,13 +3701,12 @@ async def _activate_seerr_request_resolver_for_rules(
                     if existing is None or watched_at > existing:
                         target_coordinates[coordinate] = watched_at
 
-    requester_has_watched_by_target: dict[
-        tuple[str, int, int | None, int | None], bool
-    ] = {}
+    requester_has_watched_by_target: RequesterWatchTargets = {}
+    requester_watched_after_request_by_target: RequesterWatchTargets = {}
     for tmdb_id in series_tmdb_ids:
         if (MediaType.SERIES, tmdb_id) in unobservable_keys:
             continue
-        requester_has_watched_by_target.update(
+        watched_ever_targets, watched_after_targets = (
             _compute_requester_tv_watch_targets_for_key(
                 media_key=(MediaType.SERIES, tmdb_id),
                 snapshot=snapshot,
@@ -3555,11 +3716,17 @@ async def _activate_seerr_request_resolver_for_rules(
                 alias_index=alias_index,
             )
         )
+        requester_has_watched_by_target.update(watched_ever_targets)
+        requester_watched_after_request_by_target.update(watched_after_targets)
 
     SeerrRequestResolver(
         requester_ids_by_key,
         requester_has_watched_by_key=requester_has_watched_by_key,
         requester_has_watched_by_target=requester_has_watched_by_target,
+        requester_watched_after_request_by_key=requester_watched_after_request_by_key,
+        requester_watched_after_request_by_target=(
+            requester_watched_after_request_by_target
+        ),
         latest_active_request_at_by_key=latest_active_request_at_by_key,
         requester_ids_by_target=requester_ids_by_target,
         latest_active_request_at_by_target=latest_active_request_at_by_target,

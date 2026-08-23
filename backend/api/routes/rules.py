@@ -650,6 +650,13 @@ async def get_seerr_users(
             id=user.id,
             username=user.username,
             display_name=user.display_name,
+            identities=sorted(
+                {
+                    text
+                    for value in user.identity_values()
+                    if (text := str(value or "").strip())
+                }
+            ),
         )
         for user in users
     ]
@@ -661,6 +668,7 @@ async def get_seerr_users(
             if needle in str(user.id)
             or needle in (user.username or "").lower()
             or needle in (user.display_name or "").lower()
+            or any(needle in identity.lower() for identity in user.identities)
         ]
     return response_users[:limit]
 

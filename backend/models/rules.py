@@ -50,6 +50,9 @@ class SeerrUserLookupResponse(BaseModel):
     id: int
     username: str | None = None
     display_name: str | None = None
+    # Every value matching actually tries, so a coverage report cannot claim a
+    # user is unmapped over an identity the matcher would have used.
+    identities: list[str] = Field(default_factory=list)
 
 
 class PlaybackUserLookupResponse(BaseModel):

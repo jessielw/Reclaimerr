@@ -241,6 +241,9 @@ class WatchUserLookupResponse(BaseModel):
     user_key: str
     user_key_normalized: str
     source_services: list[Service] = Field(default_factory=list)
+    # The account's other recorded names -- provider ids, emails, a Tracearr
+    # identity. Shown as secondary text and searchable, but never their own row.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class FavoritesMediaEntryResponse(BaseModel):

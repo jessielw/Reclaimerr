@@ -16,14 +16,14 @@ from backend.models.services.seerr import SeerrRequest, SeerrUser
 @dataclass(slots=True)
 class SeerrRequestSnapshot:
     requester_ids_by_key: dict[tuple[MediaType, int], set[int]]
-    latest_request_at_by_key_user: dict[tuple[MediaType, int], dict[int, datetime]]
+    first_request_at_by_key_user: dict[tuple[MediaType, int], dict[int, datetime]]
     requester_identity_keys_by_user_id: dict[int, set[str]]
     latest_active_request_at_by_key: dict[tuple[MediaType, int], datetime]
     requester_users_by_id: dict[int, SeerrUser] = field(default_factory=dict)
     requester_ids_by_series_season: dict[tuple[int, int], set[int]] = field(
         default_factory=dict
     )
-    latest_request_at_by_series_season_user: dict[
+    first_request_at_by_series_season_user: dict[
         tuple[int, int], dict[int, datetime]
     ] = field(default_factory=dict)
     latest_active_request_at_by_series_season: dict[tuple[int, int], datetime] = field(
@@ -180,14 +180,14 @@ class SeerrSnapshotCache:
                         f"directory; request payload identities will be used: {exc}"
                     )
                 requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
-                latest_request_at_by_key_user: dict[
+                first_request_at_by_key_user: dict[
                     tuple[MediaType, int], dict[int, datetime]
                 ] = {}
                 latest_active_request_at_by_key: dict[
                     tuple[MediaType, int], datetime
                 ] = {}
                 requester_ids_by_series_season: dict[tuple[int, int], set[int]] = {}
-                latest_request_at_by_series_season_user: dict[
+                first_request_at_by_series_season_user: dict[
                     tuple[int, int], dict[int, datetime]
                 ] = {}
                 latest_active_request_at_by_series_season: dict[
@@ -243,12 +243,20 @@ class SeerrSnapshotCache:
                         requester_ids_by_key[key] = bucket
                     bucket.add(req.requested_by_id)
 
-                    request_by_user = latest_request_at_by_key_user.get(key)
+                    request_by_user = first_request_at_by_key_user.get(key)
                     if request_by_user is None:
                         request_by_user = {}
-                        latest_request_at_by_key_user[key] = request_by_user
+                        first_request_at_by_key_user[key] = request_by_user
                     existing = request_by_user.get(req.requested_by_id)
-                    if existing is None or req.created_at > existing:
+                    # Earliest wins. This is the bar for "watched after they
+                    # asked for it", and a user can ask more than once: a 4K
+                    # request and a re-request of an airing season are separate
+                    # rows. Keeping the latest would move the bar past watches
+                    # that already happened and make a finished season read as
+                    # unwatched. `latest_active_request_at_*` below deliberately
+                    # keeps the newest, because request *age* is a different
+                    # question.
+                    if existing is None or req.created_at < existing:
                         request_by_user[req.requested_by_id] = req.created_at
 
                     if req.status in {
@@ -264,13 +272,14 @@ class SeerrSnapshotCache:
                         requester_ids_by_series_season.setdefault(
                             season_key, set()
                         ).add(req.requested_by_id)
-                        by_user = latest_request_at_by_series_season_user.setdefault(
+                        by_user = first_request_at_by_series_season_user.setdefault(
                             season_key, {}
                         )
                         season_existing = by_user.get(req.requested_by_id)
+                        # Earliest wins, for the same reason as the series bar.
                         if (
                             season_existing is None
-                            or requested_season.created_at > season_existing
+                            or requested_season.created_at < season_existing
                         ):
                             by_user[req.requested_by_id] = requested_season.created_at
                         if req.status in {
@@ -293,13 +302,13 @@ class SeerrSnapshotCache:
                 now = datetime.now(UTC)
                 self._request_snapshot = SeerrRequestSnapshot(
                     requester_ids_by_key=requester_ids_by_key,
-                    latest_request_at_by_key_user=latest_request_at_by_key_user,
+                    first_request_at_by_key_user=first_request_at_by_key_user,
                     requester_identity_keys_by_user_id=requester_identity_keys_by_user_id,
                     latest_active_request_at_by_key=(latest_active_request_at_by_key),
                     requester_users_by_id=requester_users_by_id,
                     requester_ids_by_series_season=requester_ids_by_series_season,
-                    latest_request_at_by_series_season_user=(
-                        latest_request_at_by_series_season_user
+                    first_request_at_by_series_season_user=(
+                        first_request_at_by_series_season_user
                     ),
                     latest_active_request_at_by_series_season=(
                         latest_active_request_at_by_series_season
