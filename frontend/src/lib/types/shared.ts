@@ -198,12 +198,16 @@ export interface WatchUserLookup {
   user_key: string;
   user_key_normalized: string;
   source_services: string[];
+  /** The account's other recorded names: ids, emails, a Tracearr identity. */
+  aliases?: string[];
 }
 
 export interface SeerrUserLookup {
   id: number;
   username: string | null;
   display_name: string | null;
+  /** Every value requester matching actually tries. */
+  identities?: string[];
 }
 
 export interface MovieCollectionLookup {
@@ -1196,6 +1200,8 @@ export interface RequesterWatchRequesterDetail {
   requested_at: string | null;
   requested_seasons: Record<string, string>;
   candidate_watch_keys: Record<string, string[]>;
+  missing_episodes: string[];
+  episodes_watched_before_request: string[];
 }
 
 export interface RequesterWatchEvidence {
@@ -1214,6 +1220,7 @@ export interface RequesterWatchExplain {
   season_number: number | null;
   episode_number: number | null;
   result: boolean | null;
+  result_after_request: boolean | null;
   reason: string;
   holding_services: string[];
   unobservable_services: string[];
