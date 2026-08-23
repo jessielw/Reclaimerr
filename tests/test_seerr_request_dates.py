@@ -171,7 +171,7 @@ def test_seerr_snapshot_preserves_requested_seasons_and_excludes_declined() -> N
         assert error is None
         assert snapshot is not None
         assert snapshot.requester_ids_by_series_season == {(5920, 3): {101}}
-        assert snapshot.latest_request_at_by_series_season_user == {
+        assert snapshot.first_request_at_by_series_season_user == {
             (5920, 3): {101: requested_at}
         }
 
@@ -276,3 +276,62 @@ def test_rule_context_propagates_series_requester_watched_to_every_tv_scope() ->
     )
 
     assert all(context["seerr.requester_has_watched"] is True for context in contexts)
+
+
+def test_watch_bar_is_the_earliest_request_not_the_latest() -> None:
+    """A second request must not invalidate a watch that already happened.
+
+    Seerr writes a separate request row for a 4K copy and for every re-request
+    of an airing season. Keeping the newest of those moved the "watched after
+    requesting" bar past plays the requester had already finished, so a season
+    they demonstrably completed reported as unwatched -- and an `is false`
+    cleanup rule deletes on that.
+    """
+
+    async def run() -> None:
+        first = datetime(2025, 1, 1, tzinfo=UTC)
+        reissued = datetime(2026, 6, 1, tzinfo=UTC)
+        original = SeerrRequest(
+            id=1,
+            status=SeerrRequestStatus.COMPLETED,
+            media_id=1,
+            media_type=MediaType.SERIES,
+            tmdb_id=5920,
+            created_at=first,
+            requested_by_id=101,
+            is_4k=False,
+            requested_seasons=(SeerrRequestedSeason(6, first),),
+        )
+        four_k = SeerrRequest(
+            id=2,
+            status=SeerrRequestStatus.APPROVED,
+            media_id=1,
+            media_type=MediaType.SERIES,
+            tmdb_id=5920,
+            created_at=reissued,
+            requested_by_id=101,
+            is_4k=True,
+            requested_seasons=(SeerrRequestedSeason(6, reissued),),
+        )
+        cache = SeerrSnapshotCache()
+        fake_client = SimpleNamespace(
+            get_all_requests=AsyncMock(return_value=[original, four_k]),
+            get_all_users=AsyncMock(return_value=[]),
+        )
+        with patch.object(service_manager, "_seerr", fake_client):
+            snapshot, error = await cache.get_request_snapshot(
+                require_fresh=True, allow_stale_on_failure=False
+            )
+
+        assert error is None
+        assert snapshot is not None
+        media_key = (MediaType.SERIES, 5920)
+        assert snapshot.first_request_at_by_key_user[media_key] == {101: first}
+        assert snapshot.first_request_at_by_series_season_user[(5920, 6)] == {
+            101: first
+        }
+        # Request *age* is a different question and still tracks the newest.
+        assert snapshot.latest_active_request_at_by_key[media_key] == reissued
+        assert snapshot.latest_active_request_at_by_series_season[(5920, 6)] == reissued
+
+    asyncio.run(run())

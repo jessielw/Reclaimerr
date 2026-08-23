@@ -34,6 +34,7 @@ from backend.database.models import (
     GeneralSettings,
     MediaFavorite,
     MediaWatchUser,
+    MediaWatchUserEpisode,
     Movie,
     MovieArrRef,
     MovieVersion,
@@ -1356,6 +1357,66 @@ class CleanupMediaRuleTests(unittest.TestCase):
         )
 
         self.assertTrue(_evaluate_rule_for_season(series, season, rule, {}, []))
+
+    def test_season_path_discriminates_a_merged_hd_and_uhd_library(self) -> None:
+        """One series, two Arr roots, and a rule that must hit only the UHD copy.
+
+        Series-level paths cannot tell two seasons apart when both Sonarr
+        instances claim the show, so `Path is not <hd root>` matched nothing at
+        all. The season's own folder is what the rule is really asking about.
+        """
+        series = Series(title="Avatar", tmdb_id=3, size=76 * 1024**3)
+        series.service_refs = [
+            _make_series_ref(service_id="hd", path="/data/media/tv-hd/Avatar"),
+            _make_series_ref(service_id="uhd", path="/data/media/tv-uhd/Avatar"),
+        ]
+        hd_season = Season(series_id=1, season_number=1, size=20 * 1024**3)
+        hd_season.path = "/data/media/tv-hd/Avatar/Season 01"
+        uhd_season = Season(series_id=1, season_number=2, size=55 * 1024**3)
+        uhd_season.path = "/data/media/tv-uhd/Avatar/Season 02"
+
+        rule = _make_single_condition_rule(
+            name="not-hd",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="media.path",
+            operator="not_equals",
+            value="/data/media/tv-hd",
+        )
+
+        self.assertTrue(_evaluate_rule_for_season(series, uhd_season, rule, {}, []))
+        self.assertFalse(_evaluate_rule_for_season(series, hd_season, rule, {}, []))
+
+    def test_path_negation_does_not_depend_on_ref_order(self) -> None:
+        """`is not` used to test whichever path came back first.
+
+        When a provider reports no season folder the series roots are still the
+        fallback, and a season under two Arr roots must not match a negation
+        just because the non-matching root sorted first.
+        """
+        rule = _make_single_condition_rule(
+            name="not-hd",
+            media_type=MediaType.SERIES,
+            target_scope="season",
+            field="media.path",
+            operator="not_equals",
+            value="/data/media/tv-hd",
+        )
+
+        for refs in (
+            ["/data/media/tv-hd/Avatar", "/data/media/tv-uhd/Avatar"],
+            ["/data/media/tv-uhd/Avatar", "/data/media/tv-hd/Avatar"],
+        ):
+            series = Series(title="Avatar", tmdb_id=3, size=76 * 1024**3)
+            series.service_refs = [
+                _make_series_ref(service_id=str(index), path=path)
+                for index, path in enumerate(refs)
+            ]
+            season = Season(series_id=1, season_number=1, size=20 * 1024**3)
+            season.path = None
+            self.assertFalse(
+                _evaluate_rule_for_season(series, season, rule, {}, [])
+            )
 
     def test_evaluate_movie_rule_temporal_criteria_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
@@ -2730,7 +2791,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 1)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={
+            first_request_at_by_key_user={
                 media_key: {101: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
             },
             requester_identity_keys_by_user_id={101: {"alice"}},
@@ -2740,25 +2801,28 @@ class CleanupMediaRuleTests(unittest.TestCase):
             tuple[MediaType, int], dict[Service, dict[str, datetime]]
         ] = {media_key: {Service.PLEX: {"alice": datetime(2026, 1, 1, 13, 0)}}}
 
-        self.assertTrue(
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
                 watch_by_service_and_user=watch_by_service_and_user,
                 mappings=[],
-            )
+            ),
+            (True, True),
         )
 
         watch_by_service_and_user[media_key][Service.PLEX]["alice"] = datetime(
             2026, 1, 1, 11, 0
         )
-        self.assertFalse(
+        # Watched, but before requesting: membership holds, the gate does not.
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
                 watch_by_service_and_user=watch_by_service_and_user,
                 mappings=[],
-            )
+            ),
+            (True, False),
         )
 
     def test_compute_requester_has_watched_supports_series_keys(self) -> None:
@@ -2766,7 +2830,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
         )
@@ -2776,13 +2840,14 @@ class CleanupMediaRuleTests(unittest.TestCase):
             }
         }
 
-        self.assertTrue(
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
                 watch_by_service_and_user=watch_by_service_and_user,  # pyright: ignore[reportArgumentType]
                 mappings=[],
-            )
+            ),
+            (True, True),
         )
 
     def test_requester_tv_watch_targets_require_complete_rollups(self) -> None:
@@ -2791,12 +2856,12 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
         )
         expected = {(1, episode) for episode in range(1, 7)}
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2818,12 +2883,12 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
         )
         regular = {(1, episode) for episode in range(1, 7)}
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2844,11 +2909,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
         )
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2868,13 +2933,13 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101, 202}},
-            latest_request_at_by_key_user={
+            first_request_at_by_key_user={
                 media_key: {101: requested_at, 202: requested_at}
             },
             requester_identity_keys_by_user_id={101: {"alice"}, 202: {"bob"}},
             latest_active_request_at_by_key={},
         )
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2896,15 +2961,15 @@ class CleanupMediaRuleTests(unittest.TestCase):
         season_two_request = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: season_two_request}},
+            first_request_at_by_key_user={media_key: {101: season_two_request}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
-            latest_request_at_by_series_season_user={
+            first_request_at_by_series_season_user={
                 (5920, 1): {101: season_one_request},
                 (5920, 2): {101: season_two_request},
             },
         )
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2927,6 +2992,88 @@ class CleanupMediaRuleTests(unittest.TestCase):
         self.assertFalse(result[(TARGET_SEASON, 5920, 3, None)])
         self.assertFalse(result[(TARGET_SERIES, 5920, None, None)])
 
+    def test_membership_and_the_request_gate_are_answered_separately(self) -> None:
+        """The reporter's case: every episode watched, still reported false.
+
+        Their request for the season predated the plays, but a later request for
+        the same season -- a 4K copy, or re-requesting as episodes aired --
+        moved the bar past them. Membership and the date test are now two
+        answers, so "they watched all of it" survives a re-request.
+        """
+        media_key = (MediaType.SERIES, 5920)
+        requested = datetime(2025, 1, 1, tzinfo=UTC)
+        watched = datetime(2025, 1, 6, tzinfo=UTC)
+        expected = {(6, episode) for episode in range(1, 13)}
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {5}},
+            first_request_at_by_key_user={media_key: {5: requested}},
+            requester_identity_keys_by_user_id={5: {"goldeylocks69"}},
+            latest_active_request_at_by_key={},
+            first_request_at_by_series_season_user={(5920, 6): {5: requested}},
+        )
+        plays = {
+            Service.PLEX: {"goldeylocks69": dict.fromkeys(expected, watched)}
+        }
+
+        ever, after = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=plays,
+            mappings=[],
+            expected_episodes=expected,
+        )
+        self.assertTrue(ever[(TARGET_SEASON, 5920, 6, None)])
+        self.assertTrue(after[(TARGET_SEASON, 5920, 6, None)])
+
+        # Now the same plays, judged against a bar set after them. The gated
+        # field goes false -- that is its job -- but membership must not.
+        reissued = datetime(2026, 6, 1, tzinfo=UTC)
+        snapshot.first_request_at_by_key_user[media_key] = {5: reissued}
+        snapshot.first_request_at_by_series_season_user[(5920, 6)] = {5: reissued}
+
+        ever, after = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user=plays,
+            mappings=[],
+            expected_episodes=expected,
+        )
+        self.assertTrue(ever[(TARGET_SEASON, 5920, 6, None)])
+        self.assertFalse(after[(TARGET_SEASON, 5920, 6, None)])
+
+    def test_membership_does_not_require_a_season_request_record(self) -> None:
+        """Membership asks only whether a requester watched every episode.
+
+        The gated field still refuses a season that requester never asked for,
+        because "after their request" is meaningless without a request.
+        """
+        media_key = (MediaType.SERIES, 5920)
+        requested = datetime(2026, 1, 1, tzinfo=UTC)
+        watched = datetime(2026, 2, 1, tzinfo=UTC)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={media_key: {101}},
+            first_request_at_by_key_user={media_key: {101: requested}},
+            requester_identity_keys_by_user_id={101: {"alice"}},
+            latest_active_request_at_by_key={},
+            # They requested season 1 only; season 2 arrived some other way.
+            first_request_at_by_series_season_user={(5920, 1): {101: requested}},
+        )
+
+        ever, after = _compute_requester_tv_watch_targets_for_key(
+            media_key=media_key,
+            snapshot=snapshot,
+            watch_by_service_and_user={
+                Service.PLEX: {"alice": {(1, 1): watched, (2, 1): watched}}
+            },
+            mappings=[],
+            expected_episodes={(1, 1), (2, 1)},
+        )
+
+        self.assertTrue(ever[(TARGET_SEASON, 5920, 1, None)])
+        self.assertTrue(ever[(TARGET_SEASON, 5920, 2, None)])
+        self.assertTrue(after[(TARGET_SEASON, 5920, 1, None)])
+        self.assertFalse(after[(TARGET_SEASON, 5920, 2, None)])
+
     def test_requester_watch_counts_local_episodes_not_sonarr_inventory(self) -> None:
         """A requester can only watch the episodes that exist.
 
@@ -2941,14 +3088,14 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"alice"}},
             latest_active_request_at_by_key={},
         )
         # Sonarr knows about episodes 1-10; only 1-8 exist locally.
         local_episodes = {(1, episode) for episode in range(1, 9)}
 
-        result = _compute_requester_tv_watch_targets_for_key(
+        _, result = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user={
@@ -2977,7 +3124,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched_at = datetime(2025, 1, 6, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={media_key: {101: requested_at}},
+            first_request_at_by_key_user={media_key: {101: requested_at}},
             requester_identity_keys_by_user_id={101: {"black widow"}},
             latest_active_request_at_by_key={},
         )
@@ -2988,7 +3135,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             }
         }
 
-        without_aliases = _compute_requester_tv_watch_targets_for_key(
+        _, without_aliases = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user=plex_watches,
@@ -3005,7 +3152,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
                 "12345": aliases,
             }
         }
-        with_aliases = _compute_requester_tv_watch_targets_for_key(
+        _, with_aliases = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
             snapshot=snapshot,
             watch_by_service_and_user=plex_watches,
@@ -3022,7 +3169,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={
+            first_request_at_by_key_user={
                 media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
             },
             requester_identity_keys_by_user_id={101: {"black widow"}},
@@ -3033,15 +3180,16 @@ class CleanupMediaRuleTests(unittest.TestCase):
         }
         aliases = frozenset({"black widow", "natasha"})
 
-        self.assertFalse(
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
                 watch_by_service_and_user=watches,
                 mappings=[],
-            )
+            ),
+            (False, False),
         )
-        self.assertTrue(
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
@@ -3050,7 +3198,8 @@ class CleanupMediaRuleTests(unittest.TestCase):
                 alias_index={
                     Service.PLEX: {"black widow": aliases, "natasha": aliases}
                 },
-            )
+            ),
+            (True, True),
         )
 
     def test_alias_expansion_is_scoped_to_the_observed_service(self) -> None:
@@ -3058,7 +3207,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={media_key: {101}},
-            latest_request_at_by_key_user={
+            first_request_at_by_key_user={
                 media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
             },
             requester_identity_keys_by_user_id={101: {"black widow"}},
@@ -3066,7 +3215,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         )
         aliases = frozenset({"black widow", "natasha"})
 
-        self.assertFalse(
+        self.assertEqual(
             _compute_requester_has_watched_for_key(
                 media_key=media_key,
                 snapshot=snapshot,
@@ -3077,7 +3226,8 @@ class CleanupMediaRuleTests(unittest.TestCase):
                 },
                 mappings=[],
                 alias_index={Service.JELLYFIN: {"black widow": aliases}},
-            )
+            ),
+            (False, False),
         )
 
 
@@ -3288,7 +3438,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
             requester_identity_keys_by_user_id={7: {"alice"}},
             latest_active_request_at_by_key={},
         )
@@ -3430,7 +3580,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
             requester_identity_keys_by_user_id={7: {"alice"}},
             latest_active_request_at_by_key={},
         )
@@ -3476,7 +3626,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
             requester_identity_keys_by_user_id={7: {"alice"}},
             latest_active_request_at_by_key={},
         )
@@ -3529,7 +3679,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
             requester_identity_keys_by_user_id={7: {"alice"}},
             latest_active_request_at_by_key={},
         )
@@ -3602,11 +3752,116 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(explanation.holding_services, [Service.PLEX])
         self.assertEqual(explanation.unobservable_services, [])
 
+    async def test_explain_scopes_required_episodes_and_names_the_shortfall(
+        self,
+    ) -> None:
+        """A season target must explain itself in terms of that season.
+
+        It used to list every episode in the series as "required", and never
+        showed the request date it compared against -- so a false verdict was
+        unanswerable without reading the database.
+        """
+        requested_at = datetime(2026, 7, 1, tzinfo=UTC)
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.SERIES, 321): {7}},
+            first_request_at_by_key_user={(MediaType.SERIES, 321): {7: requested_at}},
+            requester_identity_keys_by_user_id={7: {"alice"}},
+            latest_active_request_at_by_key={},
+            first_request_at_by_series_season_user={(321, 1): {7: requested_at}},
+        )
+        async with self._sessionmaker() as db:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            plex.extra_settings = {
+                "watch_snapshot_sync": {
+                    "available": True,
+                    "last_success_at": "2026-07-05T00:00:00Z",
+                }
+            }
+            series = Series(title="Show", tmdb_id=321)
+            db.add_all([plex, series])
+            await db.flush()
+            db.add(
+                SeriesServiceRef(
+                    series_id=series.id,
+                    service=Service.PLEX,
+                    service_id="plex-show",
+                    library_id="lib-1",
+                    library_name="TV",
+                )
+            )
+            for season_number, episodes in ((1, 2), (2, 3)):
+                season = Season(series_id=series.id, season_number=season_number)
+                db.add(season)
+                await db.flush()
+                for episode_number in range(1, episodes + 1):
+                    db.add(
+                        Episode(season_id=season.id, episode_number=episode_number)
+                    )
+            # S01E01 was watched in time; S01E02 was watched before requesting.
+            db.add_all(
+                [
+                    MediaWatchUserEpisode(
+                        series_tmdb_id=321,
+                        season_number=1,
+                        episode_number=1,
+                        watch_user_key="Alice",
+                        watch_user_key_normalized="alice",
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=datetime(2026, 7, 2),
+                    ),
+                    MediaWatchUserEpisode(
+                        series_tmdb_id=321,
+                        season_number=1,
+                        episode_number=2,
+                        watch_user_key="Alice",
+                        watch_user_key_normalized="alice",
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=datetime(2026, 1, 1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot",
+                new=AsyncMock(return_value=(snapshot, None)),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                explanation = await explain_requester_watch(
+                    db,
+                    media_type=MediaType.SERIES,
+                    tmdb_id=321,
+                    target_scope=TARGET_SEASON,
+                    season_number=1,
+                )
+
+        # Only season 1, not the five episodes across both seasons.
+        self.assertEqual(explanation.expected_episodes, ["S01E01", "S01E02"])
+        # Watched every episode, but not all of it after requesting.
+        self.assertTrue(explanation.result)
+        self.assertFalse(explanation.result_after_request)
+        detail = explanation.requesters[0]
+        self.assertEqual(detail.requested_at, requested_at)
+        self.assertEqual(detail.requested_seasons, {1: requested_at})
+        self.assertEqual(detail.missing_episodes, [])
+        self.assertEqual(detail.episodes_watched_before_request, ["S01E02"])
+
     async def test_explain_requester_watch_reports_an_unreadable_server(self) -> None:
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
             requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            latest_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
+            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
             requester_identity_keys_by_user_id={7: {"alice"}},
             latest_active_request_at_by_key={},
         )

@@ -263,3 +263,132 @@ def test_ambiguous_aliases_do_not_bridge_two_accounts() -> None:
 def test_plex_owner_account_id_is_the_history_account_id() -> None:
     # Plex attributes owner plays to account 1, which is not in plex.tv/api/users.
     assert PLEX_OWNER_ACCOUNT_ID == "1"
+
+
+def test_one_person_reported_by_several_providers_is_one_account() -> None:
+    """Plex, the Tautulli watching it, and a Plex-bound Tracearr all describe
+    the same people. Counting those as three accounts made every shared name
+    look like a collision, which silently emptied the whole Plex index and left
+    manual mappings as the only thing that worked.
+    """
+
+    async def scenario() -> None:
+        engine, sessionmaker, db_path = await _build_db()
+        try:
+            async with sessionmaker() as db:
+                configs = {}
+                for service, name in (
+                    (Service.PLEX, "Plex"),
+                    (Service.TAUTULLI, "Tautulli"),
+                    (Service.TRACEARR, "Tracearr"),
+                ):
+                    config = ServiceConfig(
+                        service_type=service,
+                        base_url=f"http://{name.lower()}",
+                        api_key="key",
+                        name=name,
+                        enabled=True,
+                    )
+                    db.add(config)
+                    await db.flush()
+                    configs[service] = config.id
+
+                # Every row is observed on Plex, but each provider uses its own
+                # id space and reports a different subset of the same names.
+                rows = (
+                    (Service.PLEX, "133423146", ("Black Widow", "BlackWidow05")),
+                    (Service.TAUTULLI, "133423146", ("BlackWidow05", "nat@x.com")),
+                    (Service.TRACEARR, "9f-uuid", ("BlackWidow05", "nat@x.com")),
+                )
+                for service, provider_user_id, aliases in rows:
+                    for alias in (*aliases, provider_user_id):
+                        db.add(
+                            WatchUserAlias(
+                                source_service=service,
+                                source_service_config_id=configs[service],
+                                observed_service=Service.PLEX,
+                                provider_user_id=provider_user_id,
+                                alias=alias,
+                                alias_normalized=alias.lower(),
+                            )
+                        )
+                await db.commit()
+
+                index = await load_watch_user_alias_index(db)
+
+            # Plex already knows the title and the username belong together, so
+            # neither needs a hand-written mapping.
+            assert expand_watch_keys({"black widow"}, index, Service.PLEX) == {
+                "black widow",
+                "blackwidow05",
+                "nat@x.com",
+                "133423146",
+                "9f-uuid",
+            }
+            # And the Seerr email reaches the same plays.
+            assert "black widow" in expand_watch_keys(
+                {"nat@x.com"}, index, Service.PLEX
+            )
+        finally:
+            await engine.dispose()
+            if db_path.exists():
+                db_path.unlink()
+
+    _run(scenario())
+
+
+def test_provider_ids_never_bridge_two_providers() -> None:
+    """Plex keys its owner as the literal "1" and Tautulli numbers its own users
+    from 1. That coincidence must not merge two strangers.
+    """
+
+    async def scenario() -> None:
+        engine, sessionmaker, db_path = await _build_db()
+        try:
+            async with sessionmaker() as db:
+                plex = ServiceConfig(
+                    service_type=Service.PLEX,
+                    base_url="http://plex",
+                    api_key="key",
+                    name="Plex",
+                    enabled=True,
+                )
+                tautulli = ServiceConfig(
+                    service_type=Service.TAUTULLI,
+                    base_url="http://tautulli",
+                    api_key="key",
+                    name="Tautulli",
+                    enabled=True,
+                )
+                db.add_all([plex, tautulli])
+                await db.flush()
+                for config, service, provider_user_id, alias in (
+                    (plex, Service.PLEX, "1", "owner"),
+                    (plex, Service.PLEX, "1", "1"),
+                    (tautulli, Service.TAUTULLI, "1", "stranger"),
+                    (tautulli, Service.TAUTULLI, "1", "1"),
+                ):
+                    db.add(
+                        WatchUserAlias(
+                            source_service=service,
+                            source_service_config_id=config.id,
+                            observed_service=Service.PLEX,
+                            provider_user_id=provider_user_id,
+                            alias=alias,
+                            alias_normalized=alias,
+                        )
+                    )
+                await db.commit()
+
+                index = await load_watch_user_alias_index(db)
+
+            assert expand_watch_keys({"owner"}, index, Service.PLEX) == {"owner"}
+            assert "stranger" not in expand_watch_keys(
+                {"owner"}, index, Service.PLEX
+            )
+        finally:
+            await engine.dispose()
+            if db_path.exists():
+                db_path.unlink()
+
+    _run(scenario())
