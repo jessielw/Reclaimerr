@@ -17,6 +17,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Jellyfin v12 user-scoped favorites and episode-parent lookups now use the supported `Items?userId=...` route instead of the removed `Users/{id}/Items` route.
+- Requester watch rules now resolve identities through a playback-user alias registry. Every name a provider reports for an account -- Plex account id, username, title, friendly name, and email, plus the Jellyfin, Emby, Tautulli, and Tracearr equivalents -- is recorded together, so matching any one of them reaches the rest. Aliases bridge accounts only within the same media server, and a name shared by two accounts (two Plex profiles both titled `Home`) bridges neither.
+- Seerr requester identities now include the linked `plexUsername`, `plexId`, `jellyfinUsername`, and `jellyfinUserId` from Seerr's user directory, and requests keep the identities embedded in their `requestedBy` payload as a fallback when that directory is unreachable.
+- Completed plays retained from a superseded durable provider now count as watch evidence for `Seerr requester has watched`. Playback totals still use exactly one provider per media server so plays are never double counted.
+- Previewing or scanning a rule that uses `Seerr requester has watched` now refreshes the watch snapshot itself instead of relying on the last `Sync Media` run.
+- Playback-user identities are registered during `Sync Media` and the periodic playback refresh, and once in the background at startup when none have been recorded yet.
+- **Behavior change:** `Seerr requester has watched` is now unknown, not false, when the media server holding an item cannot report completion and no retained durable history covers it. Unknown matches neither `is true` nor `is false`, so rules that delete on `is false` will match fewer items -- previously an unreadable media server was indistinguishable from "nobody watched it". The rule preview reports how many items were affected.
+- `Season fully watched` and `Season watched (%)` judge stale watch data per episode instead of per season. Replacing one episode file bumped the season added date and discarded the recorded watch state of every other episode in that season.
+- Rule previews now warn when Seerr request data could not be loaded, instead of silently evaluating every Seerr condition as unknown and showing an ordinary empty result.
+- Rule preview rows using `Seerr requester has watched` gained a **Why?** action that reports the requesters, every identity tried for each of them, the completed watches found, the episodes required, and any media server that could not be read. Backed by a new `GET /api/rules/requester-watch-explain`, whose verdict comes from the same code a cleanup scan uses.
+- The Seerr requester watch-user picker now lists every playback account the alias registry knows, including Tautulli and Tracearr users who never appear in the watch snapshot tables and previously could not be selected at all.
+- Renamed the **Media Identity Links** panel under Settings -> Users to **Sign-In Identity Links**, and pointed it at Settings -> User Signals. It controls sign-in only and has no effect on rules; the shared name repeatedly sent people to the wrong screen.
+
+### Fixed
+
+- `Seerr requester has watched` reported false for media the requester had demonstrably finished when the Seerr account name differed from the media-server account name, which could make an `is false` cleanup rule delete watched media.
+- Binding Tracearr to a Plex server no longer discards the Tautulli history that predates Tracearr when evaluating requester watch state.
+- Tracearr play chains whose watched flag is not a JSON boolean (`1`, `"true"`, `watched_status`) are no longer treated as unknown completion, which had silently disabled requester watch rules for a bound Plex server. A Tracearr server that returns plays but never reports completion is now logged as a warning.
+- Removed three uncalled supplemental play-count sync functions whose docstrings described precedence rules that no longer ran, so searching for that behavior no longer lands on dead code.
+- Durable playback events imported before their media-server IDs were known are re-resolved on each refresh instead of staying permanently unmapped and invisible to rules.
+- `Sync Media` failed with "can't compare offset-naive and offset-aware datetimes" while merging episode dates. Media servers report timezone-aware timestamps and SQLite reads them back naive; episode and season dates are now normalized to naive UTC on the way in so the two can never be compared directly.
+- Automatic deletion now re-checks any rule whose verdict depends on watch state, not just `playback.*` rules. A season queued as "the requester never watched it" could still be deleted after they watched it during the auto-delete delay.
+- Rule editor and preview reasons now use the same label for every field. Sixteen had drifted (`Views` vs `View count`, `Color space` vs `Video color space`, `Seerr requested by user IDs` vs `Seerr requester IDs`, and so on), which read as two different conditions. `TMDB rating (0-10)` intentionally keeps its scale hint in the editor, and a test now guards the rest.
+- Preview reasons render byte and duration values in human units (`5 GiB`, `2h 0m`) instead of raw numbers, so size and duration conditions are readable without knowing the field's unit.
+- A Tracearr user whose account on the bound server was removed keeps their username for requester matching instead of falling back to an opaque identity id, so their retained history stays attributable.
+- Tracearr HTTP 429 responses honor `Retry-After` again. The parsing body had been spliced into an unrelated function after its `return`, leaving it unreachable.
 
 ## [0.3.6] - 2026-08-18
 
