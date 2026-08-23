@@ -2162,12 +2162,36 @@ async def sync_series(
                     sql_delete(SeriesArrRef).where(SeriesArrRef.service_config_id == 0)
                 )
 
-                series_rows = await session.execute(
-                    select(Series.id, Series.tmdb_id).where(Series.removed_at.is_(None))
-                )
+                series_rows = (
+                    await session.execute(
+                        select(Series.id, Series.tmdb_id, Series.tvdb_id).where(
+                            Series.removed_at.is_(None)
+                        )
+                    )
+                ).all()
                 series_id_by_tmdb = {
-                    tmdb_id: series_id for series_id, tmdb_id in series_rows
+                    tmdb_id: series_id for series_id, tmdb_id, _tvdb_id in series_rows
                 }
+                # Sonarr is TVDB-native and reports tmdbId 0 for shows it could
+                # not map. Matching on tmdb alone left those series unmatched
+                # forever: no Arr ref, no tags, and an episode inventory this
+                # loop nulls on every run, so their seasons reported "inventory
+                # unavailable" no matter how often Sync Media ran.
+                series_id_by_tvdb = {
+                    str(tvdb_id): series_id
+                    for series_id, _tmdb_id, tvdb_id in series_rows
+                    if tvdb_id
+                }
+
+                def _match_series_id(arr_series: Any) -> int | None:
+                    """Resolve a Sonarr series to a local one, tmdb first."""
+                    if arr_series.tmdb_id:
+                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        if series_id is not None:
+                            return series_id
+                    if arr_series.tvdb_id:
+                        return series_id_by_tvdb.get(str(arr_series.tvdb_id))
+                    return None
 
                 # accumulate resolved tag labels per series across all Sonarr instances
                 series_tags: dict[int, set[str]] = {}
@@ -2185,9 +2209,9 @@ async def sync_series(
                     tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     matched_series = [
-                        (arr_series, series_id_by_tmdb[arr_series.tmdb_id])
+                        (arr_series, series_id)
                         for arr_series in all_series
-                        if arr_series.tmdb_id in series_id_by_tmdb
+                        if (series_id := _match_series_id(arr_series)) is not None
                     ]
                     semaphore = asyncio.Semaphore(SONARR_DATE_FETCH_CONCURRENCY)
 
@@ -2229,9 +2253,7 @@ async def sync_series(
                             )
 
                     for arr_series in all_series:
-                        if not arr_series.tmdb_id:
-                            continue
-                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        series_id = _match_series_id(arr_series)
                         if series_id is None:
                             continue
                         arr_path = (
@@ -2246,7 +2268,7 @@ async def sync_series(
                                 arr_series_id=arr_series.id,
                                 arr_title_slug=arr_series.title_slug,
                                 arr_series_path=arr_path,
-                                tmdb_id=arr_series.tmdb_id,
+                                tmdb_id=arr_series.tmdb_id or None,
                             )
                         )
                         for tag_id in arr_series.tags:
