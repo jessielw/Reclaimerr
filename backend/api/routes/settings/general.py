@@ -36,6 +36,7 @@ from backend.models.settings import (
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
+from backend.services.watch_identity import merge_directory_accounts
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 router = APIRouter(tags=["settings", "general"])
@@ -239,6 +240,8 @@ async def get_watch_users(
         await db.execute(
             select(
                 WatchUserAlias.observed_service,
+                WatchUserAlias.source_service_config_id,
+                WatchUserAlias.provider_user_id,
                 WatchUserAlias.alias,
                 WatchUserAlias.alias_normalized,
             ).distinct()
@@ -259,33 +262,113 @@ async def get_watch_users(
             )
         )
     ).all()
-    rows = [*alias_rows, *snapshot_rows]
 
-    by_key: dict[str, WatchUserLookupResponse] = {}
-    for source_service, user_key, user_key_normalized in rows:
+    # One row per person, not per recorded string: a single Plex account can be
+    # registered under a title, a username, an email, a numeric account id and a
+    # Tracearr identity, and listing those separately makes the picker
+    # unusable -- and invites mapping the same person twice.
+    aliases_by_account: dict[Service, dict[tuple[int, str], set[str]]] = {}
+    display_by_normalized: dict[str, str] = {}
+    services_by_normalized: dict[str, set[Service]] = {}
+    for (
+        observed_service,
+        config_id,
+        provider_user_id,
+        alias,
+        alias_normalized,
+    ) in alias_rows:
+        normalized = str(alias_normalized or "").strip().lower()
+        if not normalized:
+            continue
+        aliases_by_account.setdefault(observed_service, {}).setdefault(
+            (int(config_id), str(provider_user_id)), set()
+        ).add(normalized)
+        display_by_normalized.setdefault(normalized, str(alias or "").strip())
+        services_by_normalized.setdefault(normalized, set()).add(observed_service)
+
+    for source_service, user_key, user_key_normalized in snapshot_rows:
         normalized = str(user_key_normalized or "").strip().lower()
         if not normalized:
             continue
-        display_key = str(user_key or "").strip() or normalized
-        existing = by_key.get(normalized)
-        if existing is None:
-            by_key[normalized] = WatchUserLookupResponse(
-                user_key=display_key,
-                user_key_normalized=normalized,
-                source_services=[source_service],
-            )
-            continue
-        if source_service not in existing.source_services:
-            existing.source_services.append(source_service)
+        display_by_normalized.setdefault(normalized, str(user_key or "").strip())
+        services_by_normalized.setdefault(normalized, set()).add(source_service)
 
-    result = list(by_key.values())
-    for item in result:
-        item.source_services = sorted(
-            item.source_services,
-            key=lambda service: str(service.value),
+    result: list[WatchUserLookupResponse] = []
+    grouped: set[str] = set()
+    for observed_service, accounts in aliases_by_account.items():
+        provider_ids = {user_id.strip().lower() for _, user_id in accounts}
+        for person in merge_directory_accounts(accounts):
+            label = _pick_watch_user_label(person, provider_ids, display_by_normalized)
+            services: set[Service] = {observed_service}
+            for alias in person:
+                services |= services_by_normalized.get(alias, set())
+            grouped |= person
+            result.append(
+                WatchUserLookupResponse(
+                    user_key=display_by_normalized.get(label) or label,
+                    user_key_normalized=label,
+                    source_services=sorted(services, key=lambda s: str(s.value)),
+                    aliases=sorted(
+                        display_by_normalized.get(alias) or alias
+                        for alias in person
+                        if alias != label
+                    ),
+                )
+            )
+
+    # Keys a provider no longer lists still need to be selectable.
+    for normalized, display in display_by_normalized.items():
+        if normalized in grouped:
+            continue
+        result.append(
+            WatchUserLookupResponse(
+                user_key=display or normalized,
+                user_key_normalized=normalized,
+                source_services=sorted(
+                    services_by_normalized.get(normalized, set()),
+                    key=lambda s: str(s.value),
+                ),
+            )
         )
-    result.sort(key=lambda item: item.user_key_normalized)
+
+    result.sort(key=lambda item: item.user_key.lower())
     return result
+
+
+# Long enough that a real word like "beaded" cannot be mistaken for a uuid.
+_OPAQUE_ID_MIN_LENGTH = 8
+_HEXISH = set("0123456789abcdef-")
+
+
+def _pick_watch_user_label(
+    aliases: frozenset[str],
+    provider_ids: set[str],
+    _display_by_normalized: dict[str, str],
+) -> str:
+    """Choose the name a person should be listed under.
+
+    Provider ids, opaque uuids and email addresses identify an account but do
+    not name it, so they are the last resort rather than the first.
+    """
+
+    def rank(alias: str) -> tuple[int, int, str]:
+        is_id = (
+            alias in provider_ids
+            or alias.isdigit()
+            or (
+                len(alias) >= _OPAQUE_ID_MIN_LENGTH
+                and all(char in _HEXISH for char in alias)
+            )
+        )
+        is_email = "@" in alias
+        # A display name with a space reads better than a login handle.
+        return (
+            2 if is_id else 1 if is_email else 0,
+            0 if " " in alias else 1,
+            alias,
+        )
+
+    return min(aliases, key=rank)
 
 
 @router.get("/general/favorites-media", response_model=PaginatedFavoritesMediaResponse)
