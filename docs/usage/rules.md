@@ -272,32 +272,51 @@ Declined and failed requests are excluded. Series rules use the latest request f
 
 ### Seerr Requester Watch State
 
-`Seerr requester has watched` compares each requester's playback with the time they requested the movie or TV season. Playback at or before the request does not count. The meaning depends on the rule target:
+Two fields answer two different questions, and most rules want the first:
 
-| Scope | `is true` means |
+| Field | `is true` means |
 | --- | --- |
-| Movie version | A requester watched the movie after requesting it |
-| Episode | A requester watched that episode after requesting its season |
-| Season | One requester watched every local episode in that requested season |
-| Series | One requester watched every regular local episode in the seasons they requested |
+| `Seerr requester has watched` | A requester watched it. The request date is not consulted. |
+| `Seerr requester watched after requesting` | The same, and every qualifying play came after that requester's **earliest** request for the season. |
 
-Season 0 specials are excluded from series completion. Progress from different requesters is never combined to complete a season or series. Seasons that were not requested do not inherit another season's requested or watched state.
+What "watched it" means depends on the rule target:
 
-This field counts the episodes you actually have, unlike `Season fully watched` below, which counts Sonarr's full known inventory. The difference is intentional: a requester can only watch what exists, so an unaired or missing episode must not make a season they did finish read as unwatched. A rule using both conditions therefore applies the stricter Sonarr-inventory test through `Season fully watched`.
+| Scope         | Watched means                                            |
+| ------------- | -------------------------------------------------------- |
+| Movie version | A requester watched the movie                            |
+| Episode       | A requester watched that episode                         |
+| Season        | One requester watched every local episode in that season |
+| Series        | One requester watched every regular local episode        |
 
-Reclaimerr matches Seerr users automatically using the usernames, display names, email addresses, and linked Plex or Jellyfin account names from Seerr's user directory. Each playback provider also reports every name it knows an account by -- a Plex account id, username, title, friendly name, and email, or the equivalent from Jellyfin, Emby, Tautulli, and Tracearr -- so matching any one of those names reaches the rest. Explicit requester watch-user mappings under **Settings -> User Signals -> Seerr Requester to Watch User Mapping** remain available for identities that share no name at all. That screen lists every Seerr user, shows how many are covered automatically, and offers a picker of every known playback-user name, including Tautulli and Tracearr accounts. Do not confuse it with **Settings -> Users -> Sign-In Identity Links**, which links media-server logins to local Reclaimerr accounts and has no effect on rules. Comparisons are case-insensitive, and aliases only bridge accounts on the same media server. Tautulli and Plex-bound Tracearr identities are treated as Plex identities when applying provider-scoped mappings.
+Season 0 specials are excluded from series completion. Progress from different requesters is never combined to complete a season or series.
+
+The two fields used to be one, and the fused version caused false negatives: a requester who finished a season could still read as `false` if anything created a newer request row for it. Seerr writes a separate request for a 4K copy and for every re-request of an airing season, so the bar could move past plays that had already happened. The bar is now that requester's earliest request, and rules saved before the split were migrated to `Seerr requester watched after requesting` so none of them changed what they match.
+
+`Seerr requester watched after requesting` also needs a request record for the season it is judging; a season the requester never asked for cannot satisfy it. `Seerr requester has watched` has no such requirement.
+
+Both fields count the episodes you actually have, unlike `Season fully watched` below, which counts Sonarr's full known inventory. The difference is intentional: a requester can only watch what exists, so an unaired or missing episode must not make a season they did finish read as unwatched. A rule using both conditions therefore applies the stricter Sonarr-inventory test through `Season fully watched`.
+
+Reclaimerr matches Seerr users automatically using the usernames, display names, email addresses, and linked Plex or Jellyfin account names from Seerr's user directory. Each playback provider also reports every name it knows an account by -- a Plex account id, username, title, friendly name, and email, or the equivalent from Jellyfin, Emby, Tautulli, and Tracearr -- so matching any one of those names reaches the rest.
+
+When several providers describe the same media server -- a Plex server, the Tautulli watching it, and a Plex-bound Tracearr -- their directories are merged into one account per person, so a Plex title and the Plex username underneath it need no manual mapping. Two rules keep that safe: a name that a single provider gives to two of its own users bridges nothing, and provider ids never bridge across providers, because Plex numbering its owner `1` and Tautulli numbering its first user `1` are unrelated facts.
+
+Explicit requester watch-user mappings under **Settings -> User Signals -> Seerr Requester to Watch User Mapping** remain available for identities that share no name at all. That screen lists every Seerr user, shows how many are covered automatically, and offers a picker with one entry per playback account -- ids, emails, and a Tracearr identity are shown as that account's other names rather than as entries of their own, and all of them are searchable. Do not confuse it with **Settings -> Users -> Sign-In Identity Links**, which links media-server logins to local Reclaimerr accounts and has no effect on rules. Comparisons are case-insensitive, and aliases only bridge accounts on the same media server. Tautulli and Plex-bound Tracearr identities are treated as Plex identities when applying provider-scoped mappings.
 
 Requester watch state combines completed per-user playback snapshots from Plex, Jellyfin, and Emby with Tautulli or Tracearr events whose provider-native watched status is complete. Each provider's configured watched threshold remains the source of truth. Jellyfin and Emby Playback Reporting events describe activity but do not expose a reliable completion signal, so they do not independently satisfy this field. They remain available to the general `playback.*` fields. When the same completed play is available from multiple sources, Reclaimerr keeps the latest qualifying timestamp.
 
 Previews refresh the watch snapshot when it is more than 15 minutes old and cleanup scans require a current one, so a manual `Sync Media` is no longer needed after changing identity mappings. Plex can provide current completed-watch state directly; durable completed Plex history requires Tautulli or a Plex-bound Tracearr server.
 
-When a media server holding an item cannot report completion -- its watch snapshot has never synced, or its last attempt failed, and no retained durable history covers it -- this field is **unknown** for that item rather than false. Unknown matches neither `is true` nor `is false`, so a broken media server can no longer make a cleanup rule delete media that was watched. The preview reports how many items were affected.
+When a media server holding an item cannot report completion -- its watch snapshot has never synced, or its last attempt failed, and no retained durable history covers it -- these fields are **unknown** for that item rather than false. Unknown matches neither `is true` nor `is false`, so a broken media server can no longer make a cleanup rule delete media that was watched. The preview reports how many items were affected.
+
+Use the **Why?** control on a preview row to see exactly how either field resolved: who requested the item and when, every name tried on their behalf, every completed play found with its timestamp, and -- when the answer is false -- which episodes were never watched versus which were watched before the request.
+
+`Playback users` is a different question again. It lists who has played the item at all, with no completion requirement and no connection to who requested it, so it is not a substitute for either requester-watch field.
 
 ### Sonarr Rule Data
 
 `Season fully watched` and `Season watched (%)` use Sonarr's complete known episode inventory as their denominator. Episodes Sonarr knows about still count when they are unaired or do not have files, so six watched episodes out of seven known episodes is 85.71%, not complete. Run `Sync Media` after upgrading or after Sonarr discovers new episodes.
 
-If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only seasons where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
+Sonarr series are matched by TMDB id, falling back to TVDB id when Sonarr reports no TMDB id for a show. If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only seasons where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
 
 `Sonarr series status` exposes Sonarr's canonical series status independently from the TMDB-backed `Series status` field. It is available to series, season, and episode rules with the values `continuing`, `ended`, `upcoming`, and `deleted`.
 
