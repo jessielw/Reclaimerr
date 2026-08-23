@@ -86,12 +86,16 @@ The candidate list accepts `rule_id` to match exact membership in a candidate's 
 - `POST /api/rules/validate-paths`
 - `GET /api/rules/path-tree`
 - `GET /api/rules/seerr-users`
+- `GET /api/rules/playback-users`
+- `GET /api/rules/requester-watch-explain`
 - `GET /api/rules/movie-collections`
 - `GET /api/rules/genres`
 - `GET /api/rules/original-languages`
 - `GET /api/rules/origin-countries`
 - `GET /api/rules/media-server-collections`
 - `GET /api/rules/check-synced`
+
+`GET /api/rules/requester-watch-explain` reports how `Seerr requester has watched` resolves for one item: the requesters, the identities tried for each of them, the completed watches found, the episodes required, and any media server that could not report completion. It takes `media_type` and `tmdb_id`, plus `target_scope`, `season_number`, and `episode_number` for TV targets. Its verdict is produced by the same code a cleanup scan uses.
 
 The lookup endpoints are admin-only helpers used by the rule editor. Language results use canonical ISO 639-3 codes. Country results use the codes currently stored in local TMDB metadata. Both endpoints support media-type filtering, search, and pagination.
 
