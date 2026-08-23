@@ -1183,7 +1183,43 @@ export interface RulePreviewMetadata {
   season_inventory_unavailable_examples: string[];
   playback_unavailable_count: number;
   playback_error: string | null;
+  seerr_unavailable: boolean;
+  seerr_error: string | null;
+  requester_watch_unavailable_count: number;
   matched_count: number;
+}
+
+export interface RequesterWatchRequesterDetail {
+  seerr_user_id: number;
+  display_name: string | null;
+  identity_keys: string[];
+  requested_at: string | null;
+  requested_seasons: Record<string, string>;
+  candidate_watch_keys: Record<string, string[]>;
+}
+
+export interface RequesterWatchEvidence {
+  source_service: string;
+  watch_user_key: string;
+  matched_requester_ids: number[];
+  watched_at: string | null;
+  episodes: string[];
+}
+
+export interface RequesterWatchExplain {
+  media_type: string;
+  tmdb_id: number;
+  title: string | null;
+  target_scope: string;
+  season_number: number | null;
+  episode_number: number | null;
+  result: boolean | null;
+  reason: string;
+  holding_services: string[];
+  unobservable_services: string[];
+  requesters: RequesterWatchRequesterDetail[];
+  expected_episodes: string[];
+  evidence: RequesterWatchEvidence[];
 }
 
 export interface PaginatedRulePreviewResponse extends PaginatedResponse<RulePreviewEntry> {
