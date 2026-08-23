@@ -721,12 +721,23 @@
     Math.max(0, entry.reason_tokens.length - 2);
 
   // Requester watch state has too many moving parts to debug from a boolean,
-  // so each matching row can ask the backend to show its working.
-  const REQUESTER_WATCH_FIELD = "seerr.requester_has_watched";
+  // so each matching row can ask the backend to show its working. Both fields
+  // are answered by the same explanation.
+  const REQUESTER_WATCH_FIELDS = [
+    "seerr.requester_has_watched",
+    "seerr.requester_watched_after_request",
+  ];
 
-  const ruleUsesRequesterWatch = $derived.by(() =>
-    JSON.stringify(definition.root).includes(REQUESTER_WATCH_FIELD),
-  );
+  const ruleUsesRequesterWatch = $derived.by(() => {
+    const serialized = JSON.stringify(definition.root);
+    return REQUESTER_WATCH_FIELDS.some((field) => serialized.includes(field));
+  });
+
+  const explainMoment = (value: string | null): string => {
+    if (!value) return "unknown";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  };
 
   const explainScopeFor = (entry: RulePreviewEntry): string => {
     if (entry.episode_id !== null) return "episode";
@@ -1586,11 +1597,21 @@
             </span>
           </div>
           <div class="mt-1">
-            Result:
+            Seerr requester has watched:
             <strong>
               {explainData.result === null
                 ? "unknown"
                 : explainData.result
+                  ? "true"
+                  : "false"}
+            </strong>
+          </div>
+          <div class="mt-1">
+            Seerr requester watched after requesting:
+            <strong>
+              {explainData.result_after_request === null
+                ? "unknown"
+                : explainData.result_after_request
                   ? "true"
                   : "false"}
             </strong>
@@ -1626,11 +1647,39 @@
                     Seerr identities: {requester.identity_keys.join(", ") ||
                       "none"}
                   </div>
+                  <div class="mt-1 text-muted-foreground">
+                    First requested: {explainMoment(requester.requested_at)}
+                  </div>
+                  {#each Object.entries(requester.requested_seasons) as [season, requestedAt]}
+                    <div class="mt-1 text-muted-foreground">
+                      Season {season} requested: {explainMoment(requestedAt)}
+                    </div>
+                  {/each}
                   {#each Object.entries(requester.candidate_watch_keys) as [service, keys]}
                     <div class="mt-1 text-muted-foreground break-all">
                       Names tried on {service}: {keys.join(", ") || "none"}
                     </div>
                   {/each}
+                  {#if requester.missing_episodes.length > 0}
+                    <div class="mt-1 break-all text-amber-500">
+                      Never watched ({requester.missing_episodes.length}): {requester.missing_episodes.join(
+                        ", ",
+                      )}
+                    </div>
+                  {/if}
+                  {#if requester.episodes_watched_before_request.length > 0}
+                    <div class="mt-1 break-all text-amber-500">
+                      Watched before requesting ({requester
+                        .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
+                        ", ",
+                      )}
+                    </div>
+                  {/if}
+                  {#if requester.missing_episodes.length === 0 && requester.episodes_watched_before_request.length === 0}
+                    <div class="mt-1 text-muted-foreground">
+                      Watched every required episode, after requesting it.
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -1650,7 +1699,9 @@
                   <div class="break-all">
                     <strong>{item.watch_user_key}</strong>
                     <span class="text-muted-foreground"
-                      >on {item.source_service}</span
+                      >on {item.source_service}, latest {explainMoment(
+                        item.watched_at,
+                      )}</span
                     >
                     {#if item.matched_requester_ids.length > 0}
                       <span class="text-muted-foreground">

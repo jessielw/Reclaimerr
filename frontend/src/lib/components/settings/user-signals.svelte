@@ -229,7 +229,10 @@
     return watchUsers.filter((user) => {
       if (
         normalizeKey(user.user_key).includes(needle) ||
-        normalizeKey(user.user_key_normalized).includes(needle)
+        normalizeKey(user.user_key_normalized).includes(needle) ||
+        (user.aliases ?? []).some((alias) =>
+          normalizeKey(alias).includes(needle),
+        )
       ) {
         return true;
       }
@@ -245,7 +248,8 @@
     return watchUsers.some(
       (user) =>
         normalizeKey(user.user_key) === needle ||
-        normalizeKey(user.user_key_normalized) === needle,
+        normalizeKey(user.user_key_normalized) === needle ||
+        (user.aliases ?? []).some((alias) => normalizeKey(alias) === needle),
     );
   });
 
@@ -291,9 +295,13 @@
   });
 
   const mappingHealth = $derived.by(() => {
-    const normalizedWatchKeys = new Set(
-      watchUsers.map((entry) => normalizeKey(entry.user_key_normalized)),
-    );
+    const normalizedWatchKeys = new Set<string>();
+    for (const entry of watchUsers) {
+      normalizedWatchKeys.add(normalizeKey(entry.user_key_normalized));
+      for (const alias of entry.aliases ?? []) {
+        normalizedWatchKeys.add(normalizeKey(alias));
+      }
+    }
     const cleaned = cleanMappings(requesterWatchUserMappings);
     const mappedIds = new Set<number>();
     const mappedNames = new Set<string>();
@@ -312,6 +320,7 @@
         normalizeKey(user.username),
         normalizeKey(user.display_name),
         normalizeKey(user.id),
+        ...(user.identities ?? []).map((identity) => normalizeKey(identity)),
       ]);
       identities.delete("");
 
@@ -723,6 +732,13 @@
                         >
                           <div class="min-w-0">
                             <p class="truncate text-sm">{user.user_key}</p>
+                            {#if (user.aliases ?? []).length > 0}
+                              <p
+                                class="text-[11px] text-muted-foreground truncate"
+                              >
+                                also {(user.aliases ?? []).join(", ")}
+                              </p>
+                            {/if}
                             <p
                               class="text-[11px] text-muted-foreground truncate"
                             >
