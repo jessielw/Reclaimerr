@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rule preview rows using `Seerr requester has watched` gained a **Why?** action that reports the requesters, every identity tried for each of them, the completed watches found, the episodes required, and any media server that could not be read. Backed by a new `GET /api/rules/requester-watch-explain`, whose verdict comes from the same code a cleanup scan uses.
 - The Seerr requester watch-user picker now lists every playback account the alias registry knows, including Tautulli and Tracearr users who never appear in the watch snapshot tables and previously could not be selected at all.
 - Renamed the **Media Identity Links** panel under Settings -> Users to **Sign-In Identity Links**, and pointed it at Settings -> User Signals. It controls sign-in only and has no effect on rules; the shared name repeatedly sent people to the wrong screen.
+- Updated dependencies:
+  - apprise to 1.13.0
 
 ### Fixed
 

@@ -1,13 +1,13 @@
 [project]
 name = "reclaimerr"
-version = "0.3.6"
+version = "0.3.7-dev.1"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.19.0",
-    "apprise>=1.12.0",
+    "apprise>=1.13.0",
     "apscheduler>=3.11.3,<4.0.0",
     "argon2-cffi>=25.1.0",
     "authlib>=1.7.2",
