@@ -14,6 +14,7 @@ other names that same account uses before watch evidence is looked up.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy import delete as sql_delete
@@ -274,12 +275,21 @@ async def seed_watch_user_aliases_if_empty() -> None:
         LOG.warning(f"Initial watch identity alias refresh failed: {exc}")
 
 
-async def load_watch_user_alias_index(session: AsyncSession) -> AliasIndex:
-    """Return observed service -> alias -> every alias of that same account.
+# One directory account: what a single provider config calls one of its users.
+DirectoryAccount = tuple[int, str]
 
-    Looking a known name up in this index yields the other names the account is
+
+async def load_watch_user_alias_index(session: AsyncSession) -> AliasIndex:
+    """Return observed service -> alias -> every alias of that same person.
+
+    Looking a known name up in this index yields the other names the person is
     recorded under, which is what lets a Seerr identity reach a Plex history key
     or a Tracearr username.
+
+    One person is usually described by several providers at once: a Plex server,
+    a Tautulli beside it and a Plex-bound Tracearr all report the same accounts
+    under ``observed_service=PLEX``, each from its own config and under its own
+    provider id. Those are merged by `merge_directory_accounts`.
     """
     rows = (
         await session.execute(
@@ -292,34 +302,109 @@ async def load_watch_user_alias_index(session: AsyncSession) -> AliasIndex:
         )
     ).all()
 
-    grouped: dict[tuple[Service, int, str], set[str]] = {}
-    accounts_per_alias: dict[tuple[Service, str], set[tuple[int, str]]] = {}
+    aliases_by_account: dict[Service, dict[DirectoryAccount, set[str]]] = {}
     for observed_service, config_id, provider_user_id, alias_normalized in rows:
         if not alias_normalized:
             continue
         account = (int(config_id), str(provider_user_id))
-        alias = str(alias_normalized)
-        grouped.setdefault((observed_service, *account), set()).add(alias)
-        accounts_per_alias.setdefault((observed_service, alias), set()).add(account)
-
-    def is_unambiguous(observed_service: Service, alias: str) -> bool:
-        # Display names collide -- two Plex accounts can both be titled "Home".
-        # An alias that names more than one account proves nothing, and this
-        # index feeds deletion rules, so such aliases bridge nothing. Exact
-        # string matching still applies to them, exactly as before.
-        return len(accounts_per_alias.get((observed_service, alias), ())) == 1
+        aliases_by_account.setdefault(observed_service, {}).setdefault(
+            account, set()
+        ).add(str(alias_normalized))
 
     index: AliasIndex = {}
-    for (observed_service, _config_id, _user_id), aliases in grouped.items():
-        usable = frozenset(
-            alias for alias in aliases if is_unambiguous(observed_service, alias)
-        )
-        if not usable:
-            continue
+    for observed_service, accounts in aliases_by_account.items():
+        people = merge_directory_accounts(accounts)
+        # A name that survived into two different people proves nothing about
+        # either, so it bridges nothing -- and dropping it keeps the answer
+        # independent of the order the rows happened to arrive in.
+        people_per_alias = Counter(alias for person in people for alias in person)
+        shared = {alias for alias, count in people_per_alias.items() if count > 1}
         by_alias = index.setdefault(observed_service, {})
-        for alias in usable:
-            by_alias[alias] = usable
+        for person in people:
+            usable = person - shared
+            if not usable:
+                continue
+            for alias in usable:
+                by_alias[alias] = usable
     return index
+
+
+def merge_directory_accounts(
+    accounts: Mapping[DirectoryAccount, set[str]],
+) -> list[frozenset[str]]:
+    """Group one service's directory accounts into people.
+
+    Two rules, pulling in opposite directions:
+
+    * Within **one** config, an alias naming two accounts is a real collision --
+      two Plex profiles can both be titled "Home". This index feeds deletion
+      rules, so such an alias bridges nothing.
+    * Across **different** configs, a shared alias is the opposite signal: the
+      same person seen twice, once by Plex and once by the Tautulli watching it.
+      Without merging those, every name a second provider also reports would
+      look like a collision and the registry would bridge nothing at all.
+
+    Provider ids never bridge across configs. Plex keying its owner as the
+    literal "1" and Tautulli numbering its own users from 1 are unrelated facts,
+    and treating that as a match would merge two strangers. Ids stay in a
+    person's alias set -- Plex history really does report them -- they just do
+    not supply the evidence for a merge.
+
+    A merge is also refused when it would put two accounts of the *same* config
+    into one person, since no provider lists one user twice.
+    """
+    holders_by_alias: dict[str, set[DirectoryAccount]] = {}
+    for account, aliases in accounts.items():
+        for alias in aliases:
+            holders_by_alias.setdefault(alias, set()).add(account)
+    provider_ids = {user_id.strip().lower() for _, user_id in accounts}
+
+    def bridges(alias: str, account: DirectoryAccount) -> bool:
+        """False when this alias names another user of the same config."""
+        return not any(
+            other != account and other[0] == account[0]
+            for other in holders_by_alias.get(alias, ())
+        )
+
+    usable: dict[DirectoryAccount, set[str]] = {
+        account: {alias for alias in aliases if bridges(alias, account)}
+        for account, aliases in accounts.items()
+    }
+
+    parent: dict[DirectoryAccount, DirectoryAccount] = {a: a for a in accounts}
+    members: dict[DirectoryAccount, set[DirectoryAccount]] = {a: {a} for a in accounts}
+
+    def find(account: DirectoryAccount) -> DirectoryAccount:
+        while parent[account] != account:
+            parent[account] = parent[parent[account]]
+            account = parent[account]
+        return account
+
+    for alias in sorted(holders_by_alias):
+        if alias in provider_ids:
+            continue
+        holders = holders_by_alias[alias]
+        bridging = sorted(account for account in holders if alias in usable[account])
+        for account in bridging[1:]:
+            left, right = find(bridging[0]), find(account)
+            if left == right:
+                continue
+            if {config for config, _ in members[left]} & {
+                config for config, _ in members[right]
+            }:
+                continue
+            parent[right] = left
+            members[left] |= members[right]
+            del members[right]
+
+    people: list[frozenset[str]] = []
+    for group in members.values():
+        aliases: set[str] = set()
+        for account in group:
+            aliases |= usable[account]
+        if aliases:
+            people.append(frozenset(aliases))
+    return people
 
 
 def expand_watch_keys(
