@@ -187,7 +187,7 @@
 
   const ruleOptionLabel = (rule: CandidateRuleFilterOption): string => {
     const mediaLabel = rule.media_type === MediaType.Movie ? "Movie" : "Series";
-    return `${rule.name} (${mediaLabel})${rule.enabled ? "" : " — disabled"}`;
+    return `${rule.name} (${mediaLabel})${rule.enabled ? "" : " - disabled"}`;
   };
 
   // build grouped display rows from the flat API response

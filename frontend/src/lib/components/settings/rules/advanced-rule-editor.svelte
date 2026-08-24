@@ -724,15 +724,46 @@
   // Requester watch state has too many moving parts to debug from a boolean,
   // so each matching row can ask the backend to show its working. Both fields
   // are answered by the same explanation.
+  const REQUESTER_HAS_WATCHED_FIELD = "seerr.requester_has_watched";
+  const REQUESTER_WATCHED_AFTER_REQUEST_FIELD =
+    "seerr.requester_watched_after_request";
   const REQUESTER_WATCH_FIELDS = [
-    "seerr.requester_has_watched",
-    "seerr.requester_watched_after_request",
+    REQUESTER_HAS_WATCHED_FIELD,
+    REQUESTER_WATCHED_AFTER_REQUEST_FIELD,
   ];
 
   const ruleUsesRequesterWatch = $derived.by(() => {
     const serialized = JSON.stringify(definition.root);
     return REQUESTER_WATCH_FIELDS.some((field) => serialized.includes(field));
   });
+
+  // The explanation answers both halves whichever one the rule asked for, so
+  // track which half is in play and stop the other from reading like a verdict
+  // this rule acted on. Read from the previewed rule, since the explanation
+  // describes that match rather than any edit made since.
+  const requesterWatchFieldsUsed = $derived.by(() => {
+    const serialized = JSON.stringify(
+      (previewSnapshot?.definition ?? definition).root,
+    );
+    const hasWatched = serialized.includes(REQUESTER_HAS_WATCHED_FIELD);
+    const afterRequest = serialized.includes(
+      REQUESTER_WATCHED_AFTER_REQUEST_FIELD,
+    );
+    // Finding neither means we cannot tell which half matters, so leave both
+    // reading normally rather than greying out the answer being looked for.
+    if (!hasWatched && !afterRequest) {
+      return { hasWatched: true, afterRequest: true };
+    }
+    return { hasWatched, afterRequest };
+  });
+
+  // Watching something before requesting it only counts against the item when
+  // the rule asks the gated question and settings still enforce the gate.
+  const requestDateGateInPlay = $derived(
+    requesterWatchFieldsUsed.afterRequest &&
+      explainData !== null &&
+      !explainData.request_date_gate_ignored,
+  );
 
   const explainMoment = (value: string | null): string => {
     if (!value) return "unknown";
@@ -1597,7 +1628,11 @@
                 : ""})
             </span>
           </div>
-          <div class="mt-1">
+          <div
+            class="mt-1 {requesterWatchFieldsUsed.hasWatched
+              ? ''
+              : 'text-muted-foreground'}"
+          >
             Seerr requester has watched:
             <strong>
               {explainData.result === null
@@ -1606,8 +1641,15 @@
                   ? "true"
                   : "false"}
             </strong>
+            {#if !requesterWatchFieldsUsed.hasWatched}
+              <span>&mdash; not used by this rule</span>
+            {/if}
           </div>
-          <div class="mt-1">
+          <div
+            class="mt-1 {requesterWatchFieldsUsed.afterRequest
+              ? ''
+              : 'text-muted-foreground'}"
+          >
             Seerr requester watched after requesting:
             <strong>
               {explainData.result_after_request === null
@@ -1616,7 +1658,9 @@
                   ? "true"
                   : "false"}
             </strong>
-            {#if explainData.request_date_gate_ignored}
+            {#if !requesterWatchFieldsUsed.afterRequest}
+              <span>&mdash; not used by this rule</span>
+            {:else if explainData.request_date_gate_ignored}
               <span class="text-muted-foreground">
                 &mdash; request dates ignored (User Signals)
               </span>
@@ -1670,6 +1714,7 @@
                     {@const summary = movieRequesterWatchSummary(
                       requester,
                       explainData.request_date_gate_ignored,
+                      requesterWatchFieldsUsed.afterRequest,
                     )}
                     <div
                       class="mt-1 break-all {summary.warning
@@ -1691,9 +1736,9 @@
                     {/if}
                     {#if requester.episodes_watched_before_request.length > 0}
                       <div
-                        class="mt-1 break-all {explainData.request_date_gate_ignored
-                          ? 'text-muted-foreground'
-                          : 'text-amber-500'}"
+                        class="mt-1 break-all {requestDateGateInPlay
+                          ? 'text-amber-500'
+                          : 'text-muted-foreground'}"
                       >
                         Watched before requesting ({requester
                           .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
@@ -1701,6 +1746,8 @@
                         )}
                         {#if explainData.request_date_gate_ignored}
                           &mdash; still counted
+                        {:else if !requesterWatchFieldsUsed.afterRequest}
+                          &mdash; not used by this rule
                         {/if}
                       </div>
                     {/if}
