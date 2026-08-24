@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.rule_engine import format_rule_value
+from backend.core.rule_engine import format_rule_value, format_valueless_reason
 from backend.core.utils.misc import normalize_genre_names
 from backend.database.models import (
     Episode,
@@ -84,10 +84,13 @@ def _format_reason_condition(
     operator_label: str,
     expected: Any,
     actual: Any,
+    details: list[str] | None = None,
 ) -> str:
     """Format a reason condition into a human-readable string."""
     if operator in _VALUELESS_OPERATORS:
-        return f"{field_label} {operator_label}"
+        return format_valueless_reason(
+            field_label, operator_label, field, operator, actual, details
+        )
     expected_values = _as_list(expected)
     expected_text = ", ".join(
         format_rule_value(field, value) for value in expected_values
@@ -133,6 +136,14 @@ def normalize_reason_parts(
             operator_label = str(condition.get("operator_label") or operator)
             expected = condition.get("expected")
             actual = condition.get("actual")
+            # Recorded when the rule ran; candidates stored before derived
+            # verdicts carried their working simply have none.
+            raw_details = condition.get("details")
+            details = [
+                text
+                for item in (raw_details if isinstance(raw_details, list) else [])
+                if (text := str(item).strip())
+            ]
             if field_name == "library.id":
                 expected = _normalize_library_value(expected, library_name_by_id)
                 actual = _normalize_library_value(actual, library_name_by_id)
@@ -143,6 +154,7 @@ def normalize_reason_parts(
                 operator_label=operator_label,
                 expected=expected,
                 actual=actual,
+                details=details,
             )
             conditions_out.append(
                 CandidateReasonCondition(
@@ -152,6 +164,7 @@ def normalize_reason_parts(
                     operator_label=operator_label,
                     expected=expected,
                     actual=actual,
+                    details=details,
                     display=display,
                 )
             )

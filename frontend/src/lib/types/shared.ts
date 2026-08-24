@@ -1113,6 +1113,7 @@ export interface ReclaimCandidateEntry {
         | (string | number | boolean)[]
         | null;
       actual: string | number | boolean | (string | number | boolean)[] | null;
+      details: string[];
       display: string;
     }[];
     text: string;

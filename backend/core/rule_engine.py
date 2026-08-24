@@ -270,6 +270,41 @@ LIST_OPERATORS = {
     "not_matches_any_regex",
 }
 VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
+
+# Fields whose true/false verdict is derived from other values rather than read
+# straight off the file. A bare "is true" leaves nothing to check, so each
+# verdict carries the context values it was computed from. Every companion is
+# read from the same scope's context and skipped when unavailable.
+BOOLEAN_REASON_COMPANIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "season.fully_watched": (
+        ("season.watched_percent", "{value}% of Sonarr's episode list watched"),
+    ),
+    "watch.never_watched": (
+        ("watch.view_count", "{value} views"),
+        ("watch.last_viewed_at", "last watched {value}"),
+    ),
+    "playback.has_activity": (
+        ("playback.play_count", "{value} plays"),
+        ("playback.last_activity_at", "last played {value}"),
+    ),
+    "favorites.exists": (("favorites.usernames", "users: {value}"),),
+    "tmdb.in_collection": (("tmdb.collection_name", "collection: {value}"),),
+    "seerr.requested": (
+        ("seerr.requested_by_user_ids", "requester IDs: {value}"),
+        ("seerr.last_requested_at", "last requested {value}"),
+    ),
+    "arr.monitored": (
+        ("arr.movie_ids", "Radarr movie {value}"),
+        ("arr.series_ids", "Sonarr series {value}"),
+    ),
+    "sonarr.latest_season_has_unaired_episodes": (
+        ("sonarr.series_status", "Sonarr status: {value}"),
+    ),
+    "sonarr.latest_season_has_finale": (
+        ("sonarr.series_status", "Sonarr status: {value}"),
+    ),
+    "season.is_latest_season": (("season.season_number", "season {value}"),),
+}
 NUMERIC_FIELDS = {
     "media.size",
     "media.year",
@@ -3138,7 +3173,7 @@ def _evaluate_condition(
     elif not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
-    reasons.append(_build_reason_condition(field, operator, expected, actual))
+    reasons.append(_build_reason_condition(field, operator, expected, actual, context))
     return True
 
 
@@ -3583,14 +3618,79 @@ def _format_milliseconds(value: float) -> str:
     return f"{sign}{seconds}s"
 
 
-def _format_reason(field: str, operator: str, expected: Any, actual: Any) -> str:
+def _format_reason(
+    field: str,
+    operator: str,
+    expected: Any,
+    actual: Any,
+    details: list[str] | None = None,
+) -> str:
     """Format the reason for a rule evaluation, including the field, operator, expected, and actual values."""
     label = FIELD_LABELS.get(field, field)
     op = OPERATOR_LABELS.get(operator, operator)
     if operator in VALUELESS_OPERATORS:
-        return f"{label} {op}"
+        return format_valueless_reason(label, op, field, operator, actual, details)
     value = ", ".join(format_rule_value(field, item) for item in _as_list(expected))
     return f"{label} {op} {value} ({_format_actual(field, actual)})"
+
+
+def format_valueless_reason(
+    field_label: str,
+    operator_label: str,
+    field: str,
+    operator: str,
+    actual: Any,
+    details: list[str] | None,
+) -> str:
+    """Render a valueless-operator verdict alongside the values behind it.
+
+    Shared with the candidate reason renderer so a stored candidate reads the
+    same as the preview that produced it.
+    """
+    parts = valueless_reason_details(field, operator, actual, details)
+    if not parts:
+        return f"{field_label} {operator_label}"
+    return f"{field_label} {operator_label} ({'; '.join(parts)})"
+
+
+def valueless_reason_details(
+    field: str, operator: str, actual: Any, details: list[str] | None
+) -> list[str]:
+    """Return the supporting values shown beside a valueless-operator verdict.
+
+    `exists` already found the value it is reporting on, so it shows that.
+    `not_exists` has nothing to show. A derived true/false has to borrow the
+    companion values recorded when the condition was evaluated.
+    """
+    if operator == "exists":
+        values = _as_list(actual)
+        return [_format_actual(field, actual)] if values else []
+    if operator == "not_exists":
+        return []
+    return [text for item in (details or []) if (text := str(item).strip())]
+
+
+def _companion_reason_details(field: str, context: dict[str, Any]) -> list[str]:
+    """Render the context values a derived boolean verdict was computed from."""
+    rendered: list[str] = []
+    for companion, template in BOOLEAN_REASON_COMPANIONS.get(field, ()):
+        value = context.get(companion, RULE_VALUE_UNAVAILABLE)
+        if value is RULE_VALUE_UNAVAILABLE or value is None:
+            continue
+        # Keep falsy-but-real values such as a zero view count; drop only the
+        # empties that would render as "missing".
+        if isinstance(value, (list, str)) and not value:
+            continue
+        # A rounded percent arrives as a float, and "100.0%" reads worse than
+        # "100%" for the whole-number case these mostly land on.
+        if (
+            isinstance(value, float)
+            and not isinstance(value, bool)
+            and value.is_integer()
+        ):
+            value = int(value)
+        rendered.append(template.format(value=_format_actual(companion, value)))
+    return rendered
 
 
 def _format_actual(field: str, actual: Any) -> str:
@@ -3602,18 +3702,30 @@ def _format_actual(field: str, actual: Any) -> str:
 
 
 def _build_reason_condition(
-    field: str, operator: str, expected: Any, actual: Any
+    field: str,
+    operator: str,
+    expected: Any,
+    actual: Any,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a reason condition dictionary for a rule evaluation."""
-    return {
+    details = (
+        _companion_reason_details(field, context)
+        if context is not None and operator in {"is_true", "is_false"}
+        else []
+    )
+    condition: dict[str, Any] = {
         "field": field,
         "field_label": FIELD_LABELS.get(field, field),
         "operator": operator,
         "operator_label": OPERATOR_LABELS.get(operator, operator),
         "expected": _json_safe(expected),
         "actual": _json_safe(actual),
-        "display": _format_reason(field, operator, expected, actual),
+        "display": _format_reason(field, operator, expected, actual, details),
     }
+    if details:
+        condition["details"] = details
+    return condition
 
 
 def _json_safe(value: Any) -> Any:

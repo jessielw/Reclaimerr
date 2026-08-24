@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Candidate and protected detail views now show current rule descriptions; deleted rules omit them.
 - Per user control for datetime format
 - **Settings -> User Signals -> Ignore Seerr Request Dates.** Turns the request-date comparison off for `Seerr requester watched after requesting`, leaving it to check completion alone. Intended for installs where the request dates cannot be trusted -- a rebuilt or migrated Seerr, or re-requested seasons, dates its rows after the plays they describe, which makes that comparison un-passable for a whole library. Off by default, applies to every rule at once, and relaxes only the date half: an item nobody finished stays false, and an unreadable media server stays unknown. The **Why?** dialog reports when the switch is on and still lists the plays that predate the request.
+- More detailed information for why rules match releases
 
 ### Changed
 

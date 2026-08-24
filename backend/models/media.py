@@ -562,6 +562,9 @@ class CandidateReasonCondition(BaseModel):
     operator_label: str
     expected: str | int | float | bool | list[str | int | float | bool] | None = None
     actual: str | int | float | bool | list[str | int | float | bool] | None = None
+    # Values a derived true/false verdict was computed from, e.g. the watched
+    # percent behind `Season fully watched is true`.
+    details: list[str] = Field(default_factory=list)
     display: str
 
 
