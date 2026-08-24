@@ -1414,9 +1414,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             ]
             season = Season(series_id=1, season_number=1, size=20 * 1024**3)
             season.path = None
-            self.assertFalse(
-                _evaluate_rule_for_season(series, season, rule, {}, [])
-            )
+            self.assertFalse(_evaluate_rule_for_season(series, season, rule, {}, []))
 
     def test_evaluate_movie_rule_temporal_criteria_passes_and_fails(self) -> None:
         now = datetime.now(UTC)
@@ -1716,9 +1714,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
         )
 
         self.assertTrue(_evaluate_movie_rule(movie, plex_rule, {}, []))
-        self.assertFalse(
-            _evaluate_movie_rule(movie, wrong_provider_negative, {}, [])
-        )
+        self.assertFalse(_evaluate_movie_rule(movie, wrong_provider_negative, {}, []))
 
     def test_series_scopes_inherit_provider_genres_from_matching_ref(self) -> None:
         series = Series(title="Series", tmdb_id=2, size=20 * 1024**3)
@@ -1745,9 +1741,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             ("series", lambda rule: _evaluate_movie_rule(series, rule, {}, [])),
             (
                 "season",
-                lambda rule: _evaluate_rule_for_season(
-                    series, season, rule, {}, []
-                ),
+                lambda rule: _evaluate_rule_for_season(series, season, rule, {}, []),
             ),
             (
                 "episode",
@@ -3011,9 +3005,7 @@ class CleanupMediaRuleTests(unittest.TestCase):
             latest_active_request_at_by_key={},
             first_request_at_by_series_season_user={(5920, 6): {5: requested}},
         )
-        plays = {
-            Service.PLEX: {"goldeylocks69": dict.fromkeys(expected, watched)}
-        }
+        plays = {Service.PLEX: {"goldeylocks69": dict.fromkeys(expected, watched)}}
 
         ever, after = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
@@ -3270,9 +3262,7 @@ class ArrTagLabelCollectionTests(unittest.TestCase):
             with self.subTest(operator=operator):
                 rule = self._tag_rule(operator, value)
                 self.assertEqual(cleanup_tasks._collect_arr_tag_labels([rule]), set())
-                self.assertTrue(
-                    cleanup_tasks._has_non_exact_arr_tag_condition([rule])
-                )
+                self.assertTrue(cleanup_tasks._has_non_exact_arr_tag_condition([rule]))
 
     def test_mixed_rules_collect_exact_labels_and_flag_non_exact(self) -> None:
         rules = [
@@ -3326,9 +3316,15 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "async_db",
             self._sessionmaker,
         )
+        self._media_watch_async_db_patch = patch(
+            "backend.services.media_watch_snapshot_cache.async_db",
+            self._sessionmaker,
+        )
         self._async_db_patch.start()
+        self._media_watch_async_db_patch.start()
 
     async def asyncTearDown(self) -> None:
+        self._media_watch_async_db_patch.stop()
         self._async_db_patch.stop()
         await self._engine.dispose()
         if self._db_path.exists():
@@ -3804,9 +3800,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 db.add(season)
                 await db.flush()
                 for episode_number in range(1, episodes + 1):
-                    db.add(
-                        Episode(season_id=season.id, episode_number=episode_number)
-                    )
+                    db.add(Episode(season_id=season.id, episode_number=episode_number))
             # S01E01 was watched in time; S01E02 was watched before requesting.
             db.add_all(
                 [
@@ -3906,7 +3900,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             }
             series = Series(title="Ahsoka", tmdb_id=654)
             db.add_all(
-                [plex, series, GeneralSettings(requester_watch_ignore_request_date=True)]
+                [
+                    plex,
+                    series,
+                    GeneralSettings(requester_watch_ignore_request_date=True),
+                ]
             )
             await db.flush()
             db.add_all(
@@ -3971,9 +3969,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # The raw comparison stays visible -- the dialog labels it as counted
         # rather than hiding why the gated answer would have been false.
         detail = explanation.requesters[0]
-        self.assertEqual(
-            detail.episodes_watched_before_request, ["S01E01", "S01E02"]
-        )
+        self.assertEqual(detail.episodes_watched_before_request, ["S01E01", "S01E02"])
 
     async def test_explain_requester_watch_reports_an_unreadable_server(self) -> None:
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
