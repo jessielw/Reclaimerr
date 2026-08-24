@@ -26,6 +26,10 @@
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { canMoveRuleNodeToGroup } from "$lib/components/settings/rules/rule-tree-dnd.js";
   import {
+    ruleFieldSearchKeywords,
+    scoreRuleFieldSearch,
+  } from "$lib/components/settings/rules/rule-field-search.js";
+  import {
     byteAmountText,
     inferByteUnit,
     parseByteAmount,
@@ -2314,7 +2318,7 @@
           align="start"
           class="w-(--bits-popover-anchor-width) min-w-72 p-0 gap-0"
         >
-          <Command.Root class="rounded-md p-0">
+          <Command.Root filter={scoreRuleFieldSearch} class="rounded-md p-0">
             <Command.Input
               bind:value={fieldQuery}
               placeholder="Search rule fields..."
@@ -2326,7 +2330,11 @@
                   {#each group.items as field (field.value)}
                     <Command.Item
                       value={field.value}
-                      keywords={[field.label, group.label, field.value]}
+                      keywords={ruleFieldSearchKeywords(
+                        field.value,
+                        field.label,
+                        group.label,
+                      )}
                       onSelect={() => selectConditionField(node, field.value)}
                     >
                       {field.label}

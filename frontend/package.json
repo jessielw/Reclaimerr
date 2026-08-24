@@ -10,6 +10,7 @@
     "format": "prettier --write .",
     "test:rule-dnd": "node --test src/lib/components/settings/rules/rule-tree-dnd.test.js",
     "test:rule-condition-value": "node --test src/lib/components/settings/rules/rule-condition-value.test.js",
+    "test:rule-field-search": "node --test src/lib/components/settings/rules/rule-field-search.test.js",
     "test:requester-watch-summary": "node --test src/lib/components/settings/rules/requester-watch-summary.test.js"
   },
   "devDependencies": {
