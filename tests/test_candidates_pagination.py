@@ -740,7 +740,7 @@ def test_get_candidates_includes_origin_metadata() -> None:
                     (MediaType.MOVIE, 101): {7, 8},
                     (MediaType.SERIES, 201): {9},
                 },
-                latest_request_at_by_key_user={},
+                first_request_at_by_key_user={},
                 requester_identity_keys_by_user_id={},
                 latest_active_request_at_by_key={},
                 requester_ids_by_series_season={(201, 1): {10}},

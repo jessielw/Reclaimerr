@@ -25,6 +25,7 @@
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { isConditionValueSet } from "$lib/components/settings/rules/rule-condition-value.js";
+  import { movieRequesterWatchSummary } from "$lib/components/settings/rules/requester-watch-summary.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { toast } from "svelte-sonner";
   import {
@@ -37,6 +38,7 @@
     type RuleConditionOperator,
     type RuleDefinition,
     type RuleNode,
+    type RequesterWatchExplain,
     type RulePreviewEntry,
   } from "$lib/types/shared";
   import { formatFileSize } from "$lib/utils/formatters";
@@ -148,6 +150,10 @@
 
   // preview states
   let previewDialogOpen = $state(false);
+  let explainDialogOpen = $state(false);
+  let explainLoading = $state(false);
+  let explainError = $state<string | null>(null);
+  let explainData = $state<RequesterWatchExplain | null>(null);
   let previewLoading = $state(false);
   let previewError = $state("");
   let previewData = $state<PaginatedRulePreviewResponse | null>(null);
@@ -714,6 +720,92 @@
 
   const previewExtraRuleCount = (entry: RulePreviewEntry): number =>
     Math.max(0, entry.reason_tokens.length - 2);
+
+  // Requester watch state has too many moving parts to debug from a boolean,
+  // so each matching row can ask the backend to show its working. Both fields
+  // are answered by the same explanation.
+  const REQUESTER_HAS_WATCHED_FIELD = "seerr.requester_has_watched";
+  const REQUESTER_WATCHED_AFTER_REQUEST_FIELD =
+    "seerr.requester_watched_after_request";
+  const REQUESTER_WATCH_FIELDS = [
+    REQUESTER_HAS_WATCHED_FIELD,
+    REQUESTER_WATCHED_AFTER_REQUEST_FIELD,
+  ];
+
+  const ruleUsesRequesterWatch = $derived.by(() => {
+    const serialized = JSON.stringify(definition.root);
+    return REQUESTER_WATCH_FIELDS.some((field) => serialized.includes(field));
+  });
+
+  // The explanation answers both halves whichever one the rule asked for, so
+  // track which half is in play and stop the other from reading like a verdict
+  // this rule acted on. Read from the previewed rule, since the explanation
+  // describes that match rather than any edit made since.
+  const requesterWatchFieldsUsed = $derived.by(() => {
+    const serialized = JSON.stringify(
+      (previewSnapshot?.definition ?? definition).root,
+    );
+    const hasWatched = serialized.includes(REQUESTER_HAS_WATCHED_FIELD);
+    const afterRequest = serialized.includes(
+      REQUESTER_WATCHED_AFTER_REQUEST_FIELD,
+    );
+    // Finding neither means we cannot tell which half matters, so leave both
+    // reading normally rather than greying out the answer being looked for.
+    if (!hasWatched && !afterRequest) {
+      return { hasWatched: true, afterRequest: true };
+    }
+    return { hasWatched, afterRequest };
+  });
+
+  // Watching something before requesting it only counts against the item when
+  // the rule asks the gated question and settings still enforce the gate.
+  const requestDateGateInPlay = $derived(
+    requesterWatchFieldsUsed.afterRequest &&
+      explainData !== null &&
+      !explainData.request_date_gate_ignored,
+  );
+
+  const explainMoment = (value: string | null): string => {
+    if (!value) return "unknown";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  };
+
+  const explainScopeFor = (entry: RulePreviewEntry): string => {
+    if (entry.episode_id !== null) return "episode";
+    if (entry.season_id !== null) return "season";
+    if (entry.media_type === "series") return "series";
+    return "movie_version";
+  };
+
+  const openRequesterWatchExplain = async (entry: RulePreviewEntry) => {
+    if (entry.tmdb_id === null) return;
+    explainDialogOpen = true;
+    explainLoading = true;
+    explainError = null;
+    explainData = null;
+    const params = new URLSearchParams({
+      media_type: entry.media_type === "series" ? "series" : "movie",
+      tmdb_id: String(entry.tmdb_id),
+      target_scope: explainScopeFor(entry),
+    });
+    if (entry.season_number !== null && entry.season_number !== undefined) {
+      params.set("season_number", String(entry.season_number));
+    }
+    if (entry.episode_number !== null && entry.episode_number !== undefined) {
+      params.set("episode_number", String(entry.episode_number));
+    }
+    try {
+      explainData = await get_api<RequesterWatchExplain>(
+        `/api/rules/requester-watch-explain?${params.toString()}`,
+      );
+    } catch (error) {
+      explainError =
+        error instanceof Error ? error.message : "Failed to load explanation";
+    } finally {
+      explainLoading = false;
+    }
+  };
 
   const buildPreviewSnapshot = () => ({
     name: name.trim() || null,
@@ -1325,6 +1417,26 @@
           />
         {/if}
       </div>
+      {#if previewData?.metadata && previewData.metadata.seerr_unavailable}
+        <Notice type="warning" title="Seerr Data Unavailable">
+          Seerr request data could not be loaded, so every Seerr condition was
+          unknown and matched nothing. This preview is not a reliable answer.
+          {#if previewData.metadata.seerr_error}
+            {previewData.metadata.seerr_error}
+          {/if}
+        </Notice>
+      {/if}
+      {#if previewData?.metadata && previewData.metadata.requester_watch_unavailable_count > 0}
+        <Notice type="warning" title="Requester Watch State Unavailable">
+          {previewData.metadata.requester_watch_unavailable_count} item{previewData
+            .metadata.requester_watch_unavailable_count === 1
+            ? ""
+            : "s"} sit on a media server whose watch state could not be read, so
+          <strong>Seerr requester has watched</strong> is unknown for them and matched
+          neither true nor false. Run a media sync or check that server before relying
+          on this rule.
+        </Notice>
+      {/if}
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
         <Notice type="warning" title="Sonarr Data Unavailable">
           Sonarr rule data could not be evaluated for
@@ -1462,6 +1574,15 @@
                           +{extraRuleCount} more
                         </span>
                       {/if}
+                      {#if ruleUsesRequesterWatch && entry.tmdb_id !== null}
+                        <button
+                          type="button"
+                          class="text-xs leading-5 px-2 rounded-2xl border border-border bg-card text-muted-foreground hover:text-foreground cursor-pointer"
+                          onclick={() => void openRequesterWatchExplain(entry)}
+                        >
+                          Why?
+                        </button>
+                      {/if}
                     </div>
                   </div>
                 </div>
@@ -1471,6 +1592,231 @@
         {/if}
       </div>
     </div>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- requester watch explanation dialog -->
+<Dialog.Root bind:open={explainDialogOpen}>
+  <Dialog.Content
+    class="bg-card border border-border rounded-lg p-6 max-w-3xl w-full text-foreground max-h-[85vh] overflow-y-auto"
+  >
+    <Dialog.Header>
+      <Dialog.Title class="text-xl font-semibold text-foreground mb-1">
+        Seerr Requester Watch State
+      </Dialog.Title>
+      <Dialog.Description class="text-sm text-muted-foreground">
+        Every identity tried and every completed watch found for this item.
+      </Dialog.Description>
+    </Dialog.Header>
+
+    {#if explainLoading}
+      <div class="py-8 text-center text-sm text-muted-foreground">
+        Loading explanation...
+      </div>
+    {:else if explainError}
+      <Notice type="error" title="Could Not Explain">{explainError}</Notice>
+    {:else if explainData}
+      <div class="space-y-4 text-sm">
+        <div class="rounded-md border border-border bg-muted/20 p-3">
+          <div class="font-medium">
+            {explainData.title ?? `TMDB ${explainData.tmdb_id}`}
+            <span class="text-muted-foreground">
+              ({explainData.target_scope}{explainData.season_number !== null
+                ? ` S${explainData.season_number}`
+                : ""}{explainData.episode_number !== null
+                ? `E${explainData.episode_number}`
+                : ""})
+            </span>
+          </div>
+          <div
+            class="mt-1 {requesterWatchFieldsUsed.hasWatched
+              ? ''
+              : 'text-muted-foreground'}"
+          >
+            Seerr requester has watched:
+            <strong>
+              {explainData.result === null
+                ? "unknown"
+                : explainData.result
+                  ? "true"
+                  : "false"}
+            </strong>
+            {#if !requesterWatchFieldsUsed.hasWatched}
+              <span>&mdash; not used by this rule</span>
+            {/if}
+          </div>
+          <div
+            class="mt-1 {requesterWatchFieldsUsed.afterRequest
+              ? ''
+              : 'text-muted-foreground'}"
+          >
+            Seerr requester watched after requesting:
+            <strong>
+              {explainData.result_after_request === null
+                ? "unknown"
+                : explainData.result_after_request
+                  ? "true"
+                  : "false"}
+            </strong>
+            {#if !requesterWatchFieldsUsed.afterRequest}
+              <span>&mdash; not used by this rule</span>
+            {:else if explainData.request_date_gate_ignored}
+              <span class="text-muted-foreground">
+                &mdash; request dates ignored (User Signals)
+              </span>
+            {/if}
+          </div>
+          <div class="mt-1 text-muted-foreground">{explainData.reason}</div>
+        </div>
+
+        {#if explainData.unobservable_services.length > 0}
+          <Notice type="warning" title="Unreadable Media Server">
+            {explainData.unobservable_services.join(", ")} could not report completion
+            state, so this item cannot be judged.
+          </Notice>
+        {/if}
+
+        <div>
+          <div class="font-medium mb-1">Requesters</div>
+          {#if explainData.requesters.length === 0}
+            <div class="text-muted-foreground">
+              No active Seerr request records a requester for this item.
+            </div>
+          {:else}
+            <div class="space-y-2">
+              {#each explainData.requesters as requester}
+                <div class="rounded-md border border-border bg-muted/20 p-3">
+                  <div>
+                    {requester.display_name ??
+                      `User ${requester.seerr_user_id}`}
+                    <span class="text-muted-foreground"
+                      >(id {requester.seerr_user_id})</span
+                    >
+                  </div>
+                  <div class="mt-1 text-muted-foreground break-all">
+                    Seerr identities: {requester.identity_keys.join(", ") ||
+                      "none"}
+                  </div>
+                  <div class="mt-1 text-muted-foreground">
+                    First requested: {explainMoment(requester.requested_at)}
+                  </div>
+                  {#each Object.entries(requester.requested_seasons) as [season, requestedAt]}
+                    <div class="mt-1 text-muted-foreground">
+                      Season {season} requested: {explainMoment(requestedAt)}
+                    </div>
+                  {/each}
+                  {#each Object.entries(requester.candidate_watch_keys) as [service, keys]}
+                    <div class="mt-1 text-muted-foreground break-all">
+                      Names tried on {service}: {keys.join(", ") || "none"}
+                    </div>
+                  {/each}
+                  {#if explainData.media_type === MediaType.Movie}
+                    {@const summary = movieRequesterWatchSummary(
+                      requester,
+                      explainData.request_date_gate_ignored,
+                      requesterWatchFieldsUsed.afterRequest,
+                    )}
+                    <div
+                      class="mt-1 break-all {summary.warning
+                        ? 'text-amber-500'
+                        : 'text-muted-foreground'}"
+                    >
+                      {summary.text}
+                      {#if requester.movie_watched_at !== null}
+                        ({explainMoment(requester.movie_watched_at)})
+                      {/if}
+                    </div>
+                  {:else}
+                    {#if requester.missing_episodes.length > 0}
+                      <div class="mt-1 break-all text-amber-500">
+                        Never watched ({requester.missing_episodes.length}): {requester.missing_episodes.join(
+                          ", ",
+                        )}
+                      </div>
+                    {/if}
+                    {#if requester.episodes_watched_before_request.length > 0}
+                      <div
+                        class="mt-1 break-all {requestDateGateInPlay
+                          ? 'text-amber-500'
+                          : 'text-muted-foreground'}"
+                      >
+                        Watched before requesting ({requester
+                          .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
+                          ", ",
+                        )}
+                        {#if explainData.request_date_gate_ignored}
+                          &mdash; still counted
+                        {:else if !requesterWatchFieldsUsed.afterRequest}
+                          &mdash; not used by this rule
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if explainData.expected_episodes.length > 0 && requester.missing_episodes.length === 0 && requester.episodes_watched_before_request.length === 0}
+                      <div class="mt-1 text-muted-foreground">
+                        Watched every required episode, after requesting it.
+                      </div>
+                    {/if}
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div>
+          <div class="font-medium mb-1">Completed watches found</div>
+          {#if explainData.evidence.length === 0}
+            <div class="text-muted-foreground">
+              No completed playback is recorded for this item.
+            </div>
+          {:else}
+            <div class="space-y-2">
+              {#each explainData.evidence as item}
+                <div class="rounded-md border border-border bg-muted/20 p-3">
+                  <div class="break-all">
+                    <strong>{item.watch_user_key}</strong>
+                    <span class="text-muted-foreground"
+                      >on {item.source_service}, latest {explainMoment(
+                        item.watched_at,
+                      )}</span
+                    >
+                    {#if item.matched_requester_ids.length > 0}
+                      <span class="text-muted-foreground">
+                        &mdash; matched requester {item.matched_requester_ids.join(
+                          ", ",
+                        )}
+                      </span>
+                    {:else}
+                      <span class="text-muted-foreground">
+                        &mdash; not matched to any requester
+                      </span>
+                    {/if}
+                  </div>
+                  {#if item.episodes.length > 0}
+                    <div class="mt-1 text-muted-foreground break-all">
+                      {item.episodes.length} episode{item.episodes.length === 1
+                        ? ""
+                        : "s"}: {item.episodes.join(", ")}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if explainData.expected_episodes.length > 0}
+          <div>
+            <div class="font-medium mb-1">
+              Episodes required ({explainData.expected_episodes.length})
+            </div>
+            <div class="text-muted-foreground break-all">
+              {explainData.expected_episodes.join(", ")}
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
   </Dialog.Content>
 </Dialog.Root>
 

@@ -241,6 +241,9 @@ class WatchUserLookupResponse(BaseModel):
     user_key: str
     user_key_normalized: str
     source_services: list[Service] = Field(default_factory=list)
+    # The account's other recorded names -- provider ids, emails, a Tracearr
+    # identity. Shown as secondary text and searchable, but never their own row.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class FavoritesMediaEntryResponse(BaseModel):
@@ -294,6 +297,7 @@ class GeneralSettingsResponse(BaseModel):
     requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
         default_factory=list
     )
+    requester_watch_ignore_request_date: bool = False
     default_allowed_pages: list[PageAccess] = Field(
         default_factory=lambda: [
             PageAccess(page) for page in DEFAULT_NEW_USER_ALLOWED_PAGES

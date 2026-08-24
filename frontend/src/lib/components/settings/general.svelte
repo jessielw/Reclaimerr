@@ -64,6 +64,8 @@
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
   let requesterWatchUserMappings = $state<RequesterWatchUserMapping[]>([]);
+  // Edited on the User Signals page; carried here so saving does not reset it.
+  let requesterWatchIgnoreRequestDate = $state(false);
   let defaultAllowedPages = $state<PageAccess[]>([
     ...DEFAULT_NEW_USER_ALLOWED_PAGES,
   ]);
@@ -162,6 +164,7 @@
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
         requester_watch_user_mappings: requesterWatchUserMappings,
+        requester_watch_ignore_request_date: requesterWatchIgnoreRequestDate,
         default_allowed_pages: defaultAllowedPages,
         leaving_soon_enabled: leavingSoonEnabled,
         leaving_soon_collection_title: leavingSoonCollectionTitle,
@@ -322,6 +325,8 @@
         );
         requesterWatchUserMappings =
           settings.requester_watch_user_mappings ?? [];
+        requesterWatchIgnoreRequestDate =
+          settings.requester_watch_ignore_request_date ?? false;
         defaultAllowedPages =
           settings.default_allowed_pages?.length > 0
             ? settings.default_allowed_pages

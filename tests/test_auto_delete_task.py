@@ -612,11 +612,45 @@ def test_playback_data_refresh_combines_native_and_history(monkeypatch):
             "backend.tasks.sync._run_supplemental_syncs",
             history_refresh,
         )
+        alias_refresh = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(
+            "backend.tasks.sync.refresh_watch_user_aliases",
+            alias_refresh,
+        )
 
         result = await _run_playback_data_refresh()
 
         assert result == (True, None, history_result)
         native_refresh.assert_awaited_once_with(all_servers=None)
+        history_refresh.assert_awaited_once()
+        alias_refresh.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_playback_data_refresh_survives_alias_refresh_failure(monkeypatch):
+    """Alias registration is auxiliary and must not abort a playback refresh."""
+
+    async def run() -> None:
+        native_refresh = AsyncMock(return_value=(True, None))
+        history_result = PlaybackRefreshResult()
+        history_refresh = AsyncMock(return_value=history_result)
+        monkeypatch.setattr(
+            "backend.services.media_watch_snapshot_cache.MediaWatchSnapshotCache.refresh_snapshot",
+            native_refresh,
+        )
+        monkeypatch.setattr(
+            "backend.tasks.sync._run_supplemental_syncs",
+            history_refresh,
+        )
+        monkeypatch.setattr(
+            "backend.tasks.sync.refresh_watch_user_aliases",
+            AsyncMock(side_effect=RuntimeError("no such table: watch_user_aliases")),
+        )
+
+        result = await _run_playback_data_refresh()
+
+        assert result == (True, None, history_result)
         history_refresh.assert_awaited_once()
 
     asyncio.run(run())
@@ -725,6 +759,150 @@ def test_auto_delete_revalidation_drops_stale_playback_match(monkeypatch):
         assert preview.await_args.kwargs["target_ids_by_scope"] == {
             "movie_version": {123}
         }
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_auto_delete_revalidation_rechecks_requester_watch_rules(monkeypatch):
+    """A candidate watched during the auto-delete delay must not be deleted.
+
+    Revalidation only re-ran playback rules, so a season queued as "the
+    requester never watched it" was still deleted after they watched it.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            rule = ReclaimRule(
+                name="Delete unwatched by requester",
+                media_type=MediaType.SERIES,
+                enabled=True,
+                target_scope="season",
+                definition={
+                    "version": 1,
+                    "root": {
+                        "type": "group",
+                        "op": "and",
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "seerr.requester_has_watched",
+                                "operator": "is_false",
+                            }
+                        ],
+                    },
+                },
+                action={"auto_delete_enabled": True, "auto_delete_delay_days": 0},
+            )
+            db_session.add(rule)
+            await db_session.flush()
+            candidate = ReclaimCandidate(
+                media_type=MediaType.SERIES,
+                season_id=77,
+                matched_rule_ids=[rule.id],
+                matched_criteria={},
+                reason="requester had not watched it",
+            )
+            db_session.add(candidate)
+            await db_session.commit()
+            candidate_id = candidate.id
+
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.async_db",
+            _async_db_override(session_maker),
+        )
+        # The requester watched it in the meantime, so the rule no longer matches.
+        preview = AsyncMock(
+            return_value=RulePreviewMatchResult(
+                matches=[],
+                metadata=RulePreviewMatchMetadata(),
+            )
+        )
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.collect_rule_preview_matches_with_metadata",
+            preview,
+        )
+
+        result = await _revalidate_auto_delete_candidate_ids([candidate_id])
+
+        assert result.candidate_ids == []
+        assert result.revalidated_out == 1
+        preview.assert_awaited_once()
+        assert preview.await_args.kwargs["require_fresh"] is True
+        assert preview.await_args.kwargs["target_ids_by_scope"] == {"season": {77}}
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_auto_delete_revalidation_skips_rules_watch_state_cannot_change(monkeypatch):
+    """Rules that cannot change with viewing skip the extra provider round-trip."""
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            rule = ReclaimRule(
+                name="Delete big files",
+                media_type=MediaType.MOVIE,
+                enabled=True,
+                target_scope="movie_version",
+                definition={
+                    "version": 1,
+                    "root": {
+                        "type": "group",
+                        "op": "and",
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "media.size",
+                                "operator": "greater_than",
+                                "value": 1,
+                            }
+                        ],
+                    },
+                },
+                action={"auto_delete_enabled": True, "auto_delete_delay_days": 0},
+            )
+            db_session.add(rule)
+            await db_session.flush()
+            candidate = ReclaimCandidate(
+                media_type=MediaType.MOVIE,
+                movie_version_id=123,
+                matched_rule_ids=[rule.id],
+                matched_criteria={},
+                reason="too big",
+            )
+            db_session.add(candidate)
+            await db_session.commit()
+            candidate_id = candidate.id
+
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.async_db",
+            _async_db_override(session_maker),
+        )
+        preview = AsyncMock()
+        monkeypatch.setattr(
+            "backend.tasks.cleanup.collect_rule_preview_matches_with_metadata",
+            preview,
+        )
+
+        result = await _revalidate_auto_delete_candidate_ids([candidate_id])
+
+        assert result.candidate_ids == [candidate_id]
+        preview.assert_not_awaited()
         await engine.dispose()
 
     asyncio.run(run())

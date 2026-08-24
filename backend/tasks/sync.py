@@ -13,6 +13,7 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.tmdb import AsyncTMDBClient
+from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import normalize_fpath, paths_equivalent
 from backend.database import async_db
 from backend.database.models import (
@@ -51,6 +52,7 @@ from backend.services.playback_history import (
     refresh_playback_history,
 )
 from backend.services.plex import PlexService
+from backend.services.watch_identity import refresh_watch_user_aliases
 from backend.user_types import MEDIA_SERVERS, MediaServerType
 
 __all__ = [
@@ -59,8 +61,6 @@ __all__ = [
     "sync_media_libraries",
     "refresh_playback_history_task",
     "sync_linked_data",
-    "sync_emby_playback_reporting_data",
-    "sync_tautulli_playback_data",
 ]
 
 # number of records to process before committing to the database during sync tasks
@@ -226,6 +226,19 @@ def _duration_close(left: float | None, right: float | None) -> bool:
     if left is None or right is None:
         return False
     return abs(left - right) <= 2000
+
+
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize a provider timestamp to the naive UTC the columns store.
+
+    Media servers hand back timezone-aware values while SQLite reads back naive
+    ones, so comparing the two directly raises "can't compare offset-naive and
+    offset-aware datetimes". Converting on the way in keeps every stored value
+    on the same footing.
+    """
+    if value is None:
+        return None
+    return ensure_utc(value).replace(tzinfo=None)
 
 
 def _merge_last_viewed(
@@ -673,9 +686,11 @@ async def _sync_seasons(
             s.size = sd.size
             s.episode_count = sd.episode_count
             s.view_count = sd.view_count
-            s.last_viewed_at = sd.last_viewed_at
+            # Normalized on the way in so these never mix with the naive values
+            # SQLite reads back, which is what broke episode syncs.
+            s.last_viewed_at = _as_naive_utc(sd.last_viewed_at)
             s.air_date = sd.air_date
-            s.added_at = sd.added_at
+            s.added_at = _as_naive_utc(sd.added_at)
             s.has_hdr = sd.has_hdr
             s.has_dolby_vision = sd.has_dolby_vision
             s.max_video_width = sd.max_video_width
@@ -712,7 +727,7 @@ async def _sync_seasons(
                 size=sd.size,
                 episode_count=sd.episode_count,
                 view_count=sd.view_count,
-                last_viewed_at=sd.last_viewed_at,
+                last_viewed_at=_as_naive_utc(sd.last_viewed_at),
                 air_date=sd.air_date,
                 has_hdr=sd.has_hdr,
                 has_dolby_vision=sd.has_dolby_vision,
@@ -728,7 +743,7 @@ async def _sync_seasons(
                 plex_season_rating_key=plex_key,
                 media_server_user_rating=sd.media_server_user_rating,
             )
-            new_season.added_at = sd.added_at
+            new_season.added_at = _as_naive_utc(sd.added_at)
             new_season.path = sd.path
             new_season.episode_paths = sd.episode_paths
             session.add(new_season)
@@ -858,23 +873,21 @@ async def _upsert_episodes(
             # merge watch data: take max view_count and most recent last_viewed_at
             e.view_count = max(e.view_count or 0, ep.view_count)
             if ep.last_viewed_at is not None:
-                if e.last_viewed_at is None:
-                    e.last_viewed_at = ep.last_viewed_at
-                else:
-                    # normalize both sides to UTC aware before comparing to avoid
-                    # "offset-naive vs offset-aware" errors (SQLite returns naive datetimes)
-                    ep_lva = (
-                        ep.last_viewed_at
-                        if ep.last_viewed_at.tzinfo
-                        else ep.last_viewed_at.replace(tzinfo=UTC)
-                    )
-                    e_lva = (
-                        e.last_viewed_at
-                        if e.last_viewed_at.tzinfo
-                        else e.last_viewed_at.replace(tzinfo=UTC)
-                    )
-                    if ep_lva > e_lva:
-                        e.last_viewed_at = ep.last_viewed_at
+                incoming_viewed = _as_naive_utc(ep.last_viewed_at)
+                existing_viewed = _as_naive_utc(e.last_viewed_at)
+                if existing_viewed is None or (
+                    incoming_viewed is not None and incoming_viewed > existing_viewed
+                ):
+                    e.last_viewed_at = incoming_viewed
+            if ep.added_at is not None:
+                # Earliest wins, mirroring the season rollup, so a re-scan that
+                # reports a newer date cannot retroactively invalidate a watch.
+                incoming_added = _as_naive_utc(ep.added_at)
+                existing_added = _as_naive_utc(e.added_at)
+                if incoming_added is not None and (
+                    existing_added is None or incoming_added < existing_added
+                ):
+                    e.added_at = incoming_added
             if ep.air_date is not None and e.air_date is None:
                 e.air_date = ep.air_date
             if ep.name is not None and e.name is None:
@@ -909,6 +922,7 @@ async def _upsert_episodes(
                 media_server_user_rating=ep.media_server_user_rating,
                 runtime=ep.runtime_seconds,
             )
+            new_ep.added_at = _as_naive_utc(ep.added_at)
             session.add(new_ep)
             # We have to register in existing_eps so a duplicate ep_number later in the
             # same episode_data list hits the update branch rather than creating a second
@@ -2148,12 +2162,36 @@ async def sync_series(
                     sql_delete(SeriesArrRef).where(SeriesArrRef.service_config_id == 0)
                 )
 
-                series_rows = await session.execute(
-                    select(Series.id, Series.tmdb_id).where(Series.removed_at.is_(None))
-                )
+                series_rows = (
+                    await session.execute(
+                        select(Series.id, Series.tmdb_id, Series.tvdb_id).where(
+                            Series.removed_at.is_(None)
+                        )
+                    )
+                ).all()
                 series_id_by_tmdb = {
-                    tmdb_id: series_id for series_id, tmdb_id in series_rows
+                    tmdb_id: series_id for series_id, tmdb_id, _tvdb_id in series_rows
                 }
+                # Sonarr is TVDB-native and reports tmdbId 0 for shows it could
+                # not map. Matching on tmdb alone left those series unmatched
+                # forever: no Arr ref, no tags, and an episode inventory this
+                # loop nulls on every run, so their seasons reported "inventory
+                # unavailable" no matter how often Sync Media ran.
+                series_id_by_tvdb = {
+                    str(tvdb_id): series_id
+                    for series_id, _tmdb_id, tvdb_id in series_rows
+                    if tvdb_id
+                }
+
+                def _match_series_id(arr_series: Any) -> int | None:
+                    """Resolve a Sonarr series to a local one, tmdb first."""
+                    if arr_series.tmdb_id:
+                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        if series_id is not None:
+                            return series_id
+                    if arr_series.tvdb_id:
+                        return series_id_by_tvdb.get(str(arr_series.tvdb_id))
+                    return None
 
                 # accumulate resolved tag labels per series across all Sonarr instances
                 series_tags: dict[int, set[str]] = {}
@@ -2171,9 +2209,9 @@ async def sync_series(
                     tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     matched_series = [
-                        (arr_series, series_id_by_tmdb[arr_series.tmdb_id])
+                        (arr_series, series_id)
                         for arr_series in all_series
-                        if arr_series.tmdb_id in series_id_by_tmdb
+                        if (series_id := _match_series_id(arr_series)) is not None
                     ]
                     semaphore = asyncio.Semaphore(SONARR_DATE_FETCH_CONCURRENCY)
 
@@ -2215,9 +2253,7 @@ async def sync_series(
                             )
 
                     for arr_series in all_series:
-                        if not arr_series.tmdb_id:
-                            continue
-                        series_id = series_id_by_tmdb.get(arr_series.tmdb_id)
+                        series_id = _match_series_id(arr_series)
                         if series_id is None:
                             continue
                         arr_path = (
@@ -2232,7 +2268,7 @@ async def sync_series(
                                 arr_series_id=arr_series.id,
                                 arr_title_slug=arr_series.title_slug,
                                 arr_series_path=arr_path,
-                                tmdb_id=arr_series.tmdb_id,
+                                tmdb_id=arr_series.tmdb_id or None,
                             )
                         )
                         for tag_id in arr_series.tags:
@@ -2376,6 +2412,17 @@ async def _run_playback_data_refresh(
     watch_ok, watch_error = await media_watch_snapshot_cache.refresh_snapshot(
         all_servers=all_servers
     )
+    # Identity aliases are refreshed alongside watch data because requester
+    # matching is only as good as the names it can bridge. It is auxiliary, so
+    # a failure here degrades requester matching to plain name comparison
+    # rather than taking the playback refresh down with it.
+    try:
+        alias_ok, alias_error = await refresh_watch_user_aliases()
+    except Exception as exc:
+        LOG.warning(f"Watch identity alias refresh failed: {exc}")
+    else:
+        if not alias_ok and alias_error:
+            LOG.warning(f"Watch identity alias refresh incomplete: {alias_error}")
     history_result = await _run_supplemental_syncs()
     return watch_ok, watch_error, history_result
 
@@ -2398,681 +2445,6 @@ async def refresh_playback_history_task() -> dict[str, Any]:
             ),
             "errors": errors,
         }
-
-
-async def sync_emby_playback_reporting_data() -> None:
-    """Supplement movie, series, and season view counts from Playback Reporting.
-
-    Supports both the original Emby plugin (faush01/playback_reporting,
-    ConfigurationFileName ``playback_reporting.xml``) and the Jellyfin fork
-    (jellyfin/jellyfin-plugin-playbackreporting,
-    ConfigurationFileName ``Jellyfin.Plugin.PlaybackReporting.xml``). Both expose
-    the same ``POST /user_usage_stats/submit_custom_query`` endpoint.
-
-    After the normal sync the plugin (if installed) provides play history filtered by
-    actual play duration, which eliminates brief scrubs that the native media server
-    play count API would otherwise count. The supplemental counts are applied as
-    ``max(existing, plugin_count)`` so existing data is never decreased.
-
-    Direct main-server IDs are used when Jellyfin/Emby is the main server.
-    Otherwise, same-media supplemental mappings from linked sync are used.
-    """
-    async with async_db() as session:
-        main = await _get_main_media_server(session)
-        servers = await _get_configured_media_servers(session)
-    if not main:
-        LOG.debug(
-            "Skipping Playback Reporting supplemental sync: no main media server configured"
-        )
-        return
-
-    reporting_services = sorted(
-        {
-            server.service_type
-            for server in servers
-            if server.service_type in {Service.JELLYFIN, Service.EMBY}
-        },
-        key=lambda service: service.value,
-    )
-    if not reporting_services:
-        LOG.debug(
-            "Skipping Playback Reporting supplemental sync: no enabled jellyfin/emby services"
-        )
-        return
-
-    for server_service in reporting_services:
-        await _sync_playback_reporting_for_service(
-            server_service, use_mapped_matches=server_service != main.service_type
-        )
-
-
-async def _sync_playback_reporting_for_service(
-    server_service: Service, use_mapped_matches: bool
-) -> None:
-    service_instance = await _get_media_service_instance(server_service)
-    if not isinstance(service_instance, (JellyfinService, EmbyService)):
-        return
-
-    LOG.info(f"Checking for Playback Reporting plugin on {server_service}...")
-    if not await service_instance.has_playback_reporting_plugin():
-        LOG.info(
-            f"Playback Reporting plugin not found on {server_service} "
-            "(skipping supplemental sync)"
-        )
-        return
-
-    LOG.info(
-        f"Playback Reporting plugin found on {server_service} "
-        "(syncing supplemental play data)"
-    )
-
-    #### movies ####
-    movie_stats = await service_instance.get_playback_reporting_stats(15, "Movie")
-    if movie_stats:
-        LOG.info(
-            f"Playback Reporting plugin returned play counts for {len(movie_stats)} "
-            f"movies from {server_service}"
-        )
-        async with async_db() as session:
-            movie_rows = (
-                await session.execute(
-                    select(MovieVersion.service_item_id, Movie.id, Movie.view_count)
-                    .join(Movie, MovieVersion.movie_id == Movie.id)
-                    .where(
-                        MovieVersion.service == server_service,
-                        Movie.removed_at.is_(None),
-                    )
-                )
-            ).all()
-
-            updated = 0
-            for item_id, movie_id, current_count in movie_rows:
-                plugin_count = movie_stats.get(item_id)
-                if plugin_count and plugin_count > current_count:
-                    await session.execute(
-                        sql_update(Movie)
-                        .where(Movie.id == movie_id)
-                        .values(view_count=plugin_count)
-                    )
-                    updated += 1
-
-            if use_mapped_matches:
-                mapped_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Movie.id,
-                            Movie.view_count,
-                        )
-                        .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == server_service,
-                            SupplementalMediaMatch.media_type == MediaType.MOVIE,
-                            SupplementalMediaMatch.movie_id.is_not(None),
-                            Movie.removed_at.is_(None),
-                        )
-                    )
-                ).all()
-                for item_id, movie_id, current_count in mapped_rows:
-                    plugin_count = movie_stats.get(item_id)
-                    if plugin_count and plugin_count > (current_count or 0):
-                        await session.execute(
-                            sql_update(Movie)
-                            .where(Movie.id == movie_id)
-                            .values(view_count=plugin_count)
-                        )
-                        updated += 1
-
-            await session.commit()
-        LOG.info(
-            f"Updated view_count for {updated} movies from {server_service} "
-            "Playback Reporting plugin"
-        )
-    else:
-        LOG.debug(f"No movie play data returned from {server_service}")
-
-    #### series (aggregated from episode level data) ####
-    episode_stats = await service_instance.get_playback_reporting_stats(7, "Episode")
-    if not episode_stats:
-        LOG.debug(f"No episode play data returned from {server_service}")
-        return
-
-    LOG.info(
-        f"Playback Reporting plugin returned play counts for {len(episode_stats)} "
-        f"episodes from {server_service}"
-    )
-
-    episode_to_parent = await service_instance.get_parent_ids_for_episode_ids(
-        list(episode_stats.keys())
-    )
-    if not episode_to_parent:
-        LOG.warning(
-            "Could not resolve any episode IDs to parent IDs "
-            f"for {server_service} (skipping series/season update)"
-        )
-        return
-
-    series_play_counts: dict[str, int] = {}
-    season_play_counts: dict[str, int] = {}
-    for ep_id, ep_count in episode_stats.items():
-        parent_series_id, parent_season_id = episode_to_parent.get(ep_id, (None, None))
-        if parent_series_id:
-            series_play_counts[parent_series_id] = (
-                series_play_counts.get(parent_series_id, 0) + ep_count
-            )
-        if parent_season_id:
-            season_play_counts[parent_season_id] = (
-                season_play_counts.get(parent_season_id, 0) + ep_count
-            )
-
-    if not series_play_counts and not season_play_counts:
-        return
-
-    async with async_db() as session:
-        updated_series = 0
-        if series_play_counts:
-            series_rows = (
-                await session.execute(
-                    select(
-                        SeriesServiceRef.service_id,
-                        Series.id,
-                        Series.view_count,
-                    )
-                    .join(Series, SeriesServiceRef.series_id == Series.id)
-                    .where(
-                        SeriesServiceRef.service == server_service,
-                        Series.removed_at.is_(None),
-                    )
-                )
-            ).all()
-
-            for service_id, series_id, current_count in series_rows:
-                plugin_count = series_play_counts.get(service_id)
-                if plugin_count and plugin_count > (current_count or 0):
-                    await session.execute(
-                        sql_update(Series)
-                        .where(Series.id == series_id)
-                        .values(view_count=plugin_count)
-                    )
-                    updated_series += 1
-
-            if use_mapped_matches:
-                mapped_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Series.id,
-                            Series.view_count,
-                        )
-                        .join(Series, SupplementalMediaMatch.series_id == Series.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == server_service,
-                            SupplementalMediaMatch.media_type == MediaType.SERIES,
-                            SupplementalMediaMatch.series_id.is_not(None),
-                            SupplementalMediaMatch.season_id.is_(None),
-                            Series.removed_at.is_(None),
-                        )
-                    )
-                ).all()
-                for service_id, series_id, current_count in mapped_rows:
-                    plugin_count = series_play_counts.get(service_id)
-                    if plugin_count and plugin_count > (current_count or 0):
-                        await session.execute(
-                            sql_update(Series)
-                            .where(Series.id == series_id)
-                            .values(view_count=plugin_count)
-                        )
-                        updated_series += 1
-
-        updated_seasons = 0
-        if season_play_counts:
-            season_service_col = (
-                Season.jellyfin_season_id
-                if server_service == Service.JELLYFIN
-                else Season.emby_season_id
-            )
-            season_rows = (
-                await session.execute(
-                    select(
-                        season_service_col,
-                        Season.id,
-                        Season.view_count,
-                    ).where(season_service_col.is_not(None))
-                )
-            ).all()
-            for service_id, season_id, current_count in season_rows:
-                plugin_count = season_play_counts.get(service_id)
-                if plugin_count and plugin_count > (current_count or 0):
-                    await session.execute(
-                        sql_update(Season)
-                        .where(Season.id == season_id)
-                        .values(view_count=plugin_count)
-                    )
-                    updated_seasons += 1
-
-            if use_mapped_matches:
-                mapped_season_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Season.id,
-                            Season.view_count,
-                        )
-                        .join(Season, SupplementalMediaMatch.season_id == Season.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == server_service,
-                            SupplementalMediaMatch.media_type == MediaType.SERIES,
-                            SupplementalMediaMatch.season_id.is_not(None),
-                        )
-                    )
-                ).all()
-                for service_id, season_id, current_count in mapped_season_rows:
-                    plugin_count = season_play_counts.get(service_id)
-                    if plugin_count and plugin_count > (current_count or 0):
-                        await session.execute(
-                            sql_update(Season)
-                            .where(Season.id == season_id)
-                            .values(view_count=plugin_count)
-                        )
-                        updated_seasons += 1
-
-        await session.commit()
-
-    LOG.info(
-        f"Updated view_count for {updated_series} series and {updated_seasons} "
-        f"seasons from {server_service} Playback Reporting plugin"
-    )
-
-    #### episodes (individual, keyed by episode item ID) ####
-    episode_service_col = (
-        Episode.jellyfin_episode_id
-        if server_service == Service.JELLYFIN
-        else Episode.emby_episode_id
-    )
-    async with async_db() as session:
-        ep_rows = (
-            await session.execute(
-                select(
-                    episode_service_col,
-                    Episode.id,
-                    Episode.view_count,
-                ).where(episode_service_col.is_not(None))
-            )
-        ).all()
-
-        updated_episodes = 0
-        for service_ep_id, ep_id, current_count in ep_rows:
-            plugin_count = episode_stats.get(service_ep_id)
-            if plugin_count and plugin_count > (current_count or 0):
-                await session.execute(
-                    sql_update(Episode)
-                    .where(Episode.id == ep_id)
-                    .values(view_count=plugin_count)
-                )
-                updated_episodes += 1
-
-        await session.commit()
-
-    LOG.info(
-        f"Updated view_count for {updated_episodes} episodes from "
-        f"{server_service} Playback Reporting plugin"
-    )
-
-
-async def sync_tautulli_playback_data() -> None:
-    """Supplement movie and series view counts / last-viewed timestamps using
-    Tautulli play history.
-
-    Tautulli stores complete per-user play history that Plex's own API may under-
-    report (e.g. plays from managed accounts, partially-counted plays).  The
-    supplemental counts are applied as ``max(existing, tautulli_count)`` so
-    existing data is never decreased.
-
-    Movies are linked via ``MovieVersion.service_item_id`` (where service == PLEX).
-    Series are linked via ``SeriesServiceRef.service_id`` (where service == PLEX)
-    using series-level aggregation of episode history records.
-
-    On first run a full history pull is performed.  On subsequent runs only
-    records on/after ``last_synced_at`` (minus a 1-day overlap buffer) are
-    fetched.  The timestamp is persisted in ``ServiceConfig.extra_settings``
-    on the Tautulli config row.
-
-    Does nothing if Tautulli is not configured/enabled.
-    """
-    if service_manager.tautulli is None:
-        LOG.debug(
-            "Skipping Tautulli supplemental sync: Tautulli client not initialized"
-        )
-        return
-
-    async with async_db() as session:
-        main = await _get_main_media_server(session)
-    if not main:
-        LOG.debug(
-            "Skipping Tautulli supplemental sync: no main media server configured"
-        )
-        return
-
-    # load Tautulli ServiceConfig to read/write last_synced_at
-    async with async_db() as session:
-        result = await session.execute(
-            select(ServiceConfig).where(
-                ServiceConfig.service_type == Service.TAUTULLI,
-                ServiceConfig.enabled.is_(True),
-            )
-        )
-        tautulli_config = result.scalar_one_or_none()
-        plex_result = await session.execute(
-            select(ServiceConfig.id).where(
-                ServiceConfig.service_type == Service.PLEX,
-                ServiceConfig.enabled.is_(True),
-            )
-        )
-        has_enabled_plex = plex_result.first() is not None
-
-    if tautulli_config is None:
-        LOG.debug(
-            "Skipping Tautulli supplemental sync: no enabled Tautulli service config"
-        )
-        return
-    if not has_enabled_plex:
-        LOG.debug("Skipping Tautulli supplemental sync: no enabled Plex service config")
-        return
-    use_mapped_matches = main.service_type != Service.PLEX
-
-    LOG.info("Syncing Tautulli playback data (full pull)")
-
-    try:
-        movie_counts = await service_manager.tautulli.get_play_counts("movie")
-        episode_counts = await service_manager.tautulli.get_play_counts("episode")
-        season_counts = await service_manager.tautulli.get_play_counts(
-            "episode", episode_key="parent_rating_key"
-        )
-        individual_episode_counts = await service_manager.tautulli.get_play_counts(
-            "episode", episode_key="rating_key"
-        )
-    except Exception as e:
-        LOG.error(f"Failed to fetch Tautulli history: {e}")
-        return
-
-    #### movies ####
-    if movie_counts:
-        LOG.info(
-            f"Tautulli returned play data for {len(movie_counts)} unique movie rating keys"
-        )
-        async with async_db() as session:
-            tautulli_movie_rows = (
-                await session.execute(
-                    select(
-                        MovieVersion.service_item_id,
-                        Movie.id,
-                        Movie.view_count,
-                        Movie.last_viewed_at,
-                    )
-                    .join(Movie, MovieVersion.movie_id == Movie.id)
-                    .where(
-                        MovieVersion.service == Service.PLEX,
-                        Movie.removed_at.is_(None),
-                    )
-                )
-            ).all()
-
-            updated = 0
-            for item_id, movie_id, current_count, current_lva in tautulli_movie_rows:
-                entry = _play_entry(movie_counts, item_id)
-                if not entry:
-                    continue
-                taut_count, taut_lva = entry
-                new_count = max(current_count or 0, taut_count)
-                new_lva = _merge_last_viewed(current_lva, taut_lva)
-                if new_count != current_count or new_lva != current_lva:
-                    await session.execute(
-                        sql_update(Movie)
-                        .where(Movie.id == movie_id)
-                        .values(view_count=new_count, last_viewed_at=new_lva)
-                    )
-                    updated += 1
-
-            if use_mapped_matches:
-                mapped_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Movie.id,
-                            Movie.view_count,
-                            Movie.last_viewed_at,
-                        )
-                        .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == Service.PLEX,
-                            SupplementalMediaMatch.media_type == MediaType.MOVIE,
-                            SupplementalMediaMatch.movie_id.is_not(None),
-                            Movie.removed_at.is_(None),
-                        )
-                    )
-                ).all()
-                for item_id, movie_id, current_count, current_lva in mapped_rows:
-                    entry = _play_entry(movie_counts, item_id)
-                    if not entry:
-                        continue
-                    taut_count, taut_lva = entry
-                    new_count = max(current_count or 0, taut_count)
-                    new_lva = _merge_last_viewed(current_lva, taut_lva)
-                    if new_count != current_count or new_lva != current_lva:
-                        await session.execute(
-                            sql_update(Movie)
-                            .where(Movie.id == movie_id)
-                            .values(view_count=new_count, last_viewed_at=new_lva)
-                        )
-                        updated += 1
-
-            await session.commit()
-        LOG.info(f"Updated {updated} movies from Tautulli playback data")
-    else:
-        LOG.debug("No movie play data returned from Tautulli")
-
-    #### series (aggregated from episode-level data) ####
-    if episode_counts:
-        LOG.info(
-            f"Tautulli returned episode play data for {len(episode_counts)} unique series rating keys"
-        )
-        async with async_db() as session:
-            tautulli_series_rows = (
-                await session.execute(
-                    select(
-                        SeriesServiceRef.service_id,
-                        Series.id,
-                        Series.view_count,
-                        Series.last_viewed_at,
-                    )
-                    .join(Series, SeriesServiceRef.series_id == Series.id)
-                    .where(
-                        SeriesServiceRef.service == Service.PLEX,
-                        Series.removed_at.is_(None),
-                    )
-                )
-            ).all()
-
-            updated = 0
-            for (
-                service_id,
-                series_id,
-                current_count,
-                current_lva,
-            ) in tautulli_series_rows:
-                entry = _play_entry(episode_counts, service_id)
-                if not entry:
-                    continue
-                taut_count, taut_lva = entry
-                new_count = max(current_count or 0, taut_count)
-                new_lva = _merge_last_viewed(current_lva, taut_lva)
-                if new_count != current_count or new_lva != current_lva:
-                    await session.execute(
-                        sql_update(Series)
-                        .where(Series.id == series_id)
-                        .values(view_count=new_count, last_viewed_at=new_lva)
-                    )
-                    updated += 1
-
-            if use_mapped_matches:
-                mapped_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Series.id,
-                            Series.view_count,
-                            Series.last_viewed_at,
-                        )
-                        .join(Series, SupplementalMediaMatch.series_id == Series.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == Service.PLEX,
-                            SupplementalMediaMatch.media_type == MediaType.SERIES,
-                            SupplementalMediaMatch.series_id.is_not(None),
-                            SupplementalMediaMatch.season_id.is_(None),
-                            Series.removed_at.is_(None),
-                        )
-                    )
-                ).all()
-                for service_id, series_id, current_count, current_lva in mapped_rows:
-                    entry = _play_entry(episode_counts, service_id)
-                    if not entry:
-                        continue
-                    taut_count, taut_lva = entry
-                    new_count = max(current_count or 0, taut_count)
-                    new_lva = _merge_last_viewed(current_lva, taut_lva)
-                    if new_count != current_count or new_lva != current_lva:
-                        await session.execute(
-                            sql_update(Series)
-                            .where(Series.id == series_id)
-                            .values(view_count=new_count, last_viewed_at=new_lva)
-                        )
-                        updated += 1
-
-            await session.commit()
-        LOG.info(f"Updated {updated} series from Tautulli playback data")
-    else:
-        LOG.debug("No episode play data returned from Tautulli")
-
-    #### seasons (aggregated from episode-level data by parent season key) ####
-    if season_counts:
-        LOG.info(
-            f"Tautulli returned episode play data for {len(season_counts)} unique season rating keys"
-        )
-        async with async_db() as session:
-            tautulli_season_rows = (
-                await session.execute(
-                    select(
-                        Season.plex_season_rating_key,
-                        Season.id,
-                        Season.view_count,
-                        Season.last_viewed_at,
-                    ).where(Season.plex_season_rating_key.is_not(None))
-                )
-            ).all()
-
-            updated = 0
-            for (
-                service_id,
-                season_id,
-                current_count,
-                current_lva,
-            ) in tautulli_season_rows:
-                entry = _play_entry(season_counts, service_id)
-                if not entry:
-                    continue
-                taut_count, taut_lva = entry
-                new_count = max(current_count or 0, taut_count)
-                new_lva = _merge_last_viewed(current_lva, taut_lva)
-                if new_count != current_count or new_lva != current_lva:
-                    await session.execute(
-                        sql_update(Season)
-                        .where(Season.id == season_id)
-                        .values(view_count=new_count, last_viewed_at=new_lva)
-                    )
-                    updated += 1
-
-            if use_mapped_matches:
-                mapped_tautulli_season_rows = (
-                    await session.execute(
-                        select(
-                            SupplementalMediaMatch.source_item_id,
-                            Season.id,
-                            Season.view_count,
-                            Season.last_viewed_at,
-                        )
-                        .join(Season, SupplementalMediaMatch.season_id == Season.id)
-                        .where(
-                            SupplementalMediaMatch.source_service == Service.PLEX,
-                            SupplementalMediaMatch.media_type == MediaType.SERIES,
-                            SupplementalMediaMatch.season_id.is_not(None),
-                        )
-                    )
-                ).all()
-                for (
-                    service_id,
-                    season_id,
-                    current_count,
-                    current_lva,
-                ) in mapped_tautulli_season_rows:
-                    entry = _play_entry(season_counts, service_id)
-                    if not entry:
-                        continue
-                    taut_count, taut_lva = entry
-                    new_count = max(current_count or 0, taut_count)
-                    new_lva = _merge_last_viewed(current_lva, taut_lva)
-                    if new_count != current_count or new_lva != current_lva:
-                        await session.execute(
-                            sql_update(Season)
-                            .where(Season.id == season_id)
-                            .values(view_count=new_count, last_viewed_at=new_lva)
-                        )
-                        updated += 1
-
-            await session.commit()
-        LOG.info(f"Updated {updated} seasons from Tautulli playback data")
-    else:
-        LOG.debug("No season play data returned from Tautulli")
-
-    #### episodes (individual, keyed by episode rating_key) ####
-    if individual_episode_counts:
-        LOG.info(
-            f"Tautulli returned individual play data for "
-            f"{len(individual_episode_counts)} episode rating keys"
-        )
-        async with async_db() as session:
-            tautulli_episode_rows = (
-                await session.execute(
-                    select(
-                        Episode.plex_rating_key,
-                        Episode.id,
-                        Episode.view_count,
-                        Episode.last_viewed_at,
-                    ).where(Episode.plex_rating_key.is_not(None))
-                )
-            ).all()
-
-            updated = 0
-            for plex_key, ep_id, current_count, current_lva in tautulli_episode_rows:
-                entry = _play_entry(individual_episode_counts, plex_key)
-                if not entry:
-                    continue
-                taut_count, taut_lva = entry
-                new_count = max(current_count or 0, taut_count)
-                new_lva = _merge_last_viewed(current_lva, taut_lva)
-                if new_count != current_count or new_lva != current_lva:
-                    await session.execute(
-                        sql_update(Episode)
-                        .where(Episode.id == ep_id)
-                        .values(view_count=new_count, last_viewed_at=new_lva)
-                    )
-                    updated += 1
-
-            await session.commit()
-        LOG.info(f"Updated {updated} episodes from Tautulli playback data")
-    else:
-        LOG.debug("No individual episode play data returned from Tautulli")
-
-    LOG.info("Tautulli playback sync complete")
 
 
 async def sync_media() -> dict[str, Any] | None:

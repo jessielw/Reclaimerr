@@ -100,6 +100,9 @@ class RulePreviewMatchMetadata:
     )
     playback_unavailable_count: int = 0
     playback_error: str | None = None
+    seerr_unavailable: bool = False
+    seerr_error: str | None = None
+    requester_watch_unavailable_count: int = 0
     matched_count: int = 0
 
 

@@ -114,7 +114,7 @@ FIELD_LABELS: dict[str, str] = {
     "media.container": "Container",
     "media.days_since_added": "Days since added",
     "arr.days_since_file_added": "Days since latest Arr file added",
-    "watch.view_count": "Views",
+    "watch.view_count": "View count",
     "watch.days_since_last_watched": "Days since watched",
     "watch.last_viewed_at": "Last watched",
     "tmdb.release_date": "TMDB release date",
@@ -155,13 +155,13 @@ FIELD_LABELS: dict[str, str] = {
     "playback.days_since_last_activity": "Days since playback activity",
     "playback.user_watched_duration_minutes": "Playback duration by user (minutes)",
     "playback.user_watched_percent": "Playback watched by user (%)",
-    "tmdb.popularity": "Popularity",
+    "tmdb.popularity": "TMDB popularity",
     "tmdb.vote_average": "TMDB rating",
-    "tmdb.vote_count": "Vote count",
+    "tmdb.vote_count": "TMDB votes",
     "tmdb.id": "TMDB ID",
     "imdb.id": "IMDb ID",
     "imdb.rating": "IMDb rating",
-    "imdb.vote_count": "IMDb vote count",
+    "imdb.vote_count": "IMDb votes",
     "tvdb.id": "TVDB ID",
     "anilist.score": "AniList score",
     "anilist.popularity": "AniList popularity",
@@ -182,8 +182,8 @@ FIELD_LABELS: dict[str, str] = {
     "series.tmdb_season_count": "TMDB season count",
     "series.library_season_count": "Library season count",
     "movie.version_count": "Movie version count",
-    "video.codec_family": "Video codec",
-    "audio.codec_family": "Audio codec",
+    "video.codec_family": "Video codec family",
+    "audio.codec_family": "Audio codec family",
     "video.hdr": "HDR",
     "video.dolby_vision": "Dolby Vision",
     "video.width": "Video width",
@@ -192,29 +192,30 @@ FIELD_LABELS: dict[str, str] = {
     "video.bit_depth": "Video bit depth",
     "video.resolution": "Resolution",
     "audio.channels": "Audio channels",
-    "audio.track_count": "Audio tracks",
+    "audio.track_count": "Audio track count",
     "audio.bitrate_kbps": "Audio bitrate (kbps)",
     "audio.languages": "Audio languages",
     "subtitle.languages": "Subtitle languages",
-    "subtitle.track_count": "Subtitle tracks",
+    "subtitle.track_count": "Subtitle track count",
     "subtitle.has_forced": "Has forced subtitles",
-    "video.color_space": "Color space",
-    "video.color_transfer": "Color transfer",
-    "video.color_primaries": "Color primaries",
-    "media.duration": "Duration",
+    "video.color_space": "Video color space",
+    "video.color_transfer": "Video color transfer",
+    "video.color_primaries": "Video color primaries",
+    "media.duration": "Duration (ms)",
     "media_server.collections": "Media server collections",
     "arr.tags": "Arr tags",
     "arr.movie_ids": "Radarr movie IDs",
     "arr.series_ids": "Sonarr series IDs",
     "arr.monitored": "Arr monitored",
-    "sonarr.latest_season_has_unaired_episodes": (
-        "Sonarr latest season has unaired episodes"
-    ),
-    "sonarr.latest_season_has_finale": "Sonarr latest season has finale",
+    "sonarr.latest_season_has_unaired_episodes": "Latest season has unaired episodes",
+    "sonarr.latest_season_has_finale": "Latest season has finale",
     "sonarr.series_status": "Sonarr series status",
     "seerr.requested": "Seerr requested",
-    "seerr.requested_by_user_ids": "Seerr requested by user IDs",
+    "seerr.requested_by_user_ids": "Seerr requester IDs",
     "seerr.requester_has_watched": "Seerr requester has watched",
+    "seerr.requester_watched_after_request": (
+        "Seerr requester watched after requesting"
+    ),
     "seerr.last_requested_at": "Seerr latest active request",
     "seerr.days_since_last_requested": "Days since latest active Seerr request",
     "favorites.exists": "Favorited or watchlisted",
@@ -227,7 +228,7 @@ FIELD_LABELS: dict[str, str] = {
         "Days since collection sibling watched"
     ),
     "media_server.user_rating": "Media server user rating",
-    "disk.free_bytes": "Disk free (bytes)",
+    "disk.free_bytes": "Disk free",
     "disk.free_percent": "Disk free (%)",
 }
 
@@ -269,6 +270,41 @@ LIST_OPERATORS = {
     "not_matches_any_regex",
 }
 VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
+
+# Fields whose true/false verdict is derived from other values rather than read
+# straight off the file. A bare "is true" leaves nothing to check, so each
+# verdict carries the context values it was computed from. Every companion is
+# read from the same scope's context and skipped when unavailable.
+BOOLEAN_REASON_COMPANIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "season.fully_watched": (
+        ("season.watched_percent", "{value}% of Sonarr's episode list watched"),
+    ),
+    "watch.never_watched": (
+        ("watch.view_count", "{value} views"),
+        ("watch.last_viewed_at", "last watched {value}"),
+    ),
+    "playback.has_activity": (
+        ("playback.play_count", "{value} plays"),
+        ("playback.last_activity_at", "last played {value}"),
+    ),
+    "favorites.exists": (("favorites.usernames", "users: {value}"),),
+    "tmdb.in_collection": (("tmdb.collection_name", "collection: {value}"),),
+    "seerr.requested": (
+        ("seerr.requested_by_user_ids", "requester IDs: {value}"),
+        ("seerr.last_requested_at", "last requested {value}"),
+    ),
+    "arr.monitored": (
+        ("arr.movie_ids", "Radarr movie {value}"),
+        ("arr.series_ids", "Sonarr series {value}"),
+    ),
+    "sonarr.latest_season_has_unaired_episodes": (
+        ("sonarr.series_status", "Sonarr status: {value}"),
+    ),
+    "sonarr.latest_season_has_finale": (
+        ("sonarr.series_status", "Sonarr status: {value}"),
+    ),
+    "season.is_latest_season": (("season.season_number", "season {value}"),),
+}
 NUMERIC_FIELDS = {
     "media.size",
     "media.year",
@@ -444,6 +480,7 @@ BOOLEAN_FIELDS = {
     "sonarr.latest_season_has_finale",
     "seerr.requested",
     "seerr.requester_has_watched",
+    "seerr.requester_watched_after_request",
 }
 TEMPORAL_FIELDS = {
     "watch.last_viewed_at",
@@ -608,6 +645,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -687,6 +725,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -773,6 +812,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -858,6 +898,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "seerr.days_since_last_requested",
         "seerr.requested_by_user_ids",
         "seerr.requester_has_watched",
+        "seerr.requester_watched_after_request",
         "rottentomatoes.popcorn_meter",
         "rottentomatoes.popcorn_vote_count",
         "rottentomatoes.tomato_meter",
@@ -1215,12 +1256,15 @@ class SeerrRequestResolver:
     )
 
     __slots__ = (
+        "_ignore_request_date",
         "_latest_active_request_at_by_key",
         "_latest_active_request_at_by_target",
         "_requester_ids_by_key",
         "_requester_ids_by_target",
         "_requester_has_watched_by_key",
         "_requester_has_watched_by_target",
+        "_requester_watched_after_request_by_key",
+        "_requester_watched_after_request_by_target",
     )
 
     def __init__(
@@ -1233,6 +1277,12 @@ class SeerrRequestResolver:
             tuple[str, int, int | None, int | None], bool
         ]
         | None = None,
+        requester_watched_after_request_by_key: Mapping[tuple[MediaType, int], bool]
+        | None = None,
+        requester_watched_after_request_by_target: Mapping[
+            tuple[str, int, int | None, int | None], bool
+        ]
+        | None = None,
         latest_active_request_at_by_key: Mapping[tuple[MediaType, int], datetime]
         | None = None,
         requester_ids_by_target: Mapping[tuple[str, int, int | None], Iterable[int]]
@@ -1241,6 +1291,7 @@ class SeerrRequestResolver:
             tuple[str, int, int | None], datetime
         ]
         | None = None,
+        ignore_request_date: bool = False,
     ):
         self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
         for key, user_ids in (requester_ids_by_key or {}).items():
@@ -1256,12 +1307,22 @@ class SeerrRequestResolver:
         self._requester_has_watched_by_target = dict(
             requester_has_watched_by_target or {}
         )
+        self._requester_watched_after_request_by_key: dict[
+            tuple[MediaType, int], bool
+        ] = {
+            key: bool(value)
+            for key, value in (requester_watched_after_request_by_key or {}).items()
+        }
+        self._requester_watched_after_request_by_target = dict(
+            requester_watched_after_request_by_target or {}
+        )
         self._latest_active_request_at_by_key = dict(
             latest_active_request_at_by_key or {}
         )
         self._latest_active_request_at_by_target = dict(
             latest_active_request_at_by_target or {}
         )
+        self._ignore_request_date = bool(ignore_request_date)
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -1327,15 +1388,71 @@ class SeerrRequestResolver:
         season_number: int | None = None,
         episode_number: int | None = None,
     ) -> bool | None:
-        """Return requester watched state for the given media key if known."""
+        """Return whether a requester watched this, ignoring when they asked."""
+        return self._resolve_watch_state(
+            self._requester_has_watched_by_key,
+            self._requester_has_watched_by_target,
+            media_type,
+            tmdb_id,
+            target_scope=target_scope,
+            season_number=season_number,
+            episode_number=episode_number,
+        )
+
+    def resolve_requester_watched_after_request(
+        self,
+        media_type: MediaType,
+        tmdb_id: int | None,
+        *,
+        target_scope: str | None = None,
+        season_number: int | None = None,
+        episode_number: int | None = None,
+    ) -> bool | None:
+        """Return requester watched state gated on their earliest request date.
+
+        With the request-date gate switched off in settings this answers the
+        completion half alone, which is the same value
+        `resolve_requester_has_watched` returns. The gated maps are still built
+        so the explain endpoint can show both halves either way.
+        """
+        if self._ignore_request_date:
+            return self.resolve_requester_has_watched(
+                media_type,
+                tmdb_id,
+                target_scope=target_scope,
+                season_number=season_number,
+                episode_number=episode_number,
+            )
+        return self._resolve_watch_state(
+            self._requester_watched_after_request_by_key,
+            self._requester_watched_after_request_by_target,
+            media_type,
+            tmdb_id,
+            target_scope=target_scope,
+            season_number=season_number,
+            episode_number=episode_number,
+        )
+
+    @staticmethod
+    def _resolve_watch_state(
+        by_key: Mapping[tuple[MediaType, int], bool],
+        by_target: Mapping[tuple[str, int, int | None, int | None], bool],
+        media_type: MediaType,
+        tmdb_id: int | None,
+        *,
+        target_scope: str | None,
+        season_number: int | None,
+        episode_number: int | None,
+    ) -> bool | None:
+        """Look one watch answer up, keeping a missing key as unknown."""
         if tmdb_id is None:
             return None
         if media_type is MediaType.SERIES and target_scope is not None:
-            value = self._requester_has_watched_by_target.get(
+            value = by_target.get(
                 (target_scope, tmdb_id, season_number, episode_number)
             )
         else:
-            value = self._requester_has_watched_by_key.get((media_type, tmdb_id))
+            value = by_key.get((media_type, tmdb_id))
         if value is None:
             return None
         return bool(value)
@@ -2330,6 +2447,13 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.MOVIE, movie.tmdb_id
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -2502,6 +2626,15 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_SERIES,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -2546,7 +2679,13 @@ def _build_context(
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.title": series.title,
-            "media.path": [ref.path for ref in refs if ref.path],
+            # The season's own folder, falling back to the series roots only
+            # when the provider does not report one. A merged library holds one
+            # series under two Arr roots, and the series-level paths cannot say
+            # which of them this season's files are actually under.
+            "media.path": (
+                [season.path] if season.path else [ref.path for ref in refs if ref.path]
+            ),
             "media.file_name": [_season_file_name] if _season_file_name else [],
             "media.size": season.size,
             "media.year": series.year,
@@ -2704,6 +2843,16 @@ def _build_context(
             ),
             "seerr.requester_has_watched": (
                 _seerr_resolver.resolve_requester_has_watched(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_SEASON,
+                    season_number=season.season_number,
+                )
+                if _seerr_resolver
+                else None
+            ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
                     MediaType.SERIES,
                     series.tmdb_id,
                     target_scope=TARGET_SEASON,
@@ -2935,6 +3084,17 @@ def _build_context(
                 if _seerr_resolver
                 else None
             ),
+            "seerr.requester_watched_after_request": (
+                _seerr_resolver.resolve_requester_watched_after_request(
+                    MediaType.SERIES,
+                    series.tmdb_id,
+                    target_scope=TARGET_EPISODE,
+                    season_number=season.season_number,
+                    episode_number=episode.episode_number,
+                )
+                if _seerr_resolver
+                else None
+            ),
             "disk.free_bytes": _disk[0] if _disk else None,
             "disk.free_percent": _disk[1] if _disk else None,
         }
@@ -3013,7 +3173,7 @@ def _evaluate_condition(
     elif not _matches_operator(actual, operator, expected, field=field):
         return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
-    reasons.append(_build_reason_condition(field, operator, expected, actual))
+    reasons.append(_build_reason_condition(field, operator, expected, actual, context))
     return True
 
 
@@ -3049,7 +3209,12 @@ def _matches_operator(
         haystacks = [_normalize(item) for item in _as_list(actual) if _exists(item)]
         found = any(needle in haystack for haystack in haystacks for needle in needles)
         return found if operator == "contains_substring" else not found
-    if field in MULTI_VALUE_TEXT_FIELDS and operator in {"equals", "not_equals"}:
+    if (field in MULTI_VALUE_TEXT_FIELDS or field == "media.path") and operator in {
+        "equals",
+        "not_equals",
+    }:
+        # A scope can hold several paths -- one per Arr instance at series
+        # scope. Testing only the first made the result depend on row order.
         list_operator = "contains_any" if operator == "equals" else "not_contains_any"
         return _matches_list_operator(actual, list_operator, expected, field=field)
     if operator in {"before", "on_or_before", "after", "on_or_after"}:
@@ -3300,6 +3465,9 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     Sonarr's canonical episode inventory is the denominator. This prevents a season
     with every downloaded episode watched from appearing complete while Sonarr knows
     about missing or future episodes.
+
+    Staleness is judged per episode, since replacing one file must not discard the
+    recorded watch state of the rest of the season.
     """
     expected_episode_numbers = set(season.sonarr_episode_numbers or [])
     if not expected_episode_numbers:
@@ -3310,8 +3478,11 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     for episode in episodes:
         if episode.episode_number not in expected_episode_numbers:
             continue
+        # Compare against this episode's own added date. Using the season's
+        # would let one upgraded episode mark every other episode in the season
+        # as never watched. Fall back to the season only when unknown.
         effective_last_viewed = _effective_last_viewed(
-            episode.last_viewed_at, season.added_at
+            episode.last_viewed_at, episode.added_at or season.added_at
         )
         if effective_last_viewed is not None:
             watched_episode_numbers.add(episode.episode_number)
@@ -3403,37 +3574,158 @@ def _normalize(value: Any) -> str:
     return str(value).strip().lower()
 
 
-def _format_reason(field: str, operator: str, expected: Any, actual: Any) -> str:
+# Numeric fields whose raw value is meaningless without a unit. Reason strings
+# render these in human units so the labels do not have to carry a hint.
+BYTE_VALUE_FIELDS = frozenset({"media.size", "disk.free_bytes"})
+MILLISECOND_VALUE_FIELDS = frozenset({"media.duration"})
+
+
+def format_rule_value(field: str, value: Any) -> str:
+    """Render one condition value the way a person would read it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if field in BYTE_VALUE_FIELDS:
+        return _format_bytes(float(value))
+    if field in MILLISECOND_VALUE_FIELDS:
+        return _format_milliseconds(float(value))
+    return str(value)
+
+
+def _format_bytes(value: float) -> str:
+    negative = value < 0
+    remaining = abs(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if remaining < 1024 or unit == "TiB":
+            rendered = (
+                f"{remaining:.0f}"
+                if unit == "B"
+                else f"{remaining:.2f}".rstrip("0").rstrip(".")
+            )
+            return f"{'-' if negative else ''}{rendered} {unit}"
+        remaining /= 1024
+    return str(value)
+
+
+def _format_milliseconds(value: float) -> str:
+    total_seconds = int(abs(value) // 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    sign = "-" if value < 0 else ""
+    if hours:
+        return f"{sign}{hours}h {minutes}m"
+    if minutes:
+        return f"{sign}{minutes}m {seconds}s"
+    return f"{sign}{seconds}s"
+
+
+def _format_reason(
+    field: str,
+    operator: str,
+    expected: Any,
+    actual: Any,
+    details: list[str] | None = None,
+) -> str:
     """Format the reason for a rule evaluation, including the field, operator, expected, and actual values."""
     label = FIELD_LABELS.get(field, field)
     op = OPERATOR_LABELS.get(operator, operator)
     if operator in VALUELESS_OPERATORS:
-        return f"{label} {op}"
-    value = ", ".join(str(item) for item in _as_list(expected))
-    return f"{label} {op} {value} ({_format_actual(actual)})"
+        return format_valueless_reason(label, op, field, operator, actual, details)
+    value = ", ".join(format_rule_value(field, item) for item in _as_list(expected))
+    return f"{label} {op} {value} ({_format_actual(field, actual)})"
 
 
-def _format_actual(actual: Any) -> str:
+def format_valueless_reason(
+    field_label: str,
+    operator_label: str,
+    field: str,
+    operator: str,
+    actual: Any,
+    details: list[str] | None,
+) -> str:
+    """Render a valueless-operator verdict alongside the values behind it.
+
+    Shared with the candidate reason renderer so a stored candidate reads the
+    same as the preview that produced it.
+    """
+    parts = valueless_reason_details(field, operator, actual, details)
+    if not parts:
+        return f"{field_label} {operator_label}"
+    return f"{field_label} {operator_label} ({'; '.join(parts)})"
+
+
+def valueless_reason_details(
+    field: str, operator: str, actual: Any, details: list[str] | None
+) -> list[str]:
+    """Return the supporting values shown beside a valueless-operator verdict.
+
+    `exists` already found the value it is reporting on, so it shows that.
+    `not_exists` has nothing to show. A derived true/false has to borrow the
+    companion values recorded when the condition was evaluated.
+    """
+    if operator == "exists":
+        values = _as_list(actual)
+        return [_format_actual(field, actual)] if values else []
+    if operator == "not_exists":
+        return []
+    return [text for item in (details or []) if (text := str(item).strip())]
+
+
+def _companion_reason_details(field: str, context: dict[str, Any]) -> list[str]:
+    """Render the context values a derived boolean verdict was computed from."""
+    rendered: list[str] = []
+    for companion, template in BOOLEAN_REASON_COMPANIONS.get(field, ()):
+        value = context.get(companion, RULE_VALUE_UNAVAILABLE)
+        if value is RULE_VALUE_UNAVAILABLE or value is None:
+            continue
+        # Keep falsy-but-real values such as a zero view count; drop only the
+        # empties that would render as "missing".
+        if isinstance(value, (list, str)) and not value:
+            continue
+        # A rounded percent arrives as a float, and "100.0%" reads worse than
+        # "100%" for the whole-number case these mostly land on.
+        if (
+            isinstance(value, float)
+            and not isinstance(value, bool)
+            and value.is_integer()
+        ):
+            value = int(value)
+        rendered.append(template.format(value=_format_actual(companion, value)))
+    return rendered
+
+
+def _format_actual(field: str, actual: Any) -> str:
     """Format the actual value for a rule evaluation, returning a string representation."""
     values = _as_list(actual)
     if not values:
         return "missing"
-    return ", ".join(str(value) for value in values[:4])
+    return ", ".join(format_rule_value(field, value) for value in values[:4])
 
 
 def _build_reason_condition(
-    field: str, operator: str, expected: Any, actual: Any
+    field: str,
+    operator: str,
+    expected: Any,
+    actual: Any,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a reason condition dictionary for a rule evaluation."""
-    return {
+    details = (
+        _companion_reason_details(field, context)
+        if context is not None and operator in {"is_true", "is_false"}
+        else []
+    )
+    condition: dict[str, Any] = {
         "field": field,
         "field_label": FIELD_LABELS.get(field, field),
         "operator": operator,
         "operator_label": OPERATOR_LABELS.get(operator, operator),
         "expected": _json_safe(expected),
         "actual": _json_safe(actual),
-        "display": _format_reason(field, operator, expected, actual),
+        "display": _format_reason(field, operator, expected, actual, details),
     }
+    if details:
+        condition["details"] = details
+    return condition
 
 
 def _json_safe(value: Any) -> Any:

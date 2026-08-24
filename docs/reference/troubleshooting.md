@@ -7,13 +7,14 @@
 
 ### Seerr Requester Watch Rules Do Not Match
 
-- Run `Sync Media` after adding Seerr, changing a requester mapping, or updating a playback service.
-- Confirm the playback happened after the movie or relevant TV season was requested. Earlier playback intentionally does not count.
+- Requester mappings live under **Settings -> User Signals -> Seerr Requester to Watch User Mapping**. The **Sign-In Identity Links** panel under **Settings -> Users** links media-server logins to local accounts and has no effect on rules.
+- Confirm the playback happened after the movie or relevant TV season was requested. Earlier playback intentionally does not count for `Seerr requester watched after requesting`; use `Seerr requester has watched` in rules that should not care about dates.
+- If every item reports plays from before its request, check the request dates themselves. A rebuilt or migrated Seerr, or a re-requested season, dates its rows after the plays they describe, which makes the date comparison un-passable for a whole library. **Settings -> User Signals -> Ignore Seerr Request Dates** turns that comparison off for every rule at once.
 - For season and series targets, one requester must have watched every required local episode; progress from multiple requesters is not combined.
 - Check that the season was actually included in the Seerr request. An un-requested season does not inherit another season's state.
-- Automatic matching uses the Seerr username, display name, and email. Add an explicit requester mapping when the playback-provider identity differs.
+- Automatic matching uses the Seerr username, display name, email, and linked Plex or Jellyfin account name, plus every name the playback provider reports for that account. Add an explicit requester mapping only when the two share no name at all.
 - Partial playback does not count, regardless of session length. The media server's watched state or Tautulli's completed status must confirm completion.
-- Plex durable history requires Tautulli. Tautulli usernames are matched as Plex identities.
+- Plex durable history requires Tautulli or a Plex-bound Tracearr server. Tautulli and Tracearr usernames are matched as Plex identities. Binding Tracearr to a Plex server retires Tautulli for playback totals, but completed Tautulli plays still count as watch evidence.
 - Declined and failed Seerr requests are ignored.
 
 ## The UI Does Not Load

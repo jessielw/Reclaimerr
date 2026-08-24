@@ -16,7 +16,10 @@ from backend.core.rule_engine import (
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
     RULE_OUTCOME_PROTECT,
+    TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
+    TARGET_SEASON,
+    TARGET_SERIES,
     collect_rule_conditions,
     collect_rule_path_conditions,
     derive_path_scope_library_ids,
@@ -46,7 +49,11 @@ from backend.models.cleanup import (
     RuleImportPayload,
     RuleImportResponse,
 )
-from backend.models.media import PaginatedRulePreviewResponse, RulePreviewMetadata
+from backend.models.media import (
+    PaginatedRulePreviewResponse,
+    RequesterWatchExplainResponse,
+    RulePreviewMetadata,
+)
 from backend.models.rules import (
     GenreLookupResponse,
     MediaServerCollectionLookupResponse,
@@ -67,7 +74,10 @@ from backend.models.rules import (
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.seerr_cache import seerr_snapshot_cache
-from backend.tasks.cleanup import collect_rule_preview_matches_with_metadata
+from backend.tasks.cleanup import (
+    collect_rule_preview_matches_with_metadata,
+    explain_requester_watch,
+)
 
 router = APIRouter(prefix="/api", tags=["rules"])
 
@@ -576,6 +586,53 @@ async def get_path_tree(
     return [build_node(r) for r in roots]
 
 
+@router.get(
+    "/rules/requester-watch-explain",
+    response_model=RequesterWatchExplainResponse,
+)
+async def explain_requester_watch_state(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    media_type: Annotated[MediaType, Query()],
+    tmdb_id: Annotated[int, Query(ge=1)],
+    target_scope: Annotated[str | None, Query()] = None,
+    season_number: Annotated[int | None, Query(ge=0)] = None,
+    episode_number: Annotated[int | None, Query(ge=0)] = None,
+) -> RequesterWatchExplainResponse:
+    """Explain how `Seerr requester has watched` resolves for one item.
+
+    Reports the requesters, the identities tried for each, the completion
+    evidence found, and any media server that could not be read, so a
+    mismatch can be diagnosed without guessing.
+    """
+    scope = (target_scope or "").strip() or None
+    if scope is not None and scope not in {
+        TARGET_MOVIE_VERSION,
+        TARGET_SERIES,
+        TARGET_SEASON,
+        TARGET_EPISODE,
+    }:
+        raise HTTPException(status_code=400, detail="Unknown target scope")
+    if scope in {TARGET_SEASON, TARGET_EPISODE} and season_number is None:
+        raise HTTPException(
+            status_code=400,
+            detail="season_number is required for season and episode scopes",
+        )
+    if scope == TARGET_EPISODE and episode_number is None:
+        raise HTTPException(
+            status_code=400,
+            detail="episode_number is required for the episode scope",
+        )
+    return await explain_requester_watch(
+        db,
+        media_type=media_type,
+        tmdb_id=tmdb_id,
+        target_scope=scope,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
+
+
 @router.get("/rules/seerr-users", response_model=list[SeerrUserLookupResponse])
 async def get_seerr_users(
     _admin: Annotated[User, Depends(require_admin)],
@@ -593,6 +650,13 @@ async def get_seerr_users(
             id=user.id,
             username=user.username,
             display_name=user.display_name,
+            identities=sorted(
+                {
+                    text
+                    for value in user.identity_values()
+                    if (text := str(value or "").strip())
+                }
+            ),
         )
         for user in users
     ]
@@ -604,6 +668,7 @@ async def get_seerr_users(
             if needle in str(user.id)
             or needle in (user.username or "").lower()
             or needle in (user.display_name or "").lower()
+            or any(needle in identity.lower() for identity in user.identities)
         ]
     return response_users[:limit]
 
@@ -1228,6 +1293,11 @@ async def preview_rule_matches(
                 preview_result.metadata.playback_unavailable_count
             ),
             playback_error=preview_result.metadata.playback_error,
+            seerr_unavailable=preview_result.metadata.seerr_unavailable,
+            seerr_error=preview_result.metadata.seerr_error,
+            requester_watch_unavailable_count=(
+                preview_result.metadata.requester_watch_unavailable_count
+            ),
             matched_count=preview_result.metadata.matched_count,
         ),
     )
