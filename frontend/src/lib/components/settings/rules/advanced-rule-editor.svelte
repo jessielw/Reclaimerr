@@ -1615,6 +1615,11 @@
                   ? "true"
                   : "false"}
             </strong>
+            {#if explainData.request_date_gate_ignored}
+              <span class="text-muted-foreground">
+                &mdash; request dates ignored (User Signals)
+              </span>
+            {/if}
           </div>
           <div class="mt-1 text-muted-foreground">{explainData.reason}</div>
         </div>
@@ -1668,11 +1673,18 @@
                     </div>
                   {/if}
                   {#if requester.episodes_watched_before_request.length > 0}
-                    <div class="mt-1 break-all text-amber-500">
+                    <div
+                      class="mt-1 break-all {explainData.request_date_gate_ignored
+                        ? 'text-muted-foreground'
+                        : 'text-amber-500'}"
+                    >
                       Watched before requesting ({requester
                         .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
                         ", ",
                       )}
+                      {#if explainData.request_date_gate_ignored}
+                        &mdash; still counted
+                      {/if}
                     </div>
                   {/if}
                   {#if requester.missing_episodes.length === 0 && requester.episodes_watched_before_request.length === 0}

@@ -297,6 +297,7 @@ class GeneralSettingsResponse(BaseModel):
     requester_watch_user_mappings: list[RequesterWatchUserMapping] = Field(
         default_factory=list
     )
+    requester_watch_ignore_request_date: bool = False
     default_allowed_pages: list[PageAccess] = Field(
         default_factory=lambda: [
             PageAccess(page) for page in DEFAULT_NEW_USER_ALLOWED_PAGES

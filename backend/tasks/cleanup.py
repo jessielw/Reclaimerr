@@ -2982,6 +2982,11 @@ async def explain_requester_watch(
         settings_row.requester_watch_user_mappings if settings_row is not None else []
     )
     mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    ignore_request_date = bool(
+        settings_row.requester_watch_ignore_request_date
+        if settings_row is not None
+        else False
+    )
     alias_index = await load_watch_user_alias_index(db)
     active_tracearr_sources = await load_active_tracearr_sources(db)
 
@@ -3301,6 +3306,12 @@ async def explain_requester_watch(
                 "Unknown: this target has no locally known episodes to judge "
                 "completion against."
             )
+        elif result and ignore_request_date:
+            reason = (
+                "A requester watched every required episode. Request dates are "
+                "ignored in User Signals, so plays from before the request "
+                "still count."
+            )
         elif result and result_after_request:
             reason = "A requester watched every required episode after requesting it."
         elif result:
@@ -3326,7 +3337,13 @@ async def explain_requester_watch(
                 mappings=mappings,
                 alias_index=alias_index,
             )
-            if result and result_after_request:
+            if result and ignore_request_date:
+                reason = (
+                    "A requester has a completed watch. Request dates are "
+                    "ignored in User Signals, so a play from before the request "
+                    "still counts."
+                )
+            elif result and result_after_request:
                 reason = "A requester has a completed watch after requesting it."
             elif result:
                 reason = (
@@ -3335,6 +3352,9 @@ async def explain_requester_watch(
                 )
             else:
                 reason = "No requester has a completed watch for this item."
+
+    if ignore_request_date and result is not None:
+        result_after_request = result
 
     return RequesterWatchExplainResponse(
         media_type=media_type,
@@ -3345,6 +3365,7 @@ async def explain_requester_watch(
         episode_number=episode_number,
         result=result,
         result_after_request=result_after_request,
+        request_date_gate_ignored=ignore_request_date,
         reason=reason,
         holding_services=sorted(holding_services, key=str),
         unobservable_services=sorted(unobservable_services, key=str),
@@ -3377,8 +3398,12 @@ async def _activate_seerr_request_resolver_for_rules(
         return False, "Seerr service is not configured"
 
     if any(
-        collect_rule_conditions(rule.definition, field="seerr.requester_has_watched")
+        collect_rule_conditions(rule.definition, field=field)
         for rule in rules
+        for field in (
+            "seerr.requester_has_watched",
+            "seerr.requester_watched_after_request",
+        )
     ):
         # Requester watch state is read straight out of the persisted watch
         # tables, so without this it silently reflects whenever Sync Media last
@@ -3493,6 +3518,11 @@ async def _activate_seerr_request_resolver_for_rules(
         settings_row.requester_watch_user_mappings if settings_row is not None else []
     )
     mappings = [m for m in raw_mappings if isinstance(m, dict)]
+    ignore_request_date = bool(
+        settings_row.requester_watch_ignore_request_date
+        if settings_row is not None
+        else False
+    )
     alias_index = await load_watch_user_alias_index(db)
 
     active_tracearr_sources = await load_active_tracearr_sources(db)
@@ -3730,6 +3760,7 @@ async def _activate_seerr_request_resolver_for_rules(
         latest_active_request_at_by_key=latest_active_request_at_by_key,
         requester_ids_by_target=requester_ids_by_target,
         latest_active_request_at_by_target=latest_active_request_at_by_target,
+        ignore_request_date=ignore_request_date,
     ).activate()
     LOG.debug(
         f"Activated Seerr request resolver for {len(movie_tmdb_ids)} movie keys and "

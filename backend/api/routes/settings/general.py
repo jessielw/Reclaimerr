@@ -185,6 +185,9 @@ async def update_general_settings(
         mapping.model_dump(mode="json")
         for mapping in request.requester_watch_user_mappings
     ]
+    settings.requester_watch_ignore_request_date = (
+        request.requester_watch_ignore_request_date
+    )
     settings.default_allowed_pages = [
         page.value for page in request.default_allowed_pages
     ]

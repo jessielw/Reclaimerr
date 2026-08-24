@@ -8,7 +8,8 @@
 ### Seerr Requester Watch Rules Do Not Match
 
 - Requester mappings live under **Settings -> User Signals -> Seerr Requester to Watch User Mapping**. The **Sign-In Identity Links** panel under **Settings -> Users** links media-server logins to local accounts and has no effect on rules.
-- Confirm the playback happened after the movie or relevant TV season was requested. Earlier playback intentionally does not count.
+- Confirm the playback happened after the movie or relevant TV season was requested. Earlier playback intentionally does not count for `Seerr requester watched after requesting`; use `Seerr requester has watched` in rules that should not care about dates.
+- If every item reports plays from before its request, check the request dates themselves. A rebuilt or migrated Seerr, or a re-requested season, dates its rows after the plays they describe, which makes the date comparison un-passable for a whole library. **Settings -> User Signals -> Ignore Seerr Request Dates** turns that comparison off for every rule at once.
 - For season and series targets, one requester must have watched every required local episode; progress from multiple requesters is not combined.
 - Check that the season was actually included in the Seerr request. An un-requested season does not inherit another season's state.
 - Automatic matching uses the Seerr username, display name, email, and linked Plex or Jellyfin account name, plus every name the playback provider reports for that account. Add an explicit requester mapping only when the two share no name at all.

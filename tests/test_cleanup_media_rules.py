@@ -3857,6 +3857,119 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail.missing_episodes, [])
         self.assertEqual(detail.episodes_watched_before_request, ["S01E02"])
 
+    async def test_ignoring_request_dates_drops_the_gate_for_rules_and_explain(
+        self,
+    ) -> None:
+        """The User Signals switch has to move both the rule and the dialog.
+
+        Reproduces the reported shape: a requester finished every episode of a
+        season, and every one of those plays predates the request -- a Seerr
+        that was rebuilt or re-requested dates its rows after the plays they
+        describe. Gated, that is false for the whole library. With the switch
+        on it is true, and the explanation has to say so, or the dialog reads
+        as a contradiction of the rule beside it.
+        """
+        watched_at = datetime(2025, 1, 6)
+        requested_at = datetime(2026, 8, 21, tzinfo=UTC)
+        rule = _make_single_condition_rule(
+            name="requester-ungated",
+            media_type=MediaType.SERIES,
+            target_scope=TARGET_SEASON,
+            field="seerr.requester_watched_after_request",
+            operator="is_true",
+        )
+        snapshot = SeerrRequestSnapshot(
+            requester_ids_by_key={(MediaType.SERIES, 654): {3}},
+            first_request_at_by_key_user={(MediaType.SERIES, 654): {3: requested_at}},
+            requester_identity_keys_by_user_id={3: {"black widow"}},
+            latest_active_request_at_by_key={},
+            requester_ids_by_series_season={(654, 1): {3}},
+            first_request_at_by_series_season_user={(654, 1): {3: requested_at}},
+        )
+        async with self._sessionmaker() as db:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            plex.extra_settings = {
+                "watch_snapshot_sync": {
+                    "available": True,
+                    "last_success_at": "2026-08-22T00:00:00Z",
+                }
+            }
+            series = Series(title="Ahsoka", tmdb_id=654)
+            db.add_all(
+                [plex, series, GeneralSettings(requester_watch_ignore_request_date=True)]
+            )
+            await db.flush()
+            db.add_all(
+                [
+                    rule,
+                    SeriesServiceRef(
+                        series_id=series.id,
+                        service=Service.PLEX,
+                        service_id="plex-show",
+                        library_id="lib-1",
+                        library_name="TV",
+                    ),
+                ]
+            )
+            season = Season(series_id=series.id, season_number=1)
+            db.add(season)
+            await db.flush()
+            for episode_number in (1, 2):
+                db.add(Episode(season_id=season.id, episode_number=episode_number))
+                db.add(
+                    MediaWatchUserEpisode(
+                        series_tmdb_id=654,
+                        season_number=1,
+                        episode_number=episode_number,
+                        watch_user_key="Black Widow",
+                        watch_user_key_normalized="black widow",
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=watched_at,
+                    )
+                )
+            await db.commit()
+
+        await self._run_requester_watch_resolver(rule, snapshot)
+        resolver = SeerrRequestResolver.current()
+        assert resolver is not None
+        resolver_result = resolver.resolve_requester_watched_after_request(
+            MediaType.SERIES, 654, target_scope=TARGET_SEASON, season_number=1
+        )
+
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot",
+                new=AsyncMock(return_value=(snapshot, None)),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                explanation = await explain_requester_watch(
+                    db,
+                    media_type=MediaType.SERIES,
+                    tmdb_id=654,
+                    target_scope=TARGET_SEASON,
+                    season_number=1,
+                )
+
+        self.assertIs(resolver_result, True)
+        self.assertIs(explanation.result_after_request, resolver_result)
+        self.assertTrue(explanation.request_date_gate_ignored)
+        self.assertIn("ignored", explanation.reason)
+        # The raw comparison stays visible -- the dialog labels it as counted
+        # rather than hiding why the gated answer would have been false.
+        detail = explanation.requesters[0]
+        self.assertEqual(
+            detail.episodes_watched_before_request, ["S01E01", "S01E02"]
+        )
+
     async def test_explain_requester_watch_reports_an_unreadable_server(self) -> None:
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(

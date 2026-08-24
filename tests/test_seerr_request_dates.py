@@ -335,3 +335,94 @@ def test_watch_bar_is_the_earliest_request_not_the_latest() -> None:
         assert snapshot.latest_active_request_at_by_series_season[(5920, 6)] == reissued
 
     asyncio.run(run())
+
+
+def test_request_date_gate_switch_answers_completion_only() -> None:
+    """The User Signals switch drops the date half of the split field.
+
+    A Seerr that was rebuilt, migrated, or simply re-requested dates its rows
+    after the plays they describe, so `watched after requesting` is false for a
+    whole library no matter how the identity join resolves. With the switch on
+    that field answers the completion half alone; the gated maps are untouched
+    so the explain dialog can still show both.
+    """
+    series = Series(title="Series", tmdb_id=5920)
+    season = Season(series_id=1, season_number=1)
+    movie = Movie(title="Movie", tmdb_id=77)
+    version = MovieVersion(
+        movie_id=1,
+        service=Service.PLEX,
+        service_item_id="item",
+        service_media_id="media",
+        library_id="library",
+        library_name="Movies",
+    )
+    watched_targets = {
+        (TARGET_SERIES, 5920, None, None): True,
+        (TARGET_SEASON, 5920, 1, None): True,
+    }
+    kwargs = {
+        "requester_has_watched_by_key": {(MediaType.MOVIE, 77): True},
+        "requester_has_watched_by_target": watched_targets,
+        # Every play predates the request, so the gated answer is False.
+        "requester_watched_after_request_by_key": {(MediaType.MOVIE, 77): False},
+        "requester_watched_after_request_by_target": dict.fromkeys(
+            watched_targets, False
+        ),
+    }
+
+    SeerrRequestResolver(**kwargs).activate()
+    gated_season = _build_context(
+        TARGET_SEASON, None, None, series, season, compute_disk=False
+    )
+    gated_movie = _build_context(
+        TARGET_MOVIE_VERSION, movie, version, None, None, compute_disk=False
+    )
+    assert gated_season["seerr.requester_has_watched"] is True
+    assert gated_season["seerr.requester_watched_after_request"] is False
+    assert gated_movie["seerr.requester_watched_after_request"] is False
+
+    SeerrRequestResolver(**kwargs, ignore_request_date=True).activate()
+    ungated_season = _build_context(
+        TARGET_SEASON, None, None, series, season, compute_disk=False
+    )
+    ungated_series = _build_context(
+        TARGET_SERIES, None, None, series, None, compute_disk=False
+    )
+    ungated_movie = _build_context(
+        TARGET_MOVIE_VERSION, movie, version, None, None, compute_disk=False
+    )
+    assert ungated_season["seerr.requester_watched_after_request"] is True
+    assert ungated_series["seerr.requester_watched_after_request"] is True
+    assert ungated_movie["seerr.requester_watched_after_request"] is True
+
+
+def test_request_date_gate_switch_never_invents_a_watch() -> None:
+    """Bypassing the date gate must not turn "not watched" into "watched".
+
+    The switch relaxes one half of a conjunction. An unknown must stay unknown
+    -- an `is false` rule deletes -- and a requester who never finished the
+    item must stay False no matter what the request dates say.
+    """
+    series = Series(title="Series", tmdb_id=42)
+    season = Season(series_id=1, season_number=2)
+    unfinished = Season(series_id=1, season_number=3)
+
+    SeerrRequestResolver(
+        requester_has_watched_by_target={(TARGET_SEASON, 42, 3, None): False},
+        requester_watched_after_request_by_target={(TARGET_SEASON, 42, 3, None): False},
+        ignore_request_date=True,
+    ).activate()
+
+    # Season 2 has no entry at all, which is how "no server could report
+    # completion" reaches a rule.
+    unknown = _build_context(
+        TARGET_SEASON, None, None, series, season, compute_disk=False
+    )
+    assert unknown["seerr.requester_has_watched"] is None
+    assert unknown["seerr.requester_watched_after_request"] is None
+
+    not_watched = _build_context(
+        TARGET_SEASON, None, None, series, unfinished, compute_disk=False
+    )
+    assert not_watched["seerr.requester_watched_after_request"] is False

@@ -284,6 +284,7 @@ export interface GeneralSettings {
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
   requester_watch_user_mappings: RequesterWatchUserMapping[];
+  requester_watch_ignore_request_date: boolean;
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
@@ -1221,6 +1222,7 @@ export interface RequesterWatchExplain {
   episode_number: number | null;
   result: boolean | null;
   result_after_request: boolean | null;
+  request_date_gate_ignored: boolean;
   reason: string;
   holding_services: string[];
   unobservable_services: string[];

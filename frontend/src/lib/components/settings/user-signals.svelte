@@ -9,6 +9,7 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Popover from "$lib/components/ui/popover/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import Save from "@lucide/svelte/icons/save";
@@ -48,6 +49,7 @@
     favorites_protect_all_users: false,
     favorites_usernames: [],
     requester_watch_user_mappings: [],
+    requester_watch_ignore_request_date: false,
     default_allowed_pages: [...DEFAULT_NEW_USER_ALLOWED_PAGES],
     leaving_soon_enabled: false,
     leaving_soon_collection_title: "Leaving Soon",
@@ -61,6 +63,7 @@
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
   let requesterWatchUserMappings = $state<RequesterWatchUserMapping[]>([]);
+  let requesterWatchIgnoreRequestDate = $state(false);
   let baseSettings = $state<GeneralSettings>(DEFAULT_GENERAL_SETTINGS);
   let seerrUsers = $state<SeerrUserLookup[]>([]);
   let watchUsers = $state<WatchUserLookup[]>([]);
@@ -395,6 +398,7 @@
         requester_watch_user_mappings: cleanMappings(
           requesterWatchUserMappings,
         ),
+        requester_watch_ignore_request_date: requesterWatchIgnoreRequestDate,
       });
       baseSettings = {
         ...baseSettings,
@@ -404,6 +408,7 @@
         requester_watch_user_mappings: cleanMappings(
           requesterWatchUserMappings,
         ),
+        requester_watch_ignore_request_date: requesterWatchIgnoreRequestDate,
       };
       toast.success("User signals settings saved");
     } catch (error) {
@@ -428,6 +433,8 @@
       );
       requesterWatchUserMappings =
         baseSettings.requester_watch_user_mappings ?? [];
+      requesterWatchIgnoreRequestDate =
+        baseSettings.requester_watch_ignore_request_date ?? false;
       await loadLookups(false);
     } catch (error) {
       loadError =
@@ -475,6 +482,33 @@
       bind:favoritesProtectAllUsers
       bind:favoritesUsernamesInput
     />
+
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <div class="flex items-center justify-between mb-1 gap-4">
+        <h3 class="font-semibold text-foreground">
+          Ignore Seerr Request Dates
+        </h3>
+        <Switch
+          id="requesterWatchIgnoreRequestDate"
+          bind:checked={requesterWatchIgnoreRequestDate}
+        />
+      </div>
+      <p class="text-muted-foreground text-sm">
+        <span class="text-foreground"
+          >Seerr requester watched after requesting</span
+        >
+        normally requires every play to postdate that requester&apos;s earliest request.
+        Turn this on to drop the date comparison and check completion only, making
+        the field answer the same question as
+        <span class="text-foreground">Seerr requester has watched</span>.
+      </p>
+      <p class="text-muted-foreground text-sm mt-2">
+        Use it when your request dates cannot be trusted &mdash; a rebuilt or
+        migrated Seerr, or seasons that were re-requested &mdash; which dates
+        requests after the plays they describe and makes the comparison
+        un-passable for a whole library.
+      </p>
+    </div>
 
     <div class="bg-muted/50 border rounded-lg p-4 shadow-sm space-y-4">
       <div

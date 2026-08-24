@@ -356,6 +356,13 @@ class GeneralSettings(Base):
     requester_watch_user_mappings: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default_factory=list
     )
+    # Drops the request-date half of `seerr.requester_watched_after_request`.
+    # A Seerr that was rebuilt, migrated, or re-requested dates its rows after
+    # the plays they describe, which makes that comparison unpassable for a
+    # whole library no matter how the identity join resolves.
+    requester_watch_ignore_request_date: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )
     default_allowed_pages: Mapped[list[str]] = mapped_column(
         JSON, default_factory=lambda: list(DEFAULT_NEW_USER_ALLOWED_PAGES)
     )

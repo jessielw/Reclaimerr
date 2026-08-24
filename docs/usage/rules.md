@@ -294,6 +294,10 @@ The two fields used to be one, and the fused version caused false negatives: a r
 
 `Seerr requester watched after requesting` also needs a request record for the season it is judging; a season the requester never asked for cannot satisfy it. `Seerr requester has watched` has no such requirement.
 
+That comparison is only as good as the request dates behind it. A Seerr that was rebuilt, migrated between instances, or simply re-requested writes rows dated after the plays they describe, and the field then reads `false` for an entire library no matter how the identity join resolves. **Settings -> User Signals -> Ignore Seerr Request Dates** turns the date comparison off, leaving `Seerr requester watched after requesting` to check completion alone -- the same question `Seerr requester has watched` answers. It is off by default, applies to every rule at once, and relaxes only that one half: an item nobody finished stays `false`, and an unreadable media server stays unknown. The **Why?** dialog says when the switch is on, and still lists which plays predate the request so the raw comparison remains visible.
+
+Leave the switch off if your request dates are trustworthy and you want date-free matching in only some rules -- use `Seerr requester has watched` in those rules instead.
+
 Both fields count the episodes you actually have, unlike `Season fully watched` below, which counts Sonarr's full known inventory. The difference is intentional: a requester can only watch what exists, so an unaired or missing episode must not make a season they did finish read as unwatched. A rule using both conditions therefore applies the stricter Sonarr-inventory test through `Season fully watched`.
 
 Reclaimerr matches Seerr users automatically using the usernames, display names, email addresses, and linked Plex or Jellyfin account names from Seerr's user directory. Each playback provider also reports every name it knows an account by -- a Plex account id, username, title, friendly name, and email, or the equivalent from Jellyfin, Emby, Tautulli, and Tracearr -- so matching any one of those names reaches the rest.

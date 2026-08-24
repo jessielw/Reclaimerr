@@ -1221,6 +1221,7 @@ class SeerrRequestResolver:
     )
 
     __slots__ = (
+        "_ignore_request_date",
         "_latest_active_request_at_by_key",
         "_latest_active_request_at_by_target",
         "_requester_ids_by_key",
@@ -1255,6 +1256,7 @@ class SeerrRequestResolver:
             tuple[str, int, int | None], datetime
         ]
         | None = None,
+        ignore_request_date: bool = False,
     ):
         self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
         for key, user_ids in (requester_ids_by_key or {}).items():
@@ -1285,6 +1287,7 @@ class SeerrRequestResolver:
         self._latest_active_request_at_by_target = dict(
             latest_active_request_at_by_target or {}
         )
+        self._ignore_request_date = bool(ignore_request_date)
 
     def activate(self) -> None:
         """Install this resolver for the current async context."""
@@ -1370,7 +1373,21 @@ class SeerrRequestResolver:
         season_number: int | None = None,
         episode_number: int | None = None,
     ) -> bool | None:
-        """Return requester watched state gated on their earliest request date."""
+        """Return requester watched state gated on their earliest request date.
+
+        With the request-date gate switched off in settings this answers the
+        completion half alone, which is the same value
+        `resolve_requester_has_watched` returns. The gated maps are still built
+        so the explain endpoint can show both halves either way.
+        """
+        if self._ignore_request_date:
+            return self.resolve_requester_has_watched(
+                media_type,
+                tmdb_id,
+                target_scope=target_scope,
+                season_number=season_number,
+                episode_number=episode_number,
+            )
         return self._resolve_watch_state(
             self._requester_watched_after_request_by_key,
             self._requester_watched_after_request_by_target,

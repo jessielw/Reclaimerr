@@ -740,7 +740,11 @@ class RequesterWatchExplainResponse(BaseModel):
     season_number: int | None = None
     episode_number: int | None = None
     result: bool | None = None
+    # What a rule reading `seerr.requester_watched_after_request` sees, which
+    # follows the User Signals switch. `request_date_gate_ignored` says whether
+    # the date comparison was applied at all.
     result_after_request: bool | None = None
+    request_date_gate_ignored: bool = False
     reason: str
     holding_services: list[Service] = Field(default_factory=list)
     unobservable_services: list[Service] = Field(default_factory=list)
