@@ -649,7 +649,7 @@
                       </div>
                       {#if rule.description}
                         <p
-                          class="mb-2 whitespace-pre-line text-sm text-muted-foreground line-clamp-2"
+                          class="mb-2 whitespace-pre-line text-sm text-muted-foreground"
                         >
                           {rule.description}
                         </p>
