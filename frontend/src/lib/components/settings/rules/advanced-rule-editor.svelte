@@ -25,6 +25,7 @@
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { isConditionValueSet } from "$lib/components/settings/rules/rule-condition-value.js";
+  import { movieRequesterWatchSummary } from "$lib/components/settings/rules/requester-watch-summary.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { toast } from "svelte-sonner";
   import {
@@ -1665,32 +1666,49 @@
                       Names tried on {service}: {keys.join(", ") || "none"}
                     </div>
                   {/each}
-                  {#if requester.missing_episodes.length > 0}
-                    <div class="mt-1 break-all text-amber-500">
-                      Never watched ({requester.missing_episodes.length}): {requester.missing_episodes.join(
-                        ", ",
-                      )}
-                    </div>
-                  {/if}
-                  {#if requester.episodes_watched_before_request.length > 0}
+                  {#if explainData.media_type === MediaType.Movie}
+                    {@const summary = movieRequesterWatchSummary(
+                      requester,
+                      explainData.request_date_gate_ignored,
+                    )}
                     <div
-                      class="mt-1 break-all {explainData.request_date_gate_ignored
-                        ? 'text-muted-foreground'
-                        : 'text-amber-500'}"
+                      class="mt-1 break-all {summary.warning
+                        ? 'text-amber-500'
+                        : 'text-muted-foreground'}"
                     >
-                      Watched before requesting ({requester
-                        .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
-                        ", ",
-                      )}
-                      {#if explainData.request_date_gate_ignored}
-                        &mdash; still counted
+                      {summary.text}
+                      {#if requester.movie_watched_at !== null}
+                        ({explainMoment(requester.movie_watched_at)})
                       {/if}
                     </div>
-                  {/if}
-                  {#if requester.missing_episodes.length === 0 && requester.episodes_watched_before_request.length === 0}
-                    <div class="mt-1 text-muted-foreground">
-                      Watched every required episode, after requesting it.
-                    </div>
+                  {:else}
+                    {#if requester.missing_episodes.length > 0}
+                      <div class="mt-1 break-all text-amber-500">
+                        Never watched ({requester.missing_episodes.length}): {requester.missing_episodes.join(
+                          ", ",
+                        )}
+                      </div>
+                    {/if}
+                    {#if requester.episodes_watched_before_request.length > 0}
+                      <div
+                        class="mt-1 break-all {explainData.request_date_gate_ignored
+                          ? 'text-muted-foreground'
+                          : 'text-amber-500'}"
+                      >
+                        Watched before requesting ({requester
+                          .episodes_watched_before_request.length}): {requester.episodes_watched_before_request.join(
+                          ", ",
+                        )}
+                        {#if explainData.request_date_gate_ignored}
+                          &mdash; still counted
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if explainData.expected_episodes.length > 0 && requester.missing_episodes.length === 0 && requester.episodes_watched_before_request.length === 0}
+                      <div class="mt-1 text-muted-foreground">
+                        Watched every required episode, after requesting it.
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               {/each}

@@ -3746,6 +3746,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.seerr_user_id for r in explanation.requesters], [7])
         self.assertIn("alice", explanation.requesters[0].identity_keys)
         self.assertEqual(
+            explanation.requesters[0].movie_watched_at,
+            datetime(2026, 7, 2, tzinfo=UTC),
+        )
+        self.assertFalse(explanation.requesters[0].movie_watched_before_request)
+        self.assertEqual(
             [(e.watch_user_key, e.matched_requester_ids) for e in explanation.evidence],
             [("alice", [7])],
         )

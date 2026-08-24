@@ -2687,6 +2687,34 @@ def _requester_watched_at_by_coordinate(
     return watched_at_by_coordinate
 
 
+def _requester_movie_watched_at(
+    *,
+    requester_id: int,
+    requester_identity_keys: set[str],
+    watch_by_service_and_user: Mapping[Service, Mapping[str, datetime]],
+    mappings: list[dict[str, Any]],
+    alias_index: AliasIndex | None,
+) -> datetime | None:
+    """Latest completed movie play for one requester, across every source."""
+    latest_watched_at: datetime | None = None
+    for watch_service, watch_by_user in watch_by_service_and_user.items():
+        candidate_keys = _build_watch_keys_for_requester(
+            requester_id=requester_id,
+            requester_identity_keys=requester_identity_keys,
+            target_service=watch_service,
+            mappings=mappings,
+            alias_index=alias_index,
+        )
+        for watch_key in candidate_keys:
+            watched_at = watch_by_user.get(watch_key)
+            if watched_at is None:
+                continue
+            watched_at_utc = ensure_utc(watched_at)
+            if latest_watched_at is None or watched_at_utc > latest_watched_at:
+                latest_watched_at = watched_at_utc
+    return latest_watched_at
+
+
 def _compute_requester_has_watched_for_key(
     *,
     media_key: tuple[MediaType, int],
@@ -2719,22 +2747,19 @@ def _compute_requester_has_watched_for_key(
         if not requester_identity_keys:
             # retain user-id path if username/display_name wasn't present in request payload
             requester_identity_keys = {str(requester_id)}
-        for watch_service, watch_by_user in watches_for_key.items():
-            candidate_keys = _build_watch_keys_for_requester(
-                requester_id=requester_id,
-                requester_identity_keys=requester_identity_keys,
-                target_service=watch_service,
-                mappings=mappings,
-                alias_index=alias_index,
-            )
-            for watch_key in candidate_keys:
-                watched_at = watch_by_user.get(watch_key)
-                if watched_at is None:
-                    continue
-                watched_ever = True
-                if ensure_utc(watched_at) > requested_at_utc:
-                    # Nothing found later can improve either answer.
-                    return True, True
+        watched_at = _requester_movie_watched_at(
+            requester_id=requester_id,
+            requester_identity_keys=requester_identity_keys,
+            watch_by_service_and_user=watches_for_key,
+            mappings=mappings,
+            alias_index=alias_index,
+        )
+        if watched_at is None:
+            continue
+        watched_ever = True
+        if watched_at > requested_at_utc:
+            # Nothing found later can improve either answer.
+            return True, True
     return watched_ever, False
 
 
@@ -3196,6 +3221,8 @@ async def explain_requester_watch(
 
         missing: list[str] = []
         too_early: list[str] = []
+        movie_watched_at: datetime | None = None
+        movie_watched_before_request = False
         if is_series and target_episodes:
             requested_seasons = _requested_seasons_for_requester(
                 snapshot=snapshot,
@@ -3221,6 +3248,20 @@ async def explain_requester_watch(
                     season_requested_at
                 ):
                     too_early.append(_episode_label(*coordinate))
+        elif not is_series:
+            movie_watched_at = _requester_movie_watched_at(
+                requester_id=requester_id,
+                requester_identity_keys=set(identity_keys),
+                watch_by_service_and_user=watch_by_service_and_user.get(
+                    media_key, {}
+                ),
+                mappings=mappings,
+                alias_index=alias_index,
+            )
+            movie_watched_before_request = (
+                movie_watched_at is not None
+                and movie_watched_at <= ensure_utc(requested_at)
+            )
 
         requesters.append(
             RequesterWatchRequesterDetail(
@@ -3238,6 +3279,8 @@ async def explain_requester_watch(
                 candidate_watch_keys=candidate_keys,
                 missing_episodes=missing,
                 episodes_watched_before_request=too_early,
+                movie_watched_at=movie_watched_at,
+                movie_watched_before_request=movie_watched_before_request,
             )
         )
 

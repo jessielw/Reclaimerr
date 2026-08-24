@@ -721,6 +721,12 @@ class RequesterWatchRequesterDetail(BaseModel):
     # request date is not what you think".
     missing_episodes: list[str] = Field(default_factory=list)
     episodes_watched_before_request: list[str] = Field(default_factory=list)
+    # The movie equivalent of the two lists above. A movie has no episode
+    # coordinates to enumerate, so its shortfalls are carried as the single
+    # completed play this requester has (if any) and whether it predates their
+    # own request.
+    movie_watched_at: datetime | None = None
+    movie_watched_before_request: bool = False
 
 
 class RequesterWatchEvidence(BaseModel):

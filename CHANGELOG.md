@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The requester-watch **Why?** dialog no longer claims an unwatched movie requester watched every required episode. Movie requester details now use movie-specific wording and reflect that requester's completed-play state and request date.
 - `Seerr requester has watched` reported false for media the requester had demonstrably finished when the Seerr account name differed from the media-server account name, which could make an `is false` cleanup rule delete watched media.
 - Binding Tracearr to a Plex server no longer discards the Tautulli history that predates Tracearr when evaluating requester watch state.
 - Tracearr play chains whose watched flag is not a JSON boolean (`1`, `"true"`, `watched_status`) are no longer treated as unknown completion, which had silently disabled requester watch rules for a bound Plex server. A Tracearr server that returns plays but never reports completion is now logged as a warning.

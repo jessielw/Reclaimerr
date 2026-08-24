@@ -1204,6 +1204,8 @@ export interface RequesterWatchRequesterDetail {
   candidate_watch_keys: Record<string, string[]>;
   missing_episodes: string[];
   episodes_watched_before_request: string[];
+  movie_watched_at: string | null;
+  movie_watched_before_request: boolean;
 }
 
 export interface RequesterWatchEvidence {
