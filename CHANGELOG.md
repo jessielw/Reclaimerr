@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rule condition filter is now more accurate when searching.
 - Updated dependencies:
   - apprise to 1.13.0
+  - granian to 2.8.2
+  - platformdirs to 4.11.4
 
 ### Fixed
 
