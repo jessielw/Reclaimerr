@@ -422,6 +422,37 @@ def active_playback_event_clause(
     return or_(legacy_clause, or_(*tracearr_clauses) if tracearr_clauses else false())
 
 
+def completion_evidence_event_clause(
+    active_tracearr_sources: set[tuple[int, Service, str]],
+):
+    """Build the SQL predicate for durable proof that a play finished.
+
+    Aggregates must pick one provider per media server so plays are not counted
+    twice. Completion is a boolean instead: a finished play a superseded
+    provider recorded is still proof the person watched the item. Binding
+    Tracearr to a Plex server would otherwise retire the Tautulli history that
+    predates Tracearr, which is invisible and looks like the media was never
+    watched.
+
+    Tracearr rows from bindings that are no longer active are still excluded --
+    those point at servers this install no longer tracks.
+    """
+
+    tracearr_clauses = [
+        and_(
+            PlaybackHistoryEvent.source_service == Service.TRACEARR,
+            PlaybackHistoryEvent.source_service_config_id == config_id,
+            PlaybackHistoryEvent.observed_service == service,
+            PlaybackHistoryEvent.source_event_key.startswith(f"{server_id}:"),
+        )
+        for config_id, service, server_id in active_tracearr_sources
+    ]
+    non_tracearr_clause = PlaybackHistoryEvent.source_service != Service.TRACEARR
+    if not tracearr_clauses:
+        return non_tracearr_clause
+    return or_(non_tracearr_clause, or_(*tracearr_clauses))
+
+
 def _playback_event_is_active(
     event: PlaybackHistoryEvent,
     active_tracearr_sources: set[tuple[int, Service, str]],
@@ -842,6 +873,43 @@ def _normalize_tautulli_events(
     return events
 
 
+def _coerce_completed(value: object) -> bool | None:
+    """Interpret a provider watched flag that may not be a JSON boolean.
+
+    Tracearr is the only admitted durable source for a bound Plex server, so a
+    flag arriving as 1, "true", or "yes" used to erase every completion signal
+    for that server rather than just that one row.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, float):
+        # A fractional progress value is partial playback, which is explicitly
+        # not proof of completion, so it stays unknown rather than truthy.
+        if value in (0.0, 1.0):
+            return value == 1.0
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "yes", "y", "1", "completed", "watched"}:
+            return True
+        if normalized in {"false", "f", "no", "n", "0", "unwatched"}:
+            return False
+    return None
+
+
+def _tracearr_row_completed(row: Mapping[str, object]) -> bool | None:
+    """Return the completion flag for one Tracearr play chain."""
+    for key in ("watched", "is_watched", "completed", "watched_status"):
+        if key not in row:
+            continue
+        completed = _coerce_completed(row.get(key))
+        if completed is not None:
+            return completed
+    return None
+
+
 def _normalize_tracearr_events(
     rows: Iterable[Mapping[str, object]],
     usernames_by_identity: Mapping[str, str] | None,
@@ -894,11 +962,7 @@ def _normalize_tracearr_events(
                 duration_seconds=duration,
                 source_user_id=user_id,
                 source_username=username,
-                completed=(
-                    bool(row.get("watched"))
-                    if isinstance(row.get("watched"), bool)
-                    else None
-                ),
+                completed=_tracearr_row_completed(row),
             )
         )
     return events
@@ -1465,17 +1529,26 @@ async def _fetch_tracearr_usernames(
             accounts = row.get("accounts")
             if not identity_id or not isinstance(accounts, list):
                 continue
+            removed_username: str | None = None
             for account in accounts:
                 if not isinstance(account, Mapping):
                     continue
-                if str(
-                    account.get("server_id") or ""
-                ).strip() != server_id or account.get("removed_at"):
+                if str(account.get("server_id") or "").strip() != server_id:
                     continue
                 username = str(account.get("username") or "").strip()
-                if username:
-                    usernames[identity_id] = username
-                    break
+                if not username:
+                    continue
+                if account.get("removed_at"):
+                    # Keep it aside: retained history still carries this
+                    # person's plays, and falling back to the opaque identity
+                    # id would orphan them from requester matching.
+                    removed_username = removed_username or username
+                    continue
+                usernames[identity_id] = username
+                break
+            else:
+                if removed_username is not None:
+                    usernames[identity_id] = removed_username
         if not next_cursor:
             return usernames
         if next_cursor in seen_cursors:
@@ -1605,6 +1678,17 @@ async def _refresh_tracearr_binding(
             f"Tracearr history refresh failed for {binding.tracearr_server_name}: {error}"
         )
         return await _persist_tracearr_unavailable_status(config, binding, error)
+
+    if events and not any(event.completed for event in events):
+        # A bound Tracearr server is the only completion signal for that media
+        # server, so an all-unknown batch silently disables requester-watch
+        # rules for it. Say so rather than reporting a healthy refresh.
+        LOG.warning(
+            f"Tracearr server {binding.tracearr_server_name} returned "
+            f"{len(events)} playback event(s) but none marked watched; "
+            "requester watch rules cannot use this source until it reports "
+            "completion state"
+        )
 
     async with async_db() as session:
         db_config = await session.get(ServiceConfig, config.id)
@@ -1816,6 +1900,7 @@ async def _refresh_playback_history_once(
             refreshed = refreshed or tracearr_refreshed
 
     if force or refreshed:
+        await resolve_unmapped_event_identities()
         await rebuild_playback_history_aggregates()
         await _mark_aggregate_format_current(config.id for config in configs)
     result = PlaybackRefreshResult(statuses=statuses)
@@ -1826,6 +1911,77 @@ async def _refresh_playback_history_once(
         f"{len(result.available_services)} observed service(s) available"
     )
     return result
+
+
+async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
+    """Map retained events that had no local media match when they arrived.
+
+    Providers are read incrementally, so an event imported before its media
+    server IDs were synced -- or before a library rebuild changed them -- keeps
+    a null TMDB ID forever and stays invisible to every rule that reads durable
+    history. Re-resolving on each refresh recovers that history instead of
+    requiring the provider to hand the same rows over again.
+    """
+
+    resolved = 0
+    async with async_db() as session:
+        services = (
+            (
+                await session.execute(
+                    select(PlaybackHistoryEvent.observed_service)
+                    .where(PlaybackHistoryEvent.tmdb_id.is_(None))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for service in services:
+            if service is None:
+                continue
+            movie_map, episode_map = await _identity_maps(session, service)
+            if not movie_map and not episode_map:
+                continue
+            events = (
+                (
+                    await session.execute(
+                        select(PlaybackHistoryEvent)
+                        .where(
+                            PlaybackHistoryEvent.tmdb_id.is_(None),
+                            PlaybackHistoryEvent.observed_service == service,
+                        )
+                        .limit(batch_size)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for event in events:
+                if event.provider_media_type == "movie":
+                    identity = movie_map.get(event.source_item_id)
+                    if identity is None:
+                        continue
+                    event.movie_id, event.tmdb_id = identity
+                    resolved += 1
+                    continue
+                episode_identity = episode_map.get(event.source_item_id)
+                if episode_identity is None:
+                    continue
+                (
+                    event.episode_id,
+                    event.season_id,
+                    event.series_id,
+                    event.tmdb_id,
+                    event.season_number,
+                    event.episode_number,
+                ) = episode_identity
+                resolved += 1
+        if resolved:
+            await session.commit()
+
+    if resolved:
+        LOG.info(f"Recovered local media identity for {resolved} playback event(s)")
+    return resolved
 
 
 def _aggregate_values(aggregate: PlaybackHistoryAggregate) -> dict[str, object]:

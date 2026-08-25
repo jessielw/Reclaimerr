@@ -159,6 +159,7 @@ def test_get_series_keeps_hama_items_in_scan_results(monkeypatch) -> None:
                     "title": "Example Anime",
                     "year": 2024,
                     "guid": "com.plexapp.agents.hama://anidb-11638?lang=en",
+                    "Genre": [{"tag": "Anime"}, {"tag": "Animation"}],
                 }
             ]
 
@@ -189,6 +190,7 @@ def test_get_series_keeps_hama_items_in_scan_results(monkeypatch) -> None:
         assert series[0].name == "Example Anime"
         assert series[0].external_ids.tmdb == 65930
         assert series[0].size == 1234
+        assert series[0].media_server_genres == ["Animation", "Anime"]
 
     asyncio.run(run())
 

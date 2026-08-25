@@ -8,6 +8,7 @@ export interface User {
   username: string;
   display_name: string | null;
   email: string | null;
+  date_format: "mdy" | "dmy" | "iso";
   role: UserRole;
   permissions: Permission[];
   allowed_pages: PageAccess[] | null;
@@ -197,12 +198,16 @@ export interface WatchUserLookup {
   user_key: string;
   user_key_normalized: string;
   source_services: string[];
+  /** The account's other recorded names: ids, emails, a Tracearr identity. */
+  aliases?: string[];
 }
 
 export interface SeerrUserLookup {
   id: number;
   username: string | null;
   display_name: string | null;
+  /** Every value requester matching actually tries. */
+  identities?: string[];
 }
 
 export interface MovieCollectionLookup {
@@ -279,6 +284,7 @@ export interface GeneralSettings {
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];
   requester_watch_user_mappings: RequesterWatchUserMapping[];
+  requester_watch_ignore_request_date: boolean;
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
   leaving_soon_collection_title: string;
@@ -433,6 +439,7 @@ export interface PaginatedFavoritesMediaResponse {
 export interface ReclaimRule {
   id: number;
   name: string;
+  description: string | null;
   media_type: MediaType;
   enabled: boolean;
   target_scope: "movie_version" | "series" | "season" | "episode" | null;
@@ -1016,6 +1023,7 @@ export interface ProtectedEntry {
   source: "manual" | "rule";
   source_rule_id: number | null;
   source_rule_name: string | null;
+  source_rule_description: string | null;
   permanent: boolean;
   expires_at: string | null;
   created_at: string;
@@ -1090,6 +1098,7 @@ export interface ReclaimCandidateEntry {
   reason_parts: {
     rule_id: number | null;
     rule_name: string;
+    rule_description: string | null;
     target_scope: string;
     season_label: string | null;
     conditions: {
@@ -1104,6 +1113,7 @@ export interface ReclaimCandidateEntry {
         | (string | number | boolean)[]
         | null;
       actual: string | number | boolean | (string | number | boolean)[] | null;
+      details: string[];
       display: string;
     }[];
     text: string;
@@ -1179,7 +1189,49 @@ export interface RulePreviewMetadata {
   season_inventory_unavailable_examples: string[];
   playback_unavailable_count: number;
   playback_error: string | null;
+  seerr_unavailable: boolean;
+  seerr_error: string | null;
+  requester_watch_unavailable_count: number;
   matched_count: number;
+}
+
+export interface RequesterWatchRequesterDetail {
+  seerr_user_id: number;
+  display_name: string | null;
+  identity_keys: string[];
+  requested_at: string | null;
+  requested_seasons: Record<string, string>;
+  candidate_watch_keys: Record<string, string[]>;
+  missing_episodes: string[];
+  episodes_watched_before_request: string[];
+  movie_watched_at: string | null;
+  movie_watched_before_request: boolean;
+}
+
+export interface RequesterWatchEvidence {
+  source_service: string;
+  watch_user_key: string;
+  matched_requester_ids: number[];
+  watched_at: string | null;
+  episodes: string[];
+}
+
+export interface RequesterWatchExplain {
+  media_type: string;
+  tmdb_id: number;
+  title: string | null;
+  target_scope: string;
+  season_number: number | null;
+  episode_number: number | null;
+  result: boolean | null;
+  result_after_request: boolean | null;
+  request_date_gate_ignored: boolean;
+  reason: string;
+  holding_services: string[];
+  unobservable_services: string[];
+  requesters: RequesterWatchRequesterDetail[];
+  expected_episodes: string[];
+  evidence: RequesterWatchEvidence[];
 }
 
 export interface PaginatedRulePreviewResponse extends PaginatedResponse<RulePreviewEntry> {

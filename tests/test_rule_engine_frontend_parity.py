@@ -7,6 +7,7 @@ from pathlib import Path
 from backend.core.rule_engine import (
     FIELD_LABELS,
     FIELD_NUMERIC_BOUNDS,
+    MEDIA_SERVER_GENRE_FIELDS,
     USER_SCOPED_PLAYBACK_FIELDS,
 )
 
@@ -44,6 +45,11 @@ def _frontend_bounds() -> dict[str, tuple[float, float | None, bool]]:
         )
     return bounds
 
+
+# Fields the editor deliberately labels differently from the reason strings.
+# The editor states the rating scale because a bare value like 7.4 cannot; a
+# reason string already shows the value beside the expectation.
+LABEL_DIVERGENCE_ALLOWED = {"tmdb.vote_average"}
 
 FIELD_ENTRY = re.compile(
     r'value:\s*"(?P<field>[^"]+)",\s*\n\s*label:\s*"(?P<label>[^"]+)",\s*\n\s*'
@@ -89,3 +95,45 @@ class FrontendBoundsParityTests(unittest.TestCase):
             label, kind = entries[field]
             self.assertEqual(label, FIELD_LABELS[field])
             self.assertEqual(kind, "user_scoped_number")
+
+    def test_all_field_labels_match_frontend(self) -> None:
+        """The editor and preview reasons must name every field the same way.
+
+        A field called one thing when you pick it and another when it explains a
+        match reads as two different conditions, which is most of what makes
+        these rules hard to reason about.
+        """
+        entries = _frontend_field_entries()
+        drift = {
+            field: (label, FIELD_LABELS[field])
+            for field, (label, _kind) in entries.items()
+            if field in FIELD_LABELS
+            and field not in LABEL_DIVERGENCE_ALLOWED
+            and label != FIELD_LABELS[field]
+        }
+        self.assertEqual(
+            drift,
+            {},
+            "editor and backend labels drifted; align them or document the "
+            "divergence in LABEL_DIVERGENCE_ALLOWED",
+        )
+
+    def test_documented_label_divergences_still_diverge(self) -> None:
+        """Keeps the allow-list honest once a divergence is resolved."""
+        entries = _frontend_field_entries()
+        for field in LABEL_DIVERGENCE_ALLOWED:
+            self.assertIn(field, entries, f"{field} missing from frontend fields")
+            label, _kind = entries[field]
+            self.assertNotEqual(
+                label,
+                FIELD_LABELS[field],
+                f"{field} labels now match; drop it from LABEL_DIVERGENCE_ALLOWED",
+            )
+
+    def test_provider_genre_fields_match_frontend(self) -> None:
+        entries = _frontend_field_entries()
+        for field in MEDIA_SERVER_GENRE_FIELDS:
+            self.assertIn(field, entries, f"{field} missing from frontend fields")
+            label, kind = entries[field]
+            self.assertEqual(label, FIELD_LABELS[field])
+            self.assertEqual(kind, "text")

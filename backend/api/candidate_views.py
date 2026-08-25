@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.rule_engine import format_rule_value, format_valueless_reason
 from backend.core.utils.misc import normalize_genre_names
 from backend.database.models import (
     Episode,
@@ -67,33 +68,43 @@ def _normalize_library_value(value: Any, library_name_by_id: dict[str, str]) -> 
     return value
 
 
-def _format_reason_actual(actual: Any) -> str:
+def _format_reason_actual(field: str, actual: Any) -> str:
     """Format the actual value(s) for display in reason conditions."""
     values = _as_list(actual)
     if not values:
         return "missing"
-    return ", ".join(str(value) for value in values[:4])
+    return ", ".join(format_rule_value(field, value) for value in values[:4])
 
 
 def _format_reason_condition(
     *,
+    field: str,
     field_label: str,
     operator: str,
     operator_label: str,
     expected: Any,
     actual: Any,
+    details: list[str] | None = None,
 ) -> str:
     """Format a reason condition into a human-readable string."""
     if operator in _VALUELESS_OPERATORS:
-        return f"{field_label} {operator_label}"
+        return format_valueless_reason(
+            field_label, operator_label, field, operator, actual, details
+        )
     expected_values = _as_list(expected)
-    expected_text = ", ".join(str(value) for value in expected_values)
-    return f"{field_label} {operator_label} {expected_text} ({_format_reason_actual(actual)})"
+    expected_text = ", ".join(
+        format_rule_value(field, value) for value in expected_values
+    )
+    return (
+        f"{field_label} {operator_label} {expected_text} "
+        f"({_format_reason_actual(field, actual)})"
+    )
 
 
 def normalize_reason_parts(
     reason_data: Any,
     library_name_by_id: dict[str, str],
+    rule_descriptions_by_id: dict[int, str | None] | None = None,
 ) -> list[CandidateReasonPart]:
     """Normalize raw reason data into structured CandidateReasonPart objects."""
     parts_raw = reason_data if isinstance(reason_data, list) else []
@@ -101,6 +112,12 @@ def normalize_reason_parts(
     for part in parts_raw:
         if not isinstance(part, dict):
             continue
+        rule_id = part.get("rule_id")
+        rule_description = (
+            rule_descriptions_by_id.get(rule_id)
+            if isinstance(rule_id, int) and rule_descriptions_by_id is not None
+            else None
+        )
         rule_name = str(part.get("rule_name") or "Rule")
         target_scope = str(part.get("target_scope") or "")
         season_label = (
@@ -119,15 +136,25 @@ def normalize_reason_parts(
             operator_label = str(condition.get("operator_label") or operator)
             expected = condition.get("expected")
             actual = condition.get("actual")
+            # Recorded when the rule ran; candidates stored before derived
+            # verdicts carried their working simply have none.
+            raw_details = condition.get("details")
+            details = [
+                text
+                for item in (raw_details if isinstance(raw_details, list) else [])
+                if (text := str(item).strip())
+            ]
             if field_name == "library.id":
                 expected = _normalize_library_value(expected, library_name_by_id)
                 actual = _normalize_library_value(actual, library_name_by_id)
             display = _format_reason_condition(
+                field=field_name,
                 field_label=field_label,
                 operator=operator,
                 operator_label=operator_label,
                 expected=expected,
                 actual=actual,
+                details=details,
             )
             conditions_out.append(
                 CandidateReasonCondition(
@@ -137,6 +164,7 @@ def normalize_reason_parts(
                     operator_label=operator_label,
                     expected=expected,
                     actual=actual,
+                    details=details,
                     display=display,
                 )
             )
@@ -146,8 +174,9 @@ def normalize_reason_parts(
         text = f"{label}: {summary}" if summary else label
         normalized_parts.append(
             CandidateReasonPart(
-                rule_id=part.get("rule_id"),
+                rule_id=rule_id,
                 rule_name=rule_name,
+                rule_description=rule_description,
                 target_scope=target_scope,
                 season_label=season_label,
                 conditions=conditions_out,

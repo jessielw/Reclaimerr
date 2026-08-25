@@ -59,7 +59,7 @@
         // The opener has already been notified above. Try to close this popup,
         // but some browsers (especially after navigating through a third-party
         // auth page) silently refuse script-initiated close. In that case, don't
-        // hijack this leftover window into loading the app inline — just let the
+        // hijack this leftover window into loading the app inline - just let the
         // user close it manually.
         window.setTimeout(() => window.close(), 250);
         window.setTimeout(() => {
@@ -69,7 +69,7 @@
         }, 1000);
       } else {
         // No popup was involved (it was blocked, so this tab drove the whole
-        // flow itself) — there's nothing else to return to, so go home.
+        // flow itself) - there's nothing else to return to, so go home.
         window.setTimeout(() => {
           window.location.href = "/";
         }, 250);

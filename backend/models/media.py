@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from backend.enums import MediaType
+from backend.enums import MediaType, Service
 from backend.user_types import AudioCodecFamily, MediaServerType, VideoCodecFamily
 
 
@@ -83,6 +83,7 @@ class MovieVersionData:
     # chapters
     has_chapters: bool | None = None
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None
     media_server_user_rating: float | None = None
 
 
@@ -111,6 +112,9 @@ class AggregatedEpisodeData:
     name: str | None = None
     air_date: datetime | None = None
     last_viewed_at: datetime | None = None
+    # When the media server first saw this episode file. Used to tell a stale
+    # watch timestamp (file replaced after being watched) from a current one.
+    added_at: datetime | None = None
     size: int | None = None
     path: str | None = None
     plex_rating_key: str | None = None
@@ -119,6 +123,14 @@ class AggregatedEpisodeData:
     media_server_user_rating: float | None = None
     # file runtime in whole seconds, from the media server's item metadata
     runtime_seconds: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class WatchUserDirectoryEntry:
+    """One playback-provider account and every name that provider knows it by."""
+
+    provider_user_id: str
+    aliases: tuple[str, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -200,6 +212,7 @@ class AggregatedSeriesData:
     # jellyfin/emby specific (None for Plex)
     played_by_user_count: int | None = None
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None
     media_server_user_rating: float | None = None
     # season level breakdown (populated by service layer)
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
@@ -549,12 +562,16 @@ class CandidateReasonCondition(BaseModel):
     operator_label: str
     expected: str | int | float | bool | list[str | int | float | bool] | None = None
     actual: str | int | float | bool | list[str | int | float | bool] | None = None
+    # Values a derived true/false verdict was computed from, e.g. the watched
+    # percent behind `Season fully watched is true`.
+    details: list[str] = Field(default_factory=list)
     display: str
 
 
 class CandidateReasonPart(BaseModel):
     rule_id: int | None = None
     rule_name: str
+    rule_description: str | None = None
     target_scope: str
     season_label: str | None = None
     conditions: list[CandidateReasonCondition]
@@ -684,7 +701,65 @@ class RulePreviewMetadata(BaseModel):
     season_inventory_unavailable_examples: list[str] = Field(default_factory=list)
     playback_unavailable_count: int = 0
     playback_error: str | None = None
+    seerr_unavailable: bool = False
+    seerr_error: str | None = None
+    requester_watch_unavailable_count: int = 0
     matched_count: int = 0
+
+
+class RequesterWatchRequesterDetail(BaseModel):
+    """One Seerr requester and the identities matching tried on their behalf."""
+
+    seerr_user_id: int
+    display_name: str | None = None
+    identity_keys: list[str] = Field(default_factory=list)
+    requested_at: datetime | None = None
+    requested_seasons: dict[int, datetime] = Field(default_factory=dict)
+    candidate_watch_keys: dict[str, list[str]] = Field(default_factory=dict)
+    # The two ways a requester falls short, kept apart because they call for
+    # opposite fixes: one is "they have not finished it", the other is "the
+    # request date is not what you think".
+    missing_episodes: list[str] = Field(default_factory=list)
+    episodes_watched_before_request: list[str] = Field(default_factory=list)
+    # The movie equivalent of the two lists above. A movie has no episode
+    # coordinates to enumerate, so its shortfalls are carried as the single
+    # completed play this requester has (if any) and whether it predates their
+    # own request.
+    movie_watched_at: datetime | None = None
+    movie_watched_before_request: bool = False
+
+
+class RequesterWatchEvidence(BaseModel):
+    """One playback-user key that recorded completed watches for this media."""
+
+    source_service: Service
+    watch_user_key: str
+    matched_requester_ids: list[int] = Field(default_factory=list)
+    watched_at: datetime | None = None
+    episodes: list[str] = Field(default_factory=list)
+
+
+class RequesterWatchExplainResponse(BaseModel):
+    """Why `Seerr requester has watched` resolved the way it did for one item."""
+
+    media_type: MediaType
+    tmdb_id: int
+    title: str | None = None
+    target_scope: str
+    season_number: int | None = None
+    episode_number: int | None = None
+    result: bool | None = None
+    # What a rule reading `seerr.requester_watched_after_request` sees, which
+    # follows the User Signals switch. `request_date_gate_ignored` says whether
+    # the date comparison was applied at all.
+    result_after_request: bool | None = None
+    request_date_gate_ignored: bool = False
+    reason: str
+    holding_services: list[Service] = Field(default_factory=list)
+    unobservable_services: list[Service] = Field(default_factory=list)
+    requesters: list[RequesterWatchRequesterDetail] = Field(default_factory=list)
+    expected_episodes: list[str] = Field(default_factory=list)
+    evidence: list[RequesterWatchEvidence] = Field(default_factory=list)
 
 
 class PaginatedCandidatesResponse(BaseModel):

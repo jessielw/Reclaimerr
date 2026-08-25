@@ -1155,12 +1155,12 @@
                             >
                             {#each mediaServer.candidates as candidate}
                               <option value={candidate.id}>
-                                {candidate.name} — {candidate.match ===
+                                {candidate.name} - {candidate.match ===
                                 "confirmed"
                                   ? `confirmed (${candidate.matches} matches)`
                                   : candidate.match === "conflict"
-                                    ? "library conflict — confirm manually"
-                                    : "unverified — confirm manually"}
+                                    ? "library conflict - confirm manually"
+                                    : "unverified - confirm manually"}
                               </option>
                             {/each}
                           </select>

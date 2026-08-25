@@ -6,6 +6,7 @@
   import {
     extractPathNoFile,
     fileNameFromPath,
+    ruleDetails,
   } from "$lib/utils/candidate-rules";
   import {
     candidateMediaMetaFields,
@@ -40,20 +41,6 @@
       return `${item.version_video_width}x${item.version_video_height}`;
     }
     return unknownValue;
-  };
-
-  const parseRuleParts = (
-    tokens: { rule_name: string }[] | null | undefined,
-  ): string[] => {
-    if (!tokens) return [];
-    const parts: string[] = [];
-    tokens.forEach((token) => {
-      const name = token.rule_name?.trim();
-      if (name) {
-        parts.push(name);
-      }
-    });
-    return parts;
   };
 
   const fileFields = (item: ReclaimCandidateEntry): DetailField[] => [
@@ -127,7 +114,7 @@
     sections.filter((section) => section.fields.length > 0),
   );
 
-  const ruleNames = $derived(parseRuleParts(entry.reason_parts));
+  const rules = $derived(ruleDetails(entry));
 </script>
 
 <div class="space-y-3">
@@ -156,17 +143,24 @@
   {/each}
 
   <!-- rules -->
-  {#if ruleNames.length > 0}
+  {#if rules.length > 0}
     <section class="rounded border border-border/70 bg-muted/20 p-3">
       <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
         Rules
       </h4>
-      <div class="flex flex-wrap gap-1.5">
-        {#each ruleNames as rule}
-          <Badge
-            class="border-primary break-all whitespace-normal"
-            variant="secondary">{rule}</Badge
-          >
+      <div class="space-y-2">
+        {#each rules as rule}
+          <div class="min-w-0 space-y-1">
+            <Badge
+              class="border-primary break-all whitespace-normal"
+              variant="secondary">{rule.name}</Badge
+            >
+            {#if rule.description}
+              <p class="mt-1 whitespace-pre-line text-xs text-foreground">
+                {rule.description}
+              </p>
+            {/if}
+          </div>
         {/each}
       </div>
     </section>

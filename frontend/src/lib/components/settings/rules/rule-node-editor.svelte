@@ -26,6 +26,10 @@
   import Self from "$lib/components/settings/rules/rule-node-editor.svelte";
   import { canMoveRuleNodeToGroup } from "$lib/components/settings/rules/rule-tree-dnd.js";
   import {
+    ruleFieldSearchKeywords,
+    scoreRuleFieldSearch,
+  } from "$lib/components/settings/rules/rule-field-search.js";
+  import {
     byteAmountText,
     inferByteUnit,
     parseByteAmount,
@@ -489,6 +493,27 @@
     {
       value: "tmdb.genres",
       label: "TMDB genres",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "plex.genres",
+      label: "Plex genres",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "jellyfin.genres",
+      label: "Jellyfin genres",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_any",
+    },
+    {
+      value: "emby.genres",
+      label: "Emby genres",
       kind: "text",
       operators: multiValueTextOperators,
       defaultOperator: "contains_any",
@@ -1061,6 +1086,13 @@
       defaultOperator: "is_true",
     },
     {
+      value: "seerr.requester_watched_after_request",
+      label: "Seerr requester watched after requesting",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
       value: "seerr.requested_by_user_ids",
       label: "Seerr requester IDs",
       kind: "text",
@@ -1142,6 +1174,11 @@
     "playback.last_activity_at",
     "playback.days_since_last_activity",
   ];
+  const PROVIDER_GENRE_FIELD_VALUES = [
+    "plex.genres",
+    "jellyfin.genres",
+    "emby.genres",
+  ];
 
   const SCOPE_FIELD_VALUES: Record<RuleTargetScope, Set<string>> = {
     movie_version: new Set<string>([
@@ -1189,6 +1226,7 @@
       "seerr.days_since_last_requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
+      "seerr.requester_watched_after_request",
       "subtitle.languages",
       "subtitle.has_forced",
       "subtitle.track_count",
@@ -1196,6 +1234,7 @@
       "tmdb.in_collection",
       "tmdb.collection_name",
       "tmdb.genres",
+      ...PROVIDER_GENRE_FIELD_VALUES,
       "tmdb.id",
       "tmdb.original_language",
       "tmdb.origin_country",
@@ -1268,6 +1307,7 @@
       "seerr.days_since_last_requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
+      "seerr.requester_watched_after_request",
       "rottentomatoes.popcorn_meter",
       "rottentomatoes.popcorn_vote_count",
       "rottentomatoes.tomato_meter",
@@ -1284,6 +1324,7 @@
       "tmdb.first_air_date",
       "tmdb.last_air_date",
       "tmdb.genres",
+      ...PROVIDER_GENRE_FIELD_VALUES,
       "tmdb.id",
       "tmdb.original_language",
       "tmdb.origin_country",
@@ -1353,6 +1394,7 @@
       "seerr.days_since_last_requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
+      "seerr.requester_watched_after_request",
       "rottentomatoes.popcorn_meter",
       "rottentomatoes.popcorn_vote_count",
       "rottentomatoes.tomato_meter",
@@ -1367,6 +1409,7 @@
       "tmdb.first_air_date",
       "tmdb.last_air_date",
       "tmdb.genres",
+      ...PROVIDER_GENRE_FIELD_VALUES,
       "tmdb.id",
       "tmdb.original_language",
       "tmdb.origin_country",
@@ -1438,6 +1481,7 @@
       "seerr.days_since_last_requested",
       "seerr.requested_by_user_ids",
       "seerr.requester_has_watched",
+      "seerr.requester_watched_after_request",
       "rottentomatoes.popcorn_meter",
       "rottentomatoes.popcorn_vote_count",
       "rottentomatoes.tomato_meter",
@@ -1451,6 +1495,7 @@
       "tmdb.first_air_date",
       "tmdb.last_air_date",
       "tmdb.genres",
+      ...PROVIDER_GENRE_FIELD_VALUES,
       "tmdb.id",
       "tmdb.original_language",
       "tmdb.origin_country",
@@ -1521,6 +1566,12 @@
         return "Playback History";
       case "tmdb":
         return "TMDB";
+      case "plex":
+        return "Plex";
+      case "jellyfin":
+        return "Jellyfin";
+      case "emby":
+        return "Emby";
       case "imdb":
         return "IMDb";
       case "tvdb":
@@ -1621,6 +1672,17 @@
 
   const fieldLabel = (value: string) =>
     fields.find((f) => f.value === value)?.label ?? value;
+  const providerGenreService = (
+    fieldValue: string,
+  ): "plex" | "jellyfin" | "emby" | undefined => {
+    const prefix = fieldValue.split(".")[0];
+    return prefix === "plex" || prefix === "jellyfin" || prefix === "emby"
+      ? prefix
+      : undefined;
+  };
+  const isGenreField = (fieldValue: string) =>
+    fieldValue === "tmdb.genres" ||
+    providerGenreService(fieldValue) !== undefined;
   const ruleNodeLabel = (ruleNode: RuleNode) =>
     ruleNode.type === "group"
       ? `${ruleNode.op.toUpperCase()} group`
@@ -1684,7 +1746,7 @@
       return "Playback usernames (comma-separated)...";
     if (c.field === "tmdb.collection_name")
       return "Collection names (comma-separated)...";
-    if (c.field === "tmdb.genres") return "Genres (comma-separated)...";
+    if (isGenreField(c.field)) return "Genres (comma-separated)...";
     if (c.field === "tmdb.original_language")
       return "Language codes or names (for example: eng, English)...";
     if (c.field === "tmdb.origin_country")
@@ -2256,7 +2318,7 @@
           align="start"
           class="w-(--bits-popover-anchor-width) min-w-72 p-0 gap-0"
         >
-          <Command.Root class="rounded-md p-0">
+          <Command.Root filter={scoreRuleFieldSearch} class="rounded-md p-0">
             <Command.Input
               bind:value={fieldQuery}
               placeholder="Search rule fields..."
@@ -2268,7 +2330,11 @@
                   {#each group.items as field (field.value)}
                     <Command.Item
                       value={field.value}
-                      keywords={[field.label, group.label, field.value]}
+                      keywords={ruleFieldSearchKeywords(
+                        field.value,
+                        field.label,
+                        group.label,
+                      )}
                       onSelect={() => selectConditionField(node, field.value)}
                     >
                       {field.label}
@@ -2453,7 +2519,7 @@
                 <span class="md:hidden">Pick</span>
               </Button>
             {/if}
-            {#if node.field === "tmdb.genres" && pathPickerMediaType}
+            {#if isGenreField(node.field) && pathPickerMediaType}
               <Button
                 size="sm"
                 variant="secondary"
@@ -2598,10 +2664,11 @@
     />
   {/if}
 
-  {#if node.field === "tmdb.genres" && pathPickerMediaType}
+  {#if isGenreField(node.field) && pathPickerMediaType}
     <GenrePicker
       bind:open={genrePickerOpen}
       mediaType={pathPickerMediaType}
+      service={providerGenreService(node.field)}
       initialSelectedNames={normalizeValueList(node.value)}
       onApply={(names) => applyGenres(node, names)}
     />

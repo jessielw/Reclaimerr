@@ -313,6 +313,7 @@
   const exportRules = (rulesToExport: ReclaimRule[]) => {
     const exportData = rulesToExport.map((rule) => ({
       name: rule.name,
+      description: rule.description,
       media_type: rule.media_type,
       enabled: rule.enabled,
       target_scope: rule.target_scope,
@@ -646,6 +647,13 @@
                           </div>
                         </Badge>
                       </div>
+                      {#if rule.description}
+                        <p
+                          class="mb-2 whitespace-pre-line text-sm text-muted-foreground"
+                        >
+                          {rule.description}
+                        </p>
+                      {/if}
                       <p class="text-sm text-muted-foreground line-clamp-2">
                         {getRuleSummary(rule)}
                       </p>

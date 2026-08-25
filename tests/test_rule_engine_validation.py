@@ -497,6 +497,30 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             target_scope=TARGET_SEASON,
         )
 
+    def test_accepts_provider_genres_for_all_scopes(self) -> None:
+        for field in ("plex.genres", "jellyfin.genres", "emby.genres"):
+            for scope in (
+                TARGET_MOVIE_VERSION,
+                TARGET_SERIES,
+                TARGET_SEASON,
+                TARGET_EPISODE,
+            ):
+                with self.subTest(field=field, scope=scope):
+                    validate_rule_definition(
+                        _definition(field, "contains_any", ["Animation"]),
+                        target_scope=scope,
+                    )
+
+    def test_rejects_numeric_operator_for_provider_genres(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported rule operator 'greater_than' for field 'plex.genres'",
+        ):
+            validate_rule_definition(
+                _definition("plex.genres", "greater_than", 1),
+                target_scope=TARGET_MOVIE_VERSION,
+            )
+
     def test_accepts_media_server_collections_multi_value_operator(self) -> None:
         validate_rule_definition(
             _definition(

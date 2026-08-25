@@ -246,6 +246,40 @@ class MediaWatchSnapshotCache:
         return dict(state) if isinstance(state, dict) else {}
 
     @classmethod
+    def _config_watch_state_is_observable(cls, config: ServiceConfig) -> bool:
+        """Return whether this server's per-user watch state can be trusted."""
+        state = cls._sync_state_for_config(config)
+        if not state:
+            # Nothing has ever been recorded for this server.
+            return False
+        if state.get(cls._SYNC_AVAILABLE_KEY) is False:
+            return False
+        return cls._last_success_for_config(config) is not None
+
+    async def load_observable_watch_services(
+        self, session: AsyncSession
+    ) -> tuple[set[Service], set[Service]]:
+        """Return (configured, observable) media-server services.
+
+        A server whose snapshot has never succeeded, or whose last attempt
+        failed, cannot answer "did this user finish it". Callers need that
+        distinction to report unknown instead of a confident "not watched".
+        """
+        configured: set[Service] = set()
+        observable: set[Service] = set()
+        for config in await self._get_configured_media_servers(session):
+            if config.service_type not in {
+                Service.PLEX,
+                Service.JELLYFIN,
+                Service.EMBY,
+            }:
+                continue
+            configured.add(config.service_type)
+            if self._config_watch_state_is_observable(config):
+                observable.add(config.service_type)
+        return configured, observable
+
+    @classmethod
     def _config_snapshot_requires_refresh(
         cls,
         config: ServiceConfig,

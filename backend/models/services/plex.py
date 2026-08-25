@@ -22,6 +22,7 @@ class PlexMovie:
     external_ids: ExternalIDs
     versions: list[MovieVersionData]
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None
     media_server_user_rating: float | None = None
 
 
@@ -43,4 +44,5 @@ class PlexSeries:
     size: int
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
     media_server_collection_names: list[str] | None = None
+    media_server_genres: list[str] | None = None
     media_server_user_rating: float | None = None

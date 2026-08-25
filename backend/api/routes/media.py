@@ -1557,16 +1557,22 @@ async def get_candidates(
         for rule_id in (row.ReclaimCandidate.matched_rule_ids or [])
     }
     candidate_rule_actions_by_id: dict[int, dict[str, Any] | None] = {}
+    candidate_rule_descriptions_by_id: dict[int, str | None] = {}
     if candidate_rule_ids:
-        candidate_rule_actions_by_id = {
-            rule.id: rule.action
-            for rule in (
+        candidate_rules = (
+            (
                 await db.execute(
                     select(ReclaimRule).where(ReclaimRule.id.in_(candidate_rule_ids))
                 )
             )
             .scalars()
             .all()
+        )
+        candidate_rule_actions_by_id = {
+            rule.id: rule.action for rule in candidate_rules
+        }
+        candidate_rule_descriptions_by_id = {
+            rule.id: rule.description for rule in candidate_rules
         }
     candidate_policy_now = datetime.now(UTC)
 
@@ -1832,7 +1838,11 @@ async def get_candidates(
             library_name_by_id[row.version_library_id] = row.version_library_name
         for ref in series_library_refs_by_id.get(c.series_id or -1, []):
             library_name_by_id[ref.library_id] = ref.library_name
-        reason_parts = normalize_reason_parts(c.reason_data, library_name_by_id)
+        reason_parts = normalize_reason_parts(
+            c.reason_data,
+            library_name_by_id,
+            candidate_rule_descriptions_by_id,
+        )
 
         has_pending = (
             (

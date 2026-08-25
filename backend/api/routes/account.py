@@ -160,9 +160,14 @@ async def update_profile(
                 detail="Email already in use",
             )
 
-    # update info
-    current_user.display_name = new_info.display_name
-    current_user.email = new_info.email
+    # Only update supplied fields so presentation preferences can be saved
+    # independently from the profile form.
+    if "display_name" in new_info.model_fields_set:
+        current_user.display_name = new_info.display_name
+    if "email" in new_info.model_fields_set:
+        current_user.email = new_info.email
+    if new_info.date_format is not None:
+        current_user.date_format = new_info.date_format
     await db.commit()
 
     LOG.info(f"User {current_user.username} updated their profile info")
@@ -171,6 +176,7 @@ async def update_profile(
         "message": "Profile info updated successfully",
         "email": current_user.email,
         "display_name": current_user.display_name,
+        "date_format": current_user.date_format,
     }
 
 

@@ -394,3 +394,68 @@ def test_update_rule_allows_clearing_arr_instance_selection() -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_rule_description_round_trips_and_normalizes_empty_values() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db:
+            admin = _admin_user()
+            db.add(admin)
+            await db.flush()
+
+            created = await create_rule(
+                CleanupRuleCreate(
+                    name="Short name",
+                    description="  Keeps low-priority movie versions.  ",
+                    media_type=MediaType.MOVIE,
+                    target_scope="movie_version",
+                    definition=_definition("media.size", "greater_than", 100),
+                ),
+                admin,
+                db,
+            )
+            assert created.description == "Keeps low-priority movie versions."
+
+            cleared = await update_rule(
+                created.id,
+                CleanupRuleUpdate(description=" \n "),
+                admin,
+                db,
+            )
+            assert cleared.description is None
+
+            imported = await import_rules(
+                RuleImportPayload(
+                    rules=[
+                        CleanupRuleCreate(
+                            name="Imported rule",
+                            description="Imported context",
+                            media_type=MediaType.MOVIE,
+                            target_scope="movie_version",
+                            definition=_definition(
+                                "media.size", "greater_than", 100
+                            ),
+                        )
+                    ]
+                ),
+                admin,
+                db,
+            )
+            assert imported.imported == 1
+            imported_rule = (
+                await db.execute(
+                    select(ReclaimRule).where(ReclaimRule.name == "Imported rule")
+                )
+            ).scalar_one()
+            assert imported_rule.description == "Imported context"
+
+        await engine.dispose()
+
+    asyncio.run(run())

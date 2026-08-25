@@ -60,6 +60,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), init=True)
     email: Mapped[str | None] = mapped_column(String(120), unique=True, default=None)
     display_name: Mapped[str | None] = mapped_column(String(32), default=None)
+    # Personal presentation preference; deliberately not an instance-wide setting.
+    date_format: Mapped[str] = mapped_column(String(8), default="mdy")
     oidc_issuer: Mapped[str | None] = mapped_column(
         String(255), default=None, index=True
     )
@@ -353,6 +355,13 @@ class GeneralSettings(Base):
     favorites_usernames: Mapped[list[str]] = mapped_column(JSON, default_factory=list)
     requester_watch_user_mappings: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default_factory=list
+    )
+    # Drops the request-date half of `seerr.requester_watched_after_request`.
+    # A Seerr that was rebuilt, migrated, or re-requested dates its rows after
+    # the plays they describe, which makes that comparison unpassable for a
+    # whole library no matter how the identity join resolves.
+    requester_watch_ignore_request_date: Mapped[bool] = mapped_column(
+        Boolean, default=False
     )
     default_allowed_pages: Mapped[list[str]] = mapped_column(
         JSON, default_factory=lambda: list(DEFAULT_NEW_USER_ALLOWED_PAGES)
@@ -737,6 +746,7 @@ class MovieVersion(Base):
     media_server_collection_names: Mapped[list[str] | None] = mapped_column(
         JSON, default=None
     )
+    media_server_genres: Mapped[list[str] | None] = mapped_column(JSON, default=None)
     media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
@@ -776,6 +786,7 @@ class SeriesServiceRef(Base):
     media_server_collection_names: Mapped[list[str] | None] = mapped_column(
         JSON, default=None
     )
+    media_server_genres: Mapped[list[str] | None] = mapped_column(JSON, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -860,6 +871,45 @@ class MediaFavorite(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class WatchUserAlias(Base):
+    """One name a playback provider knows a user by.
+
+    Providers disagree about what a person is called: Plex history exposes an
+    account id, Tautulli a friendly name, Tracearr its own identity id, and Seerr
+    a display name that may match none of them. Grouping every alias under one
+    ``(config, provider_user_id)`` pair lets requester matching bridge them
+    without guessing.
+    """
+
+    __tablename__ = "watch_user_aliases"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_service_config_id",
+            "provider_user_id",
+            "alias_normalized",
+            name="uq_watch_user_alias_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # The media server the user belongs to. Tautulli and Plex-bound Tracearr
+    # identities collapse to PLEX here, matching requester-watch evaluation.
+    observed_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    provider_user_id: Mapped[str] = mapped_column(String(255), index=True)
+    alias: Mapped[str] = mapped_column(String(255))
+    alias_normalized: Mapped[str] = mapped_column(String(255), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
@@ -1408,6 +1458,9 @@ class Episode(Base):
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     media_server_user_rating: Mapped[float | None] = mapped_column(Float, default=None)
+    added_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
     arr_added_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )
@@ -1491,6 +1544,7 @@ class ReclaimRule(Base):
     )
     name: Mapped[str] = mapped_column(String(100))  # rule name
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    description: Mapped[str | None] = mapped_column(Text, default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # advanced rule engine fields

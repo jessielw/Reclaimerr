@@ -49,6 +49,7 @@ from backend.jobs.queue import reset_stale_jobs
 from backend.scheduler import shutdown_scheduler, start_scheduler
 from backend.services.admin_notices import sync_forward_auth_fallback_notice
 from backend.services.lifecycle_webhooks import recover_pending_webhook_deliveries
+from backend.services.watch_identity import seed_watch_user_aliases_if_empty
 from backend.utils.create_admin import create_initial_admin
 
 limiter = Limiter(key_func=get_remote_address)
@@ -78,6 +79,8 @@ def _wrap_proxy_headers(
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize client manager on startup."""
     worker_tasks: list[asyncio.Task[Any]] = []
+    # Holds strong references so fire-and-forget startup work is not collected.
+    background_tasks: list[asyncio.Task[Any]] = []
     scheduler_started = False
 
     try:
@@ -125,6 +128,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # load service configs from database and initialize clients
         await load_enabled_services()
 
+        # Register playback-user identities in the background so requester
+        # watch rules work on the first preview after an upgrade rather than
+        # waiting for the periodic playback refresh. Provider round-trips must
+        # not delay startup, so this is not awaited.
+        background_tasks.append(asyncio.create_task(seed_watch_user_aliases_if_empty()))
+
         # start scheduler
         await start_scheduler()
         scheduler_started = True
@@ -151,6 +160,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         LOG.info("Shutting down reclaimerr API")
 
+        for background_task in background_tasks:
+            background_task.cancel()
+
         for worker_task in worker_tasks:
             worker_task.cancel()
         worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
@@ -175,7 +187,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.3.6",
+    version="0.3.7",
     lifespan=lifespan,
 )
 

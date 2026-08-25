@@ -39,6 +39,7 @@ from backend.models.media import (
     ExternalIDs,
     MediaWatchSnapshot,
     MovieVersionData,
+    WatchUserDirectoryEntry,
 )
 from backend.models.services.plex import PlexMovie, PlexSeries
 from backend.utils.helpers import normalize_leaving_soon_collection_title
@@ -48,6 +49,8 @@ _HistEntry = tuple[int, datetime | None, int]
 JsonDict: TypeAlias = dict[str, Any]
 JsonList: TypeAlias = list[JsonDict]
 JsonPayload: TypeAlias = JsonDict | JsonList
+# Plex attributes the server owner's plays to account id 1 in history payloads.
+PLEX_OWNER_ACCOUNT_ID = "1"
 _METADATA_BATCH_SIZE = 50
 _EPISODE_METADATA_BATCH_SIZE = 100
 _SECTION_METADATA_PAGE_SIZE = 1000
@@ -1084,6 +1087,7 @@ class PlexService:
                                 or episode.get("userRating")
                             ),
                             runtime_seconds=ep_runtime_seconds,
+                            added_at=ep_added_at,
                         )
                     )
                     episode_rating = as_float(
@@ -1195,6 +1199,7 @@ class PlexService:
                 # when Part/Stream is missing in section list responses, use pre-fetched
                 # batched details from /library/metadata/{id1,id2,...}.
                 source_item = details_by_key.get(str(item["ratingKey"]), item)
+                genre_names = self._genre_names(source_item.get("Genre"))
                 media_entries = (
                     source_item.get("Media", [])
                     if source_item
@@ -1334,6 +1339,7 @@ class PlexService:
                                 else None
                             ),
                             media_server_collection_names=collection_names,
+                            media_server_genres=genre_names,
                             media_server_user_rating=as_float(
                                 source_item.get("userRating")
                                 if source_item
@@ -1357,6 +1363,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         str(item["ratingKey"])
                     ),
+                    media_server_genres=genre_names,
                     media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_movies.append(movie)
@@ -1511,6 +1518,7 @@ class PlexService:
                     media_server_collection_names=collection_names_by_item_id.get(
                         rating_key
                     ),
+                    media_server_genres=self._genre_names(item.get("Genre")),
                     media_server_user_rating=as_float(item.get("userRating")),
                 )
                 all_series.append(series)
@@ -1719,6 +1727,97 @@ class PlexService:
                 continue
             users_by_id[account_id] = display
         return users_by_id
+
+    @staticmethod
+    def _parse_plex_user_aliases_xml(payload: str) -> dict[str, set[str]]:
+        """Parse Plex.tv users XML into accountID -> every known alias."""
+        aliases_by_id: dict[str, set[str]] = {}
+        if not payload:
+            return aliases_by_id
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError:
+            return aliases_by_id
+
+        for elem in root.iter():
+            tag = str(elem.tag).split("}")[-1].lower()
+            if tag != "user":
+                continue
+            attrs = elem.attrib if isinstance(elem.attrib, Mapping) else {}
+            account_id = str(attrs.get("id", "")).strip()
+            if not account_id:
+                continue
+            aliases = {
+                value
+                for key in ("username", "title", "friendlyName", "email")
+                if (value := str(attrs.get(key, "")).strip())
+            }
+            aliases.add(account_id)
+            aliases_by_id.setdefault(account_id, set()).update(aliases)
+        return aliases_by_id
+
+    async def _fetch_owner_aliases(self) -> tuple[str, set[str]] | None:
+        """Return the server owner's Plex account id and aliases.
+
+        plex.tv/api/users lists shared users only, so without this the owner's
+        plays stay keyed by the bare account id Plex reports in history.
+        """
+        try:
+            response = await self.session.get(
+                "https://plex.tv/api/v2/user",
+                headers={"accept": "application/json", "X-Plex-Token": self.token},
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except Exception as e:
+            LOG.debug(f"Plex owner account lookup failed: {e}")
+            return None
+        if not isinstance(payload, dict):
+            return None
+        owner_id = str(payload.get("id") or "").strip()
+        if not owner_id:
+            return None
+        aliases = {
+            value
+            for key in ("username", "title", "email")
+            if (value := str(payload.get(key) or "").strip())
+        }
+        aliases.add(owner_id)
+        # Plex reports the owner as account 1 in history payloads.
+        aliases.add(PLEX_OWNER_ACCOUNT_ID)
+        return owner_id, aliases
+
+    async def get_watch_user_directory(self) -> list[WatchUserDirectoryEntry]:
+        """Return every Plex account that can appear in this server's history."""
+        entries: dict[str, set[str]] = {}
+        try:
+            response = await self.session.get(
+                "https://plex.tv/api/users",
+                params={
+                    "X-Plex-Client-Identifier": self._plex_client_identifier,
+                    "X-Plex-Token": self.token,
+                },
+                headers={"Accept": "application/xml"},
+                timeout=60,
+            )
+            response.raise_for_status()
+            entries.update(self._parse_plex_user_aliases_xml(response.text or ""))
+        except Exception as e:
+            LOG.warning(f"Plex.tv user directory lookup failed: {e}")
+
+        owner = await self._fetch_owner_aliases()
+        if owner is not None:
+            owner_id, owner_aliases = owner
+            entries.setdefault(owner_id, set()).update(owner_aliases)
+
+        return [
+            WatchUserDirectoryEntry(
+                provider_user_id=account_id,
+                aliases=tuple(sorted(aliases)),
+            )
+            for account_id, aliases in entries.items()
+        ]
 
     async def _fetch_plex_tv_user_map(self) -> dict[str, str]:
         """Fetch Plex account users from Plex.tv and map accountID -> display name."""
@@ -2005,6 +2104,7 @@ class PlexService:
                     last_viewed_at=self._merge_last_viewed(s.last_viewed_at, s_hist),
                     played_by_user_count=s_hist[2] if s_hist else None,
                     media_server_collection_names=s.media_server_collection_names,
+                    media_server_genres=s.media_server_genres,
                     media_server_user_rating=s.media_server_user_rating,
                     season_data=merged_seasons,
                 )
@@ -2290,6 +2390,19 @@ class PlexService:
                 or stream.get("languageTag")
                 or stream.get("language")
                 for stream in streams
+            ]
+        )
+
+    @staticmethod
+    def _genre_names(raw_genres: Any) -> list[str] | None:
+        """Normalize Plex ``Genre`` tag objects without mixing in TMDB genres."""
+        if not isinstance(raw_genres, list):
+            return None
+        return normalize_name_list(
+            [
+                genre.get("tag") or genre.get("name")
+                for genre in raw_genres
+                if isinstance(genre, dict)
             ]
         )
 

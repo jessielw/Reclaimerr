@@ -26,6 +26,26 @@ export const ruleNames = (entry: ReclaimCandidateEntry): string[] => {
   );
 };
 
+export type RuleDetail = {
+  name: string;
+  description: string | null;
+};
+
+export const ruleDetails = (entry: ReclaimCandidateEntry): RuleDetail[] => {
+  const details = (entry.reason_parts ?? [])
+    .map((part) => ({
+      name: part.rule_name?.trim() ?? "",
+      description: part.rule_description?.trim() || null,
+    }))
+    .filter((part) => part.name);
+  if (details.length > 0) {
+    return Array.from(
+      new Map(details.map((part) => [part.name, part])).values(),
+    );
+  }
+  return ruleNames(entry).map((name) => ({ name, description: null }));
+};
+
 export const detailReasons = (entry: ReclaimCandidateEntry): string[] => {
   const details = (entry.reason_parts ?? [])
     .map((part) => part.text?.trim() ?? "")

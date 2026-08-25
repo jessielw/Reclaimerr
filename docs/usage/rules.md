@@ -2,6 +2,7 @@
 
 Rules determine which media becomes a reclaim candidate or receives an automated protection. A rule has:
 
+- a short name and optional plain-text description for identifying it throughout the app
 - a target scope
 - one or more conditions
 - nested `AND` or `OR` groups
@@ -102,6 +103,8 @@ For example, given tags that pair a base name with a `-stale` variant (such as `
 
 Missing metadata does not automatically prove a negative condition. Language and origin-country rules therefore fail closed: if the item's value is unknown, `matches none` and `does not match all` do not match it. Use a separate `does not exist` condition when you specifically want to identify missing metadata.
 
+Provider-specific media-server genres also fail closed when their provider is not the configured main media server. For example, `Plex genres matches none Drama` does not match an item whose main server is Jellyfin, because Plex metadata is unavailable rather than empty.
+
 ## Field Reference
 
 The rule editor only displays fields valid for the selected scope. The following fields have behavior or units that are important when constructing a rule.
@@ -125,6 +128,20 @@ Size and disk-free conditions use an amount and unit selector in the editor. Rul
 Arr file-added dates are populated during Radarr and Sonarr syncs. They remain empty when an item cannot be matched or an Arr service is not configured; the existing media-server added date is not replaced or backfilled.
 
 Media-server user ratings are stored during media sync when the provider reports a user-specific rating for the item. Missing ratings do not match numeric comparisons; use `does not exist` to find unrated media.
+
+### Media-Server Genres
+
+| Field           | Scope      | Value                            |
+| --------------- | ---------- | -------------------------------- |
+| Plex genres     | All scopes | Genre tags reported by Plex      |
+| Jellyfin genres | All scopes | Genre names reported by Jellyfin |
+| Emby genres     | All scopes | Genre names reported by Emby     |
+
+Media-server genres are separate from TMDB genres. Reclaimerr does not merge names between providers, even when the same name appears in both sources. This makes it possible to combine them explicitly with `AND` or `OR` groups and keeps locally edited or provider-specific genres attributable to their source.
+
+Only genres from the configured main media server are stored. Linked media servers continue to contribute supplemental watch data, not library metadata. A condition for a different provider is unavailable and does not match, including with negative list operators. If the main provider reports an item but gives it no genres, `does not exist` can match that empty provider value.
+
+Run a full media sync after upgrading to populate provider genres for existing media. Series-level media-server genres are inherited by series, season, and episode rule scopes; movie genres are evaluated per movie version.
 
 ### Arr Identifiers
 
@@ -174,7 +191,7 @@ The current movie is excluded from the sibling calculation. Reclaimerr-managed L
 | Original language | All scopes | Canonical ISO 639-3 language code |
 | Origin country | All scopes | Case-insensitive country code such as `US` or `JP` |
 | Runtime | Movie version | TMDB movie runtime in minutes |
-| Genres | All scopes | TMDB genre names |
+| Genres | All scopes | TMDB genre names; never merged with media-server genres |
 | Rating / Votes / Popularity | All scopes | TMDB rating uses the raw 0-10 `vote_average` scale; votes and popularity use current stored TMDB metadata |
 | Release date | Movie version | Movie release date |
 | First / last air date | Series, season, episode | Dates inherited from the parent series |
@@ -255,28 +272,55 @@ Declined and failed requests are excluded. Series rules use the latest request f
 
 ### Seerr Requester Watch State
 
-`Seerr requester has watched` compares each requester's playback with the time they requested the movie or TV season. Playback at or before the request does not count. The meaning depends on the rule target:
+Two fields answer two different questions, and most rules want the first:
 
-| Scope | `is true` means |
+| Field | `is true` means |
 | --- | --- |
-| Movie version | A requester watched the movie after requesting it |
-| Episode | A requester watched that episode after requesting its season |
-| Season | One requester watched every local episode in that requested season |
-| Series | One requester watched every regular local episode in the seasons they requested |
+| `Seerr requester has watched` | A requester watched it. The request date is not consulted. |
+| `Seerr requester watched after requesting` | The same, and every qualifying play came after that requester's **earliest** request for the season. |
 
-Season 0 specials are excluded from series completion. Progress from different requesters is never combined to complete a season or series. Seasons that were not requested do not inherit another season's requested or watched state.
+What "watched it" means depends on the rule target:
 
-Reclaimerr first matches Seerr users automatically using usernames, display names, and email addresses from Seerr's user directory. Explicit requester watch-user mappings are additive fallbacks for users whose identities differ between Seerr and the playback provider. Username comparisons are case-insensitive. Tautulli and Plex-bound Tracearr identities are treated as Plex identities when applying provider-scoped mappings.
+| Scope         | Watched means                                            |
+| ------------- | -------------------------------------------------------- |
+| Movie version | A requester watched the movie                            |
+| Episode       | A requester watched that episode                         |
+| Season        | One requester watched every local episode in that season |
+| Series        | One requester watched every regular local episode        |
+
+Season 0 specials are excluded from series completion. Progress from different requesters is never combined to complete a season or series.
+
+The two fields used to be one, and the fused version caused false negatives: a requester who finished a season could still read as `false` if anything created a newer request row for it. Seerr writes a separate request for a 4K copy and for every re-request of an airing season, so the bar could move past plays that had already happened. The bar is now that requester's earliest request, and rules saved before the split were migrated to `Seerr requester watched after requesting` so none of them changed what they match.
+
+`Seerr requester watched after requesting` also needs a request record for the season it is judging; a season the requester never asked for cannot satisfy it. `Seerr requester has watched` has no such requirement.
+
+That comparison is only as good as the request dates behind it. A Seerr that was rebuilt, migrated between instances, or simply re-requested writes rows dated after the plays they describe, and the field then reads `false` for an entire library no matter how the identity join resolves. **Settings -> User Signals -> Ignore Seerr Request Dates** turns the date comparison off, leaving `Seerr requester watched after requesting` to check completion alone -- the same question `Seerr requester has watched` answers. It is off by default, applies to every rule at once, and relaxes only that one half: an item nobody finished stays `false`, and an unreadable media server stays unknown. The **Why?** dialog says when the switch is on, and still lists which plays predate the request so the raw comparison remains visible.
+
+Leave the switch off if your request dates are trustworthy and you want date-free matching in only some rules -- use `Seerr requester has watched` in those rules instead.
+
+Both fields count the episodes you actually have, unlike `Season fully watched` below, which counts Sonarr's full known inventory. The difference is intentional: a requester can only watch what exists, so an unaired or missing episode must not make a season they did finish read as unwatched. A rule using both conditions therefore applies the stricter Sonarr-inventory test through `Season fully watched`.
+
+Reclaimerr matches Seerr users automatically using the usernames, display names, email addresses, and linked Plex or Jellyfin account names from Seerr's user directory. Each playback provider also reports every name it knows an account by -- a Plex account id, username, title, friendly name, and email, or the equivalent from Jellyfin, Emby, Tautulli, and Tracearr -- so matching any one of those names reaches the rest.
+
+When several providers describe the same media server -- a Plex server, the Tautulli watching it, and a Plex-bound Tracearr -- their directories are merged into one account per person, so a Plex title and the Plex username underneath it need no manual mapping. Two rules keep that safe: a name that a single provider gives to two of its own users bridges nothing, and provider ids never bridge across providers, because Plex numbering its owner `1` and Tautulli numbering its first user `1` are unrelated facts.
+
+Explicit requester watch-user mappings under **Settings -> User Signals -> Seerr Requester to Watch User Mapping** remain available for identities that share no name at all. That screen lists every Seerr user, shows how many are covered automatically, and offers a picker with one entry per playback account -- ids, emails, and a Tracearr identity are shown as that account's other names rather than as entries of their own, and all of them are searchable. Do not confuse it with **Settings -> Users -> Sign-In Identity Links**, which links media-server logins to local Reclaimerr accounts and has no effect on rules. Comparisons are case-insensitive, and aliases only bridge accounts on the same media server. Tautulli and Plex-bound Tracearr identities are treated as Plex identities when applying provider-scoped mappings.
 
 Requester watch state combines completed per-user playback snapshots from Plex, Jellyfin, and Emby with Tautulli or Tracearr events whose provider-native watched status is complete. Each provider's configured watched threshold remains the source of truth. Jellyfin and Emby Playback Reporting events describe activity but do not expose a reliable completion signal, so they do not independently satisfy this field. They remain available to the general `playback.*` fields. When the same completed play is available from multiple sources, Reclaimerr keeps the latest qualifying timestamp.
 
-After configuring Seerr or changing identity mappings, run `Sync Media` before previewing the rule. Plex can provide current completed-watch state directly; durable completed Plex history requires Tautulli or a Plex-bound Tracearr server.
+Previews refresh the watch snapshot when it is more than 15 minutes old and cleanup scans require a current one, so a manual `Sync Media` is no longer needed after changing identity mappings. Plex can provide current completed-watch state directly; durable completed Plex history requires Tautulli or a Plex-bound Tracearr server.
+
+When a media server holding an item cannot report completion -- its watch snapshot has never synced, or its last attempt failed, and no retained durable history covers it -- these fields are **unknown** for that item rather than false. Unknown matches neither `is true` nor `is false`, so a broken media server can no longer make a cleanup rule delete media that was watched. The preview reports how many items were affected.
+
+Use the **Why?** control on a preview row to see exactly how either field resolved: who requested the item and when, every name tried on their behalf, every completed play found with its timestamp, and -- when the answer is false -- which episodes were never watched versus which were watched before the request.
+
+`Playback users` is a different question again. It lists who has played the item at all, with no completion requirement and no connection to who requested it, so it is not a substitute for either requester-watch field.
 
 ### Sonarr Rule Data
 
 `Season fully watched` and `Season watched (%)` use Sonarr's complete known episode inventory as their denominator. Episodes Sonarr knows about still count when they are unaired or do not have files, so six watched episodes out of seven known episodes is 85.71%, not complete. Run `Sync Media` after upgrading or after Sonarr discovers new episodes.
 
-If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only seasons where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
+Sonarr series are matched by TMDB id, falling back to TVDB id when Sonarr reports no TMDB id for a show. If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only seasons where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
 
 `Sonarr series status` exposes Sonarr's canonical series status independently from the TMDB-backed `Series status` field. It is available to series, season, and episode rules with the values `continuing`, `ended`, `upcoming`, and `deleted`.
 
@@ -339,7 +383,7 @@ The fields above are aggregated across every user who played the media, so `Long
 | Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
 | Playback watched by user (%) | Selected user's total watched time as a percent of runtime | Movie version, episode only |
 
-Both fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option — use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
+Both fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option - use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
 
 `Playback watched by user (%)` is only available for movie-version and episode rules, since percent-watched needs a known runtime and only movie files and episodes have one on record (series and season rules can still use the minutes field). Episode runtimes are recorded during a media-server sync, so on an existing install episode percent rules stay unknown until the next sync has run.
 
@@ -353,7 +397,9 @@ The existing `watch.*` fields continue to describe the current library copy. Nat
 
 Playback data is loaded only when an enabled rule uses a `playback.*` field. Native snapshots are read from the database. A preview refreshes them when they are more than 15 minutes old, while cleanup scans require a current snapshot. Tautulli history is fetched in one ungrouped paginated pass. Playback Reporting and Tautulli imports use an overlap window and event keys to avoid duplicate events during incremental refreshes. Tracearr uses its cursor-paginated public API v2 history and user endpoints, retaining unfinished play chains until their completed rows arrive.
 
-For each media server, Reclaimerr uses exactly one durable history provider. A Tracearr binding replaces Tautulli or Playback Reporting for that server; their retained rows are excluded from aggregates while the binding is active. A Tracearr failure is reported as unavailable and does not fall back to the other provider. Native Jellyfin/Emby snapshots continue to supplement durable history.
+For each media server, Reclaimerr uses exactly one durable history provider for playback totals. A Tracearr binding replaces Tautulli or Playback Reporting for that server; their retained rows are excluded from aggregates while the binding is active, because counting the same play from two providers would inflate every total. A Tracearr failure is reported as unavailable and does not fall back to the other provider. Native Jellyfin/Emby snapshots continue to supplement durable history.
+
+Completion evidence is the exception. `Seerr requester has watched` asks whether a play finished, not how many plays there were, so a completed play retained from a superseded provider still counts for that field. Binding Tracearr to a Plex server therefore keeps the older Tautulli history that predates Tracearr instead of quietly reporting that media as never watched. Rows from Tracearr servers that are no longer bound are still ignored.
 
 Playback-user rules match usernames case-insensitively and can require any, none, or all selected users. Jellyfin and Emby resolve names from their native user APIs; Tautulli resolves only the Plex history it supplies. If a native Jellyfin/Emby snapshot is unavailable, user conditions are unknown rather than falling back to stale imported events. If any user on an item cannot be resolved, username conditions remain unavailable for that item while the other playback metrics remain usable.
 

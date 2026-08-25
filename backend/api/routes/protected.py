@@ -210,6 +210,7 @@ async def get_protected_entries(
             Episode.name.label("episode_name"),
             User.username.label("actor_username"),
             ReclaimRule.name.label("source_rule_name"),
+            ReclaimRule.description.label("source_rule_description"),
         )
         .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
         .outerjoin(Series, Series.id == ProtectedMedia.series_id)
@@ -475,6 +476,7 @@ async def get_protected_entries(
                 source="rule" if entry.source == "rule" else "manual",
                 source_rule_id=entry.source_rule_id,
                 source_rule_name=row.source_rule_name,
+                source_rule_description=row.source_rule_description,
                 permanent=entry.permanent,
                 expires_at=to_utc_isoformat(entry.expires_at),
                 created_at=to_utc_isoformat(entry.created_at) or "",
@@ -660,6 +662,7 @@ async def create_protection_entry(
         source="manual",
         source_rule_id=None,
         source_rule_name=None,
+        source_rule_description=None,
         permanent=new_entry.permanent,
         expires_at=to_utc_isoformat(new_entry.expires_at),
         created_at=to_utc_isoformat(new_entry.created_at) or "",
@@ -788,6 +791,7 @@ async def update_protection_duration(
         source="manual",
         source_rule_id=None,
         source_rule_name=None,
+        source_rule_description=None,
         permanent=entry.permanent,
         expires_at=to_utc_isoformat(expires_at_value),
         created_at=to_utc_isoformat(entry.created_at) or "",

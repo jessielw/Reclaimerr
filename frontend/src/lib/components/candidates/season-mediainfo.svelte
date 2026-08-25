@@ -3,7 +3,7 @@
   import { formatFileSize } from "$lib/utils/formatters";
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import { toTitleCase } from "$lib/utils/strings";
-  import { ruleNames } from "$lib/utils/candidate-rules";
+  import { ruleDetails } from "$lib/utils/candidate-rules";
   import {
     candidateMediaMetaFields,
     type CandidateMetaField,
@@ -111,7 +111,7 @@
     sections.filter((section) => section.fields.length > 0),
   );
 
-  const rules = $derived(ruleNames(entry));
+  const rules = $derived(ruleDetails(entry));
 </script>
 
 <div class="space-y-3">
@@ -143,10 +143,17 @@
     <h4 class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
       Rules
     </h4>
-    <div class="flex flex-wrap gap-1.5">
+    <div class="space-y-2">
       {#if rules.length > 0}
         {#each rules as rule}
-          <Badge variant="secondary">{rule}</Badge>
+          <div class="min-w-0 space-y-1">
+            <Badge variant="secondary">{rule.name}</Badge>
+            {#if rule.description}
+              <p class="mt-1 whitespace-pre-line text-xs text-foreground">
+                {rule.description}
+              </p>
+            {/if}
+          </div>
         {/each}
       {:else}
         <span class="text-sm text-muted-foreground">{unknownValue}</span>

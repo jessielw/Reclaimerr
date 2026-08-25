@@ -4,6 +4,18 @@
 
   import { setThemeFamily, themeFamily } from "$lib/stores/theme-family";
   import { THEME_FAMILIES, type ThemeFamilyId } from "$lib/theme-families";
+  import {
+    dateFormat,
+    setDateFormat,
+    type DateFormat,
+  } from "$lib/stores/date-format";
+
+  interface Props {
+    onDateFormatChange?: (value: DateFormat) => void | Promise<void>;
+    dateFormatSaving?: boolean;
+  }
+
+  let { onDateFormatChange, dateFormatSaving = false }: Props = $props();
 
   const selectTheme = (id: ThemeFamilyId) => {
     if ($themeFamily === id) return;
@@ -11,6 +23,23 @@
   };
 
   const swatchLabels = ["Background", "Surface", "Primary", "Accent"] as const;
+  const dateFormatOptions: {
+    value: DateFormat;
+    label: string;
+    example: string;
+  }[] = [
+    { value: "mdy", label: "Month / day / year", example: "08/20/2026" },
+    { value: "dmy", label: "Day / month / year", example: "20/08/2026" },
+    { value: "iso", label: "ISO 8601", example: "2026-08-20" },
+  ];
+
+  const selectDateFormat = (value: DateFormat) => {
+    if (onDateFormatChange) {
+      void onDateFormatChange(value);
+      return;
+    }
+    setDateFormat(value);
+  };
 </script>
 
 <section class="bg-card rounded-lg border border-border p-6">
@@ -95,5 +124,31 @@
         </div>
       </button>
     {/each}
+  </div>
+
+  <div class="mt-6 border-t border-border pt-6">
+    <h3 class="text-base font-semibold text-foreground">Date format</h3>
+    <p class="mt-1 text-sm text-muted-foreground">
+      Choose how dates are displayed throughout Reclaimerr. This preference is
+      saved to your account and follows you across browsers and devices.
+    </p>
+    <div class="mt-3 grid gap-3 md:grid-cols-3">
+      {#each dateFormatOptions as option}
+        <button
+          type="button"
+          aria-pressed={$dateFormat === option.value}
+          onclick={() => selectDateFormat(option.value)}
+          disabled={dateFormatSaving}
+          class="rounded-xl border p-4 text-left transition-all cursor-pointer outline-none focus-visible:ring-2
+            focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background
+            {$dateFormat === option.value
+            ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10'
+            : 'border-border bg-background/60 hover:border-primary/40 hover:bg-accent/30'}"
+        >
+          <p class="font-medium text-foreground">{option.label}</p>
+          <p class="mt-1 text-sm text-muted-foreground">{option.example}</p>
+        </button>
+      {/each}
+    </div>
   </div>
 </section>

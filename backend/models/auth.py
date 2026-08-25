@@ -116,6 +116,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
     username: str
     display_name: str | None
     email: EmailStr | None
+    date_format: Literal["mdy", "dmy", "iso"] = "mdy"
     avatar_path: str | None
     role: UserRole
     permissions: list[Permission] = []
@@ -197,6 +198,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
             username=user.username,
             display_name=user.display_name,
             email=user.email,
+            date_format=getattr(user, "date_format", "mdy"),
             avatar_path=user.avatar_path,
             role=user.role,
             permissions=cls.coerce_permissions(user.permissions),
@@ -427,6 +429,7 @@ class UpdateUserRequest(
 class ChangeProfileInfoRequest(BaseModel, DisplayNameMixin):
     display_name: str | None = None
     email: EmailStr | None = None
+    date_format: Literal["mdy", "dmy", "iso"] | None = None
 
     @field_validator("display_name")
     @classmethod

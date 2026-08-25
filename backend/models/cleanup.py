@@ -13,6 +13,7 @@ class CleanupRuleBase(BaseModel):
     """Advanced cleanup rule payload."""
 
     name: str
+    description: str | None = None
     media_type: MediaType
     enabled: bool = True
     target_scope: str
@@ -34,6 +35,7 @@ class CleanupRuleUpdate(BaseModel):
     """
 
     name: str | None = None
+    description: str | None = None
     media_type: MediaType | None = None
     enabled: bool | None = None
     target_scope: str | None = None
@@ -98,6 +100,9 @@ class RulePreviewMatchMetadata:
     )
     playback_unavailable_count: int = 0
     playback_error: str | None = None
+    seerr_unavailable: bool = False
+    seerr_error: str | None = None
+    requester_watch_unavailable_count: int = 0
     matched_count: int = 0
 
 

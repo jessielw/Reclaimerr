@@ -37,6 +37,11 @@ def _retry_after_seconds(response: object) -> float | None:
     headers = getattr(response, "headers", None)
     if not isinstance(headers, Mapping):
         return None
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        return max(0.0, min(float(str(raw)), 60.0))
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_supported_version(version: str) -> bool:
@@ -44,11 +49,6 @@ def _is_supported_version(version: str) -> bool:
 
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?", version)
     return bool(match and tuple(int(part) for part in match.groups()) >= (2, 0, 0))
-    raw = headers.get("Retry-After") or headers.get("retry-after")
-    try:
-        return max(0.0, min(float(str(raw)), 60.0))
-    except (TypeError, ValueError):
-        return None
 
 
 class TracearrClient:

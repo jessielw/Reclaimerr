@@ -21,6 +21,7 @@
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { toast } from "svelte-sonner";
+  import { formatDateTimeToLocaleString } from "$lib/utils/date";
 
   interface Props {
     svgIcon: Component | null;
@@ -112,7 +113,7 @@
   let deliveries = $state<WebhookDeliveryInfo[]>([]);
 
   const formatDate = (value: string | null) =>
-    value ? new Date(value).toLocaleString() : "Never";
+    value ? formatDateTimeToLocaleString(value) : "Never";
 
   const newWebhook = (): LifecycleWebhookEndpoint => ({
     id: 0,

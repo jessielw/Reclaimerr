@@ -56,4 +56,22 @@ class SeerrUser:
     username: str | None
     display_name: str | None
     email: str | None = None
+    # Playback providers report the media-server account name rather than the
+    # Seerr one, so these are what requester watch matching actually joins on.
+    plex_username: str | None = None
+    plex_id: int | None = None
+    jellyfin_username: str | None = None
+    jellyfin_user_id: str | None = None
     raw: Mapping[str, Any] | None = None
+
+    def identity_values(self) -> tuple[str | int | None, ...]:
+        """Return every value that can identify this user to a media server."""
+        return (
+            self.username,
+            self.display_name,
+            self.email,
+            self.plex_username,
+            self.plex_id,
+            self.jellyfin_username,
+            self.jellyfin_user_id,
+        )

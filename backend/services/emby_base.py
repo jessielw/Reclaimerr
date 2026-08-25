@@ -118,6 +118,7 @@ class _SeriesAggregate:
     last_viewed_at: datetime | None
     played_by_user_count: int
     media_server_collection_names: list[str] | None
+    media_server_genres: list[str] | None
     season_data: list[AggregatedSeasonData]
     media_server_user_rating: float | None = None
 
@@ -770,8 +771,9 @@ class EmbyServiceBase:
     ) -> dict[str, set[int]]:
         """Return favorite TMDB IDs grouped by username for a media type.
 
-        This intentionally queries each user directly via ``Users/{id}/Items`` so
-        favorites remain user scoped and we can build a cross user snapshot.
+        The user-scoped ``Items`` query works for both Emby and Jellyfin. Jellyfin
+        v12 removed the older ``Users/{id}/Items`` route, so keep the user scope in
+        the query instead of embedding it in the path.
         """
         include_item_types = "Movie" if media_type == "movie" else "Series"
         users = await self.get_users()
@@ -800,8 +802,8 @@ class EmbyServiceBase:
                     "Limit": page_size,
                 }
                 data = await self._make_request(
-                    f"Users/{user.id}/Items",
-                    params=params,
+                    "Items",
+                    params={"userId": user.id, **params},
                     timeout=300,
                 )
                 if not isinstance(data, dict):
@@ -864,7 +866,7 @@ class EmbyServiceBase:
             "enableTotalRecordCount": "true",
             "Fields": (
                 "ProviderIds,MediaSources,MediaStreams,Chapters,DateCreated,Path,UserData,"
-                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate"
+                "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate,Genres"
             ),
             "ParentId": library_id,
         }
@@ -1018,6 +1020,7 @@ class EmbyServiceBase:
                             )
                         ),
                         media_server_collection_names=collection_names,
+                        media_server_genres=self._genre_names(item),
                         media_server_user_rating=user_data.rating,
                     )
                 )
@@ -1032,6 +1035,7 @@ class EmbyServiceBase:
                 versions=versions,
                 user_data=user_data,
                 media_server_collection_names=collection_names,
+                media_server_genres=self._genre_names(item),
             )
             data.append(movie)
         return data
@@ -1061,7 +1065,7 @@ class EmbyServiceBase:
             "enableTotalRecordCount": "true",
             "Fields": (
                 "ProviderIds,Path,UserData,UserDataLastPlayedDate,UserDataPlayCount,"
-                "ProductionYear,PremiereDate,DateCreated"
+                "ProductionYear,PremiereDate,DateCreated,Genres"
             ),
             "ParentId": library_id,
         }
@@ -1127,6 +1131,7 @@ class EmbyServiceBase:
                 media_server_collection_names=(collection_names_by_item_id or {}).get(
                     item["Id"]
                 ),
+                media_server_genres=self._genre_names(item),
             )
             data.append(series)
         return data
@@ -1258,15 +1263,19 @@ class EmbyServiceBase:
                         pass
 
                 # season added_at = earliest episode date created
+                ep_added_at: datetime | None = None
                 created_date = episode.get("DateCreated")
                 if created_date:
                     try:
-                        dt = datetime.fromisoformat(created_date.replace("Z", "+00:00"))
-                        prev = season_added_at.get(sk)
-                        if prev is None or dt < prev:
-                            season_added_at[sk] = dt
+                        ep_added_at = datetime.fromisoformat(
+                            created_date.replace("Z", "+00:00")
+                        )
                     except (TypeError, ValueError):
-                        pass
+                        ep_added_at = None
+                if ep_added_at is not None:
+                    prev = season_added_at.get(sk)
+                    if prev is None or ep_added_at < prev:
+                        season_added_at[sk] = ep_added_at
 
                 # store Emby/Jellyfin SeasonId for first episode of each season
                 if sk not in season_ids and episode.get("SeasonId"):
@@ -1367,6 +1376,7 @@ class EmbyServiceBase:
                                 else None,
                                 media_server_user_rating=episode_user_rating,
                                 runtime_seconds=ep_runtime_seconds,
+                                added_at=ep_added_at,
                             )
                         )
 
@@ -2050,6 +2060,7 @@ class EmbyServiceBase:
                             media_server_collection_names=(
                                 series.media_server_collection_names
                             ),
+                            media_server_genres=series.media_server_genres,
                             season_data=[
                                 v
                                 for k, v in season_data_map.items()
@@ -2098,6 +2109,7 @@ class EmbyServiceBase:
                 last_viewed_at=data.last_viewed_at,
                 played_by_user_count=data.played_by_user_count,
                 media_server_collection_names=data.media_server_collection_names,
+                media_server_genres=data.media_server_genres,
                 media_server_user_rating=data.media_server_user_rating,
                 season_data=data.season_data,
             )
@@ -2322,8 +2334,9 @@ class EmbyServiceBase:
                 chunk = candidate_ids[i : i + _CHUNK]
                 try:
                     data = await self._make_request(
-                        f"Users/{user.id}/Items",
+                        "Items",
                         params={
+                            "userId": user.id,
                             "Ids": ",".join(chunk),
                             "Fields": "SeriesId,SeasonId",
                             "EnableUserData": "false",
@@ -2344,8 +2357,8 @@ class EmbyServiceBase:
                         f"for user {user.id}: {e}"
                     )
 
-        # fallback to non user scoped lookup for servers where user visibility
-        # prevents `Users/{id}/Items` from returning complete parent metadata.
+        # Fallback to a non-user-scoped lookup for servers where user visibility
+        # prevents the user-scoped query from returning complete parent metadata.
         if unresolved_ids:
             candidate_ids = list(unresolved_ids)
             for i in range(0, len(candidate_ids), _CHUNK):
@@ -2399,6 +2412,26 @@ class EmbyServiceBase:
     @staticmethod
     def _unique_languages(streams: JsonList) -> list[str] | None:
         return normalize_languages([stream.get("Language") for stream in streams])
+
+    @staticmethod
+    def _genre_names(item: Mapping[str, Any]) -> list[str] | None:
+        """Normalize Emby/Jellyfin genres without mixing in TMDB metadata."""
+        raw_genres = item.get("Genres")
+        if isinstance(raw_genres, list):
+            names = normalize_name_list(raw_genres)
+            if names:
+                return names
+
+        genre_items = item.get("GenreItems")
+        if not isinstance(genre_items, list):
+            return None
+        return normalize_name_list(
+            [
+                genre.get("Name") or genre.get("name")
+                for genre in genre_items
+                if isinstance(genre, dict)
+            ]
+        )
 
     @staticmethod
     def _is_hdr(stream: JsonDict) -> bool:
