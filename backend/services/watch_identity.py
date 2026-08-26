@@ -66,14 +66,14 @@ def _entry_from_values(
 
 
 async def _plex_directory(config: ServiceConfig) -> list[WatchUserDirectoryEntry]:
-    service = await service_manager.return_service(config.service_type)
+    service = service_manager.get_media_server(config.service_type, config.id)
     if not isinstance(service, PlexService):
         return []
     return await service.get_watch_user_directory()
 
 
 async def _emby_directory(config: ServiceConfig) -> list[WatchUserDirectoryEntry]:
-    service = await service_manager.return_service(config.service_type)
+    service = service_manager.get_media_server(config.service_type, config.id)
     if not isinstance(service, (JellyfinService, EmbyService)):
         return []
     entries: list[WatchUserDirectoryEntry] = []

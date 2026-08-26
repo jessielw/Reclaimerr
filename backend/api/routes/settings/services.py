@@ -64,6 +64,11 @@ from backend.user_types import MEDIA_SERVERS
 router = APIRouter(tags=["settings", "services"])
 
 ARR_SERVICES = {Service.RADARR, Service.SONARR}
+# service types that may have more than one named ServiceConfig row at once -
+# arr instances, and (as of multi-instance media server support) Plex/
+# Jellyfin/Emby. Everything else (Seerr, Tautulli, Tracearr, MDBList, OMDb)
+# stays single-instance.
+MULTI_INSTANCE_SERVICE_TYPES = ARR_SERVICES | MEDIA_SERVERS
 METADATA_PROVIDER_SERVICES = (Service.MDBLIST, Service.OMDB)
 METADATA_PROVIDER_DEFAULT_REQUEST_LIMITS = {
     Service.MDBLIST: DEFAULT_MDBLIST_REQUEST_LIMIT,
@@ -552,10 +557,16 @@ async def get_service_settings(
         )
 
         key = config.service_type
-        if key in ARR_SERVICES:
+        if key in MULTI_INSTANCE_SERVICE_TYPES:
             bucket = response.setdefault(key, {"instances": []})
             bucket["instances"].append(payload)
-            if "id" not in bucket:
+            # back-compat: also flatten one instance's fields onto the bucket
+            # itself for old consumers reading e.g. response["plex"]["base_url"]
+            # directly. Prefer the main instance for media servers (a
+            # meaningful, stable choice) since arrival order in `service_configs`
+            # isn't guaranteed to put it first; arr services have no such
+            # concept, so first-seen wins there as before.
+            if "id" not in bucket or (key in MEDIA_SERVERS and config.is_main):
                 bucket.update(payload)
         else:
             response[key] = payload
@@ -654,7 +665,13 @@ async def set_service_settings(
         if data.service_type is Service.TRACEARR:
             await _validate_tracearr_bindings(db, data, resolved_api_key)
 
-    # detect if the main server is switching before we write the new config
+    # detect if the main server is switching before we write the new config -
+    # compared by config identity, not type, so promoting a different config
+    # of the SAME type to main (e.g. swapping which of two Plex servers is
+    # main) still triggers the full resync that clears the old main's stale
+    # MovieVersion/SeriesServiceRef rows. A type-only comparison would miss
+    # this: the old main's physical files are gone from the DB's perspective
+    # (they belonged to a different config), but nothing would clear them.
     main_switched = False
     if data.is_main and data.service_type in MEDIA_SERVERS:
         current_main_result = await db.execute(
@@ -664,9 +681,7 @@ async def set_service_settings(
             )
         )
         current_main = current_main_result.scalar_one_or_none()
-        main_switched = (
-            current_main is not None and current_main.service_type != data.service_type
-        )
+        main_switched = current_main is not None and current_main.id != data.id
 
     # determine what sync action (if any) to signal the frontend
     sync_action: str | None = None
@@ -859,7 +874,7 @@ async def _find_existing_service_config(
         return await db.execute(
             select(ServiceConfig).where(ServiceConfig.id == data.id)
         )
-    if data.service_type in ARR_SERVICES:
+    if data.service_type in MULTI_INSTANCE_SERVICE_TYPES:
         return await db.execute(
             select(ServiceConfig).where(
                 ServiceConfig.service_type == data.service_type,

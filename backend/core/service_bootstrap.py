@@ -77,21 +77,21 @@ async def load_enabled_services() -> None:
             await _initialize_with_retry(
                 "Jellyfin",
                 lambda: service_manager.initialize_jellyfin(
-                    config.base_url, api_key, config.is_main
+                    config.base_url, api_key, config.is_main, config.id
                 ),
             )
         elif config.service_type is Service.EMBY:
             await _initialize_with_retry(
                 "Emby",
                 lambda: service_manager.initialize_emby(
-                    config.base_url, api_key, config.is_main
+                    config.base_url, api_key, config.is_main, config.id
                 ),
             )
         elif config.service_type is Service.PLEX:
             await _initialize_with_retry(
                 "Plex",
                 lambda: service_manager.initialize_plex(
-                    config.base_url, api_key, config.is_main
+                    config.base_url, api_key, config.is_main, config.id
                 ),
             )
         elif config.service_type is Service.RADARR:

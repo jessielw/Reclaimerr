@@ -86,15 +86,15 @@ async def _apply_service_runtime_state(data: ServiceConfigUpdate) -> None:
 
     if data.service_type is Service.JELLYFIN:
         await service_manager.initialize_jellyfin(
-            data.base_url, data.api_key or "", data.is_main
+            data.base_url, data.api_key or "", data.is_main, data.id
         )
     elif data.service_type is Service.EMBY:
         await service_manager.initialize_emby(
-            data.base_url, data.api_key or "", data.is_main
+            data.base_url, data.api_key or "", data.is_main, data.id
         )
     elif data.service_type is Service.PLEX:
         await service_manager.initialize_plex(
-            data.base_url, data.api_key or "", data.is_main
+            data.base_url, data.api_key or "", data.is_main, data.id
         )
     elif data.service_type is Service.RADARR:
         timeout = int((data.extra_settings or {}).get("timeout", 300))
@@ -122,11 +122,11 @@ async def _apply_service_runtime_state(data: ServiceConfigUpdate) -> None:
 
 async def _clear_service_runtime(service_type: Service, config_id: int | None) -> None:
     if service_type is Service.JELLYFIN:
-        await service_manager.clear_jellyfin()
+        await service_manager.clear_jellyfin(config_id)
     elif service_type is Service.EMBY:
-        await service_manager.clear_emby()
+        await service_manager.clear_emby(config_id)
     elif service_type is Service.PLEX:
-        await service_manager.clear_plex()
+        await service_manager.clear_plex(config_id)
     elif service_type is Service.RADARR:
         await service_manager.clear_radarr(config_id)
     elif service_type is Service.SONARR:

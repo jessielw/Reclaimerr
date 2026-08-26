@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import niquests.exceptions as niq_exceptions
 import urllib3.exceptions as url3_exceptions
 
@@ -31,6 +33,9 @@ class ServiceManager:
         self._jellyfin: JellyfinService | None = None
         self._emby: EmbyService | None = None
         self._plex: PlexService | None = None
+        self._jellyfin_clients: dict[int, JellyfinService] = {}
+        self._emby_clients: dict[int, EmbyService] = {}
+        self._plex_clients: dict[int, PlexService] = {}
         self._radarr: RadarrClient | None = None
         self._sonarr: SonarrClient | None = None
         self._radarr_clients: dict[int, RadarrClient] = {}
@@ -54,6 +59,34 @@ class ServiceManager:
         self._main_media_server = service
 
     @property
+    def main_media_server_type(self) -> Service | None:
+        """Get the Service type of the current main media server.
+
+        The single source of truth for "what type is main" - use this instead
+        of identity-comparing against `service_manager.jellyfin`/`.emby`, which
+        is ambiguous once a type has multiple configured instances.
+        """
+        main = self._main_media_server
+        if main is None:
+            return None
+        if isinstance(main, JellyfinService):
+            return Service.JELLYFIN
+        if isinstance(main, EmbyService):
+            return Service.EMBY
+        if isinstance(main, PlexService):
+            return Service.PLEX
+        # Fallback for objects that aren't real client subclasses (e.g. test
+        # doubles): identity-match against each type's default client, same
+        # mechanism the old call sites used directly.
+        if main is self._jellyfin:
+            return Service.JELLYFIN
+        if main is self._emby:
+            return Service.EMBY
+        if main is self._plex:
+            return Service.PLEX
+        return None
+
+    @property
     def jellyfin(self) -> JellyfinService | None:
         """Get Jellyfin service (must be initialized first)."""
         return self._jellyfin
@@ -67,6 +100,34 @@ class ServiceManager:
     def plex(self) -> PlexService | None:
         """Get Plex service (must be initialized first)."""
         return self._plex
+
+    def get_media_server(
+        self, service_type: Service, config_id: int | None = None
+    ) -> JellyfinService | EmbyService | PlexService | None:
+        """Get a media server client by service type and config ID (must be
+        initialized first). If config_id is None, return the type's default
+        (last-initialized) client, matching `return_service`'s behavior."""
+        if service_type is Service.JELLYFIN:
+            return (
+                self._jellyfin_clients.get(config_id) if config_id else self._jellyfin
+            )
+        if service_type is Service.EMBY:
+            return self._emby_clients.get(config_id) if config_id else self._emby
+        if service_type is Service.PLEX:
+            return self._plex_clients.get(config_id) if config_id else self._plex
+        return None
+
+    def media_server_clients(
+        self, service_type: Service
+    ) -> dict[int, JellyfinService | EmbyService | PlexService]:
+        """Get all clients of a media server type as a dict of config_id to client."""
+        if service_type is Service.JELLYFIN:
+            return dict(self._jellyfin_clients)
+        if service_type is Service.EMBY:
+            return dict(self._emby_clients)
+        if service_type is Service.PLEX:
+            return dict(self._plex_clients)
+        return {}
 
     @property
     def radarr(self) -> RadarrClient | None:
@@ -205,61 +266,82 @@ class ServiceManager:
         return None
 
     async def initialize_jellyfin(
-        self, base_url: str, api_key: str, is_main: bool
+        self,
+        base_url: str,
+        api_key: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> JellyfinService | None:
         """Initialize Jellyfin service with provided config."""
         try:
-            self._jellyfin = JellyfinService(
+            client = JellyfinService(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._jellyfin.health():
+            if not await client.health():
                 LOG.error(f"Jellyfin service health check failed: {base_url}")
                 raise ValueError(f"Jellyfin service health check failed: {base_url}")
+            if config_id is not None:
+                self._jellyfin_clients[config_id] = client
+            self._jellyfin = client
             LOG.info(f"Jellyfin service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._jellyfin
-            return self._jellyfin
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Jellyfin service: {e}")
             return None
 
     async def initialize_emby(
-        self, base_url: str, api_key: str, is_main: bool
+        self,
+        base_url: str,
+        api_key: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> EmbyService | None:
         """Initialize Emby service with provided config."""
         try:
-            self._emby = EmbyService(
+            client = EmbyService(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._emby.health():
+            if not await client.health():
                 LOG.error(f"Emby service health check failed: {base_url}")
                 raise ValueError(f"Emby service health check failed: {base_url}")
+            if config_id is not None:
+                self._emby_clients[config_id] = client
+            self._emby = client
             LOG.info(f"Emby service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._emby
-            return self._emby
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Emby service: {e}")
             return None
 
     async def initialize_plex(
-        self, base_url: str, token: str, is_main: bool
+        self,
+        base_url: str,
+        token: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> PlexService | None:
         """Initialize Plex service with provided config."""
         try:
-            self._plex = PlexService(
+            client = PlexService(
                 token=token,
                 plex_url=base_url,
             )
-            if not await self._plex.health():
+            if not await client.health():
                 LOG.error(f"Plex service health check failed: {base_url}")
                 raise ValueError(f"Plex service health check failed: {base_url}")
+            if config_id is not None:
+                self._plex_clients[config_id] = client
+            self._plex = client
             LOG.info(f"Plex service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._plex
-            return self._plex
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Plex service: {e}")
             return None
@@ -375,31 +457,85 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Tracearr service: {e}")
             return None
 
-    async def clear_jellyfin(self) -> None:
-        """Clear Jellyfin service (call before reinitializing)."""
-        if self._main_media_server is self._jellyfin:
+    async def clear_jellyfin(self, config_id: int | None = None) -> None:
+        """Clear Jellyfin service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Jellyfin instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._jellyfin_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._jellyfin is client:
+                self._jellyfin = next(iter(self._jellyfin_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, JellyfinService):
             self._main_media_server = None
         if self._jellyfin and self._jellyfin.session:
             await self._jellyfin.session.close()
+        for client in self._jellyfin_clients.values():
+            if client is not self._jellyfin and client.session:
+                await client.session.close()
+        if self._jellyfin or self._jellyfin_clients:
             LOG.info("Jellyfin service cleared")
+        self._jellyfin_clients = {}
         self._jellyfin = None
 
-    async def clear_emby(self) -> None:
-        """Clear Emby service (call before reinitializing)."""
-        if self._main_media_server is self._emby:
+    async def clear_emby(self, config_id: int | None = None) -> None:
+        """Clear Emby service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Emby instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._emby_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._emby is client:
+                self._emby = next(iter(self._emby_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, EmbyService):
             self._main_media_server = None
         if self._emby and self._emby.session:
             await self._emby.session.close()
+        for client in self._emby_clients.values():
+            if client is not self._emby and client.session:
+                await client.session.close()
+        if self._emby or self._emby_clients:
             LOG.info("Emby service cleared")
+        self._emby_clients = {}
         self._emby = None
 
-    async def clear_plex(self) -> None:
-        """Clear Plex service (call before reinitializing)."""
-        if self._main_media_server is self._plex:
+    async def clear_plex(self, config_id: int | None = None) -> None:
+        """Clear Plex service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Plex instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._plex_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._plex is client:
+                self._plex = next(iter(self._plex_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, PlexService):
             self._main_media_server = None
         if self._plex and self._plex.session:
             await self._plex.session.close()
+        for client in self._plex_clients.values():
+            if client is not self._plex and client.session:
+                await client.session.close()
+        if self._plex or self._plex_clients:
             LOG.info("Plex service cleared")
+        self._plex_clients = {}
         self._plex = None
 
     async def clear_radarr(self, config_id: int | None = None) -> None:
@@ -475,7 +611,20 @@ class ServiceManager:
 
     def clear_transient_caches(self) -> None:
         """Clear large transient caches on long-lived service clients."""
-        for client in (self._plex, self._main_media_server):
+        seen: set[int] = set()
+        clients: list[Any] = [
+            self._main_media_server,
+            self._jellyfin,
+            self._emby,
+            self._plex,
+            *self._jellyfin_clients.values(),
+            *self._emby_clients.values(),
+            *self._plex_clients.values(),
+        ]
+        for client in clients:
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
             clear_method = getattr(client, "clear_transient_caches", None)
             if callable(clear_method):
                 clear_method()

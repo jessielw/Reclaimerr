@@ -105,29 +105,31 @@
       const services = await get_api<any>("/api/settings/services");
       const libraries: LibraryType[] = [];
 
-      if (services.jellyfin?.libraries) {
-        services.jellyfin.libraries.forEach((lib: any) => {
-          libraries.push({
-            id: lib.id,
-            libraryId: lib.library_id,
-            libraryName: lib.library_name,
-            mediaType:
-              lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
-            serviceType: SettingsTab.Jellyfin,
-            selected: lib.selected,
-          });
-        });
-      }
+      // media servers can now have multiple instances, but libraries are
+      // only ever sourced from the main instance of whichever type is main -
+      // find it within each type's instance list rather than reading a flat
+      // top-level `libraries` field.
+      const mainLibrariesFor = (serviceId: string): any[] | undefined =>
+        services[serviceId]?.instances?.find((inst: any) => inst.is_main)
+          ?.libraries;
 
-      if (services.plex?.libraries) {
-        services.plex.libraries.forEach((lib: any) => {
+      const sources: [string, SettingsTab][] = [
+        ["jellyfin", SettingsTab.Jellyfin],
+        ["plex", SettingsTab.Plex],
+        ["emby", SettingsTab.Emby],
+      ];
+
+      for (const [serviceId, serviceType] of sources) {
+        const serviceLibraries = mainLibrariesFor(serviceId);
+        if (!serviceLibraries) continue;
+        serviceLibraries.forEach((lib: any) => {
           libraries.push({
             id: lib.id,
             libraryId: lib.library_id,
             libraryName: lib.library_name,
             mediaType:
               lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
-            serviceType: SettingsTab.Plex,
+            serviceType,
             selected: lib.selected,
           });
         });

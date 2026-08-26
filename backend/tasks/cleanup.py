@@ -85,6 +85,7 @@ from backend.database.models import (
     Series,
     SeriesArrRef,
     SeriesServiceRef,
+    ServiceConfig,
     SupplementalMediaMatch,
 )
 from backend.enums import (
@@ -3828,36 +3829,66 @@ _LEAVING_SOON_MEDIA_SERVICES = {
 }
 
 
-def _normalize_leaving_soon_last_success_titles(
+async def _normalize_leaving_soon_last_success_titles(
+    db: AsyncSession,
     raw_titles: object,
-) -> dict[Service, str]:
+) -> dict[int, str]:
+    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
+
+    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
+    key that isn't a valid config id is resolved to whichever ServiceConfig
+    currently has that service_type, so upgrading loses no in-flight state.
+    Callers should always write the new shape back.
+    """
     if not isinstance(raw_titles, Mapping):
         return {}
-    normalized_titles: dict[Service, str] = {}
-    for raw_service, raw_title in raw_titles.items():
+    normalized_titles: dict[int, str] = {}
+    legacy_type_titles: dict[Service, str] = {}
+    for raw_key, raw_title in raw_titles.items():
+        title = normalize_leaving_soon_collection_title(str(raw_title))
         try:
-            service = Service(str(raw_service))
+            normalized_titles[int(raw_key)] = title
+            continue
+        except (TypeError, ValueError):
+            pass
+        try:
+            service = Service(str(raw_key))
         except Exception:
             continue
-        if service not in _LEAVING_SOON_MEDIA_SERVICES:
-            continue
-        normalized_titles[service] = normalize_leaving_soon_collection_title(
-            str(raw_title)
-        )
+        if service in _LEAVING_SOON_MEDIA_SERVICES:
+            legacy_type_titles[service] = title
+
+    if legacy_type_titles:
+        rows = (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.service_type).where(
+                    ServiceConfig.service_type.in_(legacy_type_titles.keys())
+                )
+            )
+        ).all()
+        config_id_by_type: dict[Service, int] = {}
+        for config_id, service_type in rows:
+            # first match wins - pre-multi-instance installs have at most one
+            config_id_by_type.setdefault(service_type, config_id)
+        for service, title in legacy_type_titles.items():
+            config_id = config_id_by_type.get(service)
+            if config_id is not None and config_id not in normalized_titles:
+                normalized_titles[config_id] = title
+
     return normalized_titles
 
 
 async def _load_leaving_soon_collection_settings(
     db: AsyncSession,
-) -> tuple[GeneralSettings | None, bool, str, dict[Service, str]]:
+) -> tuple[GeneralSettings | None, bool, str, dict[int, str]]:
     settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
     if settings_row is None:
         return None, False, "Leaving Soon", {}
     collection_base_title = normalize_leaving_soon_collection_title(
         settings_row.leaving_soon_collection_title
     )
-    last_success_titles = _normalize_leaving_soon_last_success_titles(
-        settings_row.leaving_soon_last_success_titles
+    last_success_titles = await _normalize_leaving_soon_last_success_titles(
+        db, settings_row.leaving_soon_last_success_titles
     )
     return (
         settings_row,
@@ -3867,25 +3898,75 @@ async def _load_leaving_soon_collection_settings(
     )
 
 
-def _append_service_item_id(
-    expected_items_by_service: dict[Service, set[str]],
+async def _get_enabled_leaving_soon_configs(db: AsyncSession) -> list[ServiceConfig]:
+    """Return enabled media-server ServiceConfig rows Leaving Soon can target."""
+    rows = (
+        await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+    ).scalars()
+    return list(rows)
+
+
+def _append_config_item_id(
+    expected_items_by_config: dict[int, set[str]],
     *,
-    service: Service,
+    config_id: int | None,
     item_id: str | None,
 ) -> None:
-    if service not in _LEAVING_SOON_MEDIA_SERVICES:
+    if config_id is None:
         return
     normalized_item_id = str(item_id or "").strip()
     if not normalized_item_id:
         return
-    expected_items_by_service.setdefault(service, set()).add(normalized_item_id)
+    expected_items_by_config.setdefault(config_id, set()).add(normalized_item_id)
+
+
+def _leaving_soon_config_id_resolver(
+    configs: list[ServiceConfig],
+) -> Callable[[Service], int | None]:
+    """Build a `service_type -> config_id` resolver for tables with no
+    config_id column of their own (MovieVersion, SeriesServiceRef).
+
+    Those tables are written by the main config only, so a row whose service
+    matches the CURRENT main server's type is unambiguously attributed to it.
+    A row whose service matches some other (non-main) type is legacy/stale
+    data - from before a main-server swap, or from before this table had a
+    single-writer invariant - and is attributed to whichever enabled config of
+    that type comes first; this can't be perfectly precise if two configs
+    share that non-main type, but it never misattributes to the wrong TYPE,
+    and it never affects the main config's own item set.
+    """
+    main_config = next((config for config in configs if config.is_main), None)
+    config_id_by_type: dict[Service, int] = {}
+    for config in configs:
+        config_id_by_type.setdefault(config.service_type, config.id)
+
+    def _resolve(service: Service) -> int | None:
+        if main_config is not None and service == main_config.service_type:
+            return main_config.id
+        return config_id_by_type.get(service)
+
+    return _resolve
 
 
 async def _build_leaving_soon_expected_item_ids(
     db: AsyncSession,
-) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
-    movie_expected_by_service: dict[Service, set[str]] = {}
-    series_expected_by_service: dict[Service, set[str]] = {}
+    configs: list[ServiceConfig],
+) -> tuple[dict[int, set[str]], dict[int, set[str]]]:
+    """Resolve expected Leaving Soon item IDs, keyed by service_config_id.
+
+    MovieVersion/SeriesServiceRef have no config_id column of their own, so
+    their rows are attributed via `_leaving_soon_config_id_resolver`.
+    SupplementalMediaMatch rows (from linked servers) already carry their own
+    source_service_config_id.
+    """
+    resolve_config_id = _leaving_soon_config_id_resolver(configs)
+    movie_expected_by_config: dict[int, set[str]] = {}
+    series_expected_by_config: dict[int, set[str]] = {}
 
     candidate_rows = (
         await db.execute(
@@ -3898,7 +3979,7 @@ async def _build_leaving_soon_expected_item_ids(
         )
     ).all()
     if not candidate_rows:
-        return movie_expected_by_service, series_expected_by_service
+        return movie_expected_by_config, series_expected_by_config
 
     movie_candidate_version_ids: set[int] = set()
     movie_candidate_ids: set[int] = set()
@@ -3924,9 +4005,9 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_item_id, movie_id in version_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
             movie_candidate_ids.add(int(movie_id))
@@ -3940,16 +4021,16 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_item_id in movie_version_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
         supplemental_movie_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.MOVIE,
@@ -3957,10 +4038,10 @@ async def _build_leaving_soon_expected_item_ids(
                 )
             )
         ).all()
-        for source_service, source_item_id in supplemental_movie_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=source_service,
+        for source_service_config_id, source_item_id in supplemental_movie_rows:
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=source_service_config_id,
                 item_id=source_item_id,
             )
 
@@ -3973,16 +4054,16 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_id in series_ref_rows:
-            _append_service_item_id(
-                series_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                series_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_id,
             )
 
         supplemental_series_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.SERIES,
@@ -3990,47 +4071,48 @@ async def _build_leaving_soon_expected_item_ids(
                 )
             )
         ).all()
-        for source_service, source_item_id in supplemental_series_rows:
-            _append_service_item_id(
-                series_expected_by_service,
-                service=source_service,
+        for source_service_config_id, source_item_id in supplemental_series_rows:
+            _append_config_item_id(
+                series_expected_by_config,
+                config_id=source_service_config_id,
                 item_id=source_item_id,
             )
 
-    return movie_expected_by_service, series_expected_by_service
+    return movie_expected_by_config, series_expected_by_config
 
 
 async def _cleanup_disabled_leaving_soon_collections(
     db: AsyncSession,
     *,
     settings_row: GeneralSettings | None,
-    last_success_titles_by_service: Mapping[Service, str],
+    last_success_titles_by_config: Mapping[int, str],
 ) -> None:
-    if settings_row is None or not last_success_titles_by_service:
+    if settings_row is None or not last_success_titles_by_config:
         return
 
-    updated_last_success_titles = dict(last_success_titles_by_service)
+    updated_last_success_titles = dict(last_success_titles_by_config)
     last_success_changed = False
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
+    configs_by_id = {
+        config.id: config for config in await _get_enabled_leaving_soon_configs(db)
+    }
 
-    for service_type, service_client in service_clients:
-        previous_success_title = updated_last_success_titles.get(service_type)
-        if previous_success_title is None:
-            continue
+    for config_id, previous_success_title in list(updated_last_success_titles.items()):
+        config = configs_by_id.get(config_id)
+        service_client = (
+            service_manager.get_media_server(config.service_type, config.id)
+            if config is not None
+            else None
+        )
         if service_client is None:
-            # keep title for retry while service is unavailable
+            # keep title for retry while the config is unavailable/removed
             continue
 
         delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
         if not callable(delete_method):
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
-                f"{service_type.value}; cannot remove title "
-                f"{previous_success_title!r} while Leaving Soon is disabled"
+                f"{config.service_type.value} (config {config_id}); cannot remove "
+                f"title {previous_success_title!r} while Leaving Soon is disabled"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
@@ -4039,21 +4121,19 @@ async def _cleanup_disabled_leaving_soon_collections(
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
-                f"{service_type.value} while disabled (title "
-                f"{previous_success_title!r}): {e}"
+                f"{config.service_type.value} (config {config_id}) while disabled "
+                f"(title {previous_success_title!r}): {e}"
             )
             continue
 
-        del updated_last_success_titles[service_type]
+        del updated_last_success_titles[config_id]
         last_success_changed = True
 
     if not last_success_changed:
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        service.value: title
-        for service, title in updated_last_success_titles.items()
-        if service in _LEAVING_SOON_MEDIA_SERVICES
+        str(config_id): title for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -4064,37 +4144,35 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         settings_row,
         enabled,
         collection_base_title,
-        last_success_titles_by_service,
+        last_success_titles_by_config,
     ) = await _load_leaving_soon_collection_settings(db)
     if not enabled:
         await _cleanup_disabled_leaving_soon_collections(
             db,
             settings_row=settings_row,
-            last_success_titles_by_service=last_success_titles_by_service,
+            last_success_titles_by_config=last_success_titles_by_config,
         )
         return
 
-    movie_expected_by_service: dict[Service, set[str]] = {}
-    series_expected_by_service: dict[Service, set[str]] = {}
+    configs = await _get_enabled_leaving_soon_configs(db)
     (
-        movie_expected_by_service,
-        series_expected_by_service,
-    ) = await _build_leaving_soon_expected_item_ids(db)
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
-    updated_last_success_titles = dict(last_success_titles_by_service)
+        movie_expected_by_config,
+        series_expected_by_config,
+    ) = await _build_leaving_soon_expected_item_ids(db, configs)
+    updated_last_success_titles = dict(last_success_titles_by_config)
     last_success_changed = False
 
-    for service_type, service_client in service_clients:
+    for config in configs:
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
         if service_client is None:
             continue
-        previous_success_title = updated_last_success_titles.get(service_type)
+        service_label = f"{config.service_type.value} (config {config.id})"
+        previous_success_title = updated_last_success_titles.get(config.id)
         service_success = True
 
-        # if this service last synced under a different title, clean it first.
+        # if this config last synced under a different title, clean it first.
         if (
             previous_success_title is not None
             and previous_success_title != collection_base_title
@@ -4105,9 +4183,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
             if not callable(delete_method):
                 service_success = False
                 LOG.warning(
-                    "Leaving Soon cleanup method missing for "
-                    f"{service_type.value}; cannot remove previous title "
-                    f"{previous_success_title!r}"
+                    f"Leaving Soon cleanup method missing for {service_label}; "
+                    f"cannot remove previous title {previous_success_title!r}"
                 )
             else:
                 delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
@@ -4117,19 +4194,19 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
                     service_success = False
                     LOG.warning(
                         "Failed cleaning previous Leaving Soon collections for "
-                        f"{service_type.value} (title {previous_success_title!r}): {e}"
+                        f"{service_label} (title {previous_success_title!r}): {e}"
                     )
 
         sync_method = getattr(service_client, "sync_leaving_soon_collections", None)
         if not callable(sync_method):
             LOG.warning(
-                "Leaving Soon sync method missing for "
-                f"{service_type.value}; skipping service sync"
+                f"Leaving Soon sync method missing for {service_label}; "
+                "skipping config sync"
             )
             continue
         sync_func = cast(Callable[..., Awaitable[Any]], sync_method)
-        movie_item_ids = movie_expected_by_service.get(service_type, set())
-        series_item_ids = series_expected_by_service.get(service_type, set())
+        movie_item_ids = movie_expected_by_config.get(config.id, set())
+        series_item_ids = series_expected_by_config.get(config.id, set())
         try:
             await sync_func(
                 base_title=collection_base_title,
@@ -4138,16 +4215,14 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
             )
         except Exception as e:
             service_success = False
-            LOG.warning(
-                f"Failed syncing Leaving Soon collections for {service_type.value}: {e}"
-            )
+            LOG.warning(f"Failed syncing Leaving Soon collections for {service_label}: {e}")
 
         if not service_success:
             continue
         if previous_success_title == collection_base_title:
             continue
 
-        updated_last_success_titles[service_type] = collection_base_title
+        updated_last_success_titles[config.id] = collection_base_title
         last_success_changed = True
 
     if not last_success_changed:
@@ -4156,9 +4231,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        service.value: title
-        for service, title in updated_last_success_titles.items()
-        if service in _LEAVING_SOON_MEDIA_SERVICES
+        str(config_id): title for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -4167,11 +4240,18 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
 async def _build_leaving_soon_prune_item_ids(
     db: AsyncSession,
     candidate_ids: Iterable[int],
-) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
-    """Resolve media-server collection item IDs affected by candidate actions."""
+    configs: list[ServiceConfig],
+) -> tuple[dict[int, set[str]], dict[int, set[str]]]:
+    """Resolve media-server collection item IDs affected by candidate actions.
+
+    Keyed by service_config_id - see _build_leaving_soon_expected_item_ids for
+    how MovieVersion/SeriesServiceRef rows (which have no config_id column of
+    their own) are attributed.
+    """
+    resolve_config_id = _leaving_soon_config_id_resolver(configs)
     normalized_candidate_ids = {int(candidate_id) for candidate_id in candidate_ids}
-    movie_item_ids: dict[Service, set[str]] = {}
-    series_item_ids: dict[Service, set[str]] = {}
+    movie_item_ids: dict[int, set[str]] = {}
+    series_item_ids: dict[int, set[str]] = {}
     if not normalized_candidate_ids:
         return movie_item_ids, series_item_ids
 
@@ -4212,9 +4292,9 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in version_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
@@ -4227,9 +4307,9 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in version_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
@@ -4237,7 +4317,7 @@ async def _build_leaving_soon_prune_item_ids(
         supplemental_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.MOVIE,
@@ -4245,10 +4325,10 @@ async def _build_leaving_soon_prune_item_ids(
                 )
             )
         ).all()
-        for service, service_item_id in supplemental_rows:
-            _append_service_item_id(
+        for source_service_config_id, service_item_id in supplemental_rows:
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=source_service_config_id,
                 item_id=service_item_id,
             )
 
@@ -4261,16 +4341,16 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in series_ref_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 series_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
         supplemental_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.SERIES,
@@ -4278,10 +4358,10 @@ async def _build_leaving_soon_prune_item_ids(
                 )
             )
         ).all()
-        for service, service_item_id in supplemental_rows:
-            _append_service_item_id(
+        for source_service_config_id, service_item_id in supplemental_rows:
+            _append_config_item_id(
                 series_item_ids,
-                service=service,
+                config_id=source_service_config_id,
                 item_id=service_item_id,
             )
 
@@ -4305,33 +4385,35 @@ async def _prune_leaving_soon_before_candidate_actions(
         ) = await _load_leaving_soon_collection_settings(db)
         if not enabled:
             return
+        configs = await _get_enabled_leaving_soon_configs(db)
         movie_item_ids, series_item_ids = await _build_leaving_soon_prune_item_ids(
-            db, normalized_candidate_ids
+            db,
+            normalized_candidate_ids,
+            configs,
         )
 
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
-    for service_type, service_client in service_clients:
-        service_movie_ids = movie_item_ids.get(service_type, set())
-        service_series_ids = series_item_ids.get(service_type, set())
+    for config in configs:
+        service_movie_ids = movie_item_ids.get(config.id, set())
+        service_series_ids = series_item_ids.get(config.id, set())
         if not service_movie_ids and not service_series_ids:
             continue
 
+        service_label = f"{config.service_type.value} (config {config.id})"
         titles = {
             collection_base_title,
             *(
-                [last_success_titles[service_type]]
-                if service_type in last_success_titles
+                [last_success_titles[config.id]]
+                if config.id in last_success_titles
                 else []
             ),
         }
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
         if service_client is None:
-            if service_type in last_success_titles:
+            if config.id in last_success_titles:
                 raise RuntimeError(
-                    f"{service_type.value} is unavailable; cannot safely prune "
+                    f"{service_label} is unavailable; cannot safely prune "
                     "its Leaving Soon collection"
                 )
             continue
@@ -4339,7 +4421,7 @@ async def _prune_leaving_soon_before_candidate_actions(
         prune_method = getattr(service_client, "prune_leaving_soon_items", None)
         if not callable(prune_method):
             raise RuntimeError(
-                f"{service_type.value} Leaving Soon prune method is unavailable"
+                f"{service_label} Leaving Soon prune method is unavailable"
             )
         prune_func = cast(Callable[..., Awaitable[Any]], prune_method)
         for title in titles:
@@ -4351,7 +4433,7 @@ async def _prune_leaving_soon_before_candidate_actions(
                 )
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed pruning {service_type.value} Leaving Soon collection "
+                    f"Failed pruning {service_label} Leaving Soon collection "
                     f"{title!r}: {e}"
                 ) from e
 
@@ -6381,14 +6463,7 @@ async def _load_path_mappings() -> list[dict[str, Any]]:
 
 def _main_media_server_type() -> Service | None:
     """Return the configured main media server type based on the active client."""
-    main_service = service_manager.main_media_server
-    if main_service is None:
-        return None
-    if main_service is service_manager.jellyfin:
-        return Service.JELLYFIN
-    if main_service is service_manager.emby:
-        return Service.EMBY
-    return Service.PLEX
+    return service_manager.main_media_server_type
 
 
 def _season_media_server_id(season: Season, service_type: Service | None) -> str | None:
@@ -6712,12 +6787,7 @@ async def _delete_movie_version_candidates(
             )
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     async with async_db() as db:
         version_ids = [
@@ -7548,14 +7618,7 @@ async def _delete_movie_candidates(
         unmonitor_events: list[dict[str, Any]] = []
         path_mappings = await _load_path_mappings()
         main_service = service_manager.main_media_server
-        if main_service is None:
-            unmonitor_service_type: Service | None = None
-        elif main_service is service_manager.jellyfin:
-            unmonitor_service_type = Service.JELLYFIN
-        elif main_service is service_manager.emby:
-            unmonitor_service_type = Service.EMBY
-        else:
-            unmonitor_service_type = Service.PLEX
+        unmonitor_service_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
                 seen_unmonitor_ids: set[int] = set()
@@ -8150,14 +8213,7 @@ async def _delete_series_candidates(
         unmonitor_series_events: list[dict[str, Any]] = []
         path_mappings_series = await _load_path_mappings()
         main_service_s = service_manager.main_media_server
-        if main_service_s is None:
-            unmonitor_svc_type: Service | None = None
-        elif main_service_s is service_manager.jellyfin:
-            unmonitor_svc_type = Service.JELLYFIN
-        elif main_service_s is service_manager.emby:
-            unmonitor_svc_type = Service.EMBY
-        else:
-            unmonitor_svc_type = Service.PLEX
+        unmonitor_svc_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
                 seen_series_unmonitor: set[int] = set()
@@ -8827,15 +8883,7 @@ async def _delete_season_candidates(
             await db.commit()
 
         deleted_count += 1
-        event_service_type: Service | None
-        if service_manager.main_media_server is service_manager.jellyfin:
-            event_service_type = Service.JELLYFIN
-        elif service_manager.main_media_server is service_manager.emby:
-            event_service_type = Service.EMBY
-        else:
-            event_service_type = (
-                Service.PLEX if service_manager.main_media_server else None
-            )
+        event_service_type: Service | None = service_manager.main_media_server_type
         await _dispatch_reclaim_event(
             action="unmonitored_only"
             if cand_arr_action == "unmonitor_only"
@@ -9402,12 +9450,7 @@ async def _delete_movies_via_media_server(
         LOG.warning("No main media server available for movie deletion fallback")
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     # load movies with their versions
     async with async_db() as db:
@@ -9548,12 +9591,7 @@ async def _delete_series_via_media_server(
         LOG.warning("No main media server available for series deletion fallback")
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     # get series from database to access service refs
     async with async_db() as db:
@@ -10518,11 +10556,12 @@ async def _move_specific_candidates_impl(
                 # never falls back to the normal destructive delete path.
                 try:
                     main_service = service_manager.main_media_server
+                    main_service_type = service_manager.main_media_server_type
                     if main_service and series_ref:
                         if is_episode and episode:
-                            if main_service is service_manager.jellyfin:
+                            if main_service_type is Service.JELLYFIN:
                                 episode_service_id = episode.jellyfin_episode_id
-                            elif main_service is service_manager.emby:
+                            elif main_service_type is Service.EMBY:
                                 episode_service_id = episode.emby_episode_id
                             else:
                                 episode_service_id = episode.plex_rating_key
@@ -10530,9 +10569,9 @@ async def _move_specific_candidates_impl(
                                 await main_service.delete_item(episode_service_id)
                         elif is_season and season:
                             # delete the season item from the media server
-                            if main_service is service_manager.jellyfin:
+                            if main_service_type is Service.JELLYFIN:
                                 season_service_id = season.jellyfin_season_id
-                            elif main_service is service_manager.emby:
+                            elif main_service_type is Service.EMBY:
                                 season_service_id = season.emby_season_id
                             else:
                                 season_service_id = season.plex_season_rating_key

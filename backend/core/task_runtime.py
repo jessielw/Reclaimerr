@@ -168,15 +168,11 @@ async def _run_linked_data_sync() -> None:
         )
         media_servers = result.scalars().all()
 
-    main_service_type = None
+    # compared by is_main, not type, so a non-main config of the SAME type as
+    # main is still correctly treated as linked (see sync.py's sync_media())
     for service_config in media_servers:
-        if service_config.is_main:
-            main_service_type = service_config.service_type
-            break
-
-    for service_config in media_servers:
-        if service_config.service_type != main_service_type:
-            await sync_linked_data(service_config.service_type)  # type: ignore
+        if not service_config.is_main:
+            await sync_linked_data(service_config)
 
 
 async def _ensure_main_media_server_for_task(task: Task) -> None:

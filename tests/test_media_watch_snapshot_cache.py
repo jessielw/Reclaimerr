@@ -210,6 +210,7 @@ def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) ->
             )
             supplemental_match = SupplementalMediaMatch(
                 source_service=Service.JELLYFIN,
+                source_service_config_id=config.id,
                 source_item_id="movie-item",
                 media_type=MediaType.MOVIE,
                 movie_id=movie.id,

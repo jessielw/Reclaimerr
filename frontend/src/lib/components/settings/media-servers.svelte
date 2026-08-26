@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount } from "svelte";
   import { delete_api, get_api, post_api } from "$lib/api";
   import ServiceConfigForm from "$lib/components/settings/service-config-form.svelte";
@@ -13,7 +13,9 @@
   import X from "@lucide/svelte/icons/x";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Plus from "@lucide/svelte/icons/plus";
   import Server from "@lucide/svelte/icons/server";
+  import BadgeCheck from "@lucide/svelte/icons/badge-check";
   import { toast } from "svelte-sonner";
   import { SettingsTab } from "$lib/types/shared";
   import * as Select from "$lib/components/ui/select/index.js";
@@ -27,14 +29,23 @@
 
   type MediaServerConfig = {
     id: number | null;
+    name: string;
     enabled: boolean;
     baseUrl: string;
     apiKey: string;
     isMain: boolean;
   };
 
+  // localId is a stable, client-side-only identity for one instance (a draft
+  // or a loaded row) - independent of the server-assigned `id`, which is
+  // null until the first successful save. Every selection/diffing concern
+  // (which instance is pending main, has it been edited, etc.) keys off
+  // localId rather than server id, since a brand new draft has no id yet
+  // but still needs to be individually addressable.
   type MediaServerState = {
+    localId: string;
     config: MediaServerConfig;
+    original: MediaServerConfig;
     apiKeyIsSet: boolean;
     testing: boolean;
     saving: boolean;
@@ -86,24 +97,37 @@
     plex: "e.g. http://localhost:32400",
   };
 
-  const emptyState = (): MediaServerState => ({
-    config: {
-      id: null,
-      enabled: false,
-      baseUrl: "",
-      apiKey: "",
-      isMain: false,
-    },
-    apiKeyIsSet: false,
-    testing: false,
-    saving: false,
-    testStatus: "idle",
+  const newLocalId = (): string =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const emptyConfig = (serverKey: ServerKey): MediaServerConfig => ({
+    id: null,
+    name: SERVER_LABELS[serverKey],
+    enabled: false,
+    baseUrl: "",
+    apiKey: "",
+    isMain: false,
   });
 
-  let servers = $state<Record<ServerKey, MediaServerState>>({
-    jellyfin: emptyState(),
-    emby: emptyState(),
-    plex: emptyState(),
+  const emptyState = (serverKey: ServerKey): MediaServerState => {
+    const config = emptyConfig(serverKey);
+    return {
+      localId: newLocalId(),
+      config,
+      original: { ...config },
+      apiKeyIsSet: false,
+      testing: false,
+      saving: false,
+      testStatus: "idle",
+    };
+  };
+
+  let servers = $state<Record<ServerKey, MediaServerState[]>>({
+    jellyfin: [],
+    emby: [],
+    plex: [],
   });
 
   let loading = $state(false);
@@ -111,45 +135,74 @@
   let syncingMedia = $state(false);
   let confirmServerChange = $state(false);
   let syncBanner = $state<"resync" | "sync" | null>(null);
-  let deleteTarget = $state<ServerKey | null>(null);
+  let deleteTarget = $state<{ serverKey: ServerKey; localId: string } | null>(
+    null,
+  );
   let deletingServer = $state(false);
 
-  // stores each server's enabled state from just before it was promoted to main,
-  // so we can restore it if it gets demoted back to linked
-  let enabledBeforePromotion = $state<Partial<Record<ServerKey, boolean>>>({});
+  // stores each instance's enabled state from just before it was promoted to
+  // main, so we can restore it if it gets demoted back to linked
+  let enabledBeforePromotion = $state<Record<string, boolean>>({});
 
-  // track the saved main server key so we can warn when user changes it
-  let savedMainServer = $state<ServerKey | null>(null);
+  // the saved main instance's localId, so we can warn when the user changes it
+  let savedMainLocalId = $state<string | null>(null);
 
   // the pending dropdown selection (may differ from saved)
-  let pendingMain = $state<ServerKey | null>(null);
+  let pendingMainLocalId = $state<string | null>(null);
 
-  // true when the user has selected a different main than what's saved
-  const mainServerChanged = $derived(
-    savedMainServer !== null &&
-      pendingMain !== null &&
-      pendingMain !== savedMainServer,
+  // flatten every instance across every type, in a stable (type, insertion) order
+  const allInstances = $derived<
+    { serverKey: ServerKey; state: MediaServerState }[]
+  >(
+    SERVERS.flatMap((serverKey) =>
+      servers[serverKey].map((state) => ({ serverKey, state })),
+    ),
   );
 
-  const mainServer = $derived<ServerKey | null>(pendingMain);
-  const linkedServers = $derived<ServerKey[]>(
-    SERVERS.filter((k) => k !== mainServer),
-  );
-
-  // handle changes from the config forms
-  const handleConfigChange = (serverKey: ServerKey, event: CustomEvent) => {
-    const { field, value } = event.detail;
-    servers[serverKey].testStatus = "idle";
-    if (field === "enabled") servers[serverKey].config.enabled = value;
-    else if (field === "baseUrl") servers[serverKey].config.baseUrl = value;
-    else if (field === "apiKey") servers[serverKey].config.apiKey = value;
+  const findInstance = (
+    localId: string | null,
+  ): { serverKey: ServerKey; state: MediaServerState } | null => {
+    if (localId === null) return null;
+    return (
+      allInstances.find((entry) => entry.state.localId === localId) ?? null
+    );
   };
 
-  // test connection to a media server
-  const testServer = async (serverKey: ServerKey) => {
-    servers[serverKey].testing = true;
-    servers[serverKey].testStatus = "loading";
-    const config = servers[serverKey].config;
+  const pendingMainEntry = $derived(findInstance(pendingMainLocalId));
+
+  const mainServerChanged = $derived(
+    savedMainLocalId !== null &&
+      pendingMainLocalId !== null &&
+      pendingMainLocalId !== savedMainLocalId,
+  );
+
+  const anyInstanceConfigured = $derived(allInstances.length > 0);
+
+  // handle changes from the config forms
+  const handleConfigChange = (
+    serverKey: ServerKey,
+    localId: string,
+    event: CustomEvent,
+  ) => {
+    const { field, value } = event.detail;
+    const list = servers[serverKey];
+    const idx = list.findIndex((s) => s.localId === localId);
+    if (idx === -1) return;
+    list[idx].testStatus = "idle";
+    if (field === "enabled") list[idx].config.enabled = value;
+    else if (field === "name") list[idx].config.name = value;
+    else if (field === "baseUrl") list[idx].config.baseUrl = value;
+    else if (field === "apiKey") list[idx].config.apiKey = value;
+  };
+
+  // test connection to a media server instance
+  const testServer = async (serverKey: ServerKey, localId: string) => {
+    const list = servers[serverKey];
+    const idx = list.findIndex((s) => s.localId === localId);
+    if (idx === -1) return;
+    list[idx].testing = true;
+    list[idx].testStatus = "loading";
+    const config = list[idx].config;
     try {
       const payload: Record<string, unknown> = {
         service_type: serverKey,
@@ -162,29 +215,34 @@
         payload,
       );
       if (!response) throw new Error("Connection test failed");
-      servers[serverKey].testStatus = "success";
+      list[idx].testStatus = "success";
     } catch (err: any) {
-      servers[serverKey].testStatus = "error";
+      list[idx].testStatus = "error";
       toast.error(
-        `Connection test for ${SERVER_LABELS[serverKey]} failed: ${err.message}`,
+        `Connection test for ${SERVER_LABELS[serverKey]} (${config.name}) failed: ${err.message}`,
       );
     } finally {
-      servers[serverKey].testing = false;
+      list[idx].testing = false;
     }
   };
 
-  // save a single server's settings (returns the sync_action from the API response)
+  // save a single instance's settings (returns the sync_action from the API response)
   const saveServer = async (
     serverKey: ServerKey,
+    localId: string,
   ): Promise<"resync" | "sync" | null> => {
-    servers[serverKey].saving = true;
-    const config = { ...servers[serverKey].config };
+    const list = servers[serverKey];
+    const idx = list.findIndex((s) => s.localId === localId);
+    if (idx === -1) return null;
+    list[idx].saving = true;
+    const config = { ...list[idx].config };
     try {
       const response: {
         message: string;
         sync_action: "resync" | "sync" | null;
         data: {
           id: number;
+          name: string;
           service_type: string;
           enabled: boolean;
           base_url: string;
@@ -192,34 +250,30 @@
         };
       } = await post_api("/api/settings/save/service", {
         id: config.id,
+        name: config.name,
         service_type: serverKey,
         enabled: config.enabled,
         base_url: config.baseUrl,
         is_main: config.isMain,
         ...(config.apiKey ? { api_key: config.apiKey } : {}),
       });
-      servers[serverKey].config = {
+      const saved: MediaServerConfig = {
         id: response.data.id,
+        name: response.data.name,
         enabled: response.data.enabled,
         baseUrl: response.data.base_url,
         apiKey: "",
         isMain: response.data.is_main,
       };
-      // update baseline so subsequent saves detect changes correctly
-      originalConfigs[serverKey] = {
-        id: response.data.id,
-        enabled: response.data.enabled,
-        baseUrl: response.data.base_url,
-        apiKey: "",
-        isMain: response.data.is_main,
-      };
-      servers[serverKey].apiKeyIsSet = true;
+      list[idx].config = saved;
+      list[idx].original = { ...saved };
+      list[idx].apiKeyIsSet = true;
       if (response.data.is_main) {
-        savedMainServer = serverKey;
-        pendingMain = serverKey;
-        for (const key of SERVERS) {
-          if (key !== serverKey) {
-            servers[key].config.isMain = false;
+        savedMainLocalId = localId;
+        pendingMainLocalId = localId;
+        for (const entry of allInstances) {
+          if (entry.state.localId !== localId) {
+            entry.state.config.isMain = false;
           }
         }
       }
@@ -227,26 +281,37 @@
       return response.sync_action ?? null;
     } catch (err: any) {
       toast.error(
-        `Error saving ${SERVER_LABELS[serverKey]} settings: ${err.message}`,
+        `Error saving ${SERVER_LABELS[serverKey]} (${config.name}) settings: ${err.message}`,
       );
       return null;
     } finally {
-      servers[serverKey].saving = false;
+      list[idx].saving = false;
     }
   };
 
-  // track original config for change detection
-  let originalConfigs = $state<Record<ServerKey, MediaServerConfig>>({
-    jellyfin: { ...emptyState().config },
-    emby: { ...emptyState().config },
-    plex: { ...emptyState().config },
-  });
+  // remove an unsaved draft locally (no server-side delete needed)
+  const removeDraft = (serverKey: ServerKey, localId: string) => {
+    servers[serverKey] = servers[serverKey].filter(
+      (s) => s.localId !== localId,
+    );
+    if (pendingMainLocalId === localId) pendingMainLocalId = savedMainLocalId;
+  };
 
-  const deleteLinkedServer = async () => {
-    const serverKey = deleteTarget;
-    if (!serverKey) return;
-    const configId = servers[serverKey].config.id;
-    if (!configId) return;
+  const deleteServerInstance = async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    const list = servers[target.serverKey];
+    const idx = list.findIndex((s) => s.localId === target.localId);
+    if (idx === -1) {
+      deleteTarget = null;
+      return;
+    }
+    const configId = list[idx].config.id;
+    if (!configId) {
+      removeDraft(target.serverKey, target.localId);
+      deleteTarget = null;
+      return;
+    }
 
     deletingServer = true;
     try {
@@ -254,8 +319,9 @@
         message: string;
         data: { removed_path_mappings?: number };
       } = await delete_api(`/api/settings/service/${configId}`);
-      servers[serverKey] = emptyState();
-      originalConfigs[serverKey] = { ...emptyState().config };
+      servers[target.serverKey] = list.filter(
+        (s) => s.localId !== target.localId,
+      );
       deleteTarget = null;
       toast.success(response.message);
       const removedMappings = response.data.removed_path_mappings ?? 0;
@@ -266,36 +332,52 @@
         );
       }
     } catch (err: any) {
-      toast.error(`Error deleting ${SERVER_LABELS[serverKey]}: ${err.message}`);
+      toast.error(
+        `Error deleting ${SERVER_LABELS[target.serverKey]}: ${err.message}`,
+      );
     } finally {
       deletingServer = false;
     }
   };
 
-  // save all servers, prioritizing the main server first
+  const instanceIsDirty = (state: MediaServerState): boolean => {
+    const { config, original } = state;
+    if (!config.id) {
+      return !!(
+        config.baseUrl.trim() ||
+        config.apiKey.trim() ||
+        config.name.trim() !== original.name.trim() ||
+        config.enabled
+      );
+    }
+    return (
+      !!config.apiKey ||
+      config.name !== original.name ||
+      config.enabled !== original.enabled ||
+      config.baseUrl !== original.baseUrl ||
+      config.isMain !== original.isMain
+    );
+  };
+
+  // save all instances, prioritizing the pending main instance first
   const saveAll = async () => {
     globalSaving = true;
     syncBanner = null;
-    const mainServerKey = pendingMain; // capture before async ops
+    const mainLocalId = pendingMainLocalId; // capture before async ops
     try {
-      const saveOrder: ServerKey[] = pendingMain
-        ? [pendingMain, ...SERVERS.filter((k) => k !== pendingMain)]
-        : [...SERVERS];
+      const ordered = [...allInstances].sort((a, b) => {
+        if (a.state.localId === mainLocalId) return -1;
+        if (b.state.localId === mainLocalId) return 1;
+        return 0;
+      });
       let anySaved = false;
-      for (const serverKey of saveOrder) {
-        const config = servers[serverKey].config;
-        const original = originalConfigs[serverKey];
-        // only save if API key is present OR any config field changed
-        const shouldSave =
-          !!config.apiKey ||
-          config.enabled !== original.enabled ||
-          config.baseUrl !== original.baseUrl ||
-          config.isMain !== original.isMain;
-        if (config.baseUrl && shouldSave) {
-          const action = await saveServer(serverKey);
+      for (const { serverKey, state } of ordered) {
+        const { config } = state;
+        if (config.baseUrl && instanceIsDirty(state)) {
+          const action = await saveServer(serverKey, state.localId);
           anySaved = true;
           // resync takes priority (main server was swapped, background task running)
-          if (serverKey === mainServerKey && action === "resync") {
+          if (state.localId === mainLocalId && action === "resync") {
             syncBanner = "resync";
           }
         }
@@ -378,48 +460,90 @@
         Record<
           string,
           {
-            id?: number;
-            enabled: boolean;
-            is_main: boolean | null;
-            base_url: string;
-            api_key: string;
+            instances?: Array<{
+              id?: number;
+              name?: string;
+              enabled: boolean;
+              is_main: boolean | null;
+              base_url: string;
+              api_key: string;
+            }>;
           }
         >
       >("/api/settings/services");
 
+      const next: Record<ServerKey, MediaServerState[]> = {
+        jellyfin: [],
+        emby: [],
+        plex: [],
+      };
+      savedMainLocalId = null;
+      pendingMainLocalId = null;
+      enabledBeforePromotion = {};
+
       for (const serverKey of SERVERS) {
-        const config = rawServices[serverKey];
-        if (!config) continue;
-        servers[serverKey].config = {
-          id: config.id ?? null,
-          enabled: config.enabled,
-          baseUrl: config.base_url,
-          apiKey: "",
-          isMain: config.is_main ?? false,
-        };
-        // save original config for change detection
-        originalConfigs[serverKey] = {
-          id: config.id ?? null,
-          enabled: config.enabled,
-          baseUrl: config.base_url,
-          apiKey: "",
-          isMain: config.is_main ?? false,
-        };
-        // ensure old main is enabled
-        enabledBeforePromotion[serverKey] = config.enabled;
-        servers[serverKey].apiKeyIsSet = !!config.api_key;
-        if (config.is_main) {
-          savedMainServer = serverKey;
-          pendingMain = serverKey;
-          // main server must always be enabled
-          servers[serverKey].config.enabled = true;
+        const instances = rawServices[serverKey]?.instances ?? [];
+        for (const raw of instances) {
+          const config: MediaServerConfig = {
+            id: raw.id ?? null,
+            name: raw.name || SERVER_LABELS[serverKey],
+            enabled: raw.enabled,
+            baseUrl: raw.base_url,
+            apiKey: "",
+            isMain: raw.is_main ?? false,
+          };
+          const localId = newLocalId();
+          next[serverKey].push({
+            localId,
+            config,
+            original: { ...config },
+            apiKeyIsSet: !!raw.api_key,
+            testing: false,
+            saving: false,
+            testStatus: "idle",
+          });
+          enabledBeforePromotion[localId] = raw.enabled;
+          if (raw.is_main) {
+            savedMainLocalId = localId;
+            pendingMainLocalId = localId;
+          }
         }
       }
+      servers = next;
     } catch (err: any) {
       toast.warning(`Error loading media server settings: ${err.message}`);
     } finally {
       loading = false;
     }
+  };
+
+  const addInstance = (serverKey: ServerKey) => {
+    servers[serverKey] = [...servers[serverKey], emptyState(serverKey)];
+  };
+
+  const selectMainServer = (localId: string) => {
+    const oldLocalId = pendingMainLocalId;
+    if (oldLocalId && oldLocalId !== localId) {
+      const oldEntry = findInstance(oldLocalId);
+      if (oldEntry) {
+        // restore the demoted instance's enabled state from before it was promoted
+        oldEntry.state.config.enabled =
+          enabledBeforePromotion[oldLocalId] ?? false;
+      }
+    }
+
+    const newEntry = findInstance(localId);
+    if (!newEntry) return;
+
+    // save the incoming instance's enabled state before forcing it on
+    enabledBeforePromotion[localId] = newEntry.state.config.enabled;
+
+    pendingMainLocalId = localId;
+    for (const entry of allInstances) {
+      entry.state.config.isMain = entry.state.localId === localId;
+    }
+    // main server must always be enabled
+    newEntry.state.config.enabled = true;
   };
 
   onMount(async () => {
@@ -441,11 +565,11 @@
           Media Servers
         </h2>
         <p class="text-sm text-muted-foreground mt-0.5">
-          Configure your media servers. One must be selected as the <strong
-            >main server</strong
-          >, which is the primary source for library and media data. Others will
-          be
-          <strong>linked</strong> for watch history and user data only.
+          Configure one or more media servers. One instance must be selected as
+          the <strong>main server</strong>, which is the primary source for
+          library and media data. Every other instance - including additional
+          instances of the same type - is <strong>linked</strong>
+          for watch history and user data only.
         </p>
       </div>
 
@@ -473,11 +597,12 @@
       <div>
         <h3 class="font-semibold text-foreground">Main Server</h3>
         <p class="text-sm text-muted-foreground mt-0.5">
-          The primary source for library and media sync.
+          The primary source for library and media sync. Pick a specific
+          instance, even if it's not the only one of its type.
         </p>
       </div>
 
-      <!-- dropdown to select main server -->
+      <!-- dropdown to select main server, across every instance of every type -->
       <div class="flex flex-col gap-2 max-w-xs">
         <Label
           for="main-server-select"
@@ -489,46 +614,33 @@
           <Select.Root
             name="main-server-select"
             type="single"
-            value={pendingMain ?? undefined}
-            onValueChange={(value) => {
-              const newMain = value as ServerKey;
-              const oldMain = pendingMain;
-
-              if (oldMain && oldMain !== newMain) {
-                // restore the demoted server's enabled state from before it was promoted
-                servers[oldMain].config.enabled =
-                  enabledBeforePromotion[oldMain] ?? false;
-              }
-
-              // save the incoming server's enabled state before forcing it on
-              enabledBeforePromotion[newMain] = servers[newMain].config.enabled;
-
-              pendingMain = newMain;
-              for (const key of SERVERS) {
-                servers[key].config.isMain = key === newMain;
-              }
-              // main server must always be enabled
-              servers[newMain].config.enabled = true;
-            }}
+            value={pendingMainLocalId ?? undefined}
+            onValueChange={(value) => selectMainServer(value)}
           >
             <Select.Trigger class="w-full cursor-pointer text-foreground">
-              {#if pendingMain}
-                {@const Icon = SERVER_ICONS[pendingMain]}
+              {#if pendingMainEntry}
+                {@const Icon = SERVER_ICONS[pendingMainEntry.serverKey]}
                 <span class="flex items-center gap-2">
                   <Icon class="size-4 shrink-0" />
-                  {SERVER_LABELS[pendingMain]}
+                  {SERVER_LABELS[pendingMainEntry.serverKey]} - {pendingMainEntry
+                    .state.config.name}
                 </span>
               {:else}
                 <span class="text-muted-foreground">Select a server...</span>
               {/if}
             </Select.Trigger>
             <Select.Content>
-              {#each SERVERS as serverKey}
+              {#each allInstances as { serverKey, state } (state.localId)}
                 {@const Icon = SERVER_ICONS[serverKey]}
-                <Select.Item value={serverKey} class="cursor-pointer">
+                <Select.Item value={state.localId} class="cursor-pointer">
                   <span class="flex items-center gap-2">
                     <Icon class="size-4 shrink-0" />
-                    {SERVER_LABELS[serverKey]}
+                    {SERVER_LABELS[serverKey]} - {state.config.name}
+                    {#if state.localId === savedMainLocalId}
+                      <span class="text-xs text-muted-foreground"
+                        >(current)</span
+                      >
+                    {/if}
                   </span>
                 </Select.Item>
               {/each}
@@ -539,6 +651,7 @@
 
       <!-- warning banner when changing main server -->
       {#if mainServerChanged}
+        {@const savedEntry = findInstance(savedMainLocalId)}
         <div
           class="flex flex-col items-start gap-3 p-3 rounded-md bg-warning/50 border border-warning-secondary
             text-warning-foreground"
@@ -547,12 +660,17 @@
             <AlertTriangle class="size-4 mt-0.5 shrink-0" />
             <p class="text-sm">
               Changing the main server from <strong
-                >{SERVER_LABELS[savedMainServer!]}</strong
+                >{savedEntry
+                  ? `${SERVER_LABELS[savedEntry.serverKey]} - ${savedEntry.state.config.name}`
+                  : "none"}</strong
               >
               to
-              <strong>{SERVER_LABELS[pendingMain!]}</strong> will trigger a full media
-              resync. This may take a while. Make sure the new server is fully configured
-              before saving.
+              <strong
+                >{pendingMainEntry
+                  ? `${SERVER_LABELS[pendingMainEntry.serverKey]} - ${pendingMainEntry.state.config.name}`
+                  : ""}</strong
+              > will trigger a full media resync. This may take a while. Make sure
+              the new server is fully configured before saving.
             </p>
           </div>
           <div class="flex items-center gap-2">
@@ -571,98 +689,94 @@
           </div>
         </div>
       {/if}
-
-      <!-- main server config form -->
-      {#if mainServer}
-        {@const apiKeyLabel =
-          mainServer === SettingsTab.Plex ? "Token" : "API Key"}
-        <div class="rounded-lg border border-border p-5 space-y-4">
-          <ServiceConfigForm
-            tabLabel={SERVER_LABELS[mainServer]}
-            tabIcon={SERVER_ICONS[mainServer]}
-            lockedName={SERVER_LABELS[mainServer]}
-            enabled={servers[mainServer].config.enabled}
-            baseUrl={servers[mainServer].config.baseUrl}
-            apiKey={servers[mainServer].config.apiKey}
-            apiKeyIsSet={servers[mainServer].apiKeyIsSet}
-            {apiKeyLabel}
-            baseUrlPlaceholder={SERVER_URL_PLACEHOLDERS[mainServer]}
-            disableToggle={true}
-            onchange={(e) => handleConfigChange(mainServer, e)}
-          />
-          <div class="flex gap-2 justify-end">
-            <TestButton
-              onclick={() => testServer(mainServer)}
-              disabled={servers[mainServer].testing ||
-                servers[mainServer].saving ||
-                globalSaving}
-              status={servers[mainServer].testStatus}
-              size="sm">Test</TestButton
-            >
-          </div>
-        </div>
-      {/if}
     </section>
 
-    <!-- linked servers -->
-    {#if mainServer && linkedServers.length > 0}
+    <!-- one section per media-server type, each listing every instance of that type -->
+    {#each SERVERS as serverKey (serverKey)}
+      {@const Icon = SERVER_ICONS[serverKey]}
       <hr />
       <section class="space-y-4">
-        <div>
-          <h2 class="font-semibold text-foreground">Linked Servers</h2>
-          <p class="text-sm text-muted-foreground mt-0.5">
-            Used for watch history and user data only. Libraries are sourced
-            from the main server.
-          </p>
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-foreground flex items-center gap-2">
+            <Icon class="size-4 shrink-0" />
+            {SERVER_LABELS[serverKey]}
+          </h2>
+          <Button
+            size="sm"
+            variant="outline"
+            class="cursor-pointer gap-1.5"
+            onclick={() => addInstance(serverKey)}
+          >
+            <Plus class="size-3.5" />
+            Add another
+          </Button>
         </div>
 
-        <div class="space-y-4">
-          {#each linkedServers as serverKey}
-            {@const apiKeyLabel =
-              serverKey === SettingsTab.Plex ? "Token" : "API Key"}
-            <div class="rounded-lg border border-border p-5 space-y-4">
-              <ServiceConfigForm
-                tabLabel={SERVER_LABELS[serverKey]}
-                tabIcon={SERVER_ICONS[serverKey]}
-                lockedName={SERVER_LABELS[serverKey]}
-                enabled={servers[serverKey].config.enabled}
-                baseUrl={servers[serverKey].config.baseUrl}
-                apiKey={servers[serverKey].config.apiKey}
-                apiKeyIsSet={servers[serverKey].apiKeyIsSet}
-                {apiKeyLabel}
-                baseUrlPlaceholder={SERVER_URL_PLACEHOLDERS[serverKey]}
-                onchange={(e) => handleConfigChange(serverKey, e)}
-              />
-              <div class="flex gap-2 justify-end">
-                {#if servers[serverKey].config.id}
-                  <Button
-                    size="sm"
-                    class="cursor-pointer gap-2 bg-destructive/80 hover:bg-destructive text-destructive-foreground"
-                    disabled={servers[serverKey].saving || globalSaving}
-                    onclick={() => (deleteTarget = serverKey)}
+        {#if servers[serverKey].length === 0}
+          <p class="text-sm text-muted-foreground">Not configured.</p>
+        {:else}
+          <div class="space-y-4">
+            {#each servers[serverKey] as state (state.localId)}
+              {@const apiKeyLabel =
+                serverKey === SettingsTab.Plex ? "Token" : "API Key"}
+              {@const isPendingMain = state.localId === pendingMainLocalId}
+              <div class="rounded-lg border border-border p-5 space-y-4">
+                <div class="flex items-center justify-between">
+                  {#if isPendingMain}
+                    <span
+                      class="flex items-center gap-1.5 text-xs font-medium text-primary"
+                    >
+                      <BadgeCheck class="size-3.5" />
+                      Main server
+                    </span>
+                  {:else}
+                    <span class="text-xs text-muted-foreground">Linked</span>
+                  {/if}
+                </div>
+                <ServiceConfigForm
+                  tabLabel={SERVER_LABELS[serverKey]}
+                  tabIcon={SERVER_ICONS[serverKey]}
+                  enabled={state.config.enabled}
+                  name={state.config.name}
+                  baseUrl={state.config.baseUrl}
+                  apiKey={state.config.apiKey}
+                  apiKeyIsSet={state.apiKeyIsSet}
+                  {apiKeyLabel}
+                  baseUrlPlaceholder={SERVER_URL_PLACEHOLDERS[serverKey]}
+                  disableToggle={isPendingMain}
+                  onchange={(e) =>
+                    handleConfigChange(serverKey, state.localId, e)}
+                />
+                <div class="flex gap-2 justify-end">
+                  {#if !isPendingMain}
+                    <Button
+                      size="sm"
+                      class="cursor-pointer gap-2 bg-destructive/80 hover:bg-destructive text-destructive-foreground"
+                      disabled={state.saving || globalSaving}
+                      onclick={() =>
+                        (deleteTarget = { serverKey, localId: state.localId })}
+                    >
+                      <Trash2 class="size-4" />
+                      {state.config.id ? "Delete" : "Remove"}
+                    </Button>
+                  {/if}
+                  <TestButton
+                    onclick={() => testServer(serverKey, state.localId)}
+                    disabled={state.testing || state.saving || globalSaving}
+                    status={state.testStatus}
+                    class="cursor-pointer gap-2"
+                    size="sm">Test</TestButton
                   >
-                    <Trash2 class="size-4" />
-                    Delete
-                  </Button>
-                {/if}
-                <TestButton
-                  onclick={() => testServer(serverKey)}
-                  disabled={servers[serverKey].testing ||
-                    servers[serverKey].saving ||
-                    globalSaving}
-                  status={servers[serverKey].testStatus}
-                  class="cursor-pointer gap-2"
-                  size="sm">Test</TestButton
-                >
+                </div>
               </div>
-            </div>
-          {/each}
-        </div>
+            {/each}
+          </div>
+        {/if}
       </section>
-    {/if}
+    {/each}
 
     <!-- save + sync banner -->
-    {#if mainServer}
+    {#if anyInstanceConfigured}
       <hr />
       <!-- post save sync banner -->
       {#if syncBanner}
@@ -687,7 +801,7 @@
                 Settings saved - you can sync now to get the latest media data
                 or wait for the next automatic sync.
               </p>
-              {#if linkedServers.every((k) => !servers[k].apiKeyIsSet)}
+              {#if allInstances.every((entry) => entry.state.localId === pendingMainLocalId || !entry.state.apiKeyIsSet)}
                 <p class="text-xs text-muted-foreground">
                   Tip: you can also configure a linked server to bring in watch
                   history and user data before syncing.
@@ -751,8 +865,8 @@
       <AlertDialog.Title>Delete linked media server?</AlertDialog.Title>
       <AlertDialog.Description>
         {#if deleteTarget}
-          Permanently delete the {SERVER_LABELS[deleteTarget]} configuration? This
-          cannot be undone.
+          Permanently delete the {SERVER_LABELS[deleteTarget.serverKey]} configuration?
+          This cannot be undone.
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
@@ -760,7 +874,7 @@
       <AlertDialog.Cancel disabled={deletingServer}>Cancel</AlertDialog.Cancel>
       <AlertDialog.Action
         disabled={deletingServer}
-        onclick={deleteLinkedServer}
+        onclick={deleteServerInstance}
         class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
       >
         {deletingServer ? "Deleting..." : "Delete"}

@@ -804,7 +804,7 @@ class SupplementalMediaMatch(Base):
     __tablename__ = "supplemental_media_matches"
     __table_args__ = (
         UniqueConstraint(
-            "source_service",
+            "source_service_config_id",
             "source_item_id",
             "media_type",
             name="uq_supplemental_media_match_source_item",
@@ -816,6 +816,12 @@ class SupplementalMediaMatch(Base):
     )
 
     source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    # the specific media server config this match was contributed by - required
+    # to disambiguate multiple ServiceConfig rows of the same service_type
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
     source_item_id: Mapped[str] = mapped_column(String(100))
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
 

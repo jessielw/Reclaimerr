@@ -294,29 +294,29 @@ async def _get_main_media_server(session: AsyncSession) -> ServiceConfig | None:
 
 
 async def _get_media_service_instance(
-    service_type: Service,
+    config: ServiceConfig,
 ) -> JellyfinService | EmbyService | PlexService | None:
-    """Return initialized media service instance for Plex/Jellyfin/Emby or None."""
-    service_instance = await service_manager.return_service(service_type)
+    """Return the initialized media service client for a specific ServiceConfig row."""
+    service_instance = service_manager.get_media_server(config.service_type, config.id)
     if not service_instance:
-        LOG.error(f"Service {service_type} not initialized")
+        LOG.error(f"Service {config.service_type} (config {config.id}) not initialized")
         return None
     if not isinstance(service_instance, (JellyfinService, EmbyService, PlexService)):
-        LOG.error(f"Service {service_type} is not a media server")
+        LOG.error(f"Service {config.service_type} is not a media server")
         return None
     return service_instance
 
 
 async def _replace_supplemental_matches(
     session: AsyncSession,
-    source_service: Service,
+    source_service_config_id: int,
     media_type: MediaType,
     matches: list[SupplementalMediaMatch],
 ) -> None:
-    """Replace all supplemental matches for a given source service and media type with a new set of matches."""
+    """Replace all supplemental matches for a given source config and media type with a new set of matches."""
     await session.execute(
         sql_delete(SupplementalMediaMatch).where(
-            SupplementalMediaMatch.source_service == source_service,
+            SupplementalMediaMatch.source_service_config_id == source_service_config_id,
             SupplementalMediaMatch.media_type == media_type,
         )
     )
@@ -324,13 +324,13 @@ async def _replace_supplemental_matches(
 
 
 async def _clear_supplemental_matches(
-    source_service: Service,
+    source_service_config_id: int,
     media_type: MediaType | None = None,
 ) -> None:
-    """Clear supplemental matches for a given source service, optionally filtered by media type."""
+    """Clear supplemental matches for a given source config, optionally filtered by media type."""
     async with async_db() as session:
         query = sql_delete(SupplementalMediaMatch).where(
-            SupplementalMediaMatch.source_service == source_service
+            SupplementalMediaMatch.source_service_config_id == source_service_config_id
         )
         if media_type is not None:
             query = query.where(SupplementalMediaMatch.media_type == media_type)
@@ -338,12 +338,16 @@ async def _clear_supplemental_matches(
         await session.commit()
 
 
-async def _prune_supplemental_matches(active_linked_services: set[Service]) -> None:
-    """Prune supplemental matches for inactive linked services."""
+async def _prune_supplemental_matches(
+    active_linked_service_config_ids: set[int],
+) -> None:
+    """Prune supplemental matches for inactive linked media-server configs."""
     async with async_db() as session:
-        if active_linked_services:
+        if active_linked_service_config_ids:
             query = sql_delete(SupplementalMediaMatch).where(
-                SupplementalMediaMatch.source_service.not_in(active_linked_services)
+                SupplementalMediaMatch.source_service_config_id.not_in(
+                    active_linked_service_config_ids
+                )
             )
         else:
             query = sql_delete(SupplementalMediaMatch)
@@ -353,10 +357,11 @@ async def _prune_supplemental_matches(active_linked_services: set[Service]) -> N
 
 async def _build_movie_supplemental_matches(
     session: AsyncSession,
-    source_service: Service,
+    config: ServiceConfig,
     movies: list[AggregatedMovieData],
 ) -> list[SupplementalMediaMatch]:
     """Build supplemental matches for movies."""
+    source_service = config.service_type
     rows = (
         await session.execute(
             select(MovieVersion, Movie)
@@ -402,6 +407,7 @@ async def _build_movie_supplemental_matches(
                 signals["duration"] = "close"
             matches_by_item[version.service_item_id] = SupplementalMediaMatch(
                 source_service=source_service,
+                source_service_config_id=config.id,
                 source_item_id=version.service_item_id,
                 media_type=MediaType.MOVIE,
                 movie_id=main_movie.id,
@@ -421,10 +427,11 @@ async def _build_movie_supplemental_matches(
 
 async def _build_series_supplemental_matches(
     session: AsyncSession,
-    source_service: Service,
+    config: ServiceConfig,
     series_items: list[AggregatedSeriesData],
 ) -> list[SupplementalMediaMatch]:
     """Build supplemental matches for series."""
+    source_service = config.service_type
     ref_rows = (
         await session.execute(
             select(SeriesServiceRef, Series)
@@ -493,6 +500,7 @@ async def _build_series_supplemental_matches(
 
         matches_by_item[source_series.id] = SupplementalMediaMatch(
             source_service=source_service,
+            source_service_config_id=config.id,
             source_item_id=source_series.id,
             media_type=MediaType.SERIES,
             series_id=local_series.id,
@@ -531,6 +539,7 @@ async def _build_series_supplemental_matches(
 
             matches_by_item[source_season.service_season_id] = SupplementalMediaMatch(
                 source_service=source_service,
+                source_service_config_id=config.id,
                 source_item_id=source_season.service_season_id,
                 media_type=MediaType.SERIES,
                 series_id=local_series.id,
@@ -845,6 +854,7 @@ async def _upsert_episodes(
     service_type: Service,
     *,
     remove_stale: bool = True,
+    backfill_ids: bool = True,
 ) -> None:
     """Upsert Episode rows for a season from freshly-fetched media server episode data.
 
@@ -853,6 +863,13 @@ async def _upsert_episodes(
             service. Set to False for supplemental/linked-server calls where the service
             may only have partial season coverage and should not delete episodes written
             by the primary server.
+        backfill_ids: When True (default), write the service-specific episode ID
+            column (plex_rating_key/jellyfin_episode_id/emby_episode_id) matching
+            service_type. There is exactly one such column per service *type*, not
+            per config, so this must be False when the caller is a linked (non-main)
+            server whose type matches the main server's type - otherwise its IDs
+            would silently overwrite the main server's IDs, which media-server
+            delete operations rely on.
     """
     # Flush any pending inserts (e.g. from a prior _upsert_episodes call for the same
     # season_id) so that the query below reflects the full current state. With
@@ -900,12 +917,13 @@ async def _upsert_episodes(
                 e.runtime = ep.runtime_seconds
             if ep.media_server_user_rating is not None:
                 e.media_server_user_rating = ep.media_server_user_rating
-            if service_type is Service.PLEX and ep.plex_rating_key:
-                e.plex_rating_key = ep.plex_rating_key
-            elif service_type is Service.JELLYFIN and ep.jellyfin_episode_id:
-                e.jellyfin_episode_id = ep.jellyfin_episode_id
-            elif service_type is Service.EMBY and ep.emby_episode_id:
-                e.emby_episode_id = ep.emby_episode_id
+            if backfill_ids:
+                if service_type is Service.PLEX and ep.plex_rating_key:
+                    e.plex_rating_key = ep.plex_rating_key
+                elif service_type is Service.JELLYFIN and ep.jellyfin_episode_id:
+                    e.jellyfin_episode_id = ep.jellyfin_episode_id
+                elif service_type is Service.EMBY and ep.emby_episode_id:
+                    e.emby_episode_id = ep.emby_episode_id
         else:
             new_ep = Episode(
                 season_id=season_id,
@@ -916,9 +934,9 @@ async def _upsert_episodes(
                 path=ep.path,
                 view_count=ep.view_count,
                 last_viewed_at=ep.last_viewed_at,
-                plex_rating_key=ep.plex_rating_key,
-                jellyfin_episode_id=ep.jellyfin_episode_id,
-                emby_episode_id=ep.emby_episode_id,
+                plex_rating_key=ep.plex_rating_key if backfill_ids else None,
+                jellyfin_episode_id=ep.jellyfin_episode_id if backfill_ids else None,
+                emby_episode_id=ep.emby_episode_id if backfill_ids else None,
                 media_server_user_rating=ep.media_server_user_rating,
                 runtime=ep.runtime_seconds,
             )
@@ -1194,46 +1212,37 @@ async def _upsert_movie_versions(
 
 
 async def gather_movies(
-    service: MediaServerType | None = None,
+    config: ServiceConfig | None = None,
 ) -> dict[int, AggregatedMovieData] | None:
     """
-    Fetch movies from the main media server (or a specific service) and group by TMDB ID.
+    Fetch movies from the main media server (or a specific config) and group by TMDB ID.
     Same movie in multiple libraries on the same server gets its versions merged.
     Watch data takes the max across libraries.
+
+    Note: this always resolves exactly one server - either the given `config`
+    or the designated main server. It never fans out across every configured
+    server of a type, since only one config (main, or the explicitly given
+    one) should ever contribute physical version data.
     """
     async with async_db() as session:
-        if service is not None:
-            # explicit service requested (use it directly)
-            servers = await _get_configured_media_servers(session, service)
-        else:
+        target = config
+        if target is None:
             # use designated main server (required)
-            main = await _get_main_media_server(session)
-            if not main:
+            target = await _get_main_media_server(session)
+            if not target:
                 LOG.error(
                     "No main media server configured. Must have a main server designated."
                 )
                 return None
-            servers = [main]
 
-        if not servers:
+        service_instance = await _get_media_service_instance(target)
+        if not service_instance:
             return None
-
-        aggregated_movies: list[AggregatedMovieData] = []
-        for server in servers:
-            service_instance = await _get_media_service_instance(server.service_type)
-            if not service_instance:
-                continue
-            LOG.debug(
-                f"Fetching movies from {server.service_type} at {server.base_url}"
-            )
-            get_movies = await service_instance.get_aggregated_movies(
-                included_libraries=None
-            )
-            if get_movies:
-                aggregated_movies.extend(get_movies)
-            LOG.debug(
-                f"Fetched {len(get_movies or [])} movies from {server.service_type}"
-            )
+        LOG.debug(f"Fetching movies from {target.service_type} at {target.base_url}")
+        aggregated_movies: list[AggregatedMovieData] = (
+            await service_instance.get_aggregated_movies(included_libraries=None) or []
+        )
+        LOG.debug(f"Fetched {len(aggregated_movies)} movies from {target.service_type}")
 
     # group by TMDB ID (merges same movie from multiple libraries on the same server)
     unique_movies: dict[int, AggregatedMovieData] = {}
@@ -1402,73 +1411,81 @@ def _dedupe_aggregated_series(
 
 
 async def gather_series(
-    service: MediaServerType | None = None,
+    config: ServiceConfig | None = None,
 ) -> tuple[dict[int, AggregatedSeriesData], _SupplementalEpisodeData] | None:
-    """Fetch and combine series from all configured media servers, deduplicating by TMDB ID."""
-    aggregated_series = []
+    """Fetch series from the main media server (or a specific config), deduplicating by TMDB ID.
+
+    Note: mirrors `gather_movies` - resolves exactly one server (the given
+    `config` or the designated main server), never every configured server of
+    a type.
+    """
     async with async_db() as session:
-        media_servers = await _get_configured_media_servers(session, service)
+        target = config
+        if target is None:
+            target = await _get_main_media_server(session)
+            if not target:
+                LOG.error(
+                    "No main media server configured. Must have a main server designated."
+                )
+                return None
 
-        if not media_servers:
+        service_instance = await _get_media_service_instance(target)
+        if not service_instance:
             return None
-
-        # fetch series from each media server
-        for server in media_servers:
-            service_instance = await _get_media_service_instance(server.service_type)
-            if not service_instance:
-                continue
-            LOG.debug(
-                f"Fetching series from {server.service_type} at {server.base_url}"
-            )
-
-            # fetch aggregated series
-            get_series = await service_instance.get_aggregated_series(
-                included_libraries=None
-            )
-            if get_series:
-                aggregated_series.extend(get_series)
-            LOG.debug(f"Fetched {len(get_series)} series from {server.service_type}")
+        LOG.debug(f"Fetching series from {target.service_type} at {target.base_url}")
+        aggregated_series = (
+            await service_instance.get_aggregated_series(included_libraries=None) or []
+        )
+        LOG.debug(f"Fetched {len(aggregated_series)} series from {target.service_type}")
 
     return _dedupe_aggregated_series(aggregated_series)
 
 
 async def sync_movies(
-    service: MediaServerType | None = None,
+    config_id: int | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    """Sync movies from media server to database, optionally filtered by service.
+    """Sync movies from media server to database, optionally filtered by a
+    specific media-server config ID.
 
     Returns set of synced TMDB IDs.
     """
-    # resolve main server
+    # resolve main server, and (if a specific config was requested) that config
     async with async_db() as _cfg:
-        main_server = await _get_main_media_server(_cfg)
-    main_service_type: MediaServerType | None = (
-        main_server.service_type if main_server else None  # type: ignore[assignment]
-    )
+        main_config = await _get_main_media_server(_cfg)
+        target_config = (
+            await _cfg.get(ServiceConfig, config_id) if config_id is not None else None
+        )
 
-    # if a specific non-main service was requested, only sync watch data from it
-    if (
-        service is not None
-        and main_service_type is not None
-        and service != main_service_type
-    ):
-        LOG.info(f"{service} is a linked server - syncing watch data only")
-        await sync_linked_data(service)
+    # if a specific non-main config was requested, only sync watch data from it -
+    # compared by config identity, not type, so a same-type non-main config is
+    # always treated as linked even when its type matches the main server's
+    if config_id is not None and main_config is not None and config_id != main_config.id:
+        if target_config is None:
+            LOG.warning(
+                f"sync_movies: config {config_id} not found or no longer configured - skipping"
+            )
+            return set()
+        LOG.info(
+            f"{target_config.service_type} (config {config_id}) is a linked server - "
+            "syncing watch data only"
+        )
+        await sync_linked_data(target_config)
         return set()
 
-    # resolve effective service for the full (version + watch) sync
-    effective_service = service if service is not None else main_service_type
-    if not effective_service or not effective_service.value:
+    # resolve effective config for the full (version + watch) sync
+    effective_config = target_config if config_id is not None else main_config
+    if not effective_config:
         LOG.error(
             "No media server available for syncing movies. Please configure a main media server "
             "or specify a service."
         )
         return set()
+    effective_service = effective_config.service_type
     LOG.info(f"Starting movie sync ({effective_service.value})...")
     start_time = datetime.now(UTC)
 
-    aggregated_movies = await gather_movies(effective_service)
+    aggregated_movies = await gather_movies(effective_config)
     if not aggregated_movies:
         LOG.info(f"No movies to sync from {effective_service.value}")
         return set()
@@ -1889,43 +1906,41 @@ async def _update_movie_tmdb_metadata(
 
 
 async def sync_series(
-    service: MediaServerType | None = None,
+    config_id: int | None = None,
     allow_soft_delete: bool = True,
 ) -> set[int]:
-    """Sync series from the main media server (or a specific service).
+    """Sync series from the main media server (or a specific media-server config).
 
     Mirrors sync_movies: a linked (non-main) server contributes watch data
     rather than series rows, and no argument means the main server rather than
     every configured server. That watch data comes from sync_linked_data, which
     sync_media calls in its own loop over the linked servers; unlike sync_movies
     this function does not call it, it only declines to sync the linked server.
+    Compared by config identity, not type, so a same-type non-main config is
+    always treated as linked even when its type matches the main server's.
     """
-    # resolve main server
+    # resolve main server, and (if a specific config was requested) that config
     async with async_db() as _cfg:
-        main_server = await _get_main_media_server(_cfg)
-    main_service_type: MediaServerType | None = (
-        main_server.service_type if main_server else None  # type: ignore[assignment]
-    )
+        main_config = await _get_main_media_server(_cfg)
+        target_config = (
+            await _cfg.get(ServiceConfig, config_id) if config_id is not None else None
+        )
 
     # a linked server never contributes series rows
-    if (
-        service is not None
-        and main_service_type is not None
-        and service != main_service_type
-    ):
-        LOG.info(f"{service} is a linked server - skipping series sync")
+    if config_id is not None and main_config is not None and config_id != main_config.id:
+        LOG.info(f"config {config_id} is a linked server - skipping series sync")
         return set()
 
-    effective_service = service or main_service_type
-    if effective_service is None:
+    effective_config = target_config if config_id is not None else main_config
+    if effective_config is None:
         LOG.error("No main media server configured for series sync")
         return set()
 
     start_time = datetime.now(UTC)
-    source_label = effective_service.value
+    source_label = effective_config.service_type.value
     LOG.info(f"Starting series sync ({source_label})...")
 
-    gather_result = await gather_series(effective_service)
+    gather_result = await gather_series(effective_config)
     if not gather_result:
         LOG.info(f"No series to sync from {source_label}")
         return set()
@@ -2476,27 +2491,29 @@ async def sync_media() -> dict[str, Any] | None:
         library_sync_result = await sync_media_libraries()
 
         # sync movies
-        await sync_movies(main_server)
+        await sync_movies(get_main_server.id)
 
         # sync series
-        await sync_series(main_server)
+        await sync_series(get_main_server.id)
 
-        # sync linked watch data from any non-main servers
+        # sync linked watch data from every other configured server - compared
+        # by config identity, not type, so a non-main config of the SAME type
+        # as main is still correctly treated as linked rather than silently
+        # excluded from both the main sync and the linked sync
         async with async_db() as linked_session:
             all_servers = await _get_configured_media_servers(linked_session)
-        active_linked_services: set[Service] = {
-            svr.service_type
+        linked_servers = [
+            svr
             for svr in all_servers
-            if svr.service_type != main_server
-            and _is_media_server_type(svr.service_type)
+            if svr.id != get_main_server.id and _is_media_server_type(svr.service_type)
+        ]
+        active_linked_service_config_ids: set[int] = {
+            svr.id for svr in linked_servers
         }
-        await _prune_supplemental_matches(active_linked_services)
-        for svr in all_servers:
-            if svr.service_type != main_server and _is_media_server_type(
-                svr.service_type
-            ):
-                LOG.debug(f"Linked watch sync from {svr.service_type}")
-                await sync_linked_data(svr.service_type)
+        await _prune_supplemental_matches(active_linked_service_config_ids)
+        for svr in linked_servers:
+            LOG.debug(f"Linked watch sync from {svr.service_type} (config {svr.id})")
+            await sync_linked_data(svr)
 
         # refresh favorites snapshot from supported media servers
         ok, error = await media_favorites_snapshot_cache.refresh_snapshot(
@@ -2515,19 +2532,33 @@ async def sync_media() -> dict[str, Any] | None:
 
 
 async def sync_linked_data(
-    service: MediaServerType,
+    config: ServiceConfig,
 ) -> None:
     """
     Update watch data (view_count, last_viewed_at, never_watched) on existing Movie rows
     from a linked (non-main) media server. No version rows are written, but high
     confidence same-media supplemental identity mappings are refreshed.
+
+    `config` must be a specific, non-main media server ServiceConfig row - never
+    "all configs of this type", so two linked configs of the same type are always
+    synced (and attributed) independently.
     """
+    service = config.service_type
     async with track_task_execution(Task.SYNC_LINKED_DATA):
-        LOG.info(f"Syncing linked data from {service}...")
-        service_instance = await _get_media_service_instance(service)
+        LOG.info(f"Syncing linked data from {service} (config {config.id})...")
+        service_instance = await _get_media_service_instance(config)
         if not service_instance:
-            await _clear_supplemental_matches(service)
+            await _clear_supplemental_matches(config.id)
             return
+
+        # determine whether this linked config's type matches the main
+        # server's type, so episode ID backfill (a single column per type,
+        # not per config) is only ever written by one config of that type
+        async with async_db() as _cfg:
+            main_config = await _get_main_media_server(_cfg)
+        backfill_episode_ids = (
+            main_config is None or main_config.service_type != config.service_type
+        )
 
         # fetch all libraries - linked servers don't have library selection
         try:
@@ -2539,7 +2570,7 @@ async def sync_linked_data(
                 f"Failed to fetch linked movie data from {service}; clearing "
                 f"supplemental matches for that service: {e}"
             )
-            await _clear_supplemental_matches(service)
+            await _clear_supplemental_matches(config.id)
             return
 
         # build watch data keyed by TMDB ID (merge same-TMDB across libraries)
@@ -2591,10 +2622,10 @@ async def sync_linked_data(
 
         async with async_db() as session:
             movie_matches = await _build_movie_supplemental_matches(
-                session, service, aggregated
+                session, config, aggregated
             )
             await _replace_supplemental_matches(
-                session, service, MediaType.MOVIE, movie_matches
+                session, config.id, MediaType.MOVIE, movie_matches
             )
             await session.commit()
         LOG.info(
@@ -2610,15 +2641,15 @@ async def sync_linked_data(
                 f"Failed to fetch linked series data from {service} for "
                 f"supplemental matching; clearing stale series matches: {e}"
             )
-            await _clear_supplemental_matches(service, MediaType.SERIES)
+            await _clear_supplemental_matches(config.id, MediaType.SERIES)
             return
 
         async with async_db() as session:
             series_matches = await _build_series_supplemental_matches(
-                session, service, aggregated_series
+                session, config, aggregated_series
             )
             await _replace_supplemental_matches(
-                session, service, MediaType.SERIES, series_matches
+                session, config.id, MediaType.SERIES, series_matches
             )
             await session.commit()
         LOG.info(
@@ -2685,6 +2716,7 @@ async def sync_linked_data(
                             sd.episode_data,
                             service,
                             remove_stale=False,
+                            backfill_ids=backfill_episode_ids,
                         )
                         ep_updated_count += len(sd.episode_data)
 
@@ -2815,7 +2847,7 @@ async def sync_media_libraries() -> dict[str, Any]:
             LOG.error("No main media server configured - skipping library sync")
             return {"libraries": [], "affected_rules": []}
 
-        service_instance = await _get_media_service_instance(main.service_type)
+        service_instance = await _get_media_service_instance(main)
         if not service_instance:
             return {"libraries": [], "affected_rules": []}
 

@@ -856,8 +856,8 @@ class MediaWatchSnapshotCache:
                     refreshed_servers = 0
                     refresh_errors: list[str] = []
                     for config in supported:
-                        service_instance = await service_manager.return_service(
-                            config.service_type
+                        service_instance = service_manager.get_media_server(
+                            config.service_type, config.id
                         )
                         if not isinstance(
                             service_instance,

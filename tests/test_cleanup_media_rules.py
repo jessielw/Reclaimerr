@@ -5702,8 +5702,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=5001, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-5001",
@@ -5718,9 +5727,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5729,6 +5740,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(len(fake_plex.calls), 1)
         call = fake_plex.calls[0]
@@ -5741,7 +5753,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
-                {Service.PLEX.value: "Leaving Soon"},
+                {str(plex_config_id): "Leaving Soon"},
             )
 
     async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
@@ -5756,8 +5768,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=5002, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-5002",
@@ -5772,9 +5793,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5783,6 +5806,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
 
@@ -5799,8 +5823,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=50021, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-50021",
@@ -5815,9 +5848,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5826,6 +5861,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
         self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
@@ -5849,8 +5885,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=50022, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-50022",
@@ -5865,9 +5910,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5876,12 +5923,16 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
         self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            # nothing changed (delete failed), so the persisted value is
+            # untouched - still the legacy {service_type: title} shape seeded
+            # above, not eagerly migrated to {config_id: title}.
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
                 {Service.PLEX.value: "Leaving Soon"},
@@ -5902,8 +5953,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             series = Series(title="Series", tmdb_id=5003, size=5 * 1024**3)
-            db.add_all([settings, rule, series])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, series, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             series_ref = _make_series_ref(
                 service_id="plex-series-5003",
@@ -5926,9 +5986,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5937,6 +5999,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(len(fake_plex.calls), 1)
         call = fake_plex.calls[0]
@@ -5956,8 +6019,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=5004, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-5004",
@@ -5972,9 +6044,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -5983,6 +6057,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(len(fake_plex.calls), 1)
         self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
@@ -5992,7 +6067,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
-                {Service.PLEX.value: "Latest Soon"},
+                {str(plex_config_id): "Latest Soon"},
             )
 
     async def test_scan_keeps_last_success_title_when_old_cleanup_fails(self) -> None:
@@ -6008,8 +6083,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=5005, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-5005",
@@ -6024,9 +6108,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -6035,6 +6121,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.delete_calls, ["Old A"])
         self.assertEqual(len(fake_plex.calls), 1)
@@ -6042,6 +6129,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            # the old-title delete failed, so nothing changed and nothing was
+            # written back - still the legacy {service_type: title} shape.
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
                 {Service.PLEX.value: "Old A"},
@@ -6060,8 +6149,17 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 include_never_watched=True,
             )
             movie = Movie(title="Movie", tmdb_id=5006, size=3 * 1024**3)
-            db.add_all([settings, rule, movie])
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
             await db.flush()
+            plex_config_id = plex_config.id
 
             version = _make_movie_version(
                 service_media_id="mv-5006",
@@ -6076,9 +6174,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
         cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup_tasks.service_manager._jellyfin = None
         cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
         try:
             async with self._sessionmaker() as db:
                 result = await _scan_with_db(db)
@@ -6087,12 +6187,15 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex = previous_plex
             cleanup_tasks.service_manager._jellyfin = previous_jellyfin
             cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
         self.assertEqual(fake_plex.delete_calls, ["Old A"])
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            # the sync itself failed, so nothing changed and nothing was
+            # written back - still the legacy {service_type: title} shape.
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
                 {Service.PLEX.value: "Old A"},

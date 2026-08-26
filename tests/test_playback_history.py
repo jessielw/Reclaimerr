@@ -1472,6 +1472,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                     version,
                     SupplementalMediaMatch(
                         source_service=Service.JELLYFIN,
+                        source_service_config_id=jellyfin.id,
                         source_item_id="jellyfin-item",
                         media_type=MediaType.MOVIE,
                         movie_id=movie.id,
