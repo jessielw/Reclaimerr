@@ -227,6 +227,10 @@ class ServiceConfig(Base):
     # designates this as the sole source-of-truth for physical file versions;
     # only one media server may have is_main=True at a time
     is_main: Mapped[bool] = mapped_column(Boolean, default=False)
+    # media servers only: when this specific server last had its data pulled.
+    # The main server records the end of a full media sync, a linked server the
+    # end of its own linked-data sync, so the two never report each other's time.
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=func.now(),

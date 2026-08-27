@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Support for multiple media servers
+- Per media server sync. Each media server card in **Settings -> Media Servers** has its own **Sync** button and reports its own last-sync time, and the dashboard shows each server's own time labelled main or linked. Syncing the main server runs the full media sync; syncing a linked server refreshes only that server's watch data and supplemental matches, so one linked server no longer waits on, or blocks, another.
+
+### Fixed
+
+- The Tracearr server picker listed every Tracearr server once per configured media server of that type, so two Plex servers made each Tracearr Plex server appear twice.
+- Tracearr discovery confirmed the main server's Tracearr server for every media server of main's type. Only the main server writes the version rows the probe compares against, so a second Plex server inherited a recommendation that was never about it -- and, because a Tracearr server can only be bound once, the pair could not be saved. A Tracearr server already bound to another media server now moves rather than duplicating, and saved bindings are listed by media server name instead of by type.
+- Every media server reported the last completed **Sync Media** run as its own last sync, so two servers of the same type always showed the same time.
+- A busy database during the session `last_seen_at` write rolled back the request's own database session, which expired the signed-in user and made the next permission check fail with `greenlet_spawn has not been called`. Under a running media sync this took out `/api/info/ui-indicators` repeatedly. The write now runs in its own session.
 
 ## [0.3.7] - 2026-08-18
 

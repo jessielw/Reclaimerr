@@ -97,6 +97,10 @@ For a trusted-proxy session, the sidebar logout control only appears when `FORWA
 - Keep all connected servers pointed at the same physical media library.
 - Use path mappings if the media server paths do not match local paths.
 
+The main server is the only source of library and file-version rows. Every other configured server is linked: it contributes watch state and same-media matches, but never library contents.
+
+Each media server card in **Settings -> Media Servers** has its own **Sync** button and reports when that server was last synced. Syncing the main server runs the full media sync (libraries, movies, series, then every linked server). Syncing a linked server refreshes only that server's watch data and supplemental matches, so it neither waits on nor blocks the others. The dashboard shows each server's own last-sync time, labelled main or linked.
+
 ## Disabling Or Deleting Offline Services
 
 Service configuration changes do not require the external service to be online. An existing Radarr, Sonarr, Seerr, Tautulli, Tracearr, Jellyfin, Emby, or Plex configuration can be disabled or deleted while that service is unreachable.

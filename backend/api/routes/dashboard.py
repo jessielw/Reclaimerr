@@ -25,8 +25,6 @@ from backend.enums import (
     MediaType,
     PageAccess,
     ProtectionRequestStatus,
-    Task,
-    TaskStatus,
     UserRole,
 )
 from backend.models.dashboard import (
@@ -176,16 +174,8 @@ async def get_dashboard(
 
     services: list[DashboardServiceSummary] = []
     if is_admin:
-        # get last completed SYNC_MEDIA run (single unified sync task)
-        last_sync_result = await db.execute(
-            select(func.max(TaskRun.completed_at)).where(
-                TaskRun.task == Task.SYNC_MEDIA,
-                TaskRun.status == TaskStatus.COMPLETED,
-            )
-        )
-        last_sync_at: datetime | None = last_sync_result.scalar_one_or_none()
-
-        # get all service configs
+        # get all service configs - media servers carry their own sync time, so
+        # two servers of the same type never report each other's
         service_config_rows = (
             await db.execute(
                 select(
@@ -193,6 +183,8 @@ async def get_dashboard(
                     ServiceConfig.name,
                     ServiceConfig.enabled,
                     ServiceConfig.base_url,
+                    ServiceConfig.is_main,
+                    ServiceConfig.last_synced_at,
                 )
             )
         ).all()
@@ -203,11 +195,12 @@ async def get_dashboard(
                 name=name or service_type.value.title(),
                 url=base_url or "",
                 enabled=enabled,
-                last_sync_at=to_utc_isoformat(last_sync_at)
+                last_sync_at=to_utc_isoformat(last_synced_at)
                 if service_type in MEDIA_SERVERS
                 else None,
+                is_main=bool(is_main) and service_type in MEDIA_SERVERS,
             )
-            for service_type, name, enabled, base_url in sorted(
+            for service_type, name, enabled, base_url, is_main, last_synced_at in sorted(
                 service_config_rows,
                 key=lambda r: (r[0].value, (r[1] or "").lower()),
             )

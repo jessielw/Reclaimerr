@@ -513,7 +513,8 @@
                             <p
                               class="text-xs text-muted-foreground mt-1 truncate"
                             >
-                              Last sync: {service.last_sync_at
+                              {service.is_main ? "Main" : "Linked"} - last sync:
+                              {service.last_sync_at
                                 ? formatDistanceToNow(service.last_sync_at)
                                 : "never"}
                             </p>

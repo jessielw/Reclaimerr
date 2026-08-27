@@ -18,6 +18,7 @@
   import BadgeCheck from "@lucide/svelte/icons/badge-check";
   import { toast } from "svelte-sonner";
   import { SettingsTab } from "$lib/types/shared";
+  import { formatDistanceToNow } from "$lib/utils/date";
   import * as Select from "$lib/components/ui/select/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import Checkbox from "$lib/components/ui/checkbox/checkbox.svelte";
@@ -36,6 +37,11 @@
     isMain: boolean;
   };
 
+  type MediaServerSyncResponse = SyncMediaRunResponse & {
+    task: string;
+    scope: "main" | "linked";
+  };
+
   // localId is a stable, client-side-only identity for one instance (a draft
   // or a loaded row) - independent of the server-assigned `id`, which is
   // null until the first successful save. Every selection/diffing concern
@@ -49,6 +55,8 @@
     apiKeyIsSet: boolean;
     testing: boolean;
     saving: boolean;
+    syncing: boolean;
+    lastSyncedAt: string | null;
     testStatus: "idle" | "loading" | "success" | "error";
   };
 
@@ -120,6 +128,8 @@
       apiKeyIsSet: false,
       testing: false,
       saving: false,
+      syncing: false,
+      lastSyncedAt: null,
       testStatus: "idle",
     };
   };
@@ -452,6 +462,43 @@
     }
   };
 
+  // sync one media server. Main runs the full media sync (it owns library and
+  // version rows); a linked server only refreshes its own watch + supplemental
+  // data, so it never waits on, or blocks, the others.
+  const syncServer = async (localId: string) => {
+    const entry = findInstance(localId);
+    if (!entry) return;
+    const { state } = entry;
+    const configId = state.config.id;
+    if (configId === null) {
+      toast.info("Save this server before syncing it.");
+      return;
+    }
+
+    state.syncing = true;
+    try {
+      const response = await post_api<MediaServerSyncResponse>(
+        `/api/settings/media-servers/${configId}/sync`,
+      );
+
+      if (response.scope === "main" && response.job_id !== null) {
+        void watchSyncJob(response.job_id);
+      }
+
+      if (response.already_active) {
+        toast.info(response.message);
+      } else {
+        toast.success(
+          `${response.message}. Check the Tasks page to monitor progress.`,
+        );
+      }
+    } catch (err: any) {
+      toast.error(`Failed to start sync: ${err.message}`);
+    } finally {
+      state.syncing = false;
+    }
+  };
+
   // load media server settings on mount
   const loadSettings = async () => {
     try {
@@ -467,6 +514,7 @@
               is_main: boolean | null;
               base_url: string;
               api_key: string;
+              last_synced_at?: string | null;
             }>;
           }
         >
@@ -500,6 +548,8 @@
             apiKeyIsSet: !!raw.api_key,
             testing: false,
             saving: false,
+            syncing: false,
+            lastSyncedAt: raw.last_synced_at ?? null,
             testStatus: "idle",
           });
           enabledBeforePromotion[localId] = raw.enabled;
@@ -721,7 +771,7 @@
                 serverKey === SettingsTab.Plex ? "Token" : "API Key"}
               {@const isPendingMain = state.localId === pendingMainLocalId}
               <div class="rounded-lg border border-border p-5 space-y-4">
-                <div class="flex items-center justify-between">
+                <div class="flex items-center justify-between gap-2">
                   {#if isPendingMain}
                     <span
                       class="flex items-center gap-1.5 text-xs font-medium text-primary"
@@ -731,6 +781,13 @@
                     </span>
                   {:else}
                     <span class="text-xs text-muted-foreground">Linked</span>
+                  {/if}
+                  {#if state.config.id !== null}
+                    <span class="text-xs text-muted-foreground truncate">
+                      Last sync: {state.lastSyncedAt
+                        ? formatDistanceToNow(state.lastSyncedAt)
+                        : "never"}
+                    </span>
                   {/if}
                 </div>
                 <ServiceConfigForm
@@ -758,6 +815,33 @@
                     >
                       <Trash2 class="size-4" />
                       {state.config.id ? "Delete" : "Remove"}
+                    </Button>
+                  {/if}
+                  {#if state.config.id !== null}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      class="cursor-pointer gap-2"
+                      disabled={state.syncing ||
+                        state.saving ||
+                        globalSaving ||
+                        mainServerChanged ||
+                        !state.original.enabled}
+                      title={!state.original.enabled
+                        ? "Enable and save this server to sync it"
+                        : mainServerChanged
+                          ? "Save the main server change first"
+                          : state.original.isMain
+                            ? "Run a full media sync from this server"
+                            : "Refresh watch data from this server"}
+                      onclick={() => syncServer(state.localId)}
+                    >
+                      {#if state.syncing}
+                        <Spinner class="size-4" />
+                      {:else}
+                        <RefreshCw class="size-4" />
+                      {/if}
+                      Sync
                     </Button>
                   {/if}
                   <TestButton

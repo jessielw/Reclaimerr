@@ -69,33 +69,42 @@ def should_cleanup_task_memory(task: Task) -> bool:
     return get_task_execution_mode(task) is TaskExecutionMode.ISOLATED
 
 
-async def run_task_job(task: Task) -> dict[str, Any] | None:
+async def run_task_job(
+    task: Task, service_config_id: int | None = None
+) -> dict[str, Any] | None:
     """Run one queued task using the configured execution mode."""
     if should_isolate_task(task):
-        return await run_task_in_subprocess(task)
+        return await run_task_in_subprocess(task, service_config_id)
     if should_cleanup_task_memory(task):
-        return await run_task_with_memory_cleanup(task)
+        return await run_task_with_memory_cleanup(task, service_config_id)
 
     from backend.core.task_runtime import execute_task
 
-    return await execute_task(task)
+    return await execute_task(task, service_config_id)
 
 
-async def run_task_with_memory_cleanup(task: Task) -> dict[str, Any] | None:
+async def run_task_with_memory_cleanup(
+    task: Task, service_config_id: int | None = None
+) -> dict[str, Any] | None:
     """Run a task inline and clean up transient memory afterwards."""
     from backend.core.task_runtime import execute_task
 
     context = task.friendly_name()
     log_memory_snapshot(f"before {context}")
     try:
-        return await execute_task(task)
+        return await execute_task(task, service_config_id)
     finally:
         service_manager.clear_transient_caches()
         cleanup_process_memory(context=context)
 
 
-async def run_task_in_subprocess(task: Task) -> dict[str, Any] | None:
-    request = json.dumps({"task": task.value}, separators=(",", ":")).encode()
+async def run_task_in_subprocess(
+    task: Task, service_config_id: int | None = None
+) -> dict[str, Any] | None:
+    payload: dict[str, Any] = {"task": task.value}
+    if service_config_id is not None:
+        payload["service_config_id"] = service_config_id
+    request = json.dumps(payload, separators=(",", ":")).encode()
     env = {**os.environ, TASK_CHILD_ENV: "1"}
     command = _task_child_command()
     if os.name == "nt":
@@ -123,7 +132,7 @@ async def run_task_in_subprocess(task: Task) -> dict[str, Any] | None:
             f"Task isolation is unavailable in this Python event loop; "
             f"running {task.friendly_name()} inline with memory cleanup"
         )
-        return await run_task_with_memory_cleanup(task)
+        return await run_task_with_memory_cleanup(task, service_config_id)
     if process.stdin is None or process.stdout is None or process.stderr is None:
         raise RuntimeError("Could not open task child process pipes")
 

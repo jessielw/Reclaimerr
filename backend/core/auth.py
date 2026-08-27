@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.utils.datetime_utils import ensure_utc
-from backend.database import get_db
+from backend.database import async_db, get_db
 from backend.database.models import User, UserSession
 from backend.enums import PageAccess, Permission, UserRole
 
@@ -372,40 +372,49 @@ async def get_current_user(
         or (now - ensure_utc(user_session.last_seen_at))
         >= SESSION_LAST_SEEN_TOUCH_INTERVAL
     ):
-        await _touch_user_session_last_seen(db, user_session.id, now)
+        await _touch_user_session_last_seen(user_session.id, now)
 
     return user
 
 
-async def _touch_user_session_last_seen(
-    db: AsyncSession, session_row_id: int, now: datetime
-) -> None:
+async def _touch_user_session_last_seen(session_row_id: int, now: datetime) -> None:
     """Best-effort session activity write.
 
     This value is useful account/session metadata, but it should not make normal API
     requests fail when a heavy SQLite writer is active.
+
+    Runs in its own session rather than the request's. A busy writer (a media sync,
+    say) makes this write raise, and rolling the *request* session back expires every
+    ORM object loaded through it - including `current_user`. The next attribute read
+    on that user then becomes a lazy refresh from a sync context, which async
+    SQLAlchemy cannot service ("greenlet_spawn has not been called").
     """
-    try:
-        await db.execute(text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}"))
-        await db.execute(
-            update(UserSession)
-            .where(UserSession.id == session_row_id)
-            .values(last_seen_at=now)
-        )
-        await db.commit()
-    except OperationalError:
-        await db.rollback()
-        LOG.debug("Skipped session last_seen_at update because SQLite is busy")
-    except Exception:
-        await db.rollback()
-        LOG.debug("Failed to update session last_seen_at", exc_info=True)
-    finally:
+    async with async_db() as db:
         try:
             await db.execute(
-                text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+                text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}")
             )
+            await db.execute(
+                update(UserSession)
+                .where(UserSession.id == session_row_id)
+                .values(last_seen_at=now)
+            )
+            await db.commit()
+        except OperationalError:
+            await db.rollback()
+            LOG.debug("Skipped session last_seen_at update because SQLite is busy")
         except Exception:
-            LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
+            await db.rollback()
+            LOG.debug("Failed to update session last_seen_at", exc_info=True)
+        finally:
+            # busy_timeout is per-connection and connections are pooled, so the
+            # short timeout has to be undone before this one goes back
+            try:
+                await db.execute(
+                    text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+                )
+            except Exception:
+                LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
 
 
 async def require_admin(

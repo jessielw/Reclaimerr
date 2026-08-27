@@ -293,6 +293,22 @@ async def _get_main_media_server(session: AsyncSession) -> ServiceConfig | None:
     return result.scalar_one_or_none()
 
 
+async def _mark_service_config_synced(service_config_id: int) -> None:
+    """Stamp one media server with the moment its own sync finished.
+
+    Per config, not per type: a full sync stamps main, and each linked-data sync
+    stamps only the server it pulled from, so two servers of the same type never
+    report each other's time.
+    """
+    async with async_db() as session:
+        await session.execute(
+            sql_update(ServiceConfig)
+            .where(ServiceConfig.id == service_config_id)
+            .values(last_synced_at=datetime.now(UTC).replace(tzinfo=None))
+        )
+        await session.commit()
+
+
 async def _get_media_service_instance(
     config: ServiceConfig,
 ) -> JellyfinService | EmbyService | PlexService | None:
@@ -2496,6 +2512,8 @@ async def sync_media() -> dict[str, Any] | None:
         # sync series
         await sync_series(get_main_server.id)
 
+        await _mark_service_config_synced(get_main_server.id)
+
         # sync linked watch data from every other configured server - compared
         # by config identity, not type, so a non-main config of the SAME type
         # as main is still correctly treated as linked rather than silently
@@ -2727,6 +2745,8 @@ async def sync_linked_data(
             f"({ep_updated_count} episode records processed)"
         )
 
+        await _mark_service_config_synced(config.id)
+
 
 async def resync_media() -> None:
     """
@@ -2775,6 +2795,10 @@ async def resync_media() -> None:
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
             await sync_series(allow_soft_delete=False)
+            async with async_db() as session:
+                resynced_main = await _get_main_media_server(session)
+            if resynced_main is not None:
+                await _mark_service_config_synced(resynced_main.id)
             await _run_supplemental_syncs()
         except Exception as e:
             LOG.error(f"Error during main server resync: {e}", exc_info=True)

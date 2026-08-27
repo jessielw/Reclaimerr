@@ -20,7 +20,7 @@ from backend.core.rule_actions import (
     normalize_arr_service_config_ids,
 )
 from backend.core.service_manager import service_manager
-from backend.core.task_runtime import enqueue_task_run
+from backend.core.task_runtime import enqueue_task_run, request_task_run
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
@@ -201,7 +201,10 @@ async def _tracearr_discovery_payload(
             .scalars()
             .all()
         )
-        candidates_by_service: dict[Service, list[dict[str, Any]]] = defaultdict(list)
+        # keyed by ServiceConfig.id, not service type - two Plex configs share a
+        # type, and appending per (tracearr server x config) into a type bucket
+        # listed every candidate once per config of that type
+        candidates_by_config: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for server in servers:
             server_id = str(server.get("id") or "").strip()
             server_type_raw = str(server.get("server_type") or "").strip().lower()
@@ -219,7 +222,15 @@ async def _tracearr_discovery_payload(
                 matches = 0
                 contradictions = 0
                 checked = 0
-                item_map = local_items.get(media_config.service_type, {})
+                # only the main server writes version/service-ref rows, so the
+                # local IDs we probe against describe main and nothing else.
+                # Scoring a non-main config against them would confirm main's
+                # Tracearr server for every config of main's type.
+                item_map = (
+                    local_items.get(media_config.service_type, {})
+                    if media_config.is_main
+                    else {}
+                )
                 for row in recent_rows:
                     rating_key = str(row.get("rating_key") or "").strip()
                     local = item_map.get(rating_key)
@@ -244,7 +255,7 @@ async def _tracearr_discovery_payload(
                     confidence = "conflict"
                 else:
                     confidence = "unverified"
-                candidates_by_service[media_config.service_type].append(
+                candidates_by_config[media_config.id].append(
                     {
                         **server,
                         "match": confidence,
@@ -254,36 +265,27 @@ async def _tracearr_discovery_payload(
                     }
                 )
 
-        return {
-            "servers": servers,
-            "media_servers": [
+        media_servers: list[dict[str, Any]] = []
+        for config in media_configs:
+            candidates = candidates_by_config.get(config.id, [])
+            confirmed = [
+                candidate
+                for candidate in candidates
+                if candidate["match"] == "confirmed"
+            ]
+            media_servers.append(
                 {
                     "service_config_id": config.id,
                     "name": config.name or config.service_type.title(),
                     "server_type": config.service_type.value,
-                    "candidates": candidates_by_service.get(config.service_type, []),
-                    "recommended_tracearr_server_id": next(
-                        (
-                            candidate["id"]
-                            for candidate in candidates_by_service.get(
-                                config.service_type, []
-                            )
-                            if candidate["match"] == "confirmed"
-                        ),
-                        None,
-                    )
-                    if sum(
-                        candidate["match"] == "confirmed"
-                        for candidate in candidates_by_service.get(
-                            config.service_type, []
-                        )
-                    )
-                    == 1
-                    else None,
+                    "candidates": candidates,
+                    "recommended_tracearr_server_id": (
+                        confirmed[0]["id"] if len(confirmed) == 1 else None
+                    ),
                 }
-                for config in media_configs
-            ],
-        }
+            )
+
+        return {"servers": servers, "media_servers": media_servers}
     finally:
         await client.session.close()
 
@@ -352,6 +354,7 @@ async def _validate_tracearr_bindings(
         normalized.append(
             {
                 "service_config_id": local.id,
+                "service_config_name": local.name or local.service_type.title(),
                 "tracearr_server_id": remote_id,
                 "tracearr_server_name": str(remote.get("name") or remote_id),
                 "server_type": local.service_type.value,
@@ -593,6 +596,11 @@ def _service_config_payload(config: ServiceConfig) -> dict[str, Any]:
         "api_key": _mask_api_key(fer_decrypt(config.api_key) if config.api_key else ""),
         "extra_settings": config.extra_settings,
         "is_main": config.is_main if config.service_type in MEDIA_SERVERS else None,
+        "last_synced_at": (
+            to_utc_isoformat(config.last_synced_at)
+            if config.service_type in MEDIA_SERVERS
+            else None
+        ),
     }
 
 
@@ -1013,6 +1021,57 @@ async def update_service_libraries(
 
     # update libraries from the main server
     return await sync_media_libraries()
+
+
+@router.post("/media-servers/{service_config_id}/sync")
+async def sync_media_server(
+    service_config_id: int,
+    _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Queue a sync for one media server.
+
+    The main server owns library and version rows, so refreshing it is the full
+    media sync. A linked server only contributes watch state and supplemental
+    matches, so it gets a linked-data run scoped to just that config.
+    """
+    config = (
+        await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.id == service_config_id,
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
+            )
+        )
+    ).scalar_one_or_none()
+    if config is None:
+        raise HTTPException(status_code=404, detail="Media server not found")
+    if not config.enabled:
+        raise HTTPException(
+            status_code=409, detail="Enable this media server before syncing it"
+        )
+
+    task = Task.SYNC_MEDIA if config.is_main else Task.SYNC_LINKED_DATA
+    try:
+        job, queued = await request_task_run(
+            task,
+            service_config_id=None if config.is_main else config.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    server_name = config.name or config.service_type.title()
+    return {
+        "status": "success",
+        "task": task.value,
+        "scope": "main" if config.is_main else "linked",
+        "message": (
+            f"Sync queued for {server_name}"
+            if queued
+            else f"A sync for {server_name} is already queued or running"
+        ),
+        "job_id": job.id if job is not None else None,
+        "already_active": not queued,
+    }
 
 
 @router.put("/libraries")

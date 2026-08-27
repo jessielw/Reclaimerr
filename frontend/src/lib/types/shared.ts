@@ -1282,6 +1282,7 @@ export interface DashboardServiceSummary {
   url: string;
   enabled: boolean;
   last_sync_at: string | null;
+  is_main?: boolean;
 }
 
 export interface DashboardActivityItem {

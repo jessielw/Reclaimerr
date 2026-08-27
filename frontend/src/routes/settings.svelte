@@ -609,6 +609,7 @@
     (serviceState[SettingsTab.Tracearr].config.extraSettings?.server_bindings ??
       []) as Array<{
       service_config_id: number;
+      service_config_name?: string;
       tracearr_server_id: string;
       tracearr_server_name: string;
       server_type: string;
@@ -618,8 +619,12 @@
     mediaServer: TracearrMediaServer,
     tracearrServerId: string,
   ) => {
+    // a Tracearr server can only be bound once, so picking one already used by
+    // another media server moves it rather than producing an unsavable pair
     const existing = currentTracearrBindings().filter(
-      (binding) => binding.service_config_id !== mediaServer.service_config_id,
+      (binding) =>
+        binding.service_config_id !== mediaServer.service_config_id &&
+        binding.tracearr_server_id !== tracearrServerId,
     );
     const candidate = mediaServer.candidates.find(
       (item) => item.id === tracearrServerId,
@@ -629,6 +634,7 @@
           ...existing,
           {
             service_config_id: mediaServer.service_config_id,
+            service_config_name: mediaServer.name,
             tracearr_server_id: candidate.id,
             tracearr_server_name: candidate.name,
             server_type: mediaServer.server_type,
@@ -655,15 +661,17 @@
         payload,
       );
       for (const mediaServer of tracearrDiscovery?.media_servers ?? []) {
-        const hasBinding = currentTracearrBindings().some(
+        const bindings = currentTracearrBindings();
+        const hasBinding = bindings.some(
           (binding) =>
             binding.service_config_id === mediaServer.service_config_id,
         );
-        if (!hasBinding && mediaServer.recommended_tracearr_server_id) {
-          setTracearrBinding(
-            mediaServer,
-            mediaServer.recommended_tracearr_server_id,
-          );
+        const recommended = mediaServer.recommended_tracearr_server_id;
+        const recommendedTaken = bindings.some(
+          (binding) => binding.tracearr_server_id === recommended,
+        );
+        if (!hasBinding && recommended && !recommendedTaken) {
+          setTracearrBinding(mediaServer, recommended);
         }
       }
       toast.success("Tracearr servers discovered");
@@ -1172,7 +1180,8 @@
                   <div class="space-y-1 text-sm text-muted-foreground">
                     {#each currentTracearrBindings() as binding}
                       <p>
-                        {toTitleCase(binding.server_type)} → {binding.tracearr_server_name}
+                        {binding.service_config_name ||
+                          toTitleCase(binding.server_type)} → {binding.tracearr_server_name}
                       </p>
                     {/each}
                     <p class="pt-1 text-xs">
