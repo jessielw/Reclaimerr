@@ -41,6 +41,7 @@ from backend.models.media import (
     MovieVersionData,
     WatchUserDirectoryEntry,
 )
+from backend.models.services.health import HealthResult
 from backend.models.services.plex import PlexMovie, PlexSeries
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
@@ -190,15 +191,20 @@ class PlexService:
         except (OSError, OverflowError, ValueError):
             return None
 
-    async def health(self) -> bool:
-        """Check server health and API key."""
+    async def health(self) -> HealthResult:
+        """Check server health and API key, reporting why it failed."""
         try:
             response, status_code = await self._make_request("identity")
-            if status_code == 200 and self._check_plex_healthy(response):
-                return True
-        except Exception:
-            pass
-        return False
+        except Exception as exc:
+            return HealthResult.failed(
+                format_http_failure(action="Plex health check", exception=exc)
+            )
+        if status_code == 200 and self._check_plex_healthy(response):
+            return HealthResult.healthy()
+        return HealthResult.failed(
+            "Plex identity endpoint did not identify a Plex server "
+            f"(status={status_code})"
+        )
 
     def clear_transient_caches(self) -> None:
         """Clear large short-lived caches retained between task runs."""
@@ -1890,6 +1896,59 @@ class PlexService:
         )
         return snapshots
 
+    async def _tmdb_by_rating_key(
+        self,
+        *,
+        media_type: MediaType,
+        included_libraries: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Map this server's rating keys to TMDB ids for one media type.
+
+        Watch history only needs each item's identity. get_movies()/get_series()
+        additionally walk every collection, re-fetch per-item stream metadata and
+        (for shows) every episode in the library - the bulk of their cost, and
+        none of it is used here. Resolution itself is unchanged: the same section
+        listing with the same GUIDs through the same resolver.
+        """
+        section_type = "movie" if media_type is MediaType.MOVIE else "show"
+        item_type = 1 if media_type is MediaType.MOVIE else 2
+        sections = [
+            section
+            for section in await self.get_library_sections()
+            if section.get("type") == section_type
+        ]
+        if included_libraries:
+            sections = [
+                section
+                for section in sections
+                if section.get("title") in included_libraries
+            ]
+
+        tmdb_by_rating_key: dict[str, int] = {}
+        for section in sections:
+            section_id = section.get("key")
+            if not section_id:
+                continue
+            LOG.debug(
+                f"Identifying {section_type} library for watch history: "
+                f"{section.get('title', 'Unknown')} (ID: {section_id})"
+            )
+            items = await self._get_section_metadata_items(
+                section_id=section_id,
+                params={"type": item_type, "includeGuids": 1},
+                timeout=300,
+            )
+            for item in items:
+                if item.get("type") != section_type:
+                    continue
+                rating_key = str(item.get("ratingKey", "")).strip()
+                if not rating_key:
+                    continue
+                external_ids = await self._resolve_external_ids(item, media_type)
+                if external_ids is not None and external_ids.tmdb is not None:
+                    tmdb_by_rating_key[rating_key] = int(external_ids.tmdb)
+        return tmdb_by_rating_key
+
     async def get_watched_user_snapshots_with_cursor(
         self,
         included_libraries: list[str] | None = None,
@@ -1898,18 +1957,12 @@ class PlexService:
         use_cache: bool = True,
     ) -> tuple[list[MediaWatchSnapshot], datetime | None]:
         """Return per-user watched snapshots mapped to TMDB IDs, plus max viewedAt."""
-        movies = await self.get_movies(included_libraries=included_libraries)
-        series = await self.get_series(included_libraries=included_libraries)
-        movie_tmdb_by_rating_key: dict[str, int] = {}
-        series_tmdb_by_rating_key: dict[str, int] = {}
-        for movie in movies:
-            tmdb_id = movie.external_ids.tmdb if movie.external_ids else None
-            if tmdb_id is not None:
-                movie_tmdb_by_rating_key[str(movie.id)] = int(tmdb_id)
-        for show in series:
-            tmdb_id = show.external_ids.tmdb if show.external_ids else None
-            if tmdb_id is not None:
-                series_tmdb_by_rating_key[str(show.id)] = int(tmdb_id)
+        movie_tmdb_by_rating_key = await self._tmdb_by_rating_key(
+            media_type=MediaType.MOVIE, included_libraries=included_libraries
+        )
+        series_tmdb_by_rating_key = await self._tmdb_by_rating_key(
+            media_type=MediaType.SERIES, included_libraries=included_libraries
+        )
 
         sections = await self.get_library_sections()
         scoped_sections = sections
@@ -1925,8 +1978,10 @@ class PlexService:
         )
         plex_users_by_account_id = await self._get_plex_tv_user_map()
 
+        # identity -> (watched_at, play_count, season_number, episode_number)
         merged: dict[
-            tuple[MediaType, int, str, str | None], tuple[datetime, int | None]
+            tuple[MediaType, int, str, str | None],
+            tuple[datetime, int | None, int | None, int | None],
         ] = {}
         max_viewed_at: datetime | None = None
         for record in history_records:
@@ -1945,7 +2000,7 @@ class PlexService:
                 movie_identity = (MediaType.MOVIE, tmdb_movie, watch_user_key, None)
                 prev = merged.get(movie_identity)
                 if prev is None or watched_at > prev[0]:
-                    merged[movie_identity] = (watched_at, None)
+                    merged[movie_identity] = (watched_at, None, None, None)
 
             series_key = _history_record_rating_key(record, "grandparentRatingKey")
             tmdb_series = series_tmdb_by_rating_key.get(series_key)
@@ -1959,7 +2014,12 @@ class PlexService:
                 )
                 prev = merged.get(episode_identity)
                 if prev is None or watched_at > prev[0]:
-                    merged[episode_identity] = (watched_at, None)
+                    merged[episode_identity] = (
+                        watched_at,
+                        None,
+                        as_int(record.get("parentIndex")),
+                        as_int(record.get("index")),
+                    )
 
         snapshots = [
             MediaWatchSnapshot(
@@ -1969,10 +2029,14 @@ class PlexService:
                 last_watched_at=watched_at,
                 play_count=play_count,
                 source_item_id=source_item_id,
+                season_number=season_number,
+                episode_number=episode_number,
             )
             for (media_type, tmdb_id, user_key, source_item_id), (
                 watched_at,
                 play_count,
+                season_number,
+                episode_number,
             ) in merged.items()
         ]
         return snapshots, max_viewed_at

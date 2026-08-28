@@ -184,10 +184,12 @@ async def _tracearr_discovery_payload(
 ) -> dict[str, Any]:
     client = TracearrClient(api_key=api_key, base_url=base_url, timeout=30)
     try:
-        if not await client.health():
+        health = await client.health()
+        if not health:
             raise HTTPException(
                 status_code=400,
-                detail="Tracearr must expose the stable public API v2 (2.0.0 or newer)",
+                detail=health.detail
+                or "Tracearr must expose the stable public API v2 (2.0.0 or newer)",
             )
         servers = await client.discover_servers()
         local_items = await _local_tracearr_probe_items(db)

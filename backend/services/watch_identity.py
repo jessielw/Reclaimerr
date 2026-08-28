@@ -213,9 +213,17 @@ async def _replace_aliases_for_config(
 
 
 async def refresh_watch_user_aliases() -> tuple[bool, str | None]:
-    """Rebuild the alias registry from every configured playback provider."""
+    """Rebuild the alias registry from every configured playback provider.
+
+    Every provider is polled before the database is touched. Interleaving them
+    put the first config's DELETE - and so SQLite's single write lock - at the
+    head of a transaction that then waited on every later provider's HTTP calls,
+    which is minutes with a few servers and a large Tracearr user directory. Any
+    other writer meanwhile hit "database is locked" past its busy timeout.
+    """
     errors: list[str] = []
     total = 0
+
     async with async_db() as session:
         configs = list(
             (
@@ -229,22 +237,31 @@ async def refresh_watch_user_aliases() -> tuple[bool, str | None]:
             .scalars()
             .all()
         )
-        for config in configs:
-            try:
-                entries = await _collect_aliases(config)
-            except Exception as exc:
-                # A provider that cannot answer keeps its previous rows instead
-                # of dropping identities mid-scan.
-                errors.append(f"{config.service_type.value}: {exc}")
-                LOG.warning(
-                    "Watch identity refresh failed for "
-                    f"{config.service_type.value} config {config.id}: {exc}"
-                )
-                continue
-            total += await _replace_aliases_for_config(
-                session, config.id, config.service_type, entries
+
+    collected: list[
+        tuple[int, Service, list[tuple[Service, WatchUserDirectoryEntry]]]
+    ] = []
+    for config in configs:
+        try:
+            entries = await _collect_aliases(config)
+        except Exception as exc:
+            # A provider that cannot answer keeps its previous rows instead
+            # of dropping identities mid-scan.
+            errors.append(f"{config.service_type.value}: {exc}")
+            LOG.warning(
+                "Watch identity refresh failed for "
+                f"{config.service_type.value} config {config.id}: {exc}"
             )
-        await session.commit()
+            continue
+        collected.append((config.id, config.service_type, entries))
+
+    if collected:
+        async with async_db() as session:
+            for config_id, service_type, entries in collected:
+                total += await _replace_aliases_for_config(
+                    session, config_id, service_type, entries
+                )
+            await session.commit()
 
     LOG.debug(f"Registered {total} watch user alias(es)")
     if errors:

@@ -93,6 +93,10 @@ class PlaybackProviderStatus:
     available: bool
     error: str | None = None
     imported_events: int = 0
+    # Which media-server config this provider observes. One Tracearr config can
+    # bind several servers of the same type, so without this two bindings render
+    # identically ("tracearr#6->plex" twice) in the coverage log.
+    observed_config_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -220,7 +224,8 @@ def log_playback_rule_coverage(
     selected_fields = set(fields or ())
     provider_summary = (
         ", ".join(
-            f"{status.provider.value}#{status.config_id}->{status.observed_service.value}="
+            f"{status.provider.value}#{status.config_id}->{status.observed_service.value}"
+            f"{f'#{status.observed_config_id}' if status.observed_config_id else ''}="
             f"{'available' if status.available else 'unavailable'}"
             for status in snapshot.provider_statuses
         )
@@ -1462,6 +1467,7 @@ def _recent_tracearr_binding_status(
         config_id=config.id,
         provider=Service.TRACEARR,
         observed_service=binding.observed_service,
+        observed_config_id=binding.service_config_id,
         available=bool(state.get("available")),
         error=summarize_error_message(str(state.get("last_error") or "").strip())
         or None,
@@ -1583,6 +1589,7 @@ async def _persist_tracearr_unavailable_status(
         config_id=config.id,
         provider=Service.TRACEARR,
         observed_service=binding.observed_service,
+        observed_config_id=binding.service_config_id,
         available=False,
         error=error,
     )
@@ -1721,6 +1728,7 @@ async def _refresh_tracearr_binding(
         config_id=config.id,
         provider=Service.TRACEARR,
         observed_service=binding.observed_service,
+        observed_config_id=binding.service_config_id,
         available=True,
         imported_events=imported,
     )

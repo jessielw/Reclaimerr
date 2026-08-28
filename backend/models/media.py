@@ -143,6 +143,12 @@ class MediaWatchSnapshot:
     last_watched_at: datetime
     play_count: int | None = None
     source_item_id: str | None = None
+    # Season/episode as the source server numbered them. source_item_id is that
+    # server's own item id, so it only resolves against media synced from that
+    # same server; these coordinates resolve against any server holding the
+    # same show, which is what a linked media server needs.
+    season_number: int | None = None
+    episode_number: int | None = None
 
 
 @dataclass(slots=True, frozen=True)

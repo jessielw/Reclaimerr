@@ -17,6 +17,7 @@ from tenacity import (
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.models.media import ArrTag
+from backend.models.services.health import HealthResult
 from backend.models.services.radarr import RadarrMovie
 
 
@@ -170,13 +171,15 @@ class RadarrClient:
             return status_code, response.json()
         return status_code, None
 
-    async def health(self) -> bool:
-        """Check server health and API key."""
+    async def health(self) -> HealthResult:
+        """Check server health and API key, reporting why it failed."""
         try:
-            await self._make_request("GET", "health")
-            return True
-        except Exception:
-            return False
+            await self._make_request(
+                "GET", "health", error_context="Radarr health check"
+            )
+        except Exception as exc:
+            return HealthResult.failed(exc)
+        return HealthResult.healthy()
 
     async def get_movie(self, movie_id: int) -> RadarrMovie:
         """Get movie by ID."""

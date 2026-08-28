@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 from cryptography.fernet import InvalidToken
@@ -64,6 +65,7 @@ async def load_enabled_services() -> None:
             "Multiple main media servers configured. Only one main media server is allowed."
         )
 
+    pending: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
     for config in service_configs:
         try:
             api_key = fer_decrypt(config.api_key)
@@ -74,59 +76,127 @@ async def load_enabled_services() -> None:
             ) from None
 
         if config.service_type is Service.JELLYFIN:
-            await _initialize_with_retry(
-                "Jellyfin",
-                lambda: service_manager.initialize_jellyfin(
-                    config.base_url, api_key, config.is_main, config.id
-                ),
+            pending.append(
+                (
+                    "Jellyfin",
+                    partial(
+                        service_manager.initialize_jellyfin,
+                        config.base_url,
+                        api_key,
+                        config.is_main,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.EMBY:
-            await _initialize_with_retry(
-                "Emby",
-                lambda: service_manager.initialize_emby(
-                    config.base_url, api_key, config.is_main, config.id
-                ),
+            pending.append(
+                (
+                    "Emby",
+                    partial(
+                        service_manager.initialize_emby,
+                        config.base_url,
+                        api_key,
+                        config.is_main,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.PLEX:
-            await _initialize_with_retry(
-                "Plex",
-                lambda: service_manager.initialize_plex(
-                    config.base_url, api_key, config.is_main, config.id
-                ),
+            pending.append(
+                (
+                    "Plex",
+                    partial(
+                        service_manager.initialize_plex,
+                        config.base_url,
+                        api_key,
+                        config.is_main,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.RADARR:
             timeout = int((config.extra_settings or {}).get("timeout", 300))
-            await _initialize_with_retry(
-                "Radarr",
-                lambda: service_manager.initialize_radarr(
-                    config.base_url, api_key, timeout, config.id
-                ),
+            pending.append(
+                (
+                    "Radarr",
+                    partial(
+                        service_manager.initialize_radarr,
+                        config.base_url,
+                        api_key,
+                        timeout,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.SONARR:
             timeout = int((config.extra_settings or {}).get("timeout", 300))
-            await _initialize_with_retry(
-                "Sonarr",
-                lambda: service_manager.initialize_sonarr(
-                    config.base_url, api_key, timeout, config.id
-                ),
+            pending.append(
+                (
+                    "Sonarr",
+                    partial(
+                        service_manager.initialize_sonarr,
+                        config.base_url,
+                        api_key,
+                        timeout,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.SEERR:
-            await _initialize_with_retry(
-                "Seerr",
-                lambda: service_manager.initialize_seerr(
-                    config.base_url, api_key, config.id
-                ),
+            pending.append(
+                (
+                    "Seerr",
+                    partial(
+                        service_manager.initialize_seerr,
+                        config.base_url,
+                        api_key,
+                        config.id,
+                    ),
+                )
             )
         elif config.service_type is Service.TAUTULLI:
-            await _initialize_with_retry(
-                "Tautulli",
-                lambda: service_manager.initialize_tautulli(config.base_url, api_key),
+            pending.append(
+                (
+                    "Tautulli",
+                    partial(
+                        service_manager.initialize_tautulli, config.base_url, api_key
+                    ),
+                )
             )
         elif config.service_type is Service.TRACEARR:
             timeout = int((config.extra_settings or {}).get("timeout", 30))
-            await _initialize_with_retry(
-                "Tracearr",
-                lambda: service_manager.initialize_tracearr(
-                    config.base_url, api_key, timeout
-                ),
+            pending.append(
+                (
+                    "Tracearr",
+                    partial(
+                        service_manager.initialize_tracearr,
+                        config.base_url,
+                        api_key,
+                        timeout,
+                    ),
+                )
             )
+
+    grouped: dict[str, list[Callable[[], Awaitable[Any]]]] = {}
+    for service_name, initializer in pending:
+        grouped.setdefault(service_name, []).append(initializer)
+
+    async def _initialize_group(
+        service_name: str, initializers: list[Callable[[], Awaitable[Any]]]
+    ) -> None:
+        # Configs of the same type stay serial. initialize_* assigns a
+        # last-one-wins singleton (_plex, _radarr, ...) that return_service still
+        # reads, so their relative order has to remain the database order it has
+        # always been - only the order *between* service types is free.
+        for initializer in initializers:
+            await _initialize_with_retry(service_name, initializer)
+
+    # An unreachable service burns ~9s of retry backoff. Serially that added ~30s
+    # to every API boot *and* every isolated task-child spawn once a few services
+    # were down; per-type concurrency costs one backoff window in total.
+    await asyncio.gather(
+        *(
+            _initialize_group(service_name, initializers)
+            for service_name, initializers in grouped.items()
+        )
+    )

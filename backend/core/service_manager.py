@@ -7,6 +7,7 @@ import urllib3.exceptions as url3_exceptions
 
 from backend.core.logger import LOG
 from backend.enums import Service
+from backend.models.services.health import HealthResult
 from backend.services.emby import EmbyService
 from backend.services.external_ratings import MDBListClient, OMDbClient
 from backend.services.jellyfin import JellyfinService
@@ -16,6 +17,17 @@ from backend.services.seerr import SeerrClient
 from backend.services.sonarr import SonarrClient
 from backend.services.tautulli import TautulliClient
 from backend.services.tracearr import TracearrClient
+
+
+def _health_failure(service_name: str, base_url: str, health: HealthResult) -> str:
+    """Compose one failure message that names the cause, not just the URL.
+
+    A bare "health check failed: <url>" cannot tell DNS from TLS from a 401 from
+    a 403 served by a reverse proxy sitting in front of the service, which is
+    the difference between a Reclaimerr bug and a misconfigured proxy.
+    """
+    message = f"{service_name} service health check failed: {base_url}"
+    return f"{message} - {health.detail}" if health.detail else message
 
 
 class ServiceManager:
@@ -301,9 +313,9 @@ class ServiceManager:
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await client.health():
-                LOG.error(f"Jellyfin service health check failed: {base_url}")
-                raise ValueError(f"Jellyfin service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Jellyfin", base_url, health))
             if config_id is not None:
                 self._jellyfin_clients[config_id] = client
             self._jellyfin = client
@@ -328,9 +340,9 @@ class ServiceManager:
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await client.health():
-                LOG.error(f"Emby service health check failed: {base_url}")
-                raise ValueError(f"Emby service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Emby", base_url, health))
             if config_id is not None:
                 self._emby_clients[config_id] = client
             self._emby = client
@@ -355,9 +367,9 @@ class ServiceManager:
                 token=token,
                 plex_url=base_url,
             )
-            if not await client.health():
-                LOG.error(f"Plex service health check failed: {base_url}")
-                raise ValueError(f"Plex service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Plex", base_url, health))
             if config_id is not None:
                 self._plex_clients[config_id] = client
             self._plex = client
@@ -383,9 +395,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Radarr service health check failed: {base_url}")
-                raise ValueError(f"Radarr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Radarr", base_url, health))
             if config_id is not None:
                 self._radarr_clients[config_id] = client
             self._radarr = client
@@ -409,9 +421,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Sonarr service health check failed: {base_url}")
-                raise ValueError(f"Sonarr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Sonarr", base_url, health))
             if config_id is not None:
                 self._sonarr_clients[config_id] = client
             self._sonarr = client
@@ -433,9 +445,9 @@ class ServiceManager:
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await client.health():
-                LOG.error(f"Seerr service health check failed: {base_url}")
-                raise ValueError(f"Seerr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Seerr", base_url, health))
             if config_id is not None:
                 self._seerr_clients[config_id] = client
             self._seerr = client
@@ -455,9 +467,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await self._tautulli.health():
-                LOG.error(f"Tautulli service health check failed: {base_url}")
-                raise ValueError(f"Tautulli service health check failed: {base_url}")
+            health = await self._tautulli.health()
+            if not health:
+                raise ValueError(_health_failure("Tautulli", base_url, health))
             LOG.info(f"Tautulli service initialized: {base_url}")
             return self._tautulli
         except Exception as e:
@@ -475,9 +487,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Tracearr service health check failed: {base_url}")
-                raise ValueError(f"Tracearr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Tracearr", base_url, health))
             self._tracearr = client
             LOG.info(f"Tracearr service initialized: {base_url}")
             return self._tracearr

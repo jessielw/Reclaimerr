@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, create_autospec, patch
 from uuid import uuid4
@@ -130,6 +131,90 @@ def test_tautulli_directory_registers_every_alias_under_plex() -> None:
                 "black widow",
                 "nat@example.com",
             }
+        finally:
+            await engine.dispose()
+            if db_path.exists():
+                db_path.unlink()
+
+    _run(scenario())
+
+
+
+def _probe_write_from_another_connection(db_path: Path) -> str | None:
+    """Try to take the write lock from an unrelated connection.
+
+    Returns the SQLite failure, or None when the write went through.
+    """
+    connection = sqlite3.connect(db_path, timeout=0.25, isolation_level=None)
+    try:
+        connection.execute("PRAGMA busy_timeout=250")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("UPDATE service_configs SET name = name")
+        connection.execute("COMMIT")
+    except sqlite3.OperationalError as exc:
+        return str(exc)
+    finally:
+        connection.close()
+    return None
+
+
+def test_alias_refresh_holds_no_write_lock_while_polling_providers() -> None:
+    """No write transaction may span a provider's network call.
+
+    Interleaving the two put the first config's DELETE - and with it SQLite's
+    single write lock - at the head of a transaction that then waited on every
+    remaining provider's HTTP calls. Unrelated writers failed with "database is
+    locked" well past their busy timeout while that ran.
+    """
+
+    async def scenario() -> None:
+        engine, sessionmaker, db_path = await _build_db()
+        probe: dict[str, str | None] = {}
+        try:
+            async with sessionmaker() as db:
+                for name in ("Tautulli A", "Tautulli B"):
+                    db.add(
+                        ServiceConfig(
+                            service_type=Service.TAUTULLI,
+                            base_url=f"http://{name}",
+                            api_key="key",
+                            name=name,
+                            enabled=True,
+                        )
+                    )
+                await db.commit()
+
+            def build_client(index: int) -> AsyncMock:
+                client = AsyncMock()
+
+                async def get_users() -> list[dict[str, object]]:
+                    # By the second provider the first one's rows would already
+                    # have been written under the old interleaved refresh.
+                    if index == 2:
+                        probe["error"] = _probe_write_from_another_connection(db_path)
+                    return [{"user_id": index, "username": f"user{index}"}]
+
+                client.get_users = get_users
+                return client
+
+            with (
+                patch.object(watch_identity, "async_db", sessionmaker),
+                patch.object(
+                    watch_identity,
+                    "TautulliClient",
+                    side_effect=[build_client(1), build_client(2)],
+                ),
+                patch.object(watch_identity, "_config_api_key", return_value="key"),
+            ):
+                ok, error = await refresh_watch_user_aliases()
+
+            assert ok, error
+            assert "error" in probe, "second provider was never polled"
+            assert probe["error"] is None, probe["error"]
+
+            async with sessionmaker() as db:
+                rows = (await db.execute(select(WatchUserAlias))).scalars().all()
+                assert {row.alias_normalized for row in rows} >= {"user1", "user2"}
         finally:
             await engine.dispose()
             if db_path.exists():

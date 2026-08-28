@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from asyncio import Lock
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -102,6 +102,21 @@ class _NativePlaybackAggregate:
             ),
             default=None,
         )
+
+
+@dataclass(slots=True, frozen=True)
+class _FetchedWatchState:
+    """One media server's watch data, pulled before any session is opened."""
+
+    service_instance: PlexService | JellyfinService | EmbyService | None = None
+    snapshots: list[MediaWatchSnapshot] = field(default_factory=list)
+    native_playback_snapshots: list[NativePlaybackSnapshot] = field(
+        default_factory=list
+    )
+    incremental_mode: bool = False
+    # Plex sync-state to persist with the results, or None to leave it alone.
+    extra_settings: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class MediaWatchSnapshotCache:
@@ -736,6 +751,29 @@ class MediaWatchSnapshotCache:
             ) in merged.items()
         ]
 
+    @staticmethod
+    def _episode_coordinate(
+        snapshot: MediaWatchSnapshot,
+        coordinates: Mapping[str, tuple[int, int, int]],
+    ) -> tuple[int, int, int] | None:
+        """Resolve one episode play to (series tmdb, season, episode).
+
+        The item-id lookup only works for the media server the library was
+        synced from - Episode.plex_rating_key holds a single server's rating
+        key, so a linked Plex server's ids never match it and every one of its
+        episode plays was being dropped as unmatched. The server reports the
+        season and episode numbers alongside the play, and those identify the
+        episode on any server holding the same show, so prefer them and keep the
+        id lookup as the fallback for sources that do not report them.
+        """
+        if snapshot.season_number is not None and snapshot.episode_number is not None:
+            return (
+                int(snapshot.tmdb_id),
+                int(snapshot.season_number),
+                int(snapshot.episode_number),
+            )
+        return coordinates.get(str(snapshot.source_item_id))
+
     @classmethod
     async def _build_episode_watch_rows(
         cls,
@@ -748,7 +786,14 @@ class MediaWatchSnapshotCache:
         detailed = [
             snapshot
             for snapshot in snapshots
-            if snapshot.media_type is MediaType.SERIES and snapshot.source_item_id
+            if snapshot.media_type is MediaType.SERIES
+            and (
+                snapshot.source_item_id
+                or (
+                    snapshot.season_number is not None
+                    and snapshot.episode_number is not None
+                )
+            )
         ]
         if not detailed:
             return [], 0
@@ -761,28 +806,34 @@ class MediaWatchSnapshotCache:
         if id_column is None:
             return [], len(detailed)
 
-        source_ids = {str(snapshot.source_item_id) for snapshot in detailed}
-        result = await session.execute(
-            select(
-                id_column,
-                Series.tmdb_id,
-                Season.season_number,
-                Episode.episode_number,
-            )
-            .join(Season, Episode.season_id == Season.id)
-            .join(Series, Season.series_id == Series.id)
-            .where(id_column.in_(source_ids), Series.tmdb_id.is_not(None))
-        )
-        coordinates = {
-            str(source_id): (int(tmdb_id), int(season_number), int(episode_number))
-            for source_id, tmdb_id, season_number, episode_number in result.all()
-            if source_id is not None and tmdb_id is not None
+        source_ids = {
+            str(snapshot.source_item_id)
+            for snapshot in detailed
+            if snapshot.source_item_id
         }
+        coordinates: dict[str, tuple[int, int, int]] = {}
+        if source_ids:
+            result = await session.execute(
+                select(
+                    id_column,
+                    Series.tmdb_id,
+                    Season.season_number,
+                    Episode.episode_number,
+                )
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(id_column.in_(source_ids), Series.tmdb_id.is_not(None))
+            )
+            coordinates = {
+                str(source_id): (int(tmdb_id), int(season_number), int(episode_number))
+                for source_id, tmdb_id, season_number, episode_number in result.all()
+                if source_id is not None and tmdb_id is not None
+            }
 
         merged: dict[tuple[int, int, int, str], tuple[str, datetime, int | None]] = {}
         unmatched = 0
         for snapshot in detailed:
-            coordinate = coordinates.get(str(snapshot.source_item_id))
+            coordinate = cls._episode_coordinate(snapshot, coordinates)
             watched_at = cls._as_utc_datetime(snapshot.last_watched_at)
             normalized = cls._normalize_user_key(snapshot.watch_user_key)
             if coordinate is None:
@@ -826,6 +877,99 @@ class MediaWatchSnapshotCache:
             unmatched,
         )
 
+    async def _fetch_watch_state(self, config: ServiceConfig) -> _FetchedWatchState:
+        """Pull one media server's watch data without holding a session open.
+
+        Everything here is network-bound and takes minutes against a large
+        library, so it deliberately runs outside the transaction that persists
+        the result. Failures are returned rather than raised so one unreachable
+        server does not abort the servers after it.
+        """
+        service_instance = service_manager.get_media_server(
+            config.service_type, config.id
+        )
+        if not isinstance(
+            service_instance, (PlexService, JellyfinService, EmbyService)
+        ):
+            return _FetchedWatchState(error="media-server client is not initialized")
+
+        try:
+            if isinstance(service_instance, PlexService):
+                extra_settings = (
+                    dict(config.extra_settings)
+                    if isinstance(config.extra_settings, dict)
+                    else {}
+                )
+                sync_state_raw = extra_settings.get(self._PLEX_SYNC_STATE_KEY)
+                sync_state = (
+                    dict(sync_state_raw) if isinstance(sync_state_raw, dict) else {}
+                )
+                last_viewed_at = self._parse_utc_datetime(
+                    sync_state.get(self._PLEX_LAST_VIEWED_AT_KEY)
+                )
+                now = datetime.now(UTC)
+                needs_full_rebuild = self._plex_sync_state_requires_full_rebuild(
+                    sync_state, now
+                )
+                if (
+                    sync_state.get(self._PLEX_FORMAT_VERSION_KEY)
+                    != self._PLEX_FORMAT_VERSION
+                ):
+                    LOG.info(
+                        "Rebuilding Plex watch snapshot after history "
+                        f"format upgrade (config_id={config.id})"
+                    )
+                history_cutoff = None
+                incremental_mode = False
+                if not needs_full_rebuild and last_viewed_at is not None:
+                    history_cutoff = last_viewed_at - self._PLEX_OVERLAP_WINDOW
+                    incremental_mode = True
+                (
+                    snapshots,
+                    max_viewed_at,
+                ) = await service_instance.get_watched_user_snapshots_with_cursor(
+                    viewed_at_gte=history_cutoff,
+                    use_cache=needs_full_rebuild,
+                )
+
+                if max_viewed_at is not None and (
+                    last_viewed_at is None or max_viewed_at > last_viewed_at
+                ):
+                    sync_state[self._PLEX_LAST_VIEWED_AT_KEY] = self._to_utc_iso(
+                        max_viewed_at
+                    )
+                if needs_full_rebuild:
+                    sync_state[self._PLEX_LAST_FULL_SYNC_AT_KEY] = self._to_utc_iso(now)
+                    sync_state[self._PLEX_FORMAT_VERSION_KEY] = (
+                        self._PLEX_FORMAT_VERSION
+                    )
+                extra_settings[self._PLEX_SYNC_STATE_KEY] = sync_state
+                return _FetchedWatchState(
+                    service_instance=service_instance,
+                    snapshots=snapshots,
+                    incremental_mode=incremental_mode,
+                    extra_settings=extra_settings,
+                )
+
+            native_playback_snapshots = (
+                await service_instance.get_native_playback_user_snapshots()
+            )
+            # Reading the identity map is a short query, so it gets its own
+            # session rather than borrowing the writer's.
+            async with async_db() as session:
+                snapshots = await self._build_requester_snapshots_from_native(
+                    session=session,
+                    source_service=config.service_type,
+                    snapshots=native_playback_snapshots,
+                )
+            return _FetchedWatchState(
+                service_instance=service_instance,
+                snapshots=snapshots,
+                native_playback_snapshots=native_playback_snapshots,
+            )
+        except Exception as exc:
+            return _FetchedWatchState(service_instance=service_instance, error=str(exc))
+
     async def refresh_snapshot(
         self,
         *,
@@ -833,159 +977,73 @@ class MediaWatchSnapshotCache:
     ) -> tuple[bool, str | None]:
         async with self._refresh_lock:
             try:
-                async with async_db() as session:
-                    servers = (
-                        all_servers
-                        if all_servers is not None
-                        else await self._get_configured_media_servers(session)
-                    )
-                    supported = [
-                        cfg
-                        for cfg in servers
-                        if cfg.service_type
-                        in {Service.PLEX, Service.JELLYFIN, Service.EMBY}
-                    ]
-                    if not supported:
+                if all_servers is not None:
+                    servers = all_servers
+                else:
+                    async with async_db() as session:
+                        servers = await self._get_configured_media_servers(session)
+
+                supported = [
+                    cfg
+                    for cfg in servers
+                    if cfg.service_type
+                    in {Service.PLEX, Service.JELLYFIN, Service.EMBY}
+                ]
+                if not supported:
+                    async with async_db() as session:
                         await session.execute(sql_delete(MediaWatchUser))
                         await session.execute(sql_delete(MediaWatchUserEpisode))
                         await session.execute(sql_delete(NativePlaybackUser))
                         await session.execute(sql_delete(NativePlaybackAggregate))
                         await session.commit()
-                        return True, None
+                    return True, None
 
+                # Poll every server before opening the session that writes the
+                # results. These fetches run for minutes against a large
+                # library, and holding a session across them left the write
+                # transaction that follows queued behind them - long enough for
+                # other writers to fail with "database is locked" despite the
+                # 30s busy timeout.
+                fetched = [
+                    (config, await self._fetch_watch_state(config))
+                    for config in supported
+                ]
+
+                async with async_db() as session:
                     refreshed_servers = 0
                     refresh_errors: list[str] = []
-                    for config in supported:
-                        service_instance = service_manager.get_media_server(
-                            config.service_type, config.id
-                        )
-                        if not isinstance(
-                            service_instance,
-                            (PlexService, JellyfinService, EmbyService),
-                        ):
-                            error = "media-server client is not initialized"
+                    for config, fetch in fetched:
+                        service_instance = fetch.service_instance
+                        if fetch.error is not None:
                             if config.service_type in {Service.JELLYFIN, Service.EMBY}:
                                 self._set_native_playback_sync_state(
                                     config,
                                     available=False,
-                                    error=error,
+                                    error=fetch.error,
                                 )
                             else:
                                 self._set_plex_sync_state(
                                     config,
                                     available=False,
-                                    error=error,
+                                    error=fetch.error,
                                 )
                             session.add(config)
                             await session.commit()
                             refresh_errors.append(
-                                f"{config.service_type.value}: {error}"
+                                f"{config.service_type.value}: {fetch.error}"
                             )
-                            LOG.warning(
-                                f"Watch snapshot skip for {config.service_type} "
-                                f"(config_id={config.id}): client not initialized"
-                            )
-                            continue
-                        try:
-                            incremental_mode = False
-                            max_viewed_at: datetime | None = None
-                            native_playback_snapshots: list[NativePlaybackSnapshot] = []
-                            if isinstance(service_instance, PlexService):
-                                extra_settings = (
-                                    dict(config.extra_settings)
-                                    if isinstance(config.extra_settings, dict)
-                                    else {}
-                                )
-                                sync_state_raw = extra_settings.get(
-                                    self._PLEX_SYNC_STATE_KEY
-                                )
-                                sync_state = (
-                                    dict(sync_state_raw)
-                                    if isinstance(sync_state_raw, dict)
-                                    else {}
-                                )
-                                last_viewed_at = self._parse_utc_datetime(
-                                    sync_state.get(self._PLEX_LAST_VIEWED_AT_KEY)
-                                )
-                                now = datetime.now(UTC)
-                                needs_full_rebuild = (
-                                    self._plex_sync_state_requires_full_rebuild(
-                                        sync_state, now
-                                    )
-                                )
-                                if (
-                                    sync_state.get(self._PLEX_FORMAT_VERSION_KEY)
-                                    != self._PLEX_FORMAT_VERSION
-                                ):
-                                    LOG.info(
-                                        "Rebuilding Plex watch snapshot after history "
-                                        f"format upgrade (config_id={config.id})"
-                                    )
-                                history_cutoff = None
-                                if (
-                                    not needs_full_rebuild
-                                    and last_viewed_at is not None
-                                ):
-                                    history_cutoff = (
-                                        last_viewed_at - self._PLEX_OVERLAP_WINDOW
-                                    )
-                                    incremental_mode = True
-                                (
-                                    snapshots,
-                                    max_viewed_at,
-                                ) = await service_instance.get_watched_user_snapshots_with_cursor(
-                                    viewed_at_gte=history_cutoff,
-                                    use_cache=needs_full_rebuild,
-                                )
-
-                                if max_viewed_at is not None and (
-                                    last_viewed_at is None
-                                    or max_viewed_at > last_viewed_at
-                                ):
-                                    sync_state[self._PLEX_LAST_VIEWED_AT_KEY] = (
-                                        self._to_utc_iso(max_viewed_at)
-                                    )
-                                if needs_full_rebuild:
-                                    sync_state[self._PLEX_LAST_FULL_SYNC_AT_KEY] = (
-                                        self._to_utc_iso(now)
-                                    )
-                                    sync_state[self._PLEX_FORMAT_VERSION_KEY] = (
-                                        self._PLEX_FORMAT_VERSION
-                                    )
-                                extra_settings[self._PLEX_SYNC_STATE_KEY] = sync_state
-                                config.extra_settings = extra_settings
-                                session.add(config)
-                            else:
-                                native_playback_snapshots = await service_instance.get_native_playback_user_snapshots()
-                                snapshots = (
-                                    await self._build_requester_snapshots_from_native(
-                                        session=session,
-                                        source_service=config.service_type,
-                                        snapshots=native_playback_snapshots,
-                                    )
-                                )
-                        except Exception as exc:
-                            await session.rollback()
-                            if config.service_type in {Service.JELLYFIN, Service.EMBY}:
-                                self._set_native_playback_sync_state(
-                                    config,
-                                    available=False,
-                                    error=str(exc),
-                                )
-                            else:
-                                self._set_plex_sync_state(
-                                    config,
-                                    available=False,
-                                    error=str(exc),
-                                )
-                            session.add(config)
-                            await session.commit()
-                            refresh_errors.append(f"{config.service_type.value}: {exc}")
                             LOG.warning(
                                 f"Watch snapshot fetch failed for {config.service_type} "
-                                f"(config_id={config.id}): {exc}"
+                                f"(config_id={config.id}): {fetch.error}"
                             )
                             continue
+
+                        incremental_mode = fetch.incremental_mode
+                        native_playback_snapshots = fetch.native_playback_snapshots
+                        snapshots = fetch.snapshots
+                        if fetch.extra_settings is not None:
+                            config.extra_settings = fetch.extra_settings
+                            session.add(config)
 
                         rows = self._build_watch_rows(
                             source_service=config.service_type,
@@ -1257,6 +1315,7 @@ class MediaWatchSnapshotCache:
 
                 return True, None
             except Exception as exc:
+                LOG.error(f"Watch snapshot refresh failed: {exc}", exc_info=True)
                 return False, str(exc)
 
 

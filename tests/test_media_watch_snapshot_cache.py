@@ -167,6 +167,101 @@ def test_episode_watch_rows_resolve_provider_episode_ids(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_episode_watch_rows_resolve_linked_server_plays_by_coordinates(
+    tmp_path,
+) -> None:
+    """A linked media server's own item ids never match the synced library.
+
+    Episode.plex_rating_key holds the rating key from the server the library was
+    synced from, so every episode play reported by a second Plex server serving
+    the same media used to be counted unmatched and dropped.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'linked.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            series = Series(title="Example", tmdb_id=5920)
+            session.add(series)
+            await session.flush()
+            season = Season(series_id=series.id, season_number=3)
+            session.add(season)
+            await session.flush()
+            session.add(
+                Episode(
+                    season_id=season.id,
+                    episode_number=2,
+                    # the main server's rating key - the linked server numbers
+                    # the very same episode differently
+                    plex_rating_key="62906",
+                )
+            )
+            await session.flush()
+
+            rows, unmatched = await MediaWatchSnapshotCache._build_episode_watch_rows(
+                session=session,
+                source_service=Service.PLEX,
+                source_service_config_id=5,
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.SERIES,
+                        tmdb_id=5920,
+                        watch_user_key="Bob",
+                        last_watched_at=datetime(2026, 7, 4, tzinfo=UTC),
+                        source_item_id="480113",
+                        season_number=3,
+                        episode_number=2,
+                    )
+                ],
+            )
+
+        await engine.dispose()
+        assert unmatched == 0
+        assert len(rows) == 1
+        assert rows[0].series_tmdb_id == 5920
+        assert rows[0].season_number == 3
+        assert rows[0].episode_number == 2
+        assert rows[0].source_service_config_id == 5
+
+
+    asyncio.run(run())
+
+
+def test_episode_watch_rows_still_unmatched_without_id_or_coordinates(
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'nomatch.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            rows, unmatched = await MediaWatchSnapshotCache._build_episode_watch_rows(
+                session=session,
+                source_service=Service.PLEX,
+                source_service_config_id=5,
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.SERIES,
+                        tmdb_id=5920,
+                        watch_user_key="Bob",
+                        last_watched_at=datetime(2026, 7, 4, tzinfo=UTC),
+                        source_item_id="480113",
+                    )
+                ],
+            )
+
+        await engine.dispose()
+        assert rows == []
+        assert unmatched == 1
+
+    asyncio.run(run())
+
+
 def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'native.db'}")

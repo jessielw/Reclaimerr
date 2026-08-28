@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 from backend.enums import MediaType
@@ -282,19 +281,22 @@ def test_watched_user_snapshots_accept_grandparent_key_path(monkeypatch) -> None
     async def run() -> None:
         watched_at = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
 
-        async def fake_get_movies(
-            self: PlexService, included_libraries: list[str] | None = None
-        ) -> list[object]:
-            return []
-
-        async def fake_get_series(
-            self: PlexService, included_libraries: list[str] | None = None
-        ) -> list[object]:
+        async def fake_section_items(
+            self: PlexService,
+            *,
+            section_id: str,
+            params: dict[str, object] | None = None,
+            **kwargs: object,
+        ) -> list[dict[str, object]]:
+            # type=2 is the show listing the watch snapshot identifies against
+            if (params or {}).get("type") != 2:
+                return []
             return [
-                SimpleNamespace(
-                    id="61155",
-                    external_ids=SimpleNamespace(tmdb=12345),
-                )
+                {
+                    "type": "show",
+                    "ratingKey": "61155",
+                    "Guid": [{"id": "tmdb://12345"}],
+                }
             ]
 
         async def fake_get_sections(self: PlexService) -> list[dict[str, str]]:
@@ -316,8 +318,9 @@ def test_watched_user_snapshots_accept_grandparent_key_path(monkeypatch) -> None
         async def fake_get_users(self: PlexService) -> dict[str, str]:
             return {"490001441": "alice"}
 
-        monkeypatch.setattr(PlexService, "get_movies", fake_get_movies)
-        monkeypatch.setattr(PlexService, "get_series", fake_get_series)
+        monkeypatch.setattr(
+            PlexService, "_get_section_metadata_items", fake_section_items
+        )
         monkeypatch.setattr(PlexService, "get_library_sections", fake_get_sections)
         monkeypatch.setattr(PlexService, "_get_all_history_records", fake_get_history)
         monkeypatch.setattr(PlexService, "_get_plex_tv_user_map", fake_get_users)
@@ -338,5 +341,79 @@ def test_watched_user_snapshots_accept_grandparent_key_path(monkeypatch) -> None
             )
         ]
         assert max_viewed_at == watched_at
+
+    asyncio.run(run())
+
+
+def test_watched_user_snapshots_carry_season_and_episode_numbers(monkeypatch) -> None:
+    """Plex reports the episode's coordinates alongside the play.
+
+    Carrying them lets a linked media server's plays resolve against a library
+    synced from a different server, where its own rating keys never match.
+    """
+
+    async def run() -> None:
+        watched_at = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+
+        async def fake_section_items(
+            self: PlexService,
+            *,
+            section_id: str,
+            params: dict[str, object] | None = None,
+            **kwargs: object,
+        ) -> list[dict[str, object]]:
+            # type=2 is the show listing the watch snapshot identifies against
+            if (params or {}).get("type") != 2:
+                return []
+            return [
+                {
+                    "type": "show",
+                    "ratingKey": "61155",
+                    "Guid": [{"id": "tmdb://12345"}],
+                }
+            ]
+
+        async def fake_get_sections(self: PlexService) -> list[dict[str, str]]:
+            return [{"key": "2", "title": "TV Shows", "type": "show"}]
+
+        async def fake_get_history(
+            self: PlexService, **kwargs: object
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "type": "episode",
+                    "ratingKey": "62906",
+                    "grandparentRatingKey": "61155",
+                    "parentIndex": 3,
+                    "index": 2,
+                    "accountID": "490001441",
+                    "viewedAt": int(watched_at.timestamp()),
+                }
+            ]
+
+        async def fake_get_users(self: PlexService) -> dict[str, str]:
+            return {"490001441": "alice"}
+
+        monkeypatch.setattr(
+            PlexService, "_get_section_metadata_items", fake_section_items
+        )
+        monkeypatch.setattr(PlexService, "get_library_sections", fake_get_sections)
+        monkeypatch.setattr(PlexService, "_get_all_history_records", fake_get_history)
+        monkeypatch.setattr(PlexService, "_get_plex_tv_user_map", fake_get_users)
+
+        service = PlexService("token", "http://plex.local")
+        snapshots, _ = await service.get_watched_user_snapshots_with_cursor()
+
+        assert snapshots == [
+            MediaWatchSnapshot(
+                media_type=MediaType.SERIES,
+                tmdb_id=12345,
+                watch_user_key="alice",
+                last_watched_at=watched_at,
+                source_item_id="62906",
+                season_number=3,
+                episode_number=2,
+            )
+        ]
 
     asyncio.run(run())
