@@ -41,6 +41,7 @@ class ServiceManager:
         self._radarr_clients: dict[int, RadarrClient] = {}
         self._sonarr_clients: dict[int, SonarrClient] = {}
         self._seerr: SeerrClient | None = None
+        self._seerr_clients: dict[int, SeerrClient] = {}
         self._tautulli: TautulliClient | None = None
         self._tracearr: TracearrClient | None = None
 
@@ -163,8 +164,30 @@ class ServiceManager:
 
     @property
     def seerr(self) -> SeerrClient | None:
-        """Get Seerr service (must be initialized first)."""
-        return self._seerr
+        """Get Seerr service (must be initialized first).
+
+        With several Seerrs configured this is an arbitrary one of them, kept
+        only for callers that just need to know whether any Seerr is reachable.
+        Anything that reads request data must go through `seerr_clients()` so it
+        sees every instance.
+        """
+        return self._seerr or next(iter(self._seerr_clients.values()), None)
+
+    @property
+    def has_seerr(self) -> bool:
+        """Whether any Seerr instance is initialized."""
+        return bool(self._seerr_clients) or self._seerr is not None
+
+    def get_seerr(self, config_id: int | None = None) -> SeerrClient | None:
+        """Get a Seerr client by config ID (must be initialized first). If
+        config_id is None, return the type's default client."""
+        if config_id is None:
+            return self.seerr
+        return self._seerr_clients.get(config_id)
+
+    def seerr_clients(self) -> dict[int, SeerrClient]:
+        """Get all Seerr clients as a dict of config_id to client."""
+        return dict(self._seerr_clients)
 
     @property
     def tautulli(self) -> TautulliClient | None:
@@ -184,7 +207,7 @@ class ServiceManager:
             "plex": self._plex is not None,
             "radarr": self.radarr is not None,
             "sonarr": self.sonarr is not None,
-            "seerr": self._seerr is not None,
+            "seerr": self.has_seerr,
             "tautulli": self._tautulli is not None,
             "tracearr": self._tracearr is not None,
         }
@@ -258,7 +281,7 @@ class ServiceManager:
         elif service_type is Service.SONARR:
             return self._sonarr
         elif service_type is Service.SEERR:
-            return self._seerr
+            return self.seerr
         elif service_type is Service.TAUTULLI:
             return self._tautulli
         elif service_type is Service.TRACEARR:
@@ -398,18 +421,26 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Sonarr service: {e}")
             return None
 
-    async def initialize_seerr(self, base_url: str, api_key: str) -> SeerrClient | None:
+    async def initialize_seerr(
+        self,
+        base_url: str,
+        api_key: str,
+        config_id: int | None = None,
+    ) -> SeerrClient | None:
         """Initialize Seerr service with provided config."""
         try:
-            self._seerr = SeerrClient(
+            client = SeerrClient(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._seerr.health():
+            if not await client.health():
                 LOG.error(f"Seerr service health check failed: {base_url}")
                 raise ValueError(f"Seerr service health check failed: {base_url}")
+            if config_id is not None:
+                self._seerr_clients[config_id] = client
+            self._seerr = client
             LOG.info(f"Seerr service initialized: {base_url}")
-            return self._seerr
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Seerr service: {e}")
             return None
@@ -576,11 +607,26 @@ class ServiceManager:
         self._sonarr_clients = {}
         self._sonarr = None
 
-    async def clear_seerr(self) -> None:
-        """Clear Seerr service (call before reinitializing)."""
+    async def clear_seerr(self, config_id: int | None = None) -> None:
+        """Clear Seerr service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Seerr instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._seerr_clients.pop(config_id, None)
+            if client and client.session:
+                await client.session.close()
+            if self._seerr is client:
+                self._seerr = next(iter(self._seerr_clients.values()), None)
+            return
+
         if self._seerr and self._seerr.session:
             await self._seerr.session.close()
             LOG.info("Seerr service cleared")
+        for client in self._seerr_clients.values():
+            if client is not self._seerr and client.session:
+                await client.session.close()
+        self._seerr_clients = {}
         self._seerr = None
 
     async def clear_tautulli(self) -> None:

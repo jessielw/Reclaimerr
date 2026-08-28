@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any, Final, TypeAlias, cast
 
+from backend.core.seerr_identity import is_qualified_seerr_user_id
 from backend.core.utils.filesystem import (
     mapped_path_variants,
     normalize_fpath,
@@ -527,6 +528,7 @@ LIBRARY_OPERATORS = {
     "not_exists",
 }
 BOOLEAN_OPERATORS = {"is_true", "is_false", "exists", "not_exists"}
+SEERR_REQUESTER_FIELD = "seerr.requested_by_user_ids"
 SEERR_REQUESTER_ID_OPERATORS = {
     "in",
     "not_in",
@@ -1249,6 +1251,9 @@ class SeerrRequestResolver:
     """Holds pre fetched Seerr request state for one scan run.
 
     State is keyed by ``(media_type, tmdb_id)`` and values are requester id sets.
+    A requester id is instance-qualified text (``"<service_config_id>:<user_id>"``)
+    rather than a bare number, because a Seerr user id only identifies a person
+    within the Seerr that issued it.
     """
 
     _ctx: ContextVar[SeerrRequestResolver | None] = ContextVar(
@@ -1269,7 +1274,7 @@ class SeerrRequestResolver:
 
     def __init__(
         self,
-        requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[int]]
+        requester_ids_by_key: Mapping[tuple[MediaType, int], Iterable[str]]
         | None = None,
         requester_has_watched_by_key: Mapping[tuple[MediaType, int], bool]
         | None = None,
@@ -1285,7 +1290,7 @@ class SeerrRequestResolver:
         | None = None,
         latest_active_request_at_by_key: Mapping[tuple[MediaType, int], datetime]
         | None = None,
-        requester_ids_by_target: Mapping[tuple[str, int, int | None], Iterable[int]]
+        requester_ids_by_target: Mapping[tuple[str, int, int | None], Iterable[str]]
         | None = None,
         latest_active_request_at_by_target: Mapping[
             tuple[str, int, int | None], datetime
@@ -1293,11 +1298,13 @@ class SeerrRequestResolver:
         | None = None,
         ignore_request_date: bool = False,
     ):
-        self._requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {}
+        self._requester_ids_by_key: dict[tuple[MediaType, int], set[str]] = {}
         for key, user_ids in (requester_ids_by_key or {}).items():
-            self._requester_ids_by_key[key] = {int(v) for v in user_ids}
+            self._requester_ids_by_key[key] = {
+                text for value in user_ids if (text := str(value).strip())
+            }
         self._requester_ids_by_target = {
-            key: {int(value) for value in values}
+            key: {text for value in values if (text := str(value).strip())}
             for key, values in (requester_ids_by_target or {}).items()
         }
         self._requester_has_watched_by_key: dict[tuple[MediaType, int], bool] = {
@@ -1340,11 +1347,11 @@ class SeerrRequestResolver:
         *,
         target_scope: str | None = None,
         season_number: int | None = None,
-    ) -> list[int] | None:
+    ) -> list[str] | None:
         """Return Seerr requester IDs for the given media key if known."""
         if tmdb_id is None:
             return None
-        ids: set[int] | None
+        ids: set[str] | None
         if media_type is MediaType.SERIES and target_scope in {
             TARGET_SEASON,
             TARGET_EPISODE,
@@ -2116,6 +2123,28 @@ def _numeric_expectation(field: str) -> str:
     return f"{expectation} ({note})" if note else expectation
 
 
+def _validate_seerr_requester_ids(value: Any) -> None:
+    """Reject a bare Seerr user id, which names a different person per instance.
+
+    A bare id would simply never match, and paired with `is false` that turns a
+    protect rule into a delete rule -- so it is refused at save time rather than
+    left to fail quietly.
+    """
+    values = value if isinstance(value, list) else [value]
+    unqualified = [
+        text
+        for item in values
+        if item is not None and (text := str(item).strip())
+        if not is_qualified_seerr_user_id(text)
+    ]
+    if not unqualified:
+        return
+    raise ValueError(
+        "Seerr requester IDs must name the instance they came from, written "
+        f"instanceId:userId (for example 7:3). Not valid: {', '.join(unqualified)}"
+    )
+
+
 def _validate_numeric_bounds(field: str, operator: str, value: Any) -> None:
     """Reject values that are out of range, the wrong type, or non-finite.
 
@@ -2230,6 +2259,8 @@ def _validate_node(node: dict[str, Any]) -> None:
         normalized = [str(value).strip() for value in values if value is not None]
         if not any(normalized):
             raise ValueError("Library conditions require at least one library id")
+    if field == SEERR_REQUESTER_FIELD and operator not in VALUELESS_OPERATORS:
+        _validate_seerr_requester_ids(node.get("value"))
 
 
 def _node_is_disabled(node: dict[str, Any]) -> bool:

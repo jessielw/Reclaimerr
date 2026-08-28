@@ -56,7 +56,7 @@
         <OriginMetadata
           arrRefs={entry.arr_refs}
           arrTags={entry.arr_tags}
-          seerrUrl={entry.seerr_url}
+          seerrLinks={entry.seerr_links}
           seerrRequesters={entry.seerr_requesters}
         />
       </div>

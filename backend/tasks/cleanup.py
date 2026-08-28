@@ -1,7 +1,14 @@
 import asyncio
 import shutil
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +55,7 @@ from backend.core.rule_engine import (
     normalize_rule_outcome,
     normalize_rule_target,
 )
+from backend.core.seerr_identity import seerr_config_id_of, seerr_user_id_of
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.utils.datetime_utils import ensure_utc
@@ -2565,18 +2573,89 @@ def _normalize_watch_key(value: str | None) -> str | None:
     return normalized or None
 
 
+async def _seerr_instance_names(
+    db: AsyncSession, config_ids: Collection[int]
+) -> dict[int, str]:
+    """Display names for Seerr configs, so a report can say which one is down."""
+    if not config_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ServiceConfig.id, ServiceConfig.name).where(
+                ServiceConfig.id.in_(set(config_ids))
+            )
+        )
+    ).all()
+    names = {config_id: (name or f"Seerr #{config_id}") for config_id, name in rows}
+    return {
+        config_id: names.get(config_id, f"Seerr #{config_id}")
+        for config_id in config_ids
+    }
+
+
+def _seerr_error_summary(
+    errors_by_config_id: Mapping[int, str], names: Mapping[int, str]
+) -> str | None:
+    """Join per-instance failures, naming each Seerr the way the user named it."""
+    if not errors_by_config_id:
+        return None
+    return "; ".join(
+        f"{names.get(config_id, f'Seerr #{config_id}')}: {error}"
+        for config_id, error in sorted(errors_by_config_id.items())
+    )
+
+
+def _bare_requester_identity_keys(requester_key: str) -> set[str]:
+    """Last-resort identity for a requester Seerr gave no name for.
+
+    Playback providers record the id Seerr itself issued, never Reclaimerr's
+    instance-qualified form, so matching on the qualified key would find nothing
+    and quietly report "did not watch" for every such requester.
+    """
+    bare_id = seerr_user_id_of(requester_key)
+    return {str(bare_id)} if bare_id is not None else set()
+
+
 def _extract_requester_mapping_identity(
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     mapping: dict[str, Any],
 ) -> bool:
+    """Whether one saved mapping describes this requester.
+
+    A mapping may name a Seerr instance or leave it unset. Unset means "the
+    named user on any instance", which is what someone who exists on both Seerrs
+    under the same name wants; naming one confines the mapping to that
+    instance's user.
+
+    Note which half of "named user" does the work when no instance is given: the
+    username, not the user id. A user id only identifies a person inside the
+    Seerr that issued it, so spreading one across instances would match a
+    different person on each -- the exact confusion the qualified requester
+    format exists to prevent. An unscoped mapping therefore matches by name
+    whenever it has one, and only falls back to the bare id when it has no name
+    at all, which is the shape a single-Seerr install wrote before instances
+    were recorded.
+    """
+    mapped_config_id = mapping.get("seerr_service_config_id")
+    scoped_to_instance = mapped_config_id is not None
+    if scoped_to_instance:
+        try:
+            if int(mapped_config_id) != seerr_config_id_of(requester_key):
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
+    if not scoped_to_instance and raw_name:
+        return raw_name in requester_identity_keys
+
     raw_id = mapping.get("seerr_user_id")
     if raw_id is not None:
         try:
-            return int(raw_id) == requester_id
-        except Exception:
+            return int(raw_id) == seerr_user_id_of(requester_key)
+        except (TypeError, ValueError):
             return False
-    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
     return bool(raw_name and raw_name in requester_identity_keys)
 
 
@@ -2594,7 +2673,7 @@ def _extract_mapping_service(mapping: dict[str, Any]) -> Service | None:
 
 def _build_watch_keys_for_requester(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     target_service: Service,
     mappings: list[dict[str, Any]],
@@ -2603,7 +2682,7 @@ def _build_watch_keys_for_requester(
     keys: set[str] = set()
     for mapping in mappings:
         if not _extract_requester_mapping_identity(
-            requester_id, requester_identity_keys, mapping
+            requester_key, requester_identity_keys, mapping
         ):
             continue
         service_scope = _extract_mapping_service(mapping)
@@ -2631,7 +2710,7 @@ def _requested_seasons_for_requester(
     *,
     snapshot: SeerrRequestSnapshot,
     tmdb_id: int,
-    requester_id: int,
+    requester_key: str,
     series_requested_at: datetime,
     season_numbers: Iterable[int],
 ) -> dict[int, datetime]:
@@ -2642,11 +2721,11 @@ def _requested_seasons_for_requester(
     silently skipped.
     """
     requested_seasons = {
-        season_number: by_user[requester_id]
+        season_number: by_user[requester_key]
         for (series_tmdb_id, season_number), by_user in (
             snapshot.first_request_at_by_series_season_user.items()
         )
-        if series_tmdb_id == tmdb_id and requester_id in by_user
+        if series_tmdb_id == tmdb_id and requester_key in by_user
     }
     if not requested_seasons:
         requested_seasons = {
@@ -2657,7 +2736,7 @@ def _requested_seasons_for_requester(
 
 def _requester_watched_at_by_coordinate(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     watch_by_service_and_user: Mapping[
         Service, Mapping[str, Mapping[tuple[int, int], datetime]]
@@ -2673,7 +2752,7 @@ def _requester_watched_at_by_coordinate(
     watched_at_by_coordinate: dict[tuple[int, int], datetime] = {}
     for watch_service, watch_by_user in watch_by_service_and_user.items():
         candidate_keys = _build_watch_keys_for_requester(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             target_service=watch_service,
             mappings=mappings,
@@ -2690,7 +2769,7 @@ def _requester_watched_at_by_coordinate(
 
 def _requester_movie_watched_at(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     watch_by_service_and_user: Mapping[Service, Mapping[str, datetime]],
     mappings: list[dict[str, Any]],
@@ -2700,7 +2779,7 @@ def _requester_movie_watched_at(
     latest_watched_at: datetime | None = None
     for watch_service, watch_by_user in watch_by_service_and_user.items():
         candidate_keys = _build_watch_keys_for_requester(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             target_service=watch_service,
             mappings=mappings,
@@ -2740,16 +2819,19 @@ def _compute_requester_has_watched_for_key(
         return False, False
 
     watched_ever = False
-    for requester_id, requested_at in requester_times.items():
+    for requester_key, requested_at in requester_times.items():
         requested_at_utc = ensure_utc(requested_at)
         requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
+            requester_key, set()
         )
         if not requester_identity_keys:
-            # retain user-id path if username/display_name wasn't present in request payload
-            requester_identity_keys = {str(requester_id)}
+            # retain user-id path if username/display_name wasn't present in
+            # request payload. It has to be the Seerr-native id, not the
+            # qualified key: providers record the id Seerr itself issued, and a
+            # key that can never match would turn "unknown" into "not watched".
+            requester_identity_keys = _bare_requester_identity_keys(requester_key)
         watched_at = _requester_movie_watched_at(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             watch_by_service_and_user=watches_for_key,
             mappings=mappings,
@@ -2829,19 +2911,19 @@ def _compute_requester_tv_watch_targets_for_key(
     after = _blank()
 
     requester_times = snapshot.first_request_at_by_key_user.get(media_key, {})
-    for requester_id, series_requested_at in requester_times.items():
+    for requester_key, series_requested_at in requester_times.items():
         requested_seasons = _requested_seasons_for_requester(
             snapshot=snapshot,
             tmdb_id=tmdb_id,
-            requester_id=requester_id,
+            requester_key=requester_key,
             series_requested_at=series_requested_at,
             season_numbers=expected_by_season,
         )
         requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
-        ) or {str(requester_id)}
+            requester_key, set()
+        ) or _bare_requester_identity_keys(requester_key)
         watched_at_by_coordinate = _requester_watched_at_by_coordinate(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             watch_by_service_and_user=watch_by_service_and_user,
             mappings=mappings,
@@ -2972,7 +3054,7 @@ async def explain_requester_watch(
     else:
         title = await db.scalar(select(Movie.title).where(Movie.tmdb_id == tmdb_id))
 
-    if not service_manager.seerr:
+    if not service_manager.has_seerr:
         return RequesterWatchExplainResponse(
             media_type=media_type,
             tmdb_id=tmdb_id,
@@ -3200,16 +3282,24 @@ async def explain_requester_watch(
         watch_by_service_and_user.get(media_key, {})
     )
     requesters: list[RequesterWatchRequesterDetail] = []
-    keys_by_requester: dict[int, set[str]] = {}
-    for requester_id, requested_at in sorted(requester_times.items()):
+    keys_by_requester: dict[str, set[str]] = {}
+    seerr_names = await _seerr_instance_names(
+        db,
+        {
+            config_id
+            for key in requester_times
+            if (config_id := seerr_config_id_of(key)) is not None
+        },
+    )
+    for requester_key, requested_at in sorted(requester_times.items()):
         identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
-        ) or {str(requester_id)}
+            requester_key, set()
+        ) or _bare_requester_identity_keys(requester_key)
         candidate_keys: dict[str, list[str]] = {}
         all_keys: set[str] = set()
         for service in sorted(evidence_services or {Service.PLEX}, key=str):
             keys = _build_watch_keys_for_requester(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
                 target_service=service,
                 mappings=mappings,
@@ -3217,8 +3307,8 @@ async def explain_requester_watch(
             )
             candidate_keys[str(service.value)] = sorted(keys)
             all_keys |= keys
-        keys_by_requester[requester_id] = all_keys
-        user = snapshot.requester_users_by_id.get(requester_id)
+        keys_by_requester[requester_key] = all_keys
+        user = snapshot.requester_users_by_id.get(requester_key)
 
         missing: list[str] = []
         too_early: list[str] = []
@@ -3228,12 +3318,12 @@ async def explain_requester_watch(
             requested_seasons = _requested_seasons_for_requester(
                 snapshot=snapshot,
                 tmdb_id=int(tmdb_id),
-                requester_id=requester_id,
+                requester_key=requester_key,
                 series_requested_at=requested_at,
                 season_numbers={coordinate[0] for coordinate in expected_episodes},
             )
             watched_at_by_coordinate = _requester_watched_at_by_coordinate(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
                 watch_by_service_and_user=episode_watches,
                 mappings=mappings,
@@ -3251,11 +3341,9 @@ async def explain_requester_watch(
                     too_early.append(_episode_label(*coordinate))
         elif not is_series:
             movie_watched_at = _requester_movie_watched_at(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
-                watch_by_service_and_user=watch_by_service_and_user.get(
-                    media_key, {}
-                ),
+                watch_by_service_and_user=watch_by_service_and_user.get(media_key, {}),
                 mappings=mappings,
                 alias_index=alias_index,
             )
@@ -3266,16 +3354,19 @@ async def explain_requester_watch(
 
         requesters.append(
             RequesterWatchRequesterDetail(
-                seerr_user_id=requester_id,
+                seerr_requester_key=requester_key,
+                seerr_user_id=seerr_user_id_of(requester_key) or 0,
+                service_config_id=seerr_config_id_of(requester_key),
+                service_name=seerr_names.get(seerr_config_id_of(requester_key) or -1),
                 display_name=(user.display_name or user.username) if user else None,
                 identity_keys=sorted(identity_keys),
                 requested_at=ensure_utc(requested_at),
                 requested_seasons={
-                    season_no: ensure_utc(by_user[requester_id])
+                    season_no: ensure_utc(by_user[requester_key])
                     for (series_tmdb_id, season_no), by_user in (
                         snapshot.first_request_at_by_series_season_user.items()
                     )
-                    if series_tmdb_id == tmdb_id and requester_id in by_user
+                    if series_tmdb_id == tmdb_id and requester_key in by_user
                 },
                 candidate_watch_keys=candidate_keys,
                 missing_episodes=missing,
@@ -3285,10 +3376,10 @@ async def explain_requester_watch(
             )
         )
 
-    def matched_requesters(watch_key: str) -> list[int]:
+    def matched_requesters(watch_key: str) -> list[str]:
         return sorted(
-            requester_id
-            for requester_id, keys in keys_by_requester.items()
+            requester_key
+            for requester_key, keys in keys_by_requester.items()
             if watch_key in keys
         )
 
@@ -3365,8 +3456,7 @@ async def explain_requester_watch(
             )
         else:
             reason = (
-                "No single requester has a completed watch for every required "
-                "episode."
+                "No single requester has a completed watch for every required episode."
             )
     else:
         if not requester_times:
@@ -3433,9 +3523,9 @@ async def _activate_seerr_request_resolver_for_rules(
     if not _rules_use_seerr_fields(rules):
         return True, None
 
-    if not service_manager.seerr:
+    if not service_manager.has_seerr:
         LOG.warning(
-            "Rule uses Seerr fields but Seerr service is not configured; "
+            "Rule uses Seerr fields but no Seerr instance is configured; "
             "Seerr rule conditions will not match"
         )
         SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
@@ -3487,15 +3577,30 @@ async def _activate_seerr_request_resolver_for_rules(
         ).all()
         series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
 
-    snapshot, snapshot_error = await seerr_snapshot_cache.get_request_snapshot(
+    # Every configured instance has to answer. Evaluating on the ones that did
+    # would report "nobody requested this" for titles a silent Seerr still holds
+    # active requests for, and for a cleanup rule that reads as a delete.
+    snapshot_state = await seerr_snapshot_cache.get_request_snapshot_state(
         require_fresh=require_fresh,
         allow_stale_on_failure=allow_stale_on_failure,
     )
+    snapshot = snapshot_state.merged
+    names = await _seerr_instance_names(
+        db,
+        snapshot_state.unavailable_config_ids | set(snapshot_state.errors_by_config_id),
+    )
+    snapshot_error = _seerr_error_summary(snapshot_state.errors_by_config_id, names)
+    if metadata is not None:
+        metadata.seerr_unavailable_instances = sorted(
+            names[config_id]
+            for config_id in snapshot_state.unavailable_config_ids
+            if config_id in names
+        )
     if snapshot is None:
         SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, snapshot_error or "Failed to load Seerr request snapshot"
 
-    requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
+    requester_ids_by_key: dict[tuple[MediaType, int], set[str]] = {
         (MediaType.MOVIE, tmdb_id): set() for tmdb_id in movie_tmdb_ids
     }
     requester_ids_by_key.update(
@@ -3692,7 +3797,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 (int(season_number), int(episode_number))
             )
 
-    requester_ids_by_target: dict[tuple[str, int, int | None], set[int]] = {}
+    requester_ids_by_target: dict[tuple[str, int, int | None], set[str]] = {}
     latest_active_request_at_by_target: dict[tuple[str, int, int | None], datetime] = {}
     for tmdb_id in series_tmdb_ids:
         season_numbers = {
@@ -4133,7 +4238,8 @@ async def _cleanup_disabled_leaving_soon_collections(
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        str(config_id): title for config_id, title in updated_last_success_titles.items()
+        str(config_id): title
+        for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -4215,7 +4321,9 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
             )
         except Exception as e:
             service_success = False
-            LOG.warning(f"Failed syncing Leaving Soon collections for {service_label}: {e}")
+            LOG.warning(
+                f"Failed syncing Leaving Soon collections for {service_label}: {e}"
+            )
 
         if not service_success:
             continue
@@ -4231,7 +4339,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        str(config_id): title for config_id, title in updated_last_success_titles.items()
+        str(config_id): title
+        for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -7545,7 +7654,7 @@ async def _delete_movie_candidates(
                                 await db.delete(reclaim_candidate)
 
                         movie_tmdb_id = movie_info.get("tmdb_id")
-                        if service_manager.seerr and movie and movie_tmdb_id:
+                        if service_manager.has_seerr and movie and movie_tmdb_id:
                             try:
                                 await _reset_seerr_request(
                                     movie_tmdb_id, MediaType.MOVIE
@@ -7790,7 +7899,7 @@ async def _delete_movie_candidates(
                                 await db.delete(reclaim_candidate)
 
                         movie_tmdb_id = movie_info.get("tmdb_id")
-                        if service_manager.seerr and movie and movie_tmdb_id:
+                        if service_manager.has_seerr and movie and movie_tmdb_id:
                             try:
                                 await _reset_seerr_request(
                                     movie_tmdb_id, MediaType.MOVIE
@@ -8148,7 +8257,7 @@ async def _delete_series_candidates(
                         await db.delete(reclaim_candidate)
 
                     series_tmdb_id = series_info.get("tmdb_id")
-                    if service_manager.seerr and series and series_tmdb_id:
+                    if service_manager.has_seerr and series and series_tmdb_id:
                         try:
                             await _reset_seerr_request(series_tmdb_id, MediaType.SERIES)
                         except Exception as e:
@@ -8310,7 +8419,7 @@ async def _delete_series_candidates(
                         await db.delete(reclaim_candidate)
 
                     series_tmdb_id = series_info.get("tmdb_id")
-                    if service_manager.seerr and series and series_tmdb_id:
+                    if service_manager.has_seerr and series and series_tmdb_id:
                         try:
                             await _reset_seerr_request(series_tmdb_id, MediaType.SERIES)
                         except Exception as e:
@@ -9517,7 +9626,7 @@ async def _delete_movies_via_media_server(
                 if cand:
                     await db.delete(cand)
 
-                if service_manager.seerr and movie.tmdb_id:
+                if service_manager.has_seerr and movie.tmdb_id:
                     try:
                         await _reset_seerr_request(movie.tmdb_id, MediaType.MOVIE)
                     except Exception as e:
@@ -9639,7 +9748,7 @@ async def _delete_series_via_media_server(
                 if cand:
                     await db.delete(cand)
 
-                if service_manager.seerr and series_obj.tmdb_id:
+                if service_manager.has_seerr and series_obj.tmdb_id:
                     try:
                         await _reset_seerr_request(series_obj.tmdb_id, MediaType.SERIES)
                     except Exception as e:
@@ -9679,35 +9788,69 @@ async def _delete_series_via_media_server(
     return deleted_count
 
 
-async def _reset_seerr_request(tmdb_id: int, media_type: MediaType) -> None:
+async def _reset_seerr_request(
+    tmdb_id: int,
+    media_type: MediaType,
+    *,
+    config_ids: Collection[int] | None = None,
+) -> None:
     """Remove requests and media items in Seerr (Overseerr/Jellyseerr) after media deletion.
 
     Args:
         tmdb_id: TMDB ID of the media
         media_type: Movie or Series
+        config_ids: Limit the fan-out to these Seerr configs; every configured
+            instance when omitted.
     """
-    if not service_manager.seerr:
+    clients = service_manager.seerr_clients()
+    if config_ids is not None:
+        clients = {
+            config_id: client
+            for config_id, client in clients.items()
+            if config_id in config_ids
+        }
+    if not clients:
         return
 
-    try:
-        if media_type is MediaType.MOVIE:
-            # delete all requests first
-            await service_manager.seerr.delete_movie_requests(tmdb_id)
-            LOG.debug(f"Deleted Seerr movie requests for TMDB ID {tmdb_id}")
-            # then delete the media item itself
-            await service_manager.seerr.delete_movie_media(tmdb_id)
-            LOG.debug(f"Deleted Seerr movie media for TMDB ID {tmdb_id}")
-        else:
-            # delete all requests first
-            await service_manager.seerr.delete_tv_requests(tmdb_id)
-            LOG.debug(f"Deleted Seerr TV requests for TMDB ID {tmdb_id}")
-            # then delete the media item itself
-            await service_manager.seerr.delete_tv_media(tmdb_id)
-            LOG.debug(f"Deleted Seerr TV media for TMDB ID {tmdb_id}")
-    except PermissionError as e:
-        LOG.warning(f"Seerr permission error for TMDB {tmdb_id}: {e}")
-    except Exception as e:
-        LOG.warning(f"Failed to delete Seerr data for TMDB {tmdb_id}: {e}")
+    # Per instance, so one Seerr refusing the delete does not leave the others
+    # holding a request for media that is already gone.
+    for config_id, client in clients.items():
+        try:
+            if media_type is MediaType.MOVIE:
+                # delete all requests first
+                await client.delete_movie_requests(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr movie requests for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+                # then delete the media item itself
+                await client.delete_movie_media(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr movie media for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+            else:
+                # delete all requests first
+                await client.delete_tv_requests(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr TV requests for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+                # then delete the media item itself
+                await client.delete_tv_media(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr TV media for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+        except PermissionError as e:
+            LOG.warning(
+                f"Seerr permission error for TMDB {tmdb_id} on config {config_id}: {e}"
+            )
+        except Exception as e:
+            LOG.warning(
+                f"Failed to delete Seerr data for TMDB {tmdb_id} "
+                f"on config {config_id}: {e}"
+            )
 
 
 async def delete_specific_candidates(

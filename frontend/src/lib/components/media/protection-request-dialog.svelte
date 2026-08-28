@@ -27,6 +27,8 @@
     path: string | null;
     size: number;
     library_name: string;
+    /** Set only when several media servers are configured. */
+    service_name?: string | null;
     container: string | null;
   }
 
@@ -493,7 +495,9 @@
                         class="accent-primary cursor-pointer"
                       />
                       <span class="text-sm text-foreground flex-1">
-                        {version.library_name}{version.path
+                        {version.library_name}{version.service_name
+                          ? ` (${version.service_name})`
+                          : ""}{version.path
                           ? " · " + version.path.split(/[\\/]/).pop()
                           : ""}
                       </span>

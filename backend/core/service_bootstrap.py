@@ -113,7 +113,9 @@ async def load_enabled_services() -> None:
         elif config.service_type is Service.SEERR:
             await _initialize_with_retry(
                 "Seerr",
-                lambda: service_manager.initialize_seerr(config.base_url, api_key),
+                lambda: service_manager.initialize_seerr(
+                    config.base_url, api_key, config.id
+                ),
             )
         elif config.service_type is Service.TAUTULLI:
             await _initialize_with_retry(

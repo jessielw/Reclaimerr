@@ -129,9 +129,7 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(
-            ValueError, "at least one enabled condition"
-        ):
+        with self.assertRaisesRegex(ValueError, "at least one enabled condition"):
             validate_rule_definition(definition, target_scope=TARGET_MOVIE_VERSION)
 
     def test_accepts_extended_metadata_fields_for_supported_scopes(self) -> None:
@@ -699,8 +697,10 @@ class RuleDefinitionValidationTests(unittest.TestCase):
             validate_rule_definition(_definition("seerr.requested", "greater_than", 1))
 
     def test_accepts_seerr_requester_ids_list_operator(self) -> None:
+        # Instance-qualified: a Seerr user id only names a person within the
+        # Seerr that issued it.
         validate_rule_definition(
-            _definition("seerr.requested_by_user_ids", "contains_any", ["10", "22"])
+            _definition("seerr.requested_by_user_ids", "contains_any", ["7:10", "7:22"])
         )
 
     def test_rejects_seerr_requester_ids_numeric_operator(self) -> None:
@@ -815,9 +815,7 @@ class ArrTagSubstringOperatorTests(unittest.TestCase):
     def test_not_contains_substring_matches_when_absent(self) -> None:
         tags = ["drama", "comedy"]
         self.assertTrue(
-            _matches_operator(
-                tags, "not_contains_substring", "chart", field="arr.tags"
-            )
+            _matches_operator(tags, "not_contains_substring", "chart", field="arr.tags")
         )
 
     def test_not_contains_substring_no_match_when_present(self) -> None:
@@ -1130,3 +1128,48 @@ class NumericBoundaryImpossibilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeerrRequesterIdValidationTests(unittest.TestCase):
+    """A bare Seerr user id must be refused at save time.
+
+    It would match nothing at all, and paired with `is false` that silently
+    turns a protect rule into a delete rule -- so failing loudly on save beats
+    failing quietly on the next scan.
+    """
+
+    def _rule(self, value: object) -> dict[str, object]:
+        return _definition("seerr.requested_by_user_ids", "contains_any", value)
+
+    def test_qualified_ids_are_accepted(self) -> None:
+        validate_rule_definition(
+            self._rule(["7:3", "9:12"]), target_scope=TARGET_MOVIE_VERSION
+        )
+
+    def test_bare_id_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            validate_rule_definition(
+                self._rule(["3"]), target_scope=TARGET_MOVIE_VERSION
+            )
+        self.assertIn("instanceId:userId", str(ctx.exception))
+        self.assertIn("3", str(ctx.exception))
+
+    def test_integer_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_rule_definition(self._rule([3]), target_scope=TARGET_MOVIE_VERSION)
+
+    def test_mixed_values_name_only_the_bad_ones(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            validate_rule_definition(
+                self._rule(["7:3", "12"]), target_scope=TARGET_MOVIE_VERSION
+            )
+        # Only the offending value is listed after "Not valid:"; the message
+        # also carries "7:3" as its worked example, so check the tail.
+        listed = str(ctx.exception).split("Not valid: ")[1]
+        self.assertEqual(listed, "12")
+
+    def test_valueless_operators_are_unaffected(self) -> None:
+        validate_rule_definition(
+            _definition("seerr.requested_by_user_ids", "exists"),
+            target_scope=TARGET_MOVIE_VERSION,
+        )

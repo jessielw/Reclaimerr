@@ -20,6 +20,8 @@ Use rule preview before saving or running a cleanup scan. Preview shows the item
 
 Automated protections are reconciled on each cleanup scan. They are added when a rule starts matching and removed when that same rule no longer matches, is disabled, or is deleted. Manual protections are not changed by this process. Library Scope applies to both cleanup candidate and automated protection outcomes.
 
+Library Scope lists the libraries of the configured main media server, since only the main server contributes library contents. With more than one media server configured each library is listed under that server's name, so two servers' identically-named libraries stay distinguishable; with one server the heading is left off. See [Multi-Server Setup](../getting-started/configuration.md#multi-server-setup).
+
 Each protection rule creates its own managed protection entry for a matching item. These entries are read-only on the Protected page because changing the rule is the source of truth. If a protection rule and a candidate rule match the same item, protection always takes precedence.
 
 Cleanup-candidate rules can optionally enable automatic deletion. Rules that do not enable it still create candidates and can populate Leaving Soon collections, but the scheduled delete task skips them.
@@ -270,6 +272,16 @@ Seerr request dates are available to movie-version, series, season, and episode 
 
 Declined and failed requests are excluded. Series rules use the latest request for the series. Season and episode rules use the request for their specific season, so requesting a later season does not reset the request age of an earlier season. Older Seerr responses that do not identify requested seasons fall back to the series request date. If Seerr is unavailable, these values are unknown and cannot create candidates.
 
+### Several Seerr Instances
+
+Every configured Seerr answers the same question and the answers are combined. `Seerr requested` is true if any instance holds a request, and `Seerr latest active request` is the newest live request across all of them -- so `Days since latest active Seerr request` will not pass a threshold while any instance still holds a recent request.
+
+Requesters are named per instance as `instanceId:userId` -- for example `7:3` -- because a Seerr user ID only identifies a person inside the Seerr that issued it, the same reason provider IDs never bridge across playback providers. The requester picker writes these for you, and groups its list by instance. The same person with an account on two Seerrs is two requesters, and neither one's watch progress or request dates count towards the other.
+
+Rules exported before this release name requesters by a bare user ID. Importing one attaches your Seerr to it automatically when a single Seerr is configured. With none or several configured the rule is refused rather than guessed at, and the import error says why -- re-pick its requesters in the rule editor. A rule naming an instance ID this install does not have still imports, with a warning: its requester conditions match nobody until they are re-picked.
+
+**If any configured Seerr cannot be read, every Seerr-dependent rule is skipped for that run** and an admin notice names the instance. Answering from the instances that did respond would report "not requested" for titles the silent one still holds active requests for, and for a deletion rule that is the difference between keeping and deleting. Rule previews show the same warning rather than a normal empty result.
+
 ### Seerr Requester Watch State
 
 Two fields answer two different questions, and most rules want the first:
@@ -305,6 +317,8 @@ Reclaimerr matches Seerr users automatically using the usernames, display names,
 When several providers describe the same media server -- a Plex server, the Tautulli watching it, and a Plex-bound Tracearr -- their directories are merged into one account per person, so a Plex title and the Plex username underneath it need no manual mapping. Two rules keep that safe: a name that a single provider gives to two of its own users bridges nothing, and provider ids never bridge across providers, because Plex numbering its owner `1` and Tautulli numbering its first user `1` are unrelated facts.
 
 Explicit requester watch-user mappings under **Settings -> User Signals -> Seerr Requester to Watch User Mapping** remain available for identities that share no name at all. That screen lists every Seerr user, shows how many are covered automatically, and offers a picker with one entry per playback account -- ids, emails, and a Tracearr identity are shown as that account's other names rather than as entries of their own, and all of them are searchable. Do not confuse it with **Settings -> Users -> Sign-In Identity Links**, which links media-server logins to local Reclaimerr accounts and has no effect on rules. Comparisons are case-insensitive, and aliases only bridge accounts on the same media server. Tautulli and Plex-bound Tracearr identities are treated as Plex identities when applying provider-scoped mappings.
+
+Each mapping also names which Seerr its requester belongs to. Picking a user from the lookup settles that for you. Leaving it on **Any instance** matches the _named_ user on every Seerr, which is what someone holding an account on both under one name wants -- so an unscoped mapping matches on the username, not on a user ID, since a user ID names a different person on each instance. Choosing **Any instance** clears the selected user for the same reason.
 
 Requester watch state combines completed per-user playback snapshots from Plex, Jellyfin, and Emby with Tautulli or Tracearr events whose provider-native watched status is complete. Each provider's configured watched threshold remains the source of truth. Jellyfin and Emby Playback Reporting events describe activity but do not expose a reliable completion signal, so they do not independently satisfy this field. They remain available to the general `playback.*` fields. When the same completed play is available from multiple sources, Reclaimerr keeps the latest qualifying timestamp.
 

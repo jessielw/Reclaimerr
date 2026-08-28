@@ -163,7 +163,6 @@
           desc: "Enable this to use Seerr request data for cleanup rules and to synchronize media deletions",
           baseUrlPlaceholder: "e.g. http://localhost:5055",
           adminOnly: true,
-          lockName: true,
         },
         {
           id: SettingsTab.Tautulli,
@@ -349,9 +348,20 @@
     [SettingsTab.MDBList]: emptyServiceState(SettingsTab.MDBList),
     [SettingsTab.OMDb]: emptyServiceState(SettingsTab.OMDb),
   });
+  // Service tabs that can hold several named instances at once. A Seerr
+  // usually sits beside each media server, so it belongs here with the arrs.
+  const MULTI_INSTANCE_TABS: string[] = [
+    SettingsTab.Radarr,
+    SettingsTab.Sonarr,
+    SettingsTab.Seerr,
+  ];
+  const isMultiInstanceTab = (serviceId: string) =>
+    MULTI_INSTANCE_TABS.includes(serviceId);
+
   let arrInstances = $state<Record<string, ServiceConfig[]>>({
     [SettingsTab.Radarr]: [],
     [SettingsTab.Sonarr]: [],
+    [SettingsTab.Seerr]: [],
   });
   let showConfirmDialog = $state(false);
   let confirmTitle = $state("");
@@ -506,6 +516,7 @@
           affected_rules?: Array<{ id: number; name: string }>;
           disabled_rule_count?: number;
           removed_path_mappings?: number;
+          removed_requester_mappings?: number;
         };
       } = await delete_api(`/api/settings/service/${current.id}`);
       arrInstances[serviceId] = (arrInstances[serviceId] ?? []).filter(
@@ -521,7 +532,9 @@
       const affectedRules = response.data.affected_rules ?? [];
       const disabledRuleCount = response.data.disabled_rule_count ?? 0;
       const removedMappings = response.data.removed_path_mappings ?? 0;
-      if (affectedRules.length || removedMappings) {
+      const removedRequesterMappings =
+        response.data.removed_requester_mappings ?? 0;
+      if (affectedRules.length || removedMappings || removedRequesterMappings) {
         toast.warning(
           [
             affectedRules.length
@@ -533,6 +546,9 @@
               : "",
             removedMappings
               ? `${removedMappings} scoped path mapping(s) were removed`
+              : "",
+            removedRequesterMappings
+              ? `${removedRequesterMappings} requester watch mapping(s) were removed`
               : "",
           ]
             .filter(Boolean)
@@ -797,10 +813,7 @@
         apiKey: "",
       };
       serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
-      if (
-        serviceId === SettingsTab.Radarr ||
-        serviceId === SettingsTab.Sonarr
-      ) {
+      if (isMultiInstanceTab(serviceId)) {
         const saved = serviceState[serviceId as SettingsTab].config;
         const existing = arrInstances[serviceId] ?? [];
         arrInstances[serviceId] = [
@@ -850,15 +863,10 @@
       for (const [serviceId, config] of Object.entries(rawServices)) {
         if ((MEDIA_SERVERS as readonly string[]).includes(serviceId)) continue;
         const instance =
-          (serviceId === SettingsTab.Radarr ||
-            serviceId === SettingsTab.Sonarr) &&
-          config.instances?.length
+          isMultiInstanceTab(serviceId) && config.instances?.length
             ? config.instances[0]
             : config;
-        if (
-          serviceId === SettingsTab.Radarr ||
-          serviceId === SettingsTab.Sonarr
-        ) {
+        if (isMultiInstanceTab(serviceId)) {
           arrInstances[serviceId] =
             config.instances?.map((item) => ({
               id: item.id,
@@ -998,7 +1006,7 @@
         <div class="flex-1 p-6 min-w-0">
           <!-- settings -->
           {#if serviceTabs.includes(activeTab)}
-            {#if activeTab === SettingsTab.Radarr || activeTab === SettingsTab.Sonarr}
+            {#if isMultiInstanceTab(activeTab)}
               {#snippet instanceSelector()}
                 <Label class="space-y-1">
                   <span class="text-sm font-medium text-foreground"

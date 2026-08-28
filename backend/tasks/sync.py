@@ -2880,9 +2880,21 @@ async def sync_media_libraries() -> dict[str, Any]:
 
         async with async_db() as session:
             result = await session.execute(select(ServiceMediaLibrary))
-            existing_map: dict[str, ServiceMediaLibrary] = {
-                lib.library_id: lib for lib in result.scalars().all()
-            }
+            all_rows = list(result.scalars().all())
+            # Keyed by config as well as library id. Jellyfin and Emby derive a
+            # library's id from its path, so two servers each holding a library
+            # at the same path report the same id - keying on the id alone let a
+            # main-server switch update the old server's row in place and
+            # silently retarget every rule scoped to it.
+            existing_map: dict[str, ServiceMediaLibrary] = {}
+            foreign_rows: list[ServiceMediaLibrary] = []
+            for row in all_rows:
+                # A row with no config predates this column; adopt it onto main
+                # if main still reports that library, drop it below if not.
+                if row.service_config_id in (main.id, None):
+                    existing_map[row.library_id] = row
+                else:
+                    foreign_rows.append(row)
 
             current_ids: set[str] = set()
             current_libraries: list[dict[str, Any]] = []
@@ -2897,14 +2909,17 @@ async def sync_media_libraries() -> dict[str, Any]:
                     {"id": lib_id, "name": lib["name"], "type": media_type}
                 )
                 if lib_id in existing_map:
-                    if existing_map[lib_id].library_name != lib["name"]:
-                        existing_map[lib_id].library_name = lib["name"]
+                    existing = existing_map[lib_id]
+                    if existing.library_name != lib["name"]:
+                        existing.library_name = lib["name"]
+                    existing.service_config_id = main.id
                 else:
                     session.add(
                         ServiceMediaLibrary(
                             library_id=lib_id,
                             library_name=lib["name"],
                             media_type=media_type,
+                            service_config_id=main.id,
                         )
                     )
 
@@ -2915,11 +2930,21 @@ async def sync_media_libraries() -> dict[str, Any]:
                     await session.delete(existing_library)
                     removed_ids.add(lib_id)
 
+            # and every row left over from a server that is no longer main -
+            # only main contributes libraries, so those can never be in scope.
+            # Not counted as removed: main may report the same id itself, and
+            # the row that survives is the one rules should now resolve against.
+            for foreign in foreign_rows:
+                await session.delete(foreign)
+
             # Advanced rules now keep library scope inside the rule definition.
             # We surface stale-library references through alerts instead of
             # mutating rule definitions during sync.
             affected_rules: list[dict[str, Any]] = []
             try:
+                # Sessions run with autoflush off, so the notice would otherwise
+                # read the pre-sync rows and judge staleness against them.
+                await session.flush()
                 await reconcile_stale_library_notice(session)
             except Exception as e:
                 LOG.warning(f"Failed to reconcile stale-library notice state: {e}")

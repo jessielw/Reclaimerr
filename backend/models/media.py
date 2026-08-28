@@ -233,6 +233,10 @@ class MovieVersionResponse(BaseModel):
     service_media_id: str
     library_id: str
     library_name: str
+    # The media server this library came from. Only the main server writes
+    # version rows, so this names it rather than distinguishing several.
+    service_config_id: int | None = None
+    service_name: str | None = None
     path: str | None
     size: int
     added_at: str | None
@@ -310,9 +314,22 @@ class ArrRefResponse(BaseModel):
     item_url: str | None = None
 
 
+class SeerrLinkResponse(BaseModel):
+    """One configured Seerr and where this item lives in it."""
+
+    service_config_id: int
+    service_name: str | None = None
+    item_url: str | None = None
+
+
 class SeerrRequesterResponse(BaseModel):
     """Display-safe Seerr requester identity attached to a media item."""
 
+    # Instance-qualified, so two Seerrs numbering different people 3 stay two
+    # requesters. `user_id` is what that Seerr calls them, for display.
+    key: str
+    service_config_id: int
+    service_name: str | None = None
     user_id: int
     display_name: str
     username: str | None = None
@@ -334,7 +351,7 @@ class MovieWithStatus(BaseModel):
     # arr instance refs
     arr_refs: list[ArrRefResponse]
     arr_tags: list[str] = Field(default_factory=list)
-    seerr_url: str | None = None
+    seerr_links: list[SeerrLinkResponse] = Field(default_factory=list)
     seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     imdb_id: str | None
     imdb_rating: float | None = None
@@ -397,6 +414,9 @@ class SeriesServiceRefResponse(BaseModel):
     service_id: str
     library_id: str
     library_name: str
+    # The media server this library came from, so "Shows" reads as whose Shows.
+    service_config_id: int | None = None
+    service_name: str | None = None
     path: str | None
 
 
@@ -416,7 +436,7 @@ class SeriesWithStatus(BaseModel):
     # arr instance refs
     arr_refs: list[ArrRefResponse]
     arr_tags: list[str] = Field(default_factory=list)
-    seerr_url: str | None = None
+    seerr_links: list[SeerrLinkResponse] = Field(default_factory=list)
     seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     imdb_id: str | None
     imdb_rating: float | None = None
@@ -553,6 +573,10 @@ class CandidateLibraryRef(BaseModel):
     library_id: str
     library_name: str
     service: str | None = None
+    # `service` is the provider type; these name the specific server, which is
+    # what tells two identically-named libraries apart.
+    service_config_id: int | None = None
+    service_name: str | None = None
 
 
 class CandidateReasonCondition(BaseModel):
@@ -616,19 +640,21 @@ class CandidateEntryBase(BaseModel):
     vote_average: float | None = None
     vote_count: int | None = None
     tmdb_status: str | None = None
-    media_library_names: list[str] | None = None
+    media_libraries: list[CandidateLibraryRef] | None = None
     media_added_at: str | None = None
     media_arr_added_at: str | None = None
     media_last_viewed_at: str | None = None
     media_view_count: int | None = None
     arr_refs: list[ArrRefResponse] = Field(default_factory=list)
     arr_tags: list[str] = Field(default_factory=list)
-    seerr_url: str | None = None
+    seerr_links: list[SeerrLinkResponse] = Field(default_factory=list)
     seerr_requesters: list[SeerrRequesterResponse] = Field(default_factory=list)
     movie_version_id: int | None = None
     version_service: str | None = None
     version_library_id: str | None = None
     version_library_name: str | None = None
+    version_service_config_id: int | None = None
+    version_service_name: str | None = None
     version_video_codec_family: str | None = None
     version_audio_codec_family: str | None = None
     version_video_width: int | None = None
@@ -703,6 +729,9 @@ class RulePreviewMetadata(BaseModel):
     playback_error: str | None = None
     seerr_unavailable: bool = False
     seerr_error: str | None = None
+    # Which Seerrs could not be read, so the UI can name them rather than say
+    # "Seerr" when only one of several is down.
+    seerr_unavailable_instances: list[str] = Field(default_factory=list)
     requester_watch_unavailable_count: int = 0
     matched_count: int = 0
 
@@ -710,7 +739,13 @@ class RulePreviewMetadata(BaseModel):
 class RequesterWatchRequesterDetail(BaseModel):
     """One Seerr requester and the identities matching tried on their behalf."""
 
+    # The instance-qualified identity ("<service_config_id>:<user_id>"). The bare
+    # `seerr_user_id` beside it is what that Seerr calls the person, which is
+    # what the reader recognizes and what its own UI shows.
+    seerr_requester_key: str
     seerr_user_id: int
+    service_config_id: int | None = None
+    service_name: str | None = None
     display_name: str | None = None
     identity_keys: list[str] = Field(default_factory=list)
     requested_at: datetime | None = None
@@ -734,7 +769,7 @@ class RequesterWatchEvidence(BaseModel):
 
     source_service: Service
     watch_user_key: str
-    matched_requester_ids: list[int] = Field(default_factory=list)
+    matched_requester_ids: list[str] = Field(default_factory=list)
     watched_at: datetime | None = None
     episodes: list[str] = Field(default_factory=list)
 

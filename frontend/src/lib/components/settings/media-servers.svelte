@@ -648,7 +648,14 @@
         <h3 class="font-semibold text-foreground">Main Server</h3>
         <p class="text-sm text-muted-foreground mt-0.5">
           The primary source for library and media sync. Pick a specific
-          instance, even if it's not the only one of its type.
+          instance, even if it's not the only one of its type. Every library a
+          rule can be scoped to comes from this server and is labelled with its
+          name; linked servers contribute watch history, not library contents.
+        </p>
+        <p class="text-sm text-muted-foreground mt-1.5">
+          Changing the main server replaces those libraries with the new
+          server's. Rules scoped to a library the new server does not have are
+          reported as stale rather than silently retargeted.
         </p>
       </div>
 

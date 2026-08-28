@@ -240,9 +240,21 @@ class ServiceConfig(Base):
 
 
 class ServiceMediaLibrary(Base):
-    """Media libraries available from the main media server."""
+    """Media libraries available from the main media server.
+
+    Only the main server contributes library rows, but the row records which
+    config that was: it is what lets the UI name the server a library belongs
+    to, and it keeps two servers' identically-numbered libraries apart.
+    Jellyfin and Emby derive a library's id from its path, so two servers each
+    holding a library at the same path report the same id.
+    """
 
     __tablename__ = "service_media_libraries"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_config_id", "library_id", name="uq_service_media_library_config"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -250,6 +262,13 @@ class ServiceMediaLibrary(Base):
     library_id: Mapped[str] = mapped_column(String(50))
     library_name: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    # nullable: an install that has not designated a main server yet has no
+    # config to point at. The next library sync adopts or removes the row.
+    service_config_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+        default=None,
+    )
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False

@@ -73,6 +73,31 @@
     return "season_count" in media;
   };
 
+  /** Libraries this item lives in, deduped by library id and named by server.
+   *
+   * Deduping on the name instead would collapse two servers' "Movies" into
+   * one entry and hide a copy the user can see in their own media server.
+   * `service_name` is only present when several media servers are configured.
+   */
+  const libraryLabels = (media: MediaItem): string[] => {
+    const refs = isSeries(media)
+      ? media.service_refs
+      : isMovie(media)
+        ? media.versions
+        : [];
+    const byId = new Map<string, string>();
+    for (const ref of refs) {
+      if (byId.has(ref.library_id)) continue;
+      byId.set(
+        ref.library_id,
+        ref.service_name
+          ? `${ref.library_name} (${ref.service_name})`
+          : ref.library_name,
+      );
+    }
+    return [...byId.values()];
+  };
+
   const canRequestExceptions = $derived(
     $auth.user?.role === "admin" ||
       ($auth.user?.permissions ?? []).includes(Permission.Request) ||
@@ -508,15 +533,7 @@
                 <div>
                   <span class="text-muted-foreground">Library:</span>
                   <span class="text-foreground ml-2">
-                    {isSeries(media) && media.service_refs.length > 0
-                      ? media.service_refs.map((r) => r.library_name).join(", ")
-                      : isMovie(media) && media.versions.length > 0
-                        ? [
-                            ...new Set(
-                              media.versions.map((v) => v.library_name),
-                            ),
-                          ].join(", ")
-                        : "Unknown"}
+                    {libraryLabels(media).join(", ") || "Unknown"}
                   </span>
                 </div>
                 <div>
@@ -569,7 +586,7 @@
             <OriginMetadata
               arrRefs={media.arr_refs}
               arrTags={media.arr_tags}
-              seerrUrl={media.seerr_url}
+              seerrLinks={media.seerr_links}
               seerrRequesters={media.seerr_requesters}
             />
           </div>

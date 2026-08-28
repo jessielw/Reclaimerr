@@ -109,9 +109,8 @@
       // only ever sourced from the main instance of whichever type is main -
       // find it within each type's instance list rather than reading a flat
       // top-level `libraries` field.
-      const mainLibrariesFor = (serviceId: string): any[] | undefined =>
-        services[serviceId]?.instances?.find((inst: any) => inst.is_main)
-          ?.libraries;
+      const mainInstanceFor = (serviceId: string): any | undefined =>
+        services[serviceId]?.instances?.find((inst: any) => inst.is_main);
 
       const sources: [string, SettingsTab][] = [
         ["jellyfin", SettingsTab.Jellyfin],
@@ -120,8 +119,13 @@
       ];
 
       for (const [serviceId, serviceType] of sources) {
-        const serviceLibraries = mainLibrariesFor(serviceId);
+        const instance = mainInstanceFor(serviceId);
+        const serviceLibraries = instance?.libraries;
         if (!serviceLibraries) continue;
+        // Carry the server's identity onto every library: two Plex servers can
+        // both hold a "Movies", and the provider icon alone cannot say which.
+        const serviceConfigId: number | null = instance?.id ?? null;
+        const serviceName: string | null = instance?.name || null;
         serviceLibraries.forEach((lib: any) => {
           libraries.push({
             id: lib.id,
@@ -130,6 +134,8 @@
             mediaType:
               lib.media_type === "movie" ? MediaType.Movie : MediaType.Series,
             serviceType,
+            serviceConfigId: lib.service_config_id ?? serviceConfigId,
+            serviceName,
             selected: lib.selected,
           });
         });
@@ -406,24 +412,46 @@
     }
   };
 
+  // Sonner renders a description as plain text, so the newlines between
+  // messages need whitespace-pre-line to survive. Per-toast classes merge with
+  // the Toaster's, so this keeps the muted styling.
+  const detailedToast = (messages: string[]) => ({
+    description: messages.join("\n"),
+    duration: 15000,
+    classes: { description: "whitespace-pre-line" },
+  });
+
   const confirmImport = async () => {
     importLoading = true;
     try {
-      const result = await post_api<{ imported: number; errors: string[] }>(
-        "/api/rules/import",
-        { rules: importRules },
-      );
+      const result = await post_api<{
+        imported: number;
+        errors: string[];
+        warnings?: string[];
+      }>("/api/rules/import", { rules: importRules });
       showImportDialog = false;
       importPreviewItems = [];
       importRules = [];
       await loadRules();
+      const importWarnings = result.warnings ?? [];
+      const imported = `Imported ${result.imported} rule${result.imported === 1 ? "" : "s"}`;
       if (result.errors.length > 0) {
+        // The reason a rule was refused is the whole value of the message -
+        // "1 error" alone leaves nothing to act on.
         toast.warning(
-          `Imported ${result.imported} rule${result.imported === 1 ? "" : "s"} with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+          `${imported} with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+          detailedToast(result.errors),
         );
       } else {
-        toast.success(
-          `Imported ${result.imported} rule${result.imported === 1 ? "" : "s"}`,
+        toast.success(imported);
+      }
+      // Separate from the error toast: these rules did import, they just point
+      // at a Seerr this install does not have, so they match nobody until the
+      // requesters are re-picked.
+      if (importWarnings.length > 0) {
+        toast.warning(
+          `${importWarnings.length} imported rule${importWarnings.length === 1 ? "" : "s"} reference a Seerr instance that is not configured here`,
+          detailedToast(importWarnings),
         );
       }
     } catch (err: any) {

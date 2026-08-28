@@ -99,7 +99,19 @@ For a trusted-proxy session, the sidebar logout control only appears when `FORWA
 
 The main server is the only source of library and file-version rows. Every other configured server is linked: it contributes watch state and same-media matches, but never library contents.
 
+Every library records the server it came from, and with more than one media server configured that server's name is shown beside it -- in a rule's Library Scope, on candidate and media views, and in the reason a rule gives for matching. Two servers can each hold a library called `Movies`, and the provider logo alone does not say whose. With a single media server the name is left off, since there is nothing to tell apart.
+
+Changing which server is main replaces the library list with the new server's. Rules scoped to a library the new server does not have are reported as stale in the sidebar rather than silently retargeted -- which matters most for Jellyfin and Emby, where a library's id is derived from its path and two servers holding a library at the same path report the same id.
+
 Each media server card in **Settings -> Media Servers** has its own **Sync** button and reports when that server was last synced. Syncing the main server runs the full media sync (libraries, movies, series, then every linked server). Syncing a linked server refreshes only that server's watch data and supplemental matches, so it neither waits on nor blocks the others. The dashboard shows each server's own last-sync time, labelled main or linked.
+
+### Multiple Seerr Instances
+
+Radarr, Sonarr and Seerr each support several named instances, added from the **Instance** selector at the top of their settings tab. A request frontend usually sits beside each media server, so an Overseerr and a Jellyseerr can be configured side by side.
+
+Every Seerr instance is queried for the same question and the answers are combined: a title counts as requested if any instance holds a request for it, and its request age is that of the newest live request on any instance. Deleting media clears the request and media entry on every configured instance.
+
+Requesters are identified per instance, because a Seerr user ID only names a person within the Seerr that issued it. Rules and requester watch mappings therefore record `instanceId:userId` rather than a bare number, and the same person with an account on two Seerrs counts as two requesters. See [Rules](../usage/rules.md#seerr-requester-watch-state).
 
 ## Disabling Or Deleting Offline Services
 

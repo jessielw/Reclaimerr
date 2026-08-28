@@ -51,7 +51,7 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, Service
 from backend.models.cleanup import RulePreviewMatchMetadata
-from backend.services.seerr_cache import SeerrRequestSnapshot
+from backend.services.seerr_cache import SeerrRequestSnapshot, SeerrSnapshotState
 from backend.tasks import cleanup as cleanup_tasks
 from backend.tasks.cleanup import (
     _activate_seerr_request_resolver_for_rules,
@@ -327,6 +327,19 @@ def _make_multi_condition_rule(
             "root": {"type": "group", "op": "and", "children": conditions},
         },
         action={"candidate": True, "media_server_action": "delete"},
+    )
+
+
+def _snapshot_state(
+    snapshot: SeerrRequestSnapshot | None, *, config_id: int = 1
+) -> SeerrSnapshotState:
+    """One healthy Seerr holding `snapshot`, matching the fixtures qualified ids."""
+    return SeerrSnapshotState(
+        merged=snapshot,
+        by_config_id={config_id: snapshot} if snapshot is not None else {},
+        errors_by_config_id={} if snapshot is not None else {config_id: "unavailable"},
+        healthy_config_ids={config_id} if snapshot is not None else set(),
+        configured_config_ids={config_id},
     )
 
 
@@ -2784,11 +2797,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
     ) -> None:
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 1)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
+            requester_ids_by_key={media_key: {"1:101"}},
             first_request_at_by_key_user={
-                media_key: {101: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
+                media_key: {"1:101": datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
             },
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         watch_by_service_and_user: dict[
@@ -2823,9 +2836,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         media_key: tuple[MediaType, int] = (MediaType.SERIES, 5920)
         requested_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         watch_by_service_and_user = {
@@ -2849,9 +2862,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         expected = {(1, episode) for episode in range(1, 7)}
@@ -2876,9 +2889,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         regular = {(1, episode) for episode in range(1, 7)}
@@ -2902,9 +2915,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         media_key = (MediaType.SERIES, 5920)
         requested_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         _, result = _compute_requester_tv_watch_targets_for_key(
@@ -2926,11 +2939,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101, 202}},
+            requester_ids_by_key={media_key: {"1:101", "1:202"}},
             first_request_at_by_key_user={
-                media_key: {101: requested_at, 202: requested_at}
+                media_key: {"1:101": requested_at, "1:202": requested_at}
             },
-            requester_identity_keys_by_user_id={101: {"alice"}, 202: {"bob"}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}, "1:202": {"bob"}},
             latest_active_request_at_by_key={},
         )
         _, result = _compute_requester_tv_watch_targets_for_key(
@@ -2954,13 +2967,13 @@ class CleanupMediaRuleTests(unittest.TestCase):
         season_one_request = datetime(2026, 1, 1, tzinfo=UTC)
         season_two_request = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: season_two_request}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": season_two_request}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
             first_request_at_by_series_season_user={
-                (5920, 1): {101: season_one_request},
-                (5920, 2): {101: season_two_request},
+                (5920, 1): {"1:101": season_one_request},
+                (5920, 2): {"1:101": season_two_request},
             },
         )
         _, result = _compute_requester_tv_watch_targets_for_key(
@@ -2999,11 +3012,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
         watched = datetime(2025, 1, 6, tzinfo=UTC)
         expected = {(6, episode) for episode in range(1, 13)}
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {5}},
-            first_request_at_by_key_user={media_key: {5: requested}},
-            requester_identity_keys_by_user_id={5: {"goldeylocks69"}},
+            requester_ids_by_key={media_key: {"1:5"}},
+            first_request_at_by_key_user={media_key: {"1:5": requested}},
+            requester_identity_keys_by_user_id={"1:5": {"goldeylocks69"}},
             latest_active_request_at_by_key={},
-            first_request_at_by_series_season_user={(5920, 6): {5: requested}},
+            first_request_at_by_series_season_user={(5920, 6): {"1:5": requested}},
         )
         plays = {Service.PLEX: {"goldeylocks69": dict.fromkeys(expected, watched)}}
 
@@ -3020,8 +3033,8 @@ class CleanupMediaRuleTests(unittest.TestCase):
         # Now the same plays, judged against a bar set after them. The gated
         # field goes false -- that is its job -- but membership must not.
         reissued = datetime(2026, 6, 1, tzinfo=UTC)
-        snapshot.first_request_at_by_key_user[media_key] = {5: reissued}
-        snapshot.first_request_at_by_series_season_user[(5920, 6)] = {5: reissued}
+        snapshot.first_request_at_by_key_user[media_key] = {"1:5": reissued}
+        snapshot.first_request_at_by_series_season_user[(5920, 6)] = {"1:5": reissued}
 
         ever, after = _compute_requester_tv_watch_targets_for_key(
             media_key=media_key,
@@ -3043,12 +3056,12 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested = datetime(2026, 1, 1, tzinfo=UTC)
         watched = datetime(2026, 2, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
             # They requested season 1 only; season 2 arrived some other way.
-            first_request_at_by_series_season_user={(5920, 1): {101: requested}},
+            first_request_at_by_series_season_user={(5920, 1): {"1:101": requested}},
         )
 
         ever, after = _compute_requester_tv_watch_targets_for_key(
@@ -3079,9 +3092,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         watched_at = datetime(2026, 7, 2, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"alice"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"alice"}},
             latest_active_request_at_by_key={},
         )
         # Sonarr knows about episodes 1-10; only 1-8 exist locally.
@@ -3115,9 +3128,9 @@ class CleanupMediaRuleTests(unittest.TestCase):
         requested_at = datetime(2023, 8, 23, tzinfo=UTC)
         watched_at = datetime(2025, 1, 6, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
-            first_request_at_by_key_user={media_key: {101: requested_at}},
-            requester_identity_keys_by_user_id={101: {"black widow"}},
+            requester_ids_by_key={media_key: {"1:101"}},
+            first_request_at_by_key_user={media_key: {"1:101": requested_at}},
+            requester_identity_keys_by_user_id={"1:101": {"black widow"}},
             latest_active_request_at_by_key={},
         )
         episodes = {(1, episode) for episode in range(1, 9)}
@@ -3160,11 +3173,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
     def test_requester_movie_watch_bridges_identities_through_aliases(self) -> None:
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
+            requester_ids_by_key={media_key: {"1:101"}},
             first_request_at_by_key_user={
-                media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
+                media_key: {"1:101": datetime(2026, 1, 1, tzinfo=UTC)}
             },
-            requester_identity_keys_by_user_id={101: {"black widow"}},
+            requester_identity_keys_by_user_id={"1:101": {"black widow"}},
             latest_active_request_at_by_key={},
         )
         watches: dict[tuple[MediaType, int], dict[Service, dict[str, datetime]]] = {
@@ -3198,11 +3211,11 @@ class CleanupMediaRuleTests(unittest.TestCase):
         """A Jellyfin alias must not vouch for a Plex watch key."""
         media_key: tuple[MediaType, int] = (MediaType.MOVIE, 42)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={media_key: {101}},
+            requester_ids_by_key={media_key: {"1:101"}},
             first_request_at_by_key_user={
-                media_key: {101: datetime(2026, 1, 1, tzinfo=UTC)}
+                media_key: {"1:101": datetime(2026, 1, 1, tzinfo=UTC)}
             },
-            requester_identity_keys_by_user_id={101: {"black widow"}},
+            requester_identity_keys_by_user_id={"1:101": {"black widow"}},
             latest_active_request_at_by_key={},
         )
         aliases = frozenset({"black widow", "natasha"})
@@ -3433,9 +3446,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             action={"candidate": True, "media_server_action": "delete"},
         )
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.MOVIE, 123): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.MOVIE, 123): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
         )
         async with self._sessionmaker() as db:
@@ -3468,8 +3483,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:
@@ -3515,8 +3530,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:
@@ -3531,6 +3546,89 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         assert resolver is not None
         self.assertTrue(resolver.resolve_requester_has_watched(MediaType.MOVIE, 123))
 
+    async def test_one_unreachable_seerr_skips_every_seerr_rule(self) -> None:
+        """Fail closed: a Seerr that is down still holds requests we cannot see.
+
+        Answering from the instance that did respond would report "not
+        requested" for those titles, and a deletion rule acts on that.
+        """
+        rule = ReclaimRule(
+            name="Requested",
+            media_type=MediaType.MOVIE,
+            enabled=True,
+            target_scope="movie_version",
+            definition={
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "seerr.requested",
+                            "operator": "is_false",
+                        }
+                    ],
+                },
+            },
+            action={"candidate": True, "media_server_action": "delete"},
+        )
+        async with self._sessionmaker() as db:
+            overseerr = ServiceConfig(
+                service_type=Service.SEERR,
+                name="Overseerr",
+                base_url="http://overseerr",
+                api_key="key",
+                enabled=True,
+            )
+            jellyseerr = ServiceConfig(
+                service_type=Service.SEERR,
+                name="Jellyseerr",
+                base_url="http://jellyseerr",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([rule, Movie(title="Movie", tmdb_id=123), overseerr, jellyseerr])
+            await db.commit()
+            healthy_id = overseerr.id
+            down_id = jellyseerr.id
+
+        degraded = SeerrSnapshotState(
+            merged=None,
+            by_config_id={},
+            errors_by_config_id={down_id: "connection refused"},
+            healthy_config_ids={healthy_id},
+            configured_config_ids={healthy_id, down_id},
+        )
+        metadata = RulePreviewMatchMetadata()
+        with (
+            patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
+            patch.object(
+                type(cleanup_tasks.seerr_snapshot_cache),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=degraded),
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                ready, error = await _activate_seerr_request_resolver_for_rules(
+                    db,
+                    [rule],
+                    require_fresh=True,
+                    allow_stale_on_failure=False,
+                    metadata=metadata,
+                )
+
+        self.assertFalse(ready)
+        assert error is not None
+        self.assertIn("Jellyseerr", error)
+        self.assertIn("connection refused", error)
+        self.assertEqual(metadata.seerr_unavailable_instances, ["Jellyseerr"])
+        # The resolver is installed but empty, so conditions read unknown rather
+        # than false while the scan drops the rule.
+        resolver = SeerrRequestResolver.current()
+        assert resolver is not None
+        self.assertIsNone(resolver.resolve(MediaType.MOVIE, 123))
+
     async def _run_requester_watch_resolver(
         self, rule: ReclaimRule, snapshot: SeerrRequestSnapshot
     ) -> RulePreviewMatchMetadata:
@@ -3539,8 +3637,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
             patch.object(
                 type(cleanup_tasks.media_watch_snapshot_cache),
@@ -3575,9 +3673,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             operator="is_false",
         )
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.MOVIE, 123): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.MOVIE, 123): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
         )
         async with self._sessionmaker() as db:
@@ -3621,9 +3721,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             operator="is_false",
         )
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.MOVIE, 123): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.MOVIE, 123): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
         )
         async with self._sessionmaker() as db:
@@ -3674,9 +3776,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             operator="is_true",
         )
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.MOVIE, 123): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.MOVIE, 123): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
         )
         async with self._sessionmaker() as db:
@@ -3727,8 +3831,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:
@@ -3748,7 +3852,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(explanation.requesters[0].movie_watched_before_request)
         self.assertEqual(
             [(e.watch_user_key, e.matched_requester_ids) for e in explanation.evidence],
-            [("alice", [7])],
+            [("alice", ["1:7"])],
         )
         self.assertEqual(explanation.holding_services, [Service.PLEX])
         self.assertEqual(explanation.unobservable_services, [])
@@ -3764,11 +3868,13 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         """
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.SERIES, 321): {7}},
-            first_request_at_by_key_user={(MediaType.SERIES, 321): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.SERIES, 321): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.SERIES, 321): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
-            first_request_at_by_series_season_user={(321, 1): {7: requested_at}},
+            first_request_at_by_series_season_user={(321, 1): {"1:7": requested_at}},
         )
         async with self._sessionmaker() as db:
             plex = ServiceConfig(
@@ -3832,8 +3938,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:
@@ -3878,12 +3984,14 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             operator="is_true",
         )
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.SERIES, 654): {3}},
-            first_request_at_by_key_user={(MediaType.SERIES, 654): {3: requested_at}},
-            requester_identity_keys_by_user_id={3: {"black widow"}},
+            requester_ids_by_key={(MediaType.SERIES, 654): {"1:3"}},
+            first_request_at_by_key_user={
+                (MediaType.SERIES, 654): {"1:3": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:3": {"black widow"}},
             latest_active_request_at_by_key={},
-            requester_ids_by_series_season={(654, 1): {3}},
-            first_request_at_by_series_season_user={(654, 1): {3: requested_at}},
+            requester_ids_by_series_season={(654, 1): {"1:3"}},
+            first_request_at_by_series_season_user={(654, 1): {"1:3": requested_at}},
         )
         async with self._sessionmaker() as db:
             plex = ServiceConfig(
@@ -3949,8 +4057,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:
@@ -3974,9 +4082,11 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explain_requester_watch_reports_an_unreadable_server(self) -> None:
         requested_at = datetime(2026, 7, 1, tzinfo=UTC)
         snapshot = SeerrRequestSnapshot(
-            requester_ids_by_key={(MediaType.MOVIE, 123): {7}},
-            first_request_at_by_key_user={(MediaType.MOVIE, 123): {7: requested_at}},
-            requester_identity_keys_by_user_id={7: {"alice"}},
+            requester_ids_by_key={(MediaType.MOVIE, 123): {"1:7"}},
+            first_request_at_by_key_user={
+                (MediaType.MOVIE, 123): {"1:7": requested_at}
+            },
+            requester_identity_keys_by_user_id={"1:7": {"alice"}},
             latest_active_request_at_by_key={},
         )
         async with self._sessionmaker() as db:
@@ -4006,8 +4116,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cleanup_tasks.service_manager, "_seerr", SimpleNamespace()),
             patch.object(
                 type(cleanup_tasks.seerr_snapshot_cache),
-                "get_request_snapshot",
-                new=AsyncMock(return_value=(snapshot, None)),
+                "get_request_snapshot_state",
+                new=AsyncMock(return_value=_snapshot_state(snapshot)),
             ),
         ):
             async with self._sessionmaker() as db:

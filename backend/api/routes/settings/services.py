@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -18,6 +19,7 @@ from backend.core.logger import LOG
 from backend.core.rule_actions import (
     get_arr_service_config_ids,
     normalize_arr_service_config_ids,
+    strip_seerr_config_from_definition,
 )
 from backend.core.service_manager import service_manager
 from backend.core.task_runtime import enqueue_task_run, request_task_run
@@ -65,10 +67,10 @@ router = APIRouter(tags=["settings", "services"])
 
 ARR_SERVICES = {Service.RADARR, Service.SONARR}
 # service types that may have more than one named ServiceConfig row at once -
-# arr instances, and (as of multi-instance media server support) Plex/
-# Jellyfin/Emby. Everything else (Seerr, Tautulli, Tracearr, MDBList, OMDb)
+# arr instances, Plex/Jellyfin/Emby, and Seerr (a request frontend usually sits
+# beside each media server). Everything else (Tautulli, Tracearr, MDBList, OMDb)
 # stays single-instance.
-MULTI_INSTANCE_SERVICE_TYPES = ARR_SERVICES | MEDIA_SERVERS
+MULTI_INSTANCE_SERVICE_TYPES = ARR_SERVICES | MEDIA_SERVERS | {Service.SEERR}
 METADATA_PROVIDER_SERVICES = (Service.MDBLIST, Service.OMDB)
 METADATA_PROVIDER_DEFAULT_REQUEST_LIMITS = {
     Service.MDBLIST: DEFAULT_MDBLIST_REQUEST_LIMIT,
@@ -523,7 +525,9 @@ async def get_service_settings(
     get_service_configs = await db.execute(select(ServiceConfig))
     service_configs = get_service_configs.scalars().all()
 
-    # gather libraries from the main media server
+    # gather libraries, grouped by the media server that reported them. Only the
+    # main server contributes rows, but grouping by config means a row left
+    # behind by a previously-main server is never handed to the current one.
     get_service_libraries = await db.execute(
         select(
             ServiceMediaLibrary.id,
@@ -531,33 +535,41 @@ async def get_service_settings(
             ServiceMediaLibrary.library_name,
             ServiceMediaLibrary.media_type,
             ServiceMediaLibrary.selected,
+            ServiceMediaLibrary.service_config_id,
         ).order_by(ServiceMediaLibrary.media_type)
     )
-    service_libraries = get_service_libraries.all()
+    libraries_by_config: dict[int | None, list[dict[str, Any]]] = {}
+    for (
+        lib_id,
+        library_id,
+        library_name,
+        media_type,
+        selected,
+        service_config_id,
+    ) in get_service_libraries.all():
+        libraries_by_config.setdefault(service_config_id, []).append(
+            {
+                "id": lib_id,
+                "library_id": library_id,
+                "library_name": library_name,
+                "media_type": media_type,
+                "selected": selected,
+                "service_config_id": service_config_id,
+            }
+        )
 
     response: dict[str, Any] = {}
     for config in service_configs:
         payload = _service_config_payload(config)
-        payload["libraries"] = (
-            [
-                {
-                    "id": lib_id,
-                    "library_id": library_id,
-                    "library_name": library_name,
-                    "media_type": media_type,
-                    "selected": selected,
-                }
-                for (
-                    lib_id,
-                    library_id,
-                    library_name,
-                    media_type,
-                    selected,
-                ) in service_libraries
+        if config.service_type in MEDIA_SERVERS and config.is_main:
+            # Rows predating the service_config_id column carry NULL; they
+            # belong to main by definition, since nothing else ever wrote them.
+            payload["libraries"] = [
+                *libraries_by_config.get(config.id, []),
+                *libraries_by_config.get(None, []),
             ]
-            if config.service_type in MEDIA_SERVERS and config.is_main
-            else None
-        )
+        else:
+            payload["libraries"] = None
 
         key = config.service_type
         if key in MULTI_INSTANCE_SERVICE_TYPES:
@@ -823,7 +835,43 @@ async def delete_service_settings(
                 disabled_rule_count += 1
             affected_rules.append({"id": rule.id, "name": rule.name})
 
+    removed_requester_mappings = 0
+
+    if service_type is Service.SEERR:
+        # A requester id names a person on one Seerr, so deleting that Seerr
+        # leaves conditions pointing at nobody. Mirror the arr cascade: strip the
+        # instance out, and disable any rule whose condition is left empty rather
+        # than leave a value list that `not_contains_any` would match everything
+        # against.
+        rules = (await db.execute(select(ReclaimRule))).scalars().all()
+        for rule in rules:
+            definition = deepcopy(rule.definition) if rule.definition else None
+            if not definition:
+                continue
+            changed, emptied = strip_seerr_config_from_definition(definition, config_id)
+            if not changed:
+                continue
+            rule.definition = definition
+            if emptied:
+                rule.enabled = False
+                disabled_rule_count += 1
+            affected_rules.append({"id": rule.id, "name": rule.name})
+
     settings = (await db.execute(select(GeneralSettings))).scalars().first()
+    if settings is not None and service_type is Service.SEERR:
+        current_requester_mappings = list(settings.requester_watch_user_mappings or [])
+        retained_requester_mappings = [
+            mapping
+            for mapping in current_requester_mappings
+            if not isinstance(mapping, dict)
+            or mapping.get("seerr_service_config_id") != config_id
+        ]
+        removed_requester_mappings = len(current_requester_mappings) - len(
+            retained_requester_mappings
+        )
+        if removed_requester_mappings:
+            settings.requester_watch_user_mappings = retained_requester_mappings
+
     if settings is not None:
         current_mappings = list(settings.path_mappings or [])
         retained_mappings = [
@@ -870,6 +918,7 @@ async def delete_service_settings(
             "affected_rules": affected_rules,
             "disabled_rule_count": disabled_rule_count,
             "removed_path_mappings": removed_path_mappings,
+            "removed_requester_mappings": removed_requester_mappings,
         },
     }
 
