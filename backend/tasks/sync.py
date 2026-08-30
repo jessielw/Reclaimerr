@@ -441,6 +441,15 @@ async def _build_movie_supplemental_matches(
     return list(matches_by_item.values())
 
 
+def _episode_item_id(episode: AggregatedEpisodeData, service: Service) -> str | None:
+    """Return the item id a media server uses for one episode."""
+    return {
+        Service.PLEX: episode.plex_rating_key,
+        Service.JELLYFIN: episode.jellyfin_episode_id,
+        Service.EMBY: episode.emby_episode_id,
+    }.get(service)
+
+
 async def _build_series_supplemental_matches(
     session: AsyncSession,
     config: ServiceConfig,
@@ -482,6 +491,18 @@ async def _build_series_supplemental_matches(
         names = _episode_file_names(season.episode_paths)
         if names:
             season_episode_names[season.id] = names
+
+    episodes_by_key: dict[tuple[int, int], int] = {
+        (season_id, episode_number): episode_id
+        for episode_id, season_id, episode_number in (
+            await session.execute(
+                select(Episode.id, Episode.season_id, Episode.episode_number)
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(Series.removed_at.is_(None))
+            )
+        ).all()
+    }
 
     matches_by_item: dict[str, SupplementalMediaMatch] = {}
     ambiguous = 0
@@ -568,6 +589,34 @@ async def _build_series_supplemental_matches(
                     "season_number": source_season.season_number,
                 },
             )
+
+            # Episode ids too, since only one server per type may write
+            # episodes.<service>_episode_id. Episode number within a season the
+            # season pass already matched is identity enough - it is the same
+            # coordinate _upsert_episodes merges linked watch data on.
+            for source_episode in source_season.episode_data:
+                source_episode_id = _episode_item_id(source_episode, source_service)
+                local_episode_id = episodes_by_key.get(
+                    (local_season.id, source_episode.episode_number)
+                )
+                if not source_episode_id or local_episode_id is None:
+                    continue
+                matches_by_item[source_episode_id] = SupplementalMediaMatch(
+                    source_service=source_service,
+                    source_service_config_id=config.id,
+                    source_item_id=source_episode_id,
+                    media_type=MediaType.SERIES,
+                    series_id=local_series.id,
+                    season_id=local_season.id,
+                    episode_id=local_episode_id,
+                    confidence=100,
+                    signals={
+                        "match": "episode_number",
+                        "tmdb_id": tmdb_id,
+                        "season_number": source_season.season_number,
+                        "episode_number": source_episode.episode_number,
+                    },
+                )
 
     if ambiguous:
         LOG.debug(

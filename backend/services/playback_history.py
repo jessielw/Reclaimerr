@@ -35,6 +35,10 @@ from backend.database.models import (
 from backend.enums import MediaType, Service
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
+from backend.services.media_identity import (
+    MediaIdentityOwnership,
+    load_media_identity_ownership,
+)
 from backend.services.tautulli import TautulliClient
 from backend.services.tracearr import TracearrClient
 
@@ -45,8 +49,10 @@ PLAYBACK_TARGET_SCOPES = ("movie_version", "series", "season", "episode")
 PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
 PLAYBACK_EVENT_FORMAT_VERSION = 2
-PLAYBACK_AGGREGATE_FORMAT_VERSION = 1
-TRACEARR_PLAYBACK_FORMAT_VERSION = 1
+# 2: events resolve against the server they were observed on rather than every
+# server of that type, so retained history has to be re-resolved and rebuilt.
+PLAYBACK_AGGREGATE_FORMAT_VERSION = 2
+TRACEARR_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
 NATIVE_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_FIELDS = frozenset(
@@ -974,54 +980,86 @@ def _normalize_tracearr_events(
 
 
 async def _identity_maps(
-    session: AsyncSession, service: Service
+    session: AsyncSession,
+    service: Service,
+    config_id: int | None,
+    *,
+    ownership: MediaIdentityOwnership | None = None,
 ) -> tuple[
     dict[str, tuple[int, int]],
     dict[str, tuple[int, int, int, int, int, int]],
 ]:
-    """Load local media ID maps for imported playback events."""
+    """Load local media ID maps for one media server's playback events.
 
-    movie_map: dict[str, tuple[int, int]] = {
-        str(item_id): (movie_id, tmdb_id)
-        for item_id, movie_id, tmdb_id in (
-            await session.execute(
-                select(
-                    MovieVersion.service_item_id,
-                    Movie.id,
-                    Movie.tmdb_id,
+    ``config_id`` names the media server the events were observed on. A Plex
+    ratingKey (or Jellyfin/Emby item id) is only unique within one server, so a
+    second server of the same type resolves through its own supplemental
+    matches rather than the ids the main server wrote -- otherwise a play on
+    one server lands on whichever media happens to share that id on the other.
+    ``None`` means the events cannot name their server, which keeps the
+    service-wide behaviour that predates multi-server support.
+
+    Supplemental matches carry episode ids as well as movie ones, so a linked
+    server of the main server's own type -- which may not write
+    ``episodes.<service>_episode_id`` -- still resolves its episode plays.
+    """
+
+    if ownership is None:
+        ownership = await load_media_identity_ownership(session)
+    unattributed = config_id is None
+
+    movie_map: dict[str, tuple[int, int]] = {}
+    if unattributed or ownership.owns_media_rows(service, cast(int, config_id)):
+        movie_map = {
+            str(item_id): (movie_id, tmdb_id)
+            for item_id, movie_id, tmdb_id in (
+                await session.execute(
+                    select(
+                        MovieVersion.service_item_id,
+                        Movie.id,
+                        Movie.tmdb_id,
+                    )
+                    .join(Movie, MovieVersion.movie_id == Movie.id)
+                    .where(
+                        MovieVersion.service == service,
+                        Movie.removed_at.is_(None),
+                    )
                 )
-                .join(Movie, MovieVersion.movie_id == Movie.id)
-                .where(
-                    MovieVersion.service == service,
-                    Movie.removed_at.is_(None),
-                )
-            )
-        ).all()
-    }
-    mapped_movies = (
-        await session.execute(
-            select(
-                SupplementalMediaMatch.source_item_id,
-                Movie.id,
-                Movie.tmdb_id,
-            )
-            .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
-            .where(
-                SupplementalMediaMatch.source_service == service,
-                SupplementalMediaMatch.media_type == MediaType.MOVIE,
-                SupplementalMediaMatch.movie_id.is_not(None),
-                Movie.removed_at.is_(None),
-            )
+            ).all()
+        }
+
+    supplemental_query = (
+        select(
+            SupplementalMediaMatch.source_item_id,
+            Movie.id,
+            Movie.tmdb_id,
         )
-    ).all()
+        .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
+        .where(
+            SupplementalMediaMatch.media_type == MediaType.MOVIE,
+            SupplementalMediaMatch.movie_id.is_not(None),
+            Movie.removed_at.is_(None),
+        )
+    )
+    supplemental_query = supplemental_query.where(
+        SupplementalMediaMatch.source_service == service
+        if unattributed
+        else SupplementalMediaMatch.source_service_config_id == config_id
+    )
+    mapped_movies = (await session.execute(supplemental_query)).all()
     for item_id, movie_id, tmdb_id in mapped_movies:
         movie_map.setdefault(str(item_id), (movie_id, tmdb_id))
 
-    episode_column = {
-        Service.PLEX: Episode.plex_rating_key,
-        Service.JELLYFIN: Episode.jellyfin_episode_id,
-        Service.EMBY: Episode.emby_episode_id,
-    }.get(service)
+    episode_column = (
+        {
+            Service.PLEX: Episode.plex_rating_key,
+            Service.JELLYFIN: Episode.jellyfin_episode_id,
+            Service.EMBY: Episode.emby_episode_id,
+        }.get(service)
+        if unattributed
+        or ownership.owns_service_id_columns(service, cast(int, config_id))
+        else None
+    )
     episode_map: dict[str, tuple[int, int, int, int, int, int]] = {}
     if episode_column is not None:
         rows = (
@@ -1062,6 +1100,44 @@ async def _identity_maps(
                 episode_number,
             ) in rows
         }
+
+    supplemental_episode_query = (
+        select(
+            SupplementalMediaMatch.source_item_id,
+            Episode.id,
+            Season.id,
+            Series.id,
+            Series.tmdb_id,
+            Season.season_number,
+            Episode.episode_number,
+        )
+        .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+        .join(Season, Episode.season_id == Season.id)
+        .join(Series, Season.series_id == Series.id)
+        .where(
+            SupplementalMediaMatch.media_type == MediaType.SERIES,
+            SupplementalMediaMatch.episode_id.is_not(None),
+            Series.removed_at.is_(None),
+        )
+    )
+    supplemental_episode_query = supplemental_episode_query.where(
+        SupplementalMediaMatch.source_service == service
+        if unattributed
+        else SupplementalMediaMatch.source_service_config_id == config_id
+    )
+    for (
+        item_id,
+        episode_id,
+        season_id,
+        series_id,
+        tmdb_id,
+        season_number,
+        episode_number,
+    ) in (await session.execute(supplemental_episode_query)).all():
+        episode_map.setdefault(
+            str(item_id),
+            (episode_id, season_id, series_id, tmdb_id, season_number, episode_number),
+        )
     return movie_map, episode_map
 
 
@@ -1071,9 +1147,16 @@ async def _upsert_events(
     config: ServiceConfig,
     provider: Service,
     observed_service: Service,
+    observed_config_id: int | None,
     events: list[_NormalizedEvent],
 ) -> int:
-    """Insert new playback events and update existing ones."""
+    """Insert new playback events and update existing ones.
+
+    ``observed_config_id`` is the media server the plays happened on, which is
+    not the provider config whenever one provider fronts several servers (a
+    Tracearr instance bound to two Plex servers). ``None`` when the provider
+    cannot name it -- Tautulli on an install whose main server is not Plex.
+    """
 
     events_by_key: dict[str, _NormalizedEvent] = {}
     for event in events:
@@ -1086,7 +1169,9 @@ async def _upsert_events(
         )
     events = list(events_by_key.values())
 
-    movie_map, episode_map = await _identity_maps(session, observed_service)
+    movie_map, episode_map = await _identity_maps(
+        session, observed_service, observed_config_id
+    )
     existing_by_key: dict[str, PlaybackHistoryEvent] = {}
     keys = [event.source_event_key for event in events]
     for offset in range(0, len(keys), 500):
@@ -1127,6 +1212,7 @@ async def _upsert_events(
                 {
                     "source_service": provider,
                     "observed_service": observed_service,
+                    "observed_service_config_id": observed_config_id,
                     "source_service_config_id": config.id,
                     "source_event_key": event.source_event_key,
                     "source_item_id": event.source_item_id,
@@ -1149,6 +1235,7 @@ async def _upsert_events(
 
         existing.source_item_id = event.source_item_id
         existing.observed_service = observed_service
+        existing.observed_service_config_id = observed_config_id
         existing.provider_media_type = event.provider_media_type
         existing.played_at = event.played_at
         existing.duration_seconds = event.duration_seconds
@@ -1223,6 +1310,7 @@ async def _persist_unavailable_status(
     provider: Service,
     observed_service: Service,
     error: str | None,
+    observed_config_id: int | None = None,
 ) -> PlaybackProviderStatus:
     """Persist a provider outcome without swallowing database failures."""
 
@@ -1242,6 +1330,7 @@ async def _persist_unavailable_status(
         config_id=config.id,
         provider=provider,
         observed_service=observed_service,
+        observed_config_id=observed_config_id,
         available=False,
         error=error,
     )
@@ -1301,6 +1390,7 @@ async def _refresh_reporting_config(
                 provider=config.service_type,
                 observed_service=config.service_type,
                 error=error,
+                observed_config_id=config.id,
             )
 
         if not plugin_available:
@@ -1309,6 +1399,7 @@ async def _refresh_reporting_config(
                 provider=config.service_type,
                 observed_service=config.service_type,
                 error=None,
+                observed_config_id=config.id,
             )
 
         async with async_db() as session:
@@ -1325,6 +1416,9 @@ async def _refresh_reporting_config(
                 config=db_config,
                 provider=config.service_type,
                 observed_service=config.service_type,
+                # Playback Reporting reads the media server's own history, so
+                # the provider config and the observed server are one row.
+                observed_config_id=db_config.id,
                 events=events,
             )
             _set_state(
@@ -1341,6 +1435,7 @@ async def _refresh_reporting_config(
             config_id=config.id,
             provider=config.service_type,
             observed_service=config.service_type,
+            observed_config_id=config.id,
             available=True,
             imported_events=imported,
         )
@@ -1403,6 +1498,12 @@ async def _refresh_tautulli_config(
             db_config = await session.get(ServiceConfig, config.id)
             if db_config is None:
                 raise ValueError(f"Service config {config.id} no longer exists")
+            # Tautulli's API cannot name which Plex it fronts, so attribute it
+            # to the main server. Null when main is not Plex, which leaves its
+            # events resolving service-wide the way they always have.
+            observed_config_id = (
+                await load_media_identity_ownership(session)
+            ).main_config_id_for(Service.PLEX)
             await _backfill_event_usernames(
                 session,
                 config_id=db_config.id,
@@ -1413,6 +1514,7 @@ async def _refresh_tautulli_config(
                 config=db_config,
                 provider=Service.TAUTULLI,
                 observed_service=Service.PLEX,
+                observed_config_id=observed_config_id,
                 events=events,
             )
             _set_state(
@@ -1429,6 +1531,7 @@ async def _refresh_tautulli_config(
             config_id=config.id,
             provider=Service.TAUTULLI,
             observed_service=Service.PLEX,
+            observed_config_id=observed_config_id,
             available=True,
             imported_events=imported,
         )
@@ -1712,6 +1815,7 @@ async def _refresh_tracearr_binding(
             config=db_config,
             provider=Service.TRACEARR,
             observed_service=binding.observed_service,
+            observed_config_id=binding.service_config_id,
             events=events,
         )
         _set_tracearr_binding_state(
@@ -1933,21 +2037,25 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
 
     resolved = 0
     async with async_db() as session:
-        services = (
-            (
-                await session.execute(
-                    select(PlaybackHistoryEvent.observed_service)
-                    .where(PlaybackHistoryEvent.tmdb_id.is_(None))
-                    .distinct()
+        ownership = await load_media_identity_ownership(session)
+        # Grouped by observed server, not just service type - two servers of the
+        # same type hand out the same item ids, so each needs its own map.
+        sources = (
+            await session.execute(
+                select(
+                    PlaybackHistoryEvent.observed_service,
+                    PlaybackHistoryEvent.observed_service_config_id,
                 )
+                .where(PlaybackHistoryEvent.tmdb_id.is_(None))
+                .distinct()
             )
-            .scalars()
-            .all()
-        )
-        for service in services:
+        ).all()
+        for service, observed_config_id in sources:
             if service is None:
                 continue
-            movie_map, episode_map = await _identity_maps(session, service)
+            movie_map, episode_map = await _identity_maps(
+                session, service, observed_config_id, ownership=ownership
+            )
             if not movie_map and not episode_map:
                 continue
             events = (
@@ -1957,6 +2065,10 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                         .where(
                             PlaybackHistoryEvent.tmdb_id.is_(None),
                             PlaybackHistoryEvent.observed_service == service,
+                            PlaybackHistoryEvent.observed_service_config_id.is_(None)
+                            if observed_config_id is None
+                            else PlaybackHistoryEvent.observed_service_config_id
+                            == observed_config_id,
                         )
                         .limit(batch_size)
                     )
@@ -2318,11 +2430,6 @@ async def rebuild_playback_history_aggregates() -> None:
             series_added_by_id[series_id] = series_added_at
             season_added_by_id[season_id] = season_added_at
 
-        identity_maps = {
-            service: await _identity_maps(session, service)
-            for service in (Service.PLEX, Service.JELLYFIN, Service.EMBY)
-        }
-
         aggregates: dict[PlaybackTargetKey, _Aggregate] = {}
         user_aggregates: dict[
             tuple[int, Service, str, int],
@@ -2337,6 +2444,29 @@ async def rebuild_playback_history_aggregates() -> None:
         events = list(
             (await session.execute(select(PlaybackHistoryEvent))).scalars().all()
         )
+
+        # One map per media server, not per service type: two servers of the
+        # same type reuse each other's item ids, so a shared map would credit a
+        # play to whichever media happened to hold that id on the other server.
+        ownership = await load_media_identity_ownership(session)
+        identity_maps: dict[
+            tuple[Service, int | None],
+            tuple[
+                dict[str, tuple[int, int]],
+                dict[str, tuple[int, int, int, int, int, int]],
+            ],
+        ] = {}
+        for identity_key in {
+            (_observed_service_for_event(event), event.observed_service_config_id)
+            for event in events
+        }:
+            identity_maps[identity_key] = await _identity_maps(
+                session,
+                identity_key[0],
+                identity_key[1],
+                ownership=ownership,
+            )
+
         for event in events:
             if not _playback_event_is_active(event, active_tracearr_sources):
                 continue
@@ -2348,7 +2478,9 @@ async def rebuild_playback_history_aggregates() -> None:
                 event.episode_id,
             )
             observed_service = _observed_service_for_event(event)
-            movie_map, episode_map = identity_maps.get(observed_service, ({}, {}))
+            movie_map, episode_map = identity_maps.get(
+                (observed_service, event.observed_service_config_id), ({}, {})
+            )
 
             if event.provider_media_type == "movie":
                 movie_id: int | None = None
@@ -2640,17 +2772,20 @@ async def load_playback_rule_snapshot(
                 SupplementalMediaMatch.movie_id,
                 SupplementalMediaMatch.series_id,
                 SupplementalMediaMatch.season_id,
+                SupplementalMediaMatch.episode_id,
             )
         )
     ).all()
     supplemental_movie_ids: dict[Service, set[int]] = defaultdict(set)
-    for service, movie_id, series_id, season_id in supplemental_rows:
+    for service, movie_id, series_id, season_id, episode_id in supplemental_rows:
         if movie_id is not None:
             supplemental_movie_ids[service].add(movie_id)
         if series_id is not None:
             target_services["series"].setdefault(series_id, set()).add(service)
         if season_id is not None:
             target_services["season"].setdefault(season_id, set()).add(service)
+        if episode_id is not None:
+            target_services["episode"].setdefault(episode_id, set()).add(service)
     for service, movie_ids in supplemental_movie_ids.items():
         version_rows = (
             await db.execute(

@@ -857,6 +857,13 @@ class SupplementalMediaMatch(Base):
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), index=True, default=None
     )
+    # Only a server of a type the main server does not provide can write its
+    # episode ids to episodes.<service>_episode_id, so a linked server of the
+    # main server's own type records them here instead. Without it, its episode
+    # plays have no id to resolve through at all.
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id"), index=True, default=None
+    )
     source_media_id: Mapped[str | None] = mapped_column(String(100), default=None)
     path_tail: Mapped[str | None] = mapped_column(String(1024), default=None)
     confidence: Mapped[int] = mapped_column(SmallInteger, default=100)
@@ -1117,6 +1124,16 @@ class PlaybackHistoryEvent(Base):
     duration_seconds: Mapped[int] = mapped_column(Integer)
     observed_service: Mapped[Service | None] = mapped_column(
         Enum(Service), default=None, index=True
+    )
+    # which media server config the play happened on. one provider config can
+    # observe several servers of the same type (a Tracearr instance bound to two
+    # Plex servers), and item ids are only unique within a single server, so
+    # identity resolution has to know which server an event came from. null for
+    # legacy rows and for providers that cannot name their server.
+    observed_service_config_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
     )
     completed: Mapped[bool | None] = mapped_column(Boolean, default=None, index=True)
     source_user_id: Mapped[str | None] = mapped_column(

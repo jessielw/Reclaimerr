@@ -215,7 +215,9 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         config.extra_settings = {
             "playback_history_sync": {
                 "format_version": 2,
-                "aggregate_format_version": 1,
+                "aggregate_format_version": (
+                    playback_history.PLAYBACK_AGGREGATE_FORMAT_VERSION
+                ),
                 "available": True,
                 "last_attempt_at": datetime.now(UTC).isoformat(),
             }
@@ -845,6 +847,338 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
             self.assertEqual(aggregate.play_count, 1)
             self.assertEqual(aggregate.total_duration_seconds, 60)
+
+    async def _two_plex_servers_sharing_a_rating_key(
+        self,
+    ) -> tuple[int, int, int, int, int]:
+        """Seed two Plex servers where ratingKey "5001" means different movies.
+
+        Plex hands out per-server sequential rating keys, so two servers holding
+        the same library reuse each other's ids. The main server writes the
+        movie_versions rows; the linked server's ids only exist as supplemental
+        matches, keyed to its own config.
+        """
+        async with self.sessionmaker() as db:
+            main_movie = Movie(title="Main Movie", tmdb_id=101)
+            linked_movie = Movie(title="Linked Movie", tmdb_id=202)
+            plex_main = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex-main",
+                api_key="key",
+                name="Plex Main",
+                enabled=True,
+                is_main=True,
+            )
+            plex_linked = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex-linked",
+                api_key="key",
+                name="Plex Linked",
+                enabled=True,
+            )
+            tracearr = ServiceConfig(
+                service_type=Service.TRACEARR,
+                base_url="http://tracearr",
+                api_key="key",
+                name="Tracearr",
+                enabled=True,
+            )
+            db.add_all([main_movie, linked_movie, plex_main, plex_linked, tracearr])
+            await db.flush()
+            tracearr.extra_settings = {
+                "server_bindings": [
+                    {
+                        "service_config_id": plex_main.id,
+                        "tracearr_server_id": "server-main",
+                        "tracearr_server_name": "Plex Main",
+                        "server_type": "plex",
+                    },
+                    {
+                        "service_config_id": plex_linked.id,
+                        "tracearr_server_id": "server-linked",
+                        "tracearr_server_name": "Plex Linked",
+                        "server_type": "plex",
+                    },
+                ]
+            }
+            # only the main server contributes version rows
+            main_version = MovieVersion(
+                movie_id=main_movie.id,
+                service=Service.PLEX,
+                service_item_id="5001",
+                service_media_id="main-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            linked_version = MovieVersion(
+                movie_id=linked_movie.id,
+                service=Service.PLEX,
+                service_item_id="7777",
+                service_media_id="linked-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            db.add_all([main_version, linked_version])
+            await db.flush()
+            # on the linked server, ratingKey 5001 is the *other* movie
+            db.add(
+                SupplementalMediaMatch(
+                    source_service=Service.PLEX,
+                    source_service_config_id=plex_linked.id,
+                    source_item_id="5001",
+                    media_type=MediaType.MOVIE,
+                    movie_id=linked_movie.id,
+                )
+            )
+            await db.commit()
+            return (
+                tracearr.id,
+                plex_main.id,
+                plex_linked.id,
+                main_version.id,
+                linked_version.id,
+            )
+
+    async def _movie_version_aggregates(
+        self,
+    ) -> dict[int, PlaybackHistoryAggregate]:
+        async with self.sessionmaker() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(PlaybackHistoryAggregate).where(
+                            PlaybackHistoryAggregate.target_scope == "movie_version"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return {row.target_id: row for row in rows}
+
+    async def test_same_rating_key_on_two_servers_resolves_per_server(self) -> None:
+        """A play on the linked server must not land on the main server's movie.
+
+        Both servers hand out ratingKey "5001" for different films. Resolving by
+        service type alone let the main server's movie_versions row shadow the
+        linked server's supplemental match, so a linked-server play was credited
+        to the wrong movie (or dropped), and "playback plays" read 0 for media
+        that had in fact been watched.
+        """
+        (
+            tracearr_id,
+            _plex_main_id,
+            plex_linked_id,
+            main_version_id,
+            linked_version_id,
+        ) = await self._two_plex_servers_sharing_a_rating_key()
+
+        async with self.sessionmaker() as db:
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TRACEARR,
+                    observed_service=Service.PLEX,
+                    observed_service_config_id=plex_linked_id,
+                    source_service_config_id=tracearr_id,
+                    source_event_key="server-linked:play-1",
+                    source_item_id="5001",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 8, 2),
+                    duration_seconds=90,
+                )
+            )
+            await db.commit()
+
+        await rebuild_playback_history_aggregates()
+        aggregates = await self._movie_version_aggregates()
+
+        self.assertNotIn(main_version_id, aggregates)
+        self.assertIn(linked_version_id, aggregates)
+        self.assertEqual(aggregates[linked_version_id].play_count, 1)
+        self.assertEqual(aggregates[linked_version_id].total_duration_seconds, 90)
+
+    async def test_main_server_play_still_resolves_through_its_own_versions(
+        self,
+    ) -> None:
+        """The same id observed on the main server keeps resolving to its movie."""
+        (
+            tracearr_id,
+            plex_main_id,
+            _plex_linked_id,
+            main_version_id,
+            linked_version_id,
+        ) = await self._two_plex_servers_sharing_a_rating_key()
+
+        async with self.sessionmaker() as db:
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TRACEARR,
+                    observed_service=Service.PLEX,
+                    observed_service_config_id=plex_main_id,
+                    source_service_config_id=tracearr_id,
+                    source_event_key="server-main:play-1",
+                    source_item_id="5001",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 8, 2),
+                    duration_seconds=120,
+                )
+            )
+            await db.commit()
+
+        await rebuild_playback_history_aggregates()
+        aggregates = await self._movie_version_aggregates()
+
+        self.assertNotIn(linked_version_id, aggregates)
+        self.assertIn(main_version_id, aggregates)
+        self.assertEqual(aggregates[main_version_id].play_count, 1)
+
+    async def test_unmapped_identity_recovery_respects_observed_server(self) -> None:
+        """Re-resolving a null-TMDB event must use its own server's ids."""
+        (
+            tracearr_id,
+            _plex_main_id,
+            plex_linked_id,
+            _main_version_id,
+            _linked_version_id,
+        ) = await self._two_plex_servers_sharing_a_rating_key()
+
+        async with self.sessionmaker() as db:
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TRACEARR,
+                    observed_service=Service.PLEX,
+                    observed_service_config_id=plex_linked_id,
+                    source_service_config_id=tracearr_id,
+                    source_event_key="server-linked:play-1",
+                    source_item_id="5001",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 8, 2),
+                    duration_seconds=90,
+                )
+            )
+            await db.commit()
+
+        self.assertEqual(await resolve_unmapped_event_identities(), 1)
+
+        async with self.sessionmaker() as db:
+            event = (await db.execute(select(PlaybackHistoryEvent))).scalars().one()
+            self.assertEqual(event.tmdb_id, 202)
+
+    async def test_linked_same_type_server_episode_play_resolves(self) -> None:
+        """Episode plays on a second Plex server need a supplemental episode id.
+
+        There is one episode id column per service type, and sync_linked_data
+        only lets a linked server write it when its type differs from the main
+        server's. Without an episode-level supplemental match a second Plex
+        server's episode plays had nothing to resolve through, so every TV rule
+        read 0 plays for media it had in fact watched.
+        """
+        async with self.sessionmaker() as db:
+            series = Series(title="Series", tmdb_id=303)
+            plex_main = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex-main",
+                api_key="key",
+                name="Plex Main",
+                enabled=True,
+                is_main=True,
+            )
+            plex_linked = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex-linked",
+                api_key="key",
+                name="Plex Linked",
+                enabled=True,
+            )
+            tracearr = ServiceConfig(
+                service_type=Service.TRACEARR,
+                base_url="http://tracearr",
+                api_key="key",
+                name="Tracearr",
+                enabled=True,
+            )
+            db.add_all([series, plex_main, plex_linked, tracearr])
+            await db.flush()
+            tracearr.extra_settings = {
+                "server_bindings": [
+                    {
+                        "service_config_id": plex_linked.id,
+                        "tracearr_server_id": "server-linked",
+                        "tracearr_server_name": "Plex Linked",
+                        "server_type": "plex",
+                    }
+                ]
+            }
+            db.add(
+                SeriesServiceRef(
+                    series_id=series.id,
+                    service=Service.PLEX,
+                    service_id="series-item",
+                    library_id="shows",
+                    library_name="Shows",
+                )
+            )
+            season = Season(series_id=series.id, season_number=1)
+            db.add(season)
+            await db.flush()
+            episode = Episode(
+                season_id=season.id,
+                episode_number=4,
+                # the main server's rating key; the linked server numbers the
+                # very same episode differently
+                plex_rating_key="9001",
+            )
+            db.add(episode)
+            await db.flush()
+            db.add(
+                SupplementalMediaMatch(
+                    source_service=Service.PLEX,
+                    source_service_config_id=plex_linked.id,
+                    source_item_id="4242",
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    season_id=season.id,
+                    episode_id=episode.id,
+                )
+            )
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TRACEARR,
+                    observed_service=Service.PLEX,
+                    observed_service_config_id=plex_linked.id,
+                    source_service_config_id=tracearr.id,
+                    source_event_key="server-linked:play-1",
+                    source_item_id="4242",
+                    provider_media_type="episode",
+                    played_at=datetime(2026, 8, 2),
+                    duration_seconds=600,
+                )
+            )
+            await db.commit()
+            episode_id = episode.id
+            season_id = season.id
+            series_id = series.id
+
+        await rebuild_playback_history_aggregates()
+
+        async with self.sessionmaker() as db:
+            aggregates = {
+                (row.target_scope, row.target_id): row.play_count
+                for row in (
+                    (await db.execute(select(PlaybackHistoryAggregate)))
+                    .scalars()
+                    .all()
+                )
+            }
+
+        self.assertEqual(
+            aggregates,
+            {
+                ("series", series_id): 1,
+                ("season", season_id): 1,
+                ("episode", episode_id): 1,
+            },
+        )
 
     async def test_completion_evidence_keeps_superseded_provider_history(
         self,
@@ -1784,6 +2118,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                 config=config,
                 provider=Service.JELLYFIN,
                 observed_service=Service.JELLYFIN,
+                observed_config_id=config.id,
                 events=events,
             )
             await db.commit()
@@ -1798,6 +2133,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
                 config=config,
                 provider=Service.JELLYFIN,
                 observed_service=Service.JELLYFIN,
+                observed_config_id=config.id,
                 events=events,
             )
             await db.commit()

@@ -31,6 +31,7 @@ from backend.enums import MediaType, Service
 from backend.models.media import MediaWatchSnapshot, NativePlaybackSnapshot
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
+from backend.services.media_identity import load_media_identity_ownership
 from backend.services.plex import PlexService
 from backend.user_types import MEDIA_SERVERS
 
@@ -418,9 +419,16 @@ class MediaWatchSnapshotCache:
         *,
         session: AsyncSession,
         source_service: Service,
+        source_service_config_id: int,
         snapshots: list[NativePlaybackSnapshot],
     ) -> list[MediaWatchSnapshot]:
-        """Derive completed requester-watch evidence from native item snapshots."""
+        """Derive completed requester-watch evidence from native item snapshots.
+
+        Resolved against the server that reported the snapshots rather than
+        every server of its type: item ids repeat across servers, so a second
+        Jellyfin or Emby would otherwise credit a play to whichever title
+        happened to share that id on the first.
+        """
 
         completed = [
             snapshot
@@ -438,8 +446,12 @@ class MediaWatchSnapshotCache:
             for snapshot in completed
             if snapshot.provider_media_type == "movie"
         }
+        ownership = await load_media_identity_ownership(session)
+        owns_media_rows = ownership.owns_media_rows(
+            source_service, source_service_config_id
+        )
         movie_tmdb_by_source_id: dict[str, int] = {}
-        if movie_ids:
+        if movie_ids and owns_media_rows:
             movie_rows = (
                 await session.execute(
                     select(MovieVersion.service_item_id, Movie.tmdb_id)
@@ -456,12 +468,14 @@ class MediaWatchSnapshotCache:
                 for source_id, tmdb_id in movie_rows
                 if source_id is not None and tmdb_id is not None
             }
+        if movie_ids:
             supplemental_rows = (
                 await session.execute(
                     select(SupplementalMediaMatch.source_item_id, Movie.tmdb_id)
                     .join(Movie, SupplementalMediaMatch.movie_id == Movie.id)
                     .where(
-                        SupplementalMediaMatch.source_service == source_service,
+                        SupplementalMediaMatch.source_service_config_id
+                        == source_service_config_id,
                         SupplementalMediaMatch.media_type == MediaType.MOVIE,
                         SupplementalMediaMatch.source_item_id.in_(movie_ids),
                         SupplementalMediaMatch.movie_id.is_not(None),
@@ -479,10 +493,16 @@ class MediaWatchSnapshotCache:
             if snapshot.provider_media_type == "episode"
         }
         episode_tmdb_by_source_id: dict[str, int] = {}
-        episode_column = {
-            Service.JELLYFIN: Episode.jellyfin_episode_id,
-            Service.EMBY: Episode.emby_episode_id,
-        }.get(source_service)
+        episode_column = (
+            {
+                Service.JELLYFIN: Episode.jellyfin_episode_id,
+                Service.EMBY: Episode.emby_episode_id,
+            }.get(source_service)
+            if ownership.owns_service_id_columns(
+                source_service, source_service_config_id
+            )
+            else None
+        )
         if episode_ids and episode_column is not None:
             episode_rows = (
                 await session.execute(
@@ -500,6 +520,26 @@ class MediaWatchSnapshotCache:
                 for source_id, tmdb_id in episode_rows
                 if source_id is not None and tmdb_id is not None
             }
+        if episode_ids:
+            supplemental_episode_rows = (
+                await session.execute(
+                    select(SupplementalMediaMatch.source_item_id, Series.tmdb_id)
+                    .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                    .join(Season, Episode.season_id == Season.id)
+                    .join(Series, Season.series_id == Series.id)
+                    .where(
+                        SupplementalMediaMatch.source_service_config_id
+                        == source_service_config_id,
+                        SupplementalMediaMatch.media_type == MediaType.SERIES,
+                        SupplementalMediaMatch.source_item_id.in_(episode_ids),
+                        SupplementalMediaMatch.episode_id.is_not(None),
+                        Series.removed_at.is_(None),
+                    )
+                )
+            ).all()
+            for source_id, tmdb_id in supplemental_episode_rows:
+                if source_id is not None and tmdb_id is not None:
+                    episode_tmdb_by_source_id.setdefault(str(source_id), int(tmdb_id))
 
         result: list[MediaWatchSnapshot] = []
         for snapshot in completed:
@@ -541,7 +581,12 @@ class MediaWatchSnapshotCache:
         # before rebuilding, regardless of which caller invokes this helper.
         await session.flush()
 
-        movie_targets: dict[tuple[Service, str], set[int]] = defaultdict(set)
+        # Keyed by the config that issued the id, not by service type: item ids
+        # are only unique within one server, so two servers of the same type
+        # would otherwise resolve each other's ids to the wrong media.
+        ownership = await load_media_identity_ownership(session)
+
+        movie_targets: dict[tuple[int, str], set[int]] = defaultdict(set)
         for service, item_id, version_id in (
             await session.execute(
                 select(
@@ -553,12 +598,13 @@ class MediaWatchSnapshotCache:
                 .where(Movie.removed_at.is_(None))
             )
         ).all():
-            movie_targets[(service, str(item_id))].add(version_id)
+            for config_id in ownership.configs_owning_media_rows(service):
+                movie_targets[(config_id, str(item_id))].add(version_id)
 
         supplemental_movie_rows = (
             await session.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                     MovieVersion.id,
                 )
@@ -571,10 +617,14 @@ class MediaWatchSnapshotCache:
                 )
             )
         ).all()
-        for service, item_id, version_id in supplemental_movie_rows:
-            movie_targets[(service, str(item_id))].add(version_id)
+        for config_id, item_id, version_id in supplemental_movie_rows:
+            movie_targets[(config_id, str(item_id))].add(version_id)
 
-        episode_targets: dict[tuple[Service, str], tuple[int, int, int]] = {}
+        episode_targets: dict[tuple[int, str], tuple[int, int, int]] = {}
+        episode_id_owners = {
+            service: ownership.configs_owning_service_id_columns(service)
+            for service in (Service.JELLYFIN, Service.EMBY)
+        }
         for (
             episode_id,
             season_id,
@@ -595,18 +645,43 @@ class MediaWatchSnapshotCache:
                 .where(Series.removed_at.is_(None))
             )
         ).all():
-            if jellyfin_id:
-                episode_targets[(Service.JELLYFIN, str(jellyfin_id))] = (
-                    episode_id,
-                    season_id,
-                    series_id,
+            for service, source_id in (
+                (Service.JELLYFIN, jellyfin_id),
+                (Service.EMBY, emby_id),
+            ):
+                if not source_id:
+                    continue
+                for config_id in episode_id_owners[service]:
+                    episode_targets[(config_id, str(source_id))] = (
+                        episode_id,
+                        season_id,
+                        series_id,
+                    )
+
+        # A linked server of the main server's own type writes no id column, so
+        # its episode ids only exist as supplemental matches.
+        for config_id, item_id, episode_id, season_id, series_id in (
+            await session.execute(
+                select(
+                    SupplementalMediaMatch.source_service_config_id,
+                    SupplementalMediaMatch.source_item_id,
+                    Episode.id,
+                    Season.id,
+                    Series.id,
                 )
-            if emby_id:
-                episode_targets[(Service.EMBY, str(emby_id))] = (
-                    episode_id,
-                    season_id,
-                    series_id,
+                .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(
+                    SupplementalMediaMatch.media_type == MediaType.SERIES,
+                    SupplementalMediaMatch.episode_id.is_not(None),
+                    Series.removed_at.is_(None),
                 )
+            )
+        ).all():
+            episode_targets.setdefault(
+                (config_id, str(item_id)), (episode_id, season_id, series_id)
+            )
 
         aggregates: dict[tuple[int, str, int], _NativePlaybackAggregate] = {}
         source_services: dict[int, Service] = {}
@@ -618,11 +693,13 @@ class MediaWatchSnapshotCache:
                 target_keys.extend(
                     ("movie_version", version_id)
                     for version_id in movie_targets.get(
-                        (row.source_service, row.source_item_id), set()
+                        (row.source_service_config_id, row.source_item_id), set()
                     )
                 )
             elif row.provider_media_type == "episode":
-                target = episode_targets.get((row.source_service, row.source_item_id))
+                target = episode_targets.get(
+                    (row.source_service_config_id, row.source_item_id)
+                )
                 if target is not None:
                     episode_id, season_id, series_id = target
                     target_keys.extend(
@@ -829,6 +906,34 @@ class MediaWatchSnapshotCache:
                 for source_id, tmdb_id, season_number, episode_number in result.all()
                 if source_id is not None and tmdb_id is not None
             }
+            # The id column holds one server's ids. A linked server of the same
+            # type records its own only as supplemental matches.
+            supplemental = await session.execute(
+                select(
+                    SupplementalMediaMatch.source_item_id,
+                    Series.tmdb_id,
+                    Season.season_number,
+                    Episode.episode_number,
+                )
+                .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                .join(Season, Episode.season_id == Season.id)
+                .join(Series, Season.series_id == Series.id)
+                .where(
+                    SupplementalMediaMatch.source_service_config_id
+                    == source_service_config_id,
+                    SupplementalMediaMatch.media_type == MediaType.SERIES,
+                    SupplementalMediaMatch.source_item_id.in_(source_ids),
+                    SupplementalMediaMatch.episode_id.is_not(None),
+                    Series.tmdb_id.is_not(None),
+                )
+            )
+            for source_id, tmdb_id, season_number, episode_number in supplemental.all():
+                if source_id is None or tmdb_id is None:
+                    continue
+                coordinates.setdefault(
+                    str(source_id),
+                    (int(tmdb_id), int(season_number), int(episode_number)),
+                )
 
         merged: dict[tuple[int, int, int, str], tuple[str, datetime, int | None]] = {}
         unmatched = 0
@@ -960,6 +1065,7 @@ class MediaWatchSnapshotCache:
                 snapshots = await self._build_requester_snapshots_from_native(
                     session=session,
                     source_service=config.service_type,
+                    source_service_config_id=config.id,
                     snapshots=native_playback_snapshots,
                 )
             return _FetchedWatchState(
