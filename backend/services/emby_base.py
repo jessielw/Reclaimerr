@@ -45,6 +45,7 @@ from backend.models.services.emby_base import (
     EmbyUserBase,
     EmbyUserDataBase,
 )
+from backend.models.services.health import HealthResult
 from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 RawSQL: TypeAlias = str
@@ -170,13 +171,17 @@ class EmbyServiceBase:
         resp: JsonPayload = response.json()
         return resp
 
-    async def health(self) -> bool:
-        """Check server health and API key."""
+    async def health(self) -> HealthResult:
+        """Check server health and API key, reporting why it failed."""
         try:
             await self._make_request("System/Info")
-            return True
-        except Exception:
-            return False
+        except Exception as exc:
+            return HealthResult.failed(
+                format_http_failure(
+                    action=f"{self.service_type.value} health check", exception=exc
+                )
+            )
+        return HealthResult.healthy()
 
     async def delete_item(self, item_id: str) -> None:
         """Deletes an item (movie or series) from Emby/Jellyfin.

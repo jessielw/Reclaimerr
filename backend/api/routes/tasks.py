@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import require_admin
@@ -72,7 +72,14 @@ async def _get_latest_task_job(db: AsyncSession, task: Task) -> BackgroundJob | 
         select(BackgroundJob)
         .where(
             BackgroundJob.job_type == BackgroundJobType.TASK_RUN,
-            BackgroundJob.dedupe_key == f"task-run-{task}",
+            # config-scoped runs (one linked media server) carry a
+            # `-config-<id>` suffix and still belong to this task's row. Matched
+            # explicitly rather than by prefix because `task-run-sync_media` is
+            # itself a prefix of `task-run-sync_media_libraries`.
+            or_(
+                BackgroundJob.dedupe_key == f"task-run-{task}",
+                BackgroundJob.dedupe_key.like(f"task-run-{task}-config-%"),
+            ),
         )
         .order_by(BackgroundJob.created_at.desc(), BackgroundJob.id.desc())
         .limit(1)

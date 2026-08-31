@@ -94,7 +94,11 @@
   const sourceFields = (item: ReclaimCandidateEntry): DetailField[] => [
     {
       label: "Service",
-      value: textValue(toTitleCase(item.version_service || "")),
+      // The instance name where one is given, since with two Plex servers
+      // "Plex" alone does not say which one holds this version.
+      value: textValue(
+        item.version_service_name || toTitleCase(item.version_service || ""),
+      ),
     },
     ...candidateMediaMetaFields(item, formatDate),
   ];

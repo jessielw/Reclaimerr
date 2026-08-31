@@ -206,6 +206,13 @@ class PathMappingItem(BaseModel):
 class RequesterWatchUserMapping(BaseModel):
     """Map Seerr requester identities to media server watch user keys."""
 
+    # Which Seerr the requester belongs to. Left unset the mapping matches the
+    # named user on every instance, which is what someone who exists on both
+    # Seerrs under one name wants; set, it is confined to that instance.
+    # "Named" is load-bearing: unset, matching runs on the username, because a
+    # user id only identifies a person inside the Seerr that issued it and
+    # spreading one across instances would name a different person on each.
+    seerr_service_config_id: int | None = None
     seerr_user_id: int | None = None
     seerr_username: str | None = None
     media_user_key: str
@@ -366,9 +373,12 @@ class GeneralSettingsResponse(BaseModel):
     def normalize_requester_watch_user_mappings(self) -> GeneralSettingsResponse:
         """Normalize and dedupe requester watch user mappings."""
         deduped: list[RequesterWatchUserMapping] = []
-        seen: set[tuple[int | None, str | None, str, Service | None]] = set()
+        seen: set[tuple[int | None, int | None, str | None, str, Service | None]] = (
+            set()
+        )
         for mapping in self.requester_watch_user_mappings:
             key = (
+                mapping.seerr_service_config_id,
                 mapping.seerr_user_id,
                 mapping.seerr_username,
                 mapping.media_user_key.strip().lower(),

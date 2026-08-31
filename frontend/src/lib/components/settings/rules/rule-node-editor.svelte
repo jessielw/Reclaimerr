@@ -1741,7 +1741,7 @@
     )
       return "regex patterns…";
     if (c.field === "seerr.requested_by_user_ids")
-      return "Seerr user IDs (comma-separated)...";
+      return "Seerr requester IDs, instanceId:userId (for example: 7:3, 9:12)...";
     if (c.field === "playback.usernames")
       return "Playback usernames (comma-separated)...";
     if (c.field === "tmdb.collection_name")

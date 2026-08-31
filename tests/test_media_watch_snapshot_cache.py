@@ -167,6 +167,100 @@ def test_episode_watch_rows_resolve_provider_episode_ids(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_episode_watch_rows_resolve_linked_server_plays_by_coordinates(
+    tmp_path,
+) -> None:
+    """A linked media server's own item ids never match the synced library.
+
+    Episode.plex_rating_key holds the rating key from the server the library was
+    synced from, so every episode play reported by a second Plex server serving
+    the same media used to be counted unmatched and dropped.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'linked.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            series = Series(title="Example", tmdb_id=5920)
+            session.add(series)
+            await session.flush()
+            season = Season(series_id=series.id, season_number=3)
+            session.add(season)
+            await session.flush()
+            session.add(
+                Episode(
+                    season_id=season.id,
+                    episode_number=2,
+                    # the main server's rating key - the linked server numbers
+                    # the very same episode differently
+                    plex_rating_key="62906",
+                )
+            )
+            await session.flush()
+
+            rows, unmatched = await MediaWatchSnapshotCache._build_episode_watch_rows(
+                session=session,
+                source_service=Service.PLEX,
+                source_service_config_id=5,
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.SERIES,
+                        tmdb_id=5920,
+                        watch_user_key="Bob",
+                        last_watched_at=datetime(2026, 7, 4, tzinfo=UTC),
+                        source_item_id="480113",
+                        season_number=3,
+                        episode_number=2,
+                    )
+                ],
+            )
+
+        await engine.dispose()
+        assert unmatched == 0
+        assert len(rows) == 1
+        assert rows[0].series_tmdb_id == 5920
+        assert rows[0].season_number == 3
+        assert rows[0].episode_number == 2
+        assert rows[0].source_service_config_id == 5
+
+    asyncio.run(run())
+
+
+def test_episode_watch_rows_still_unmatched_without_id_or_coordinates(
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'nomatch.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            rows, unmatched = await MediaWatchSnapshotCache._build_episode_watch_rows(
+                session=session,
+                source_service=Service.PLEX,
+                source_service_config_id=5,
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.SERIES,
+                        tmdb_id=5920,
+                        watch_user_key="Bob",
+                        last_watched_at=datetime(2026, 7, 4, tzinfo=UTC),
+                        source_item_id="480113",
+                    )
+                ],
+            )
+
+        await engine.dispose()
+        assert rows == []
+        assert unmatched == 1
+
+    asyncio.run(run())
+
+
 def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'native.db'}")
@@ -210,6 +304,7 @@ def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) ->
             )
             supplemental_match = SupplementalMediaMatch(
                 source_service=Service.JELLYFIN,
+                source_service_config_id=config.id,
                 source_item_id="movie-item",
                 media_type=MediaType.MOVIE,
                 movie_id=movie.id,
@@ -221,6 +316,7 @@ def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) ->
                 await MediaWatchSnapshotCache._build_requester_snapshots_from_native(
                     session=session,
                     source_service=Service.JELLYFIN,
+                    source_service_config_id=config.id,
                     snapshots=[
                         NativePlaybackSnapshot(
                             source_item_id="movie-item",
@@ -301,5 +397,137 @@ def test_native_playback_aggregates_use_exact_movie_and_episode_ids(tmp_path) ->
             ("episode", episode_one.id, 1, 1),
             ("episode", episode_two.id, 2, 1),
         }
+
+    asyncio.run(run())
+
+
+def test_native_playback_ids_do_not_cross_two_servers_of_one_type(tmp_path) -> None:
+    """Item ids repeat across servers, so each server resolves its own.
+
+    Two Jellyfin servers both hand out item id "5001" for different films. Keying
+    the identity maps on service type alone let the main server's rows shadow the
+    linked server's supplemental match, crediting a play on one server to
+    whichever title happened to share that id on the other.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'split.db'}")
+        session_factory = async_sessionmaker(
+            engine, expire_on_commit=False, autoflush=False
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            main_config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin-main",
+                api_key="key",
+                name="Jellyfin Main",
+                enabled=True,
+                is_main=True,
+            )
+            linked_config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin-linked",
+                api_key="key",
+                name="Jellyfin Linked",
+                enabled=True,
+            )
+            main_movie = Movie(title="Main Movie", tmdb_id=101)
+            linked_movie = Movie(title="Linked Movie", tmdb_id=202)
+            session.add_all([main_config, linked_config, main_movie, linked_movie])
+            await session.flush()
+
+            # only the main server contributes version rows
+            main_version = MovieVersion(
+                movie_id=main_movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="5001",
+                service_media_id="main-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            linked_version = MovieVersion(
+                movie_id=linked_movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="7777",
+                service_media_id="linked-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            # on the linked server, item id 5001 is the *other* movie
+            supplemental_match = SupplementalMediaMatch(
+                source_service=Service.JELLYFIN,
+                source_service_config_id=linked_config.id,
+                source_item_id="5001",
+                media_type=MediaType.MOVIE,
+                movie_id=linked_movie.id,
+            )
+            session.add_all([main_version, linked_version, supplemental_match])
+            await session.flush()
+
+            snapshot = NativePlaybackSnapshot(
+                source_item_id="5001",
+                provider_media_type="movie",
+                source_user_id="u1",
+                source_username="Alice",
+                play_count=2,
+                completed=True,
+                last_activity_at=datetime(2026, 7, 10, tzinfo=UTC),
+            )
+            linked_requester_rows = (
+                await MediaWatchSnapshotCache._build_requester_snapshots_from_native(
+                    session=session,
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=linked_config.id,
+                    snapshots=[snapshot],
+                )
+            )
+            main_requester_rows = (
+                await MediaWatchSnapshotCache._build_requester_snapshots_from_native(
+                    session=session,
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=main_config.id,
+                    snapshots=[snapshot],
+                )
+            )
+
+            session.add(
+                NativePlaybackUser(
+                    source_service=Service.JELLYFIN,
+                    source_service_config_id=linked_config.id,
+                    source_item_id="5001",
+                    provider_media_type="movie",
+                    source_user_id="u1",
+                    source_username="Alice",
+                    source_username_normalized="alice",
+                    play_count=2,
+                    completed=True,
+                    last_activity_at=datetime(2026, 7, 10, tzinfo=UTC),
+                    refreshed_at=datetime(2026, 7, 11, tzinfo=UTC),
+                )
+            )
+            await MediaWatchSnapshotCache._rebuild_native_playback_aggregates(session)
+            await session.flush()
+            aggregate_targets = {
+                row[0]
+                for row in (
+                    await session.execute(
+                        select(NativePlaybackAggregate.target_id).where(
+                            NativePlaybackAggregate.target_scope == "movie_version"
+                        )
+                    )
+                ).all()
+            }
+            main_version_id = main_version.id
+            linked_version_id = linked_version.id
+
+        await engine.dispose()
+
+        assert [row.tmdb_id for row in linked_requester_rows] == [202]
+        assert [row.tmdb_id for row in main_requester_rows] == [101]
+        assert aggregate_targets == {linked_version_id}
+        assert main_version_id not in aggregate_targets
 
     asyncio.run(run())

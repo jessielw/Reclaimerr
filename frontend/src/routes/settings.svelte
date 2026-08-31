@@ -163,7 +163,6 @@
           desc: "Enable this to use Seerr request data for cleanup rules and to synchronize media deletions",
           baseUrlPlaceholder: "e.g. http://localhost:5055",
           adminOnly: true,
-          lockName: true,
         },
         {
           id: SettingsTab.Tautulli,
@@ -349,9 +348,20 @@
     [SettingsTab.MDBList]: emptyServiceState(SettingsTab.MDBList),
     [SettingsTab.OMDb]: emptyServiceState(SettingsTab.OMDb),
   });
+  // Service tabs that can hold several named instances at once. A Seerr
+  // usually sits beside each media server, so it belongs here with the arrs.
+  const MULTI_INSTANCE_TABS: string[] = [
+    SettingsTab.Radarr,
+    SettingsTab.Sonarr,
+    SettingsTab.Seerr,
+  ];
+  const isMultiInstanceTab = (serviceId: string) =>
+    MULTI_INSTANCE_TABS.includes(serviceId);
+
   let arrInstances = $state<Record<string, ServiceConfig[]>>({
     [SettingsTab.Radarr]: [],
     [SettingsTab.Sonarr]: [],
+    [SettingsTab.Seerr]: [],
   });
   let showConfirmDialog = $state(false);
   let confirmTitle = $state("");
@@ -506,6 +516,7 @@
           affected_rules?: Array<{ id: number; name: string }>;
           disabled_rule_count?: number;
           removed_path_mappings?: number;
+          removed_requester_mappings?: number;
         };
       } = await delete_api(`/api/settings/service/${current.id}`);
       arrInstances[serviceId] = (arrInstances[serviceId] ?? []).filter(
@@ -521,7 +532,9 @@
       const affectedRules = response.data.affected_rules ?? [];
       const disabledRuleCount = response.data.disabled_rule_count ?? 0;
       const removedMappings = response.data.removed_path_mappings ?? 0;
-      if (affectedRules.length || removedMappings) {
+      const removedRequesterMappings =
+        response.data.removed_requester_mappings ?? 0;
+      if (affectedRules.length || removedMappings || removedRequesterMappings) {
         toast.warning(
           [
             affectedRules.length
@@ -533,6 +546,9 @@
               : "",
             removedMappings
               ? `${removedMappings} scoped path mapping(s) were removed`
+              : "",
+            removedRequesterMappings
+              ? `${removedRequesterMappings} requester watch mapping(s) were removed`
               : "",
           ]
             .filter(Boolean)
@@ -609,6 +625,7 @@
     (serviceState[SettingsTab.Tracearr].config.extraSettings?.server_bindings ??
       []) as Array<{
       service_config_id: number;
+      service_config_name?: string;
       tracearr_server_id: string;
       tracearr_server_name: string;
       server_type: string;
@@ -618,8 +635,12 @@
     mediaServer: TracearrMediaServer,
     tracearrServerId: string,
   ) => {
+    // a Tracearr server can only be bound once, so picking one already used by
+    // another media server moves it rather than producing an unsavable pair
     const existing = currentTracearrBindings().filter(
-      (binding) => binding.service_config_id !== mediaServer.service_config_id,
+      (binding) =>
+        binding.service_config_id !== mediaServer.service_config_id &&
+        binding.tracearr_server_id !== tracearrServerId,
     );
     const candidate = mediaServer.candidates.find(
       (item) => item.id === tracearrServerId,
@@ -629,6 +650,7 @@
           ...existing,
           {
             service_config_id: mediaServer.service_config_id,
+            service_config_name: mediaServer.name,
             tracearr_server_id: candidate.id,
             tracearr_server_name: candidate.name,
             server_type: mediaServer.server_type,
@@ -655,15 +677,17 @@
         payload,
       );
       for (const mediaServer of tracearrDiscovery?.media_servers ?? []) {
-        const hasBinding = currentTracearrBindings().some(
+        const bindings = currentTracearrBindings();
+        const hasBinding = bindings.some(
           (binding) =>
             binding.service_config_id === mediaServer.service_config_id,
         );
-        if (!hasBinding && mediaServer.recommended_tracearr_server_id) {
-          setTracearrBinding(
-            mediaServer,
-            mediaServer.recommended_tracearr_server_id,
-          );
+        const recommended = mediaServer.recommended_tracearr_server_id;
+        const recommendedTaken = bindings.some(
+          (binding) => binding.tracearr_server_id === recommended,
+        );
+        if (!hasBinding && recommended && !recommendedTaken) {
+          setTracearrBinding(mediaServer, recommended);
         }
       }
       toast.success("Tracearr servers discovered");
@@ -789,10 +813,7 @@
         apiKey: "",
       };
       serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
-      if (
-        serviceId === SettingsTab.Radarr ||
-        serviceId === SettingsTab.Sonarr
-      ) {
+      if (isMultiInstanceTab(serviceId)) {
         const saved = serviceState[serviceId as SettingsTab].config;
         const existing = arrInstances[serviceId] ?? [];
         arrInstances[serviceId] = [
@@ -842,15 +863,10 @@
       for (const [serviceId, config] of Object.entries(rawServices)) {
         if ((MEDIA_SERVERS as readonly string[]).includes(serviceId)) continue;
         const instance =
-          (serviceId === SettingsTab.Radarr ||
-            serviceId === SettingsTab.Sonarr) &&
-          config.instances?.length
+          isMultiInstanceTab(serviceId) && config.instances?.length
             ? config.instances[0]
             : config;
-        if (
-          serviceId === SettingsTab.Radarr ||
-          serviceId === SettingsTab.Sonarr
-        ) {
+        if (isMultiInstanceTab(serviceId)) {
           arrInstances[serviceId] =
             config.instances?.map((item) => ({
               id: item.id,
@@ -990,7 +1006,7 @@
         <div class="flex-1 p-6 min-w-0">
           <!-- settings -->
           {#if serviceTabs.includes(activeTab)}
-            {#if activeTab === SettingsTab.Radarr || activeTab === SettingsTab.Sonarr}
+            {#if isMultiInstanceTab(activeTab)}
               {#snippet instanceSelector()}
                 <Label class="space-y-1">
                   <span class="text-sm font-medium text-foreground"
@@ -1172,7 +1188,8 @@
                   <div class="space-y-1 text-sm text-muted-foreground">
                     {#each currentTracearrBindings() as binding}
                       <p>
-                        {toTitleCase(binding.server_type)} → {binding.tracearr_server_name}
+                        {binding.service_config_name ||
+                          toTitleCase(binding.server_type)} → {binding.tracearr_server_name}
                       </p>
                     {/each}
                     <p class="pt-1 text-xs">

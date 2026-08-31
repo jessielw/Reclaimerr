@@ -244,6 +244,7 @@ def test_scheduled_tasks_are_queued_at_low_priority(monkeypatch) -> None:
         assert captured["payload"] == {
             "task": Task.SYNC_MEDIA.value,
             "trigger": "scheduled",
+            "service_config_id": None,
         }
 
     asyncio.run(run())

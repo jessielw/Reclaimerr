@@ -224,7 +224,7 @@
         <OriginMetadata
           arrRefs={groupOrigin.arrRefs}
           arrTags={groupOrigin.arrTags}
-          seerrUrl={groupOrigin.seerrUrl}
+          seerrLinks={groupOrigin.seerrLinks}
           seerrRequesters={groupOrigin.seerrRequesters}
           compact
           class={canBulkSelect ? "ml-7" : ""}

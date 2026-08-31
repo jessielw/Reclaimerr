@@ -22,6 +22,9 @@ class ServiceToggleJobPayload(BaseModel):
 class TaskRunJobPayload(BaseModel):
     task: Task
     trigger: Literal["manual", "scheduled", "system"] = "manual"
+    # scopes a task to one ServiceConfig - currently SYNC_LINKED_DATA, so a
+    # single linked media server can be refreshed without touching the others
+    service_config_id: int | None = None
 
 
 class WebhookDeliveryJobPayload(BaseModel):

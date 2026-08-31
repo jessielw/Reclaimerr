@@ -69,7 +69,12 @@
   let watchUsers = $state<WatchUserLookup[]>([]);
   let mappingSearch = $state("");
   let mappingSort = $state<
-    "seerr_asc" | "seerr_desc" | "media_asc" | "media_desc" | "service_asc"
+    | "seerr_asc"
+    | "seerr_desc"
+    | "media_asc"
+    | "media_desc"
+    | "service_asc"
+    | "instance_asc"
   >("seerr_asc");
   let mediaUserPickerRowIndex = $state<number | null>(null);
   let mediaUserQuery = $state("");
@@ -80,6 +85,9 @@
     seerrDisplay: string;
     mediaKey: string;
     serviceLabel: string;
+    /** Which Seerr the requester belongs to; distinct from serviceLabel, which
+     * scopes the *media server* side of the mapping. */
+    instanceLabel: string;
   };
 
   const parseFavoritesUsernames = (value: string): string[] => {
@@ -111,8 +119,15 @@
         mapping.service_type && String(mapping.service_type).trim()
           ? String(mapping.service_type).trim().toLowerCase()
           : null;
+      const seerrConfigId =
+        mapping.seerr_service_config_id !== null &&
+        mapping.seerr_service_config_id !== undefined &&
+        Number.isFinite(mapping.seerr_service_config_id)
+          ? Number(mapping.seerr_service_config_id)
+          : null;
       if (!mediaUserKey || (userId === null && !username)) continue;
       cleaned.push({
+        seerr_service_config_id: seerrConfigId,
         seerr_user_id: userId,
         seerr_username: username || null,
         media_user_key: mediaUserKey,
@@ -126,6 +141,7 @@
     requesterWatchUserMappings = [
       ...requesterWatchUserMappings,
       {
+        seerr_service_config_id: null,
         seerr_user_id: null,
         seerr_username: null,
         media_user_key: "",
@@ -155,23 +171,74 @@
     return `${display}${username} [${user.id}]`;
   };
 
-  const seerrSelectValue = (mapping: RequesterWatchUserMapping): string =>
-    mapping.seerr_user_id !== null && Number.isFinite(mapping.seerr_user_id)
-      ? String(mapping.seerr_user_id)
+  // Seerr instances are derived from the user lookup: an instance with no
+  // users has nobody to map, so it needs no option of its own.
+  const seerrInstances = $derived.by(() => {
+    const byId = new Map<number, string>();
+    for (const user of seerrUsers) {
+      if (byId.has(user.service_config_id)) continue;
+      byId.set(
+        user.service_config_id,
+        user.service_name || `Seerr #${user.service_config_id}`,
+      );
+    }
+    return [...byId.entries()]
+      .map(([configId, label]) => ({ configId, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  });
+
+  /** The lookup entry for a mapping. Matching on the bare id alone would return
+   * whichever instance happened to be listed first. */
+  const seerrUserFor = (
+    mapping: RequesterWatchUserMapping,
+  ): SeerrUserLookup | undefined => {
+    if (
+      mapping.seerr_user_id === null ||
+      !Number.isFinite(mapping.seerr_user_id)
+    )
+      return undefined;
+    if (mapping.seerr_service_config_id !== null) {
+      return seerrUsers.find(
+        (entry) =>
+          entry.id === mapping.seerr_user_id &&
+          entry.service_config_id === mapping.seerr_service_config_id,
+      );
+    }
+    return seerrUsers.find((entry) => entry.id === mapping.seerr_user_id);
+  };
+
+  const seerrSelectValue = (mapping: RequesterWatchUserMapping): string => {
+    const user = seerrUserFor(mapping);
+    if (user) return user.key;
+    return mapping.seerr_user_id !== null &&
+      Number.isFinite(mapping.seerr_user_id)
+      ? `${mapping.seerr_service_config_id ?? ""}:${mapping.seerr_user_id}`
       : "__manual__";
+  };
 
   const seerrTriggerLabel = (mapping: RequesterWatchUserMapping): string => {
     if (
       mapping.seerr_user_id !== null &&
       Number.isFinite(mapping.seerr_user_id)
     ) {
-      const user = seerrUsers.find(
-        (entry) => entry.id === mapping.seerr_user_id,
-      );
+      const user = seerrUserFor(mapping);
       return user ? seerrLabel(user) : `ID ${mapping.seerr_user_id}`;
     }
     return "Manual username only";
   };
+
+  const instanceScopeLabel = (mapping: RequesterWatchUserMapping): string => {
+    if (mapping.seerr_service_config_id === null) return "Any instance";
+    const match = seerrInstances.find(
+      (entry) => entry.configId === mapping.seerr_service_config_id,
+    );
+    return match ? match.label : `Seerr #${mapping.seerr_service_config_id}`;
+  };
+
+  const instanceScopeValue = (mapping: RequesterWatchUserMapping): string =>
+    mapping.seerr_service_config_id === null
+      ? "__any__"
+      : String(mapping.seerr_service_config_id);
 
   const normalizeKey = (value: unknown): string =>
     String(value ?? "")
@@ -183,9 +250,7 @@
       mapping.seerr_user_id !== null &&
       Number.isFinite(mapping.seerr_user_id)
     ) {
-      const user = seerrUsers.find(
-        (entry) => entry.id === mapping.seerr_user_id,
-      );
+      const user = seerrUserFor(mapping);
       if (user) return seerrLabel(user);
       return `ID ${mapping.seerr_user_id}`;
     }
@@ -264,6 +329,7 @@
         seerrDisplay: displaySeerrIdentity(mapping),
         mediaKey: String(mapping.media_user_key ?? ""),
         serviceLabel: serviceScopeLabel(mapping.service_type),
+        instanceLabel: instanceScopeLabel(mapping),
       }),
     );
 
@@ -277,6 +343,7 @@
           row.mapping.seerr_user_id ?? "",
           row.mediaKey,
           row.serviceLabel,
+          row.instanceLabel,
         ]
           .join(" ")
           .toLowerCase();
@@ -288,6 +355,8 @@
       if (mappingSort.startsWith("seerr_"))
         return normalizeKey(row.seerrDisplay);
       if (mappingSort.startsWith("media_")) return normalizeKey(row.mediaKey);
+      if (mappingSort.startsWith("instance_"))
+        return normalizeKey(row.instanceLabel);
       return normalizeKey(row.serviceLabel);
     };
     const sorted = [...filtered].sort((a, b) =>
@@ -306,10 +375,16 @@
       }
     }
     const cleaned = cleanMappings(requesterWatchUserMappings);
-    const mappedIds = new Set<number>();
+    // Keyed by instance as well as id, so mapping user 3 on one Seerr does not
+    // report user 3 on another as covered.
+    const mappedIds = new Set<string>();
     const mappedNames = new Set<string>();
     for (const mapping of cleaned) {
-      if (mapping.seerr_user_id !== null) mappedIds.add(mapping.seerr_user_id);
+      if (mapping.seerr_user_id !== null) {
+        mappedIds.add(
+          `${mapping.seerr_service_config_id ?? "*"}:${mapping.seerr_user_id}`,
+        );
+      }
       if (mapping.seerr_username)
         mappedNames.add(normalizeKey(mapping.seerr_username));
     }
@@ -328,7 +403,8 @@
       identities.delete("");
 
       const hasExplicitMapping =
-        mappedIds.has(user.id) ||
+        mappedIds.has(user.key) ||
+        mappedIds.has(`*:${user.id}`) ||
         [...identities].some((identity) => mappedNames.has(identity));
       const hasDirectWatchKey = [...identities].some((identity) =>
         normalizedWatchKeys.has(identity),
@@ -623,6 +699,9 @@
               <Select.Item value="seerr_desc" label="Seerr user Z-A">
                 Seerr user Z-A
               </Select.Item>
+              <Select.Item value="instance_asc" label="Seerr instance A-Z">
+                Seerr instance A-Z
+              </Select.Item>
               <Select.Item value="media_asc" label="Media key A-Z">
                 Media key A-Z
               </Select.Item>
@@ -652,8 +731,68 @@
         {#each visibleMappings as row (`map-${row.index}`)}
           {@const mapping = row.mapping}
           <div
-            class="rounded-md border border-border bg-background/40 p-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4"
+            class="rounded-md border border-border bg-background/40 p-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5"
           >
+            <div class="min-w-0">
+              <Label class="mb-2 text-xs whitespace-nowrap"
+                >Seerr instance</Label
+              >
+              <Select.Root
+                type="single"
+                value={instanceScopeValue(mapping)}
+                onValueChange={(value) => {
+                  if (!value || value === "__any__") {
+                    mapping.seerr_service_config_id = null;
+                    // A user id belongs to the instance that issued it, so
+                    // "any instance" and "that instance's user #3" contradict
+                    // each other. Drop the id and let the mapping match by
+                    // name, which is what matching every instance means.
+                    mapping.seerr_user_id = null;
+                    return;
+                  }
+                  const configId = Number(value);
+                  mapping.seerr_service_config_id = Number.isFinite(configId)
+                    ? configId
+                    : null;
+                  // The user list is filtered by instance, so a user picked
+                  // under a different one is no longer an option here.
+                  if (
+                    mapping.seerr_user_id !== null &&
+                    !seerrUsers.some(
+                      (entry) =>
+                        entry.id === mapping.seerr_user_id &&
+                        entry.service_config_id ===
+                          mapping.seerr_service_config_id,
+                    )
+                  ) {
+                    mapping.seerr_user_id = null;
+                  }
+                }}
+              >
+                <Select.Trigger
+                  class="w-full min-w-0 cursor-pointer text-foreground"
+                >
+                  <span class="block truncate"
+                    >{instanceScopeLabel(mapping)}</span
+                  >
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="__any__" label="Any instance">
+                    Any instance
+                  </Select.Item>
+                  {#each seerrInstances as instance (instance.configId)}
+                    <Select.Item
+                      value={String(instance.configId)}
+                      label={instance.label}
+                      class="cursor-pointer"
+                    >
+                      {instance.label}
+                    </Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+
             <div class="min-w-0">
               <Label class="mb-2 text-xs whitespace-nowrap"
                 >Seerr user (lookup)</Label
@@ -666,8 +805,17 @@
                     mapping.seerr_user_id = null;
                     return;
                   }
-                  const id = Number(value);
-                  mapping.seerr_user_id = Number.isFinite(id) ? id : null;
+                  // Option values are qualified, so picking a user settles which
+                  // Seerr the mapping belongs to as well as who it names.
+                  const picked = seerrUsers.find(
+                    (entry) => entry.key === value,
+                  );
+                  if (!picked) {
+                    mapping.seerr_user_id = null;
+                    return;
+                  }
+                  mapping.seerr_service_config_id = picked.service_config_id;
+                  mapping.seerr_user_id = picked.id;
                 }}
               >
                 <Select.Trigger
@@ -681,9 +829,9 @@
                   <Select.Item value="__manual__" label="Manual username only">
                     Manual username only
                   </Select.Item>
-                  {#each seerrUsers as user (user.id)}
+                  {#each seerrUsers.filter((user) => mapping.seerr_service_config_id === null || user.service_config_id === mapping.seerr_service_config_id) as user (user.key)}
                     <Select.Item
-                      value={String(user.id)}
+                      value={user.key}
                       label={seerrLabel(user)}
                       class="cursor-pointer"
                     >

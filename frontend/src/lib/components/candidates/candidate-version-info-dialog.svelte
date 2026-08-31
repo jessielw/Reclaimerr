@@ -37,9 +37,9 @@
       >
         <div class="min-w-0">
           <div class="text-sm font-semibold text-foreground truncate">
-            {entry.version_library_name ?? "Version"} - {versionResolutionLabel(
-              entry,
-            )}
+            {entry.version_library_name ?? "Version"}{entry.version_service_name
+              ? ` (${entry.version_service_name})`
+              : ""} - {versionResolutionLabel(entry)}
           </div>
           <div class="text-xs text-muted-foreground truncate">
             {candidateFileName(entry.version_path, entry.version_file_name)}
@@ -58,7 +58,7 @@
         <OriginMetadata
           arrRefs={entry.arr_refs}
           arrTags={entry.arr_tags}
-          seerrUrl={entry.seerr_url}
+          seerrLinks={entry.seerr_links}
           seerrRequesters={entry.seerr_requesters}
         />
       </div>

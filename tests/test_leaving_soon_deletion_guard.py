@@ -15,6 +15,7 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
+    ServiceConfig,
 )
 from backend.enums import MediaType, Service
 from backend.services.emby_base import EmbyServiceBase
@@ -497,6 +498,9 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         async with self.sessionmaker() as db:
+            # last_success_titles intentionally uses the legacy {service_type:
+            # title} shape here to also exercise the backward-compat migration
+            # in _normalize_leaving_soon_last_success_titles.
             db.add(
                 GeneralSettings(
                     leaving_soon_enabled=True,
@@ -507,9 +511,27 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
             )
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                name="Plex",
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+                is_main=True,
+            )
+            jellyfin_config = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                name="Jellyfin",
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([plex_config, jellyfin_config])
             movie = Movie(title="Movie", tmdb_id=1234)
             db.add(movie)
             await db.flush()
+            plex_config_id = plex_config.id
+            jellyfin_config_id = jellyfin_config.id
             plex_version = MovieVersion(
                 movie_id=movie.id,
                 service=Service.PLEX,
@@ -552,9 +574,13 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
         previous_plex = cleanup.service_manager._plex
         previous_jellyfin = cleanup.service_manager._jellyfin
         previous_emby = cleanup.service_manager._emby
+        previous_plex_clients = cleanup.service_manager._plex_clients
+        previous_jellyfin_clients = cleanup.service_manager._jellyfin_clients
         cleanup.service_manager._plex = fake_plex  # type: ignore[assignment]
         cleanup.service_manager._jellyfin = fake_jellyfin  # type: ignore[assignment]
         cleanup.service_manager._emby = None
+        cleanup.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
+        cleanup.service_manager._jellyfin_clients = {jellyfin_config_id: fake_jellyfin}  # type: ignore[dict-item]
         try:
             with patch.object(cleanup, "async_db", self.sessionmaker):
                 await cleanup._prune_leaving_soon_before_candidate_actions(
@@ -564,6 +590,8 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
             cleanup.service_manager._plex = previous_plex
             cleanup.service_manager._jellyfin = previous_jellyfin
             cleanup.service_manager._emby = previous_emby
+            cleanup.service_manager._plex_clients = previous_plex_clients
+            cleanup.service_manager._jellyfin_clients = previous_jellyfin_clients
 
         self.assertEqual(
             {call["base_title"] for call in fake_plex.calls},

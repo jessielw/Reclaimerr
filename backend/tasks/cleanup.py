@@ -1,7 +1,14 @@
 import asyncio
 import shutil
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +55,7 @@ from backend.core.rule_engine import (
     normalize_rule_outcome,
     normalize_rule_target,
 )
+from backend.core.seerr_identity import seerr_config_id_of, seerr_user_id_of
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.utils.datetime_utils import ensure_utc
@@ -85,6 +93,7 @@ from backend.database.models import (
     Series,
     SeriesArrRef,
     SeriesServiceRef,
+    ServiceConfig,
     SupplementalMediaMatch,
 )
 from backend.enums import (
@@ -2564,18 +2573,89 @@ def _normalize_watch_key(value: str | None) -> str | None:
     return normalized or None
 
 
+async def _seerr_instance_names(
+    db: AsyncSession, config_ids: Collection[int]
+) -> dict[int, str]:
+    """Display names for Seerr configs, so a report can say which one is down."""
+    if not config_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ServiceConfig.id, ServiceConfig.name).where(
+                ServiceConfig.id.in_(set(config_ids))
+            )
+        )
+    ).all()
+    names = {config_id: (name or f"Seerr #{config_id}") for config_id, name in rows}
+    return {
+        config_id: names.get(config_id, f"Seerr #{config_id}")
+        for config_id in config_ids
+    }
+
+
+def _seerr_error_summary(
+    errors_by_config_id: Mapping[int, str], names: Mapping[int, str]
+) -> str | None:
+    """Join per-instance failures, naming each Seerr the way the user named it."""
+    if not errors_by_config_id:
+        return None
+    return "; ".join(
+        f"{names.get(config_id, f'Seerr #{config_id}')}: {error}"
+        for config_id, error in sorted(errors_by_config_id.items())
+    )
+
+
+def _bare_requester_identity_keys(requester_key: str) -> set[str]:
+    """Last-resort identity for a requester Seerr gave no name for.
+
+    Playback providers record the id Seerr itself issued, never Reclaimerr's
+    instance-qualified form, so matching on the qualified key would find nothing
+    and quietly report "did not watch" for every such requester.
+    """
+    bare_id = seerr_user_id_of(requester_key)
+    return {str(bare_id)} if bare_id is not None else set()
+
+
 def _extract_requester_mapping_identity(
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     mapping: dict[str, Any],
 ) -> bool:
+    """Whether one saved mapping describes this requester.
+
+    A mapping may name a Seerr instance or leave it unset. Unset means "the
+    named user on any instance", which is what someone who exists on both Seerrs
+    under the same name wants; naming one confines the mapping to that
+    instance's user.
+
+    Note which half of "named user" does the work when no instance is given: the
+    username, not the user id. A user id only identifies a person inside the
+    Seerr that issued it, so spreading one across instances would match a
+    different person on each -- the exact confusion the qualified requester
+    format exists to prevent. An unscoped mapping therefore matches by name
+    whenever it has one, and only falls back to the bare id when it has no name
+    at all, which is the shape a single-Seerr install wrote before instances
+    were recorded.
+    """
+    mapped_config_id = mapping.get("seerr_service_config_id")
+    scoped_to_instance = mapped_config_id is not None
+    if scoped_to_instance:
+        try:
+            if int(mapped_config_id) != seerr_config_id_of(requester_key):
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
+    if not scoped_to_instance and raw_name:
+        return raw_name in requester_identity_keys
+
     raw_id = mapping.get("seerr_user_id")
     if raw_id is not None:
         try:
-            return int(raw_id) == requester_id
-        except Exception:
+            return int(raw_id) == seerr_user_id_of(requester_key)
+        except (TypeError, ValueError):
             return False
-    raw_name = _normalize_watch_key(mapping.get("seerr_username"))
     return bool(raw_name and raw_name in requester_identity_keys)
 
 
@@ -2593,7 +2673,7 @@ def _extract_mapping_service(mapping: dict[str, Any]) -> Service | None:
 
 def _build_watch_keys_for_requester(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     target_service: Service,
     mappings: list[dict[str, Any]],
@@ -2602,7 +2682,7 @@ def _build_watch_keys_for_requester(
     keys: set[str] = set()
     for mapping in mappings:
         if not _extract_requester_mapping_identity(
-            requester_id, requester_identity_keys, mapping
+            requester_key, requester_identity_keys, mapping
         ):
             continue
         service_scope = _extract_mapping_service(mapping)
@@ -2630,7 +2710,7 @@ def _requested_seasons_for_requester(
     *,
     snapshot: SeerrRequestSnapshot,
     tmdb_id: int,
-    requester_id: int,
+    requester_key: str,
     series_requested_at: datetime,
     season_numbers: Iterable[int],
 ) -> dict[int, datetime]:
@@ -2641,11 +2721,11 @@ def _requested_seasons_for_requester(
     silently skipped.
     """
     requested_seasons = {
-        season_number: by_user[requester_id]
+        season_number: by_user[requester_key]
         for (series_tmdb_id, season_number), by_user in (
             snapshot.first_request_at_by_series_season_user.items()
         )
-        if series_tmdb_id == tmdb_id and requester_id in by_user
+        if series_tmdb_id == tmdb_id and requester_key in by_user
     }
     if not requested_seasons:
         requested_seasons = {
@@ -2656,7 +2736,7 @@ def _requested_seasons_for_requester(
 
 def _requester_watched_at_by_coordinate(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     watch_by_service_and_user: Mapping[
         Service, Mapping[str, Mapping[tuple[int, int], datetime]]
@@ -2672,7 +2752,7 @@ def _requester_watched_at_by_coordinate(
     watched_at_by_coordinate: dict[tuple[int, int], datetime] = {}
     for watch_service, watch_by_user in watch_by_service_and_user.items():
         candidate_keys = _build_watch_keys_for_requester(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             target_service=watch_service,
             mappings=mappings,
@@ -2689,7 +2769,7 @@ def _requester_watched_at_by_coordinate(
 
 def _requester_movie_watched_at(
     *,
-    requester_id: int,
+    requester_key: str,
     requester_identity_keys: set[str],
     watch_by_service_and_user: Mapping[Service, Mapping[str, datetime]],
     mappings: list[dict[str, Any]],
@@ -2699,7 +2779,7 @@ def _requester_movie_watched_at(
     latest_watched_at: datetime | None = None
     for watch_service, watch_by_user in watch_by_service_and_user.items():
         candidate_keys = _build_watch_keys_for_requester(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             target_service=watch_service,
             mappings=mappings,
@@ -2739,16 +2819,19 @@ def _compute_requester_has_watched_for_key(
         return False, False
 
     watched_ever = False
-    for requester_id, requested_at in requester_times.items():
+    for requester_key, requested_at in requester_times.items():
         requested_at_utc = ensure_utc(requested_at)
         requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
+            requester_key, set()
         )
         if not requester_identity_keys:
-            # retain user-id path if username/display_name wasn't present in request payload
-            requester_identity_keys = {str(requester_id)}
+            # retain user-id path if username/display_name wasn't present in
+            # request payload. It has to be the Seerr-native id, not the
+            # qualified key: providers record the id Seerr itself issued, and a
+            # key that can never match would turn "unknown" into "not watched".
+            requester_identity_keys = _bare_requester_identity_keys(requester_key)
         watched_at = _requester_movie_watched_at(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             watch_by_service_and_user=watches_for_key,
             mappings=mappings,
@@ -2828,19 +2911,19 @@ def _compute_requester_tv_watch_targets_for_key(
     after = _blank()
 
     requester_times = snapshot.first_request_at_by_key_user.get(media_key, {})
-    for requester_id, series_requested_at in requester_times.items():
+    for requester_key, series_requested_at in requester_times.items():
         requested_seasons = _requested_seasons_for_requester(
             snapshot=snapshot,
             tmdb_id=tmdb_id,
-            requester_id=requester_id,
+            requester_key=requester_key,
             series_requested_at=series_requested_at,
             season_numbers=expected_by_season,
         )
         requester_identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
-        ) or {str(requester_id)}
+            requester_key, set()
+        ) or _bare_requester_identity_keys(requester_key)
         watched_at_by_coordinate = _requester_watched_at_by_coordinate(
-            requester_id=requester_id,
+            requester_key=requester_key,
             requester_identity_keys=requester_identity_keys,
             watch_by_service_and_user=watch_by_service_and_user,
             mappings=mappings,
@@ -2971,7 +3054,7 @@ async def explain_requester_watch(
     else:
         title = await db.scalar(select(Movie.title).where(Movie.tmdb_id == tmdb_id))
 
-    if not service_manager.seerr:
+    if not service_manager.has_seerr:
         return RequesterWatchExplainResponse(
             media_type=media_type,
             tmdb_id=tmdb_id,
@@ -3199,16 +3282,24 @@ async def explain_requester_watch(
         watch_by_service_and_user.get(media_key, {})
     )
     requesters: list[RequesterWatchRequesterDetail] = []
-    keys_by_requester: dict[int, set[str]] = {}
-    for requester_id, requested_at in sorted(requester_times.items()):
+    keys_by_requester: dict[str, set[str]] = {}
+    seerr_names = await _seerr_instance_names(
+        db,
+        {
+            config_id
+            for key in requester_times
+            if (config_id := seerr_config_id_of(key)) is not None
+        },
+    )
+    for requester_key, requested_at in sorted(requester_times.items()):
         identity_keys = snapshot.requester_identity_keys_by_user_id.get(
-            requester_id, set()
-        ) or {str(requester_id)}
+            requester_key, set()
+        ) or _bare_requester_identity_keys(requester_key)
         candidate_keys: dict[str, list[str]] = {}
         all_keys: set[str] = set()
         for service in sorted(evidence_services or {Service.PLEX}, key=str):
             keys = _build_watch_keys_for_requester(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
                 target_service=service,
                 mappings=mappings,
@@ -3216,8 +3307,8 @@ async def explain_requester_watch(
             )
             candidate_keys[str(service.value)] = sorted(keys)
             all_keys |= keys
-        keys_by_requester[requester_id] = all_keys
-        user = snapshot.requester_users_by_id.get(requester_id)
+        keys_by_requester[requester_key] = all_keys
+        user = snapshot.requester_users_by_id.get(requester_key)
 
         missing: list[str] = []
         too_early: list[str] = []
@@ -3227,12 +3318,12 @@ async def explain_requester_watch(
             requested_seasons = _requested_seasons_for_requester(
                 snapshot=snapshot,
                 tmdb_id=int(tmdb_id),
-                requester_id=requester_id,
+                requester_key=requester_key,
                 series_requested_at=requested_at,
                 season_numbers={coordinate[0] for coordinate in expected_episodes},
             )
             watched_at_by_coordinate = _requester_watched_at_by_coordinate(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
                 watch_by_service_and_user=episode_watches,
                 mappings=mappings,
@@ -3250,11 +3341,9 @@ async def explain_requester_watch(
                     too_early.append(_episode_label(*coordinate))
         elif not is_series:
             movie_watched_at = _requester_movie_watched_at(
-                requester_id=requester_id,
+                requester_key=requester_key,
                 requester_identity_keys=set(identity_keys),
-                watch_by_service_and_user=watch_by_service_and_user.get(
-                    media_key, {}
-                ),
+                watch_by_service_and_user=watch_by_service_and_user.get(media_key, {}),
                 mappings=mappings,
                 alias_index=alias_index,
             )
@@ -3265,16 +3354,19 @@ async def explain_requester_watch(
 
         requesters.append(
             RequesterWatchRequesterDetail(
-                seerr_user_id=requester_id,
+                seerr_requester_key=requester_key,
+                seerr_user_id=seerr_user_id_of(requester_key) or 0,
+                service_config_id=seerr_config_id_of(requester_key),
+                service_name=seerr_names.get(seerr_config_id_of(requester_key) or -1),
                 display_name=(user.display_name or user.username) if user else None,
                 identity_keys=sorted(identity_keys),
                 requested_at=ensure_utc(requested_at),
                 requested_seasons={
-                    season_no: ensure_utc(by_user[requester_id])
+                    season_no: ensure_utc(by_user[requester_key])
                     for (series_tmdb_id, season_no), by_user in (
                         snapshot.first_request_at_by_series_season_user.items()
                     )
-                    if series_tmdb_id == tmdb_id and requester_id in by_user
+                    if series_tmdb_id == tmdb_id and requester_key in by_user
                 },
                 candidate_watch_keys=candidate_keys,
                 missing_episodes=missing,
@@ -3284,10 +3376,10 @@ async def explain_requester_watch(
             )
         )
 
-    def matched_requesters(watch_key: str) -> list[int]:
+    def matched_requesters(watch_key: str) -> list[str]:
         return sorted(
-            requester_id
-            for requester_id, keys in keys_by_requester.items()
+            requester_key
+            for requester_key, keys in keys_by_requester.items()
             if watch_key in keys
         )
 
@@ -3364,8 +3456,7 @@ async def explain_requester_watch(
             )
         else:
             reason = (
-                "No single requester has a completed watch for every required "
-                "episode."
+                "No single requester has a completed watch for every required episode."
             )
     else:
         if not requester_times:
@@ -3432,9 +3523,9 @@ async def _activate_seerr_request_resolver_for_rules(
     if not _rules_use_seerr_fields(rules):
         return True, None
 
-    if not service_manager.seerr:
+    if not service_manager.has_seerr:
         LOG.warning(
-            "Rule uses Seerr fields but Seerr service is not configured; "
+            "Rule uses Seerr fields but no Seerr instance is configured; "
             "Seerr rule conditions will not match"
         )
         SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
@@ -3486,15 +3577,30 @@ async def _activate_seerr_request_resolver_for_rules(
         ).all()
         series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
 
-    snapshot, snapshot_error = await seerr_snapshot_cache.get_request_snapshot(
+    # Every configured instance has to answer. Evaluating on the ones that did
+    # would report "nobody requested this" for titles a silent Seerr still holds
+    # active requests for, and for a cleanup rule that reads as a delete.
+    snapshot_state = await seerr_snapshot_cache.get_request_snapshot_state(
         require_fresh=require_fresh,
         allow_stale_on_failure=allow_stale_on_failure,
     )
+    snapshot = snapshot_state.merged
+    names = await _seerr_instance_names(
+        db,
+        snapshot_state.unavailable_config_ids | set(snapshot_state.errors_by_config_id),
+    )
+    snapshot_error = _seerr_error_summary(snapshot_state.errors_by_config_id, names)
+    if metadata is not None:
+        metadata.seerr_unavailable_instances = sorted(
+            names[config_id]
+            for config_id in snapshot_state.unavailable_config_ids
+            if config_id in names
+        )
     if snapshot is None:
         SeerrRequestResolver({}, requester_has_watched_by_key={}).activate()
         return False, snapshot_error or "Failed to load Seerr request snapshot"
 
-    requester_ids_by_key: dict[tuple[MediaType, int], set[int]] = {
+    requester_ids_by_key: dict[tuple[MediaType, int], set[str]] = {
         (MediaType.MOVIE, tmdb_id): set() for tmdb_id in movie_tmdb_ids
     }
     requester_ids_by_key.update(
@@ -3691,7 +3797,7 @@ async def _activate_seerr_request_resolver_for_rules(
                 (int(season_number), int(episode_number))
             )
 
-    requester_ids_by_target: dict[tuple[str, int, int | None], set[int]] = {}
+    requester_ids_by_target: dict[tuple[str, int, int | None], set[str]] = {}
     latest_active_request_at_by_target: dict[tuple[str, int, int | None], datetime] = {}
     for tmdb_id in series_tmdb_ids:
         season_numbers = {
@@ -3828,36 +3934,66 @@ _LEAVING_SOON_MEDIA_SERVICES = {
 }
 
 
-def _normalize_leaving_soon_last_success_titles(
+async def _normalize_leaving_soon_last_success_titles(
+    db: AsyncSession,
     raw_titles: object,
-) -> dict[Service, str]:
+) -> dict[int, str]:
+    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
+
+    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
+    key that isn't a valid config id is resolved to whichever ServiceConfig
+    currently has that service_type, so upgrading loses no in-flight state.
+    Callers should always write the new shape back.
+    """
     if not isinstance(raw_titles, Mapping):
         return {}
-    normalized_titles: dict[Service, str] = {}
-    for raw_service, raw_title in raw_titles.items():
+    normalized_titles: dict[int, str] = {}
+    legacy_type_titles: dict[Service, str] = {}
+    for raw_key, raw_title in raw_titles.items():
+        title = normalize_leaving_soon_collection_title(str(raw_title))
         try:
-            service = Service(str(raw_service))
+            normalized_titles[int(raw_key)] = title
+            continue
+        except (TypeError, ValueError):
+            pass
+        try:
+            service = Service(str(raw_key))
         except Exception:
             continue
-        if service not in _LEAVING_SOON_MEDIA_SERVICES:
-            continue
-        normalized_titles[service] = normalize_leaving_soon_collection_title(
-            str(raw_title)
-        )
+        if service in _LEAVING_SOON_MEDIA_SERVICES:
+            legacy_type_titles[service] = title
+
+    if legacy_type_titles:
+        rows = (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.service_type).where(
+                    ServiceConfig.service_type.in_(legacy_type_titles.keys())
+                )
+            )
+        ).all()
+        config_id_by_type: dict[Service, int] = {}
+        for config_id, service_type in rows:
+            # first match wins - pre-multi-instance installs have at most one
+            config_id_by_type.setdefault(service_type, config_id)
+        for service, title in legacy_type_titles.items():
+            config_id = config_id_by_type.get(service)
+            if config_id is not None and config_id not in normalized_titles:
+                normalized_titles[config_id] = title
+
     return normalized_titles
 
 
 async def _load_leaving_soon_collection_settings(
     db: AsyncSession,
-) -> tuple[GeneralSettings | None, bool, str, dict[Service, str]]:
+) -> tuple[GeneralSettings | None, bool, str, dict[int, str]]:
     settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
     if settings_row is None:
         return None, False, "Leaving Soon", {}
     collection_base_title = normalize_leaving_soon_collection_title(
         settings_row.leaving_soon_collection_title
     )
-    last_success_titles = _normalize_leaving_soon_last_success_titles(
-        settings_row.leaving_soon_last_success_titles
+    last_success_titles = await _normalize_leaving_soon_last_success_titles(
+        db, settings_row.leaving_soon_last_success_titles
     )
     return (
         settings_row,
@@ -3867,25 +4003,75 @@ async def _load_leaving_soon_collection_settings(
     )
 
 
-def _append_service_item_id(
-    expected_items_by_service: dict[Service, set[str]],
+async def _get_enabled_leaving_soon_configs(db: AsyncSession) -> list[ServiceConfig]:
+    """Return enabled media-server ServiceConfig rows Leaving Soon can target."""
+    rows = (
+        await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+    ).scalars()
+    return list(rows)
+
+
+def _append_config_item_id(
+    expected_items_by_config: dict[int, set[str]],
     *,
-    service: Service,
+    config_id: int | None,
     item_id: str | None,
 ) -> None:
-    if service not in _LEAVING_SOON_MEDIA_SERVICES:
+    if config_id is None:
         return
     normalized_item_id = str(item_id or "").strip()
     if not normalized_item_id:
         return
-    expected_items_by_service.setdefault(service, set()).add(normalized_item_id)
+    expected_items_by_config.setdefault(config_id, set()).add(normalized_item_id)
+
+
+def _leaving_soon_config_id_resolver(
+    configs: list[ServiceConfig],
+) -> Callable[[Service], int | None]:
+    """Build a `service_type -> config_id` resolver for tables with no
+    config_id column of their own (MovieVersion, SeriesServiceRef).
+
+    Those tables are written by the main config only, so a row whose service
+    matches the CURRENT main server's type is unambiguously attributed to it.
+    A row whose service matches some other (non-main) type is legacy/stale
+    data - from before a main-server swap, or from before this table had a
+    single-writer invariant - and is attributed to whichever enabled config of
+    that type comes first; this can't be perfectly precise if two configs
+    share that non-main type, but it never misattributes to the wrong TYPE,
+    and it never affects the main config's own item set.
+    """
+    main_config = next((config for config in configs if config.is_main), None)
+    config_id_by_type: dict[Service, int] = {}
+    for config in configs:
+        config_id_by_type.setdefault(config.service_type, config.id)
+
+    def _resolve(service: Service) -> int | None:
+        if main_config is not None and service == main_config.service_type:
+            return main_config.id
+        return config_id_by_type.get(service)
+
+    return _resolve
 
 
 async def _build_leaving_soon_expected_item_ids(
     db: AsyncSession,
-) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
-    movie_expected_by_service: dict[Service, set[str]] = {}
-    series_expected_by_service: dict[Service, set[str]] = {}
+    configs: list[ServiceConfig],
+) -> tuple[dict[int, set[str]], dict[int, set[str]]]:
+    """Resolve expected Leaving Soon item IDs, keyed by service_config_id.
+
+    MovieVersion/SeriesServiceRef have no config_id column of their own, so
+    their rows are attributed via `_leaving_soon_config_id_resolver`.
+    SupplementalMediaMatch rows (from linked servers) already carry their own
+    source_service_config_id.
+    """
+    resolve_config_id = _leaving_soon_config_id_resolver(configs)
+    movie_expected_by_config: dict[int, set[str]] = {}
+    series_expected_by_config: dict[int, set[str]] = {}
 
     candidate_rows = (
         await db.execute(
@@ -3898,7 +4084,7 @@ async def _build_leaving_soon_expected_item_ids(
         )
     ).all()
     if not candidate_rows:
-        return movie_expected_by_service, series_expected_by_service
+        return movie_expected_by_config, series_expected_by_config
 
     movie_candidate_version_ids: set[int] = set()
     movie_candidate_ids: set[int] = set()
@@ -3924,9 +4110,9 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_item_id, movie_id in version_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
             movie_candidate_ids.add(int(movie_id))
@@ -3940,16 +4126,16 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_item_id in movie_version_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
         supplemental_movie_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.MOVIE,
@@ -3957,10 +4143,10 @@ async def _build_leaving_soon_expected_item_ids(
                 )
             )
         ).all()
-        for source_service, source_item_id in supplemental_movie_rows:
-            _append_service_item_id(
-                movie_expected_by_service,
-                service=source_service,
+        for source_service_config_id, source_item_id in supplemental_movie_rows:
+            _append_config_item_id(
+                movie_expected_by_config,
+                config_id=source_service_config_id,
                 item_id=source_item_id,
             )
 
@@ -3973,16 +4159,16 @@ async def _build_leaving_soon_expected_item_ids(
             )
         ).all()
         for service, service_id in series_ref_rows:
-            _append_service_item_id(
-                series_expected_by_service,
-                service=service,
+            _append_config_item_id(
+                series_expected_by_config,
+                config_id=resolve_config_id(service),
                 item_id=service_id,
             )
 
         supplemental_series_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.SERIES,
@@ -3990,47 +4176,48 @@ async def _build_leaving_soon_expected_item_ids(
                 )
             )
         ).all()
-        for source_service, source_item_id in supplemental_series_rows:
-            _append_service_item_id(
-                series_expected_by_service,
-                service=source_service,
+        for source_service_config_id, source_item_id in supplemental_series_rows:
+            _append_config_item_id(
+                series_expected_by_config,
+                config_id=source_service_config_id,
                 item_id=source_item_id,
             )
 
-    return movie_expected_by_service, series_expected_by_service
+    return movie_expected_by_config, series_expected_by_config
 
 
 async def _cleanup_disabled_leaving_soon_collections(
     db: AsyncSession,
     *,
     settings_row: GeneralSettings | None,
-    last_success_titles_by_service: Mapping[Service, str],
+    last_success_titles_by_config: Mapping[int, str],
 ) -> None:
-    if settings_row is None or not last_success_titles_by_service:
+    if settings_row is None or not last_success_titles_by_config:
         return
 
-    updated_last_success_titles = dict(last_success_titles_by_service)
+    updated_last_success_titles = dict(last_success_titles_by_config)
     last_success_changed = False
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
+    configs_by_id = {
+        config.id: config for config in await _get_enabled_leaving_soon_configs(db)
+    }
 
-    for service_type, service_client in service_clients:
-        previous_success_title = updated_last_success_titles.get(service_type)
-        if previous_success_title is None:
-            continue
+    for config_id, previous_success_title in list(updated_last_success_titles.items()):
+        config = configs_by_id.get(config_id)
+        service_client = (
+            service_manager.get_media_server(config.service_type, config.id)
+            if config is not None
+            else None
+        )
         if service_client is None:
-            # keep title for retry while service is unavailable
+            # keep title for retry while the config is unavailable/removed
             continue
 
         delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
         if not callable(delete_method):
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
-                f"{service_type.value}; cannot remove title "
-                f"{previous_success_title!r} while Leaving Soon is disabled"
+                f"{config.service_type.value} (config {config_id}); cannot remove "
+                f"title {previous_success_title!r} while Leaving Soon is disabled"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
@@ -4039,21 +4226,20 @@ async def _cleanup_disabled_leaving_soon_collections(
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
-                f"{service_type.value} while disabled (title "
-                f"{previous_success_title!r}): {e}"
+                f"{config.service_type.value} (config {config_id}) while disabled "
+                f"(title {previous_success_title!r}): {e}"
             )
             continue
 
-        del updated_last_success_titles[service_type]
+        del updated_last_success_titles[config_id]
         last_success_changed = True
 
     if not last_success_changed:
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        service.value: title
-        for service, title in updated_last_success_titles.items()
-        if service in _LEAVING_SOON_MEDIA_SERVICES
+        str(config_id): title
+        for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -4064,37 +4250,35 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         settings_row,
         enabled,
         collection_base_title,
-        last_success_titles_by_service,
+        last_success_titles_by_config,
     ) = await _load_leaving_soon_collection_settings(db)
     if not enabled:
         await _cleanup_disabled_leaving_soon_collections(
             db,
             settings_row=settings_row,
-            last_success_titles_by_service=last_success_titles_by_service,
+            last_success_titles_by_config=last_success_titles_by_config,
         )
         return
 
-    movie_expected_by_service: dict[Service, set[str]] = {}
-    series_expected_by_service: dict[Service, set[str]] = {}
+    configs = await _get_enabled_leaving_soon_configs(db)
     (
-        movie_expected_by_service,
-        series_expected_by_service,
-    ) = await _build_leaving_soon_expected_item_ids(db)
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
-    updated_last_success_titles = dict(last_success_titles_by_service)
+        movie_expected_by_config,
+        series_expected_by_config,
+    ) = await _build_leaving_soon_expected_item_ids(db, configs)
+    updated_last_success_titles = dict(last_success_titles_by_config)
     last_success_changed = False
 
-    for service_type, service_client in service_clients:
+    for config in configs:
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
         if service_client is None:
             continue
-        previous_success_title = updated_last_success_titles.get(service_type)
+        service_label = f"{config.service_type.value} (config {config.id})"
+        previous_success_title = updated_last_success_titles.get(config.id)
         service_success = True
 
-        # if this service last synced under a different title, clean it first.
+        # if this config last synced under a different title, clean it first.
         if (
             previous_success_title is not None
             and previous_success_title != collection_base_title
@@ -4105,9 +4289,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
             if not callable(delete_method):
                 service_success = False
                 LOG.warning(
-                    "Leaving Soon cleanup method missing for "
-                    f"{service_type.value}; cannot remove previous title "
-                    f"{previous_success_title!r}"
+                    f"Leaving Soon cleanup method missing for {service_label}; "
+                    f"cannot remove previous title {previous_success_title!r}"
                 )
             else:
                 delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
@@ -4117,19 +4300,19 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
                     service_success = False
                     LOG.warning(
                         "Failed cleaning previous Leaving Soon collections for "
-                        f"{service_type.value} (title {previous_success_title!r}): {e}"
+                        f"{service_label} (title {previous_success_title!r}): {e}"
                     )
 
         sync_method = getattr(service_client, "sync_leaving_soon_collections", None)
         if not callable(sync_method):
             LOG.warning(
-                "Leaving Soon sync method missing for "
-                f"{service_type.value}; skipping service sync"
+                f"Leaving Soon sync method missing for {service_label}; "
+                "skipping config sync"
             )
             continue
         sync_func = cast(Callable[..., Awaitable[Any]], sync_method)
-        movie_item_ids = movie_expected_by_service.get(service_type, set())
-        series_item_ids = series_expected_by_service.get(service_type, set())
+        movie_item_ids = movie_expected_by_config.get(config.id, set())
+        series_item_ids = series_expected_by_config.get(config.id, set())
         try:
             await sync_func(
                 base_title=collection_base_title,
@@ -4139,7 +4322,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         except Exception as e:
             service_success = False
             LOG.warning(
-                f"Failed syncing Leaving Soon collections for {service_type.value}: {e}"
+                f"Failed syncing Leaving Soon collections for {service_label}: {e}"
             )
 
         if not service_success:
@@ -4147,7 +4330,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         if previous_success_title == collection_base_title:
             continue
 
-        updated_last_success_titles[service_type] = collection_base_title
+        updated_last_success_titles[config.id] = collection_base_title
         last_success_changed = True
 
     if not last_success_changed:
@@ -4156,9 +4339,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         return
 
     settings_row.leaving_soon_last_success_titles = {
-        service.value: title
-        for service, title in updated_last_success_titles.items()
-        if service in _LEAVING_SOON_MEDIA_SERVICES
+        str(config_id): title
+        for config_id, title in updated_last_success_titles.items()
     }
     db.add(settings_row)
     await db.commit()
@@ -4167,11 +4349,18 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
 async def _build_leaving_soon_prune_item_ids(
     db: AsyncSession,
     candidate_ids: Iterable[int],
-) -> tuple[dict[Service, set[str]], dict[Service, set[str]]]:
-    """Resolve media-server collection item IDs affected by candidate actions."""
+    configs: list[ServiceConfig],
+) -> tuple[dict[int, set[str]], dict[int, set[str]]]:
+    """Resolve media-server collection item IDs affected by candidate actions.
+
+    Keyed by service_config_id - see _build_leaving_soon_expected_item_ids for
+    how MovieVersion/SeriesServiceRef rows (which have no config_id column of
+    their own) are attributed.
+    """
+    resolve_config_id = _leaving_soon_config_id_resolver(configs)
     normalized_candidate_ids = {int(candidate_id) for candidate_id in candidate_ids}
-    movie_item_ids: dict[Service, set[str]] = {}
-    series_item_ids: dict[Service, set[str]] = {}
+    movie_item_ids: dict[int, set[str]] = {}
+    series_item_ids: dict[int, set[str]] = {}
     if not normalized_candidate_ids:
         return movie_item_ids, series_item_ids
 
@@ -4212,9 +4401,9 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in version_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
@@ -4227,9 +4416,9 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in version_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
@@ -4237,7 +4426,7 @@ async def _build_leaving_soon_prune_item_ids(
         supplemental_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.MOVIE,
@@ -4245,10 +4434,10 @@ async def _build_leaving_soon_prune_item_ids(
                 )
             )
         ).all()
-        for service, service_item_id in supplemental_rows:
-            _append_service_item_id(
+        for source_service_config_id, service_item_id in supplemental_rows:
+            _append_config_item_id(
                 movie_item_ids,
-                service=service,
+                config_id=source_service_config_id,
                 item_id=service_item_id,
             )
 
@@ -4261,16 +4450,16 @@ async def _build_leaving_soon_prune_item_ids(
             )
         ).all()
         for service, service_item_id in series_ref_rows:
-            _append_service_item_id(
+            _append_config_item_id(
                 series_item_ids,
-                service=service,
+                config_id=resolve_config_id(service),
                 item_id=service_item_id,
             )
 
         supplemental_rows = (
             await db.execute(
                 select(
-                    SupplementalMediaMatch.source_service,
+                    SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.SERIES,
@@ -4278,10 +4467,10 @@ async def _build_leaving_soon_prune_item_ids(
                 )
             )
         ).all()
-        for service, service_item_id in supplemental_rows:
-            _append_service_item_id(
+        for source_service_config_id, service_item_id in supplemental_rows:
+            _append_config_item_id(
                 series_item_ids,
-                service=service,
+                config_id=source_service_config_id,
                 item_id=service_item_id,
             )
 
@@ -4305,33 +4494,35 @@ async def _prune_leaving_soon_before_candidate_actions(
         ) = await _load_leaving_soon_collection_settings(db)
         if not enabled:
             return
+        configs = await _get_enabled_leaving_soon_configs(db)
         movie_item_ids, series_item_ids = await _build_leaving_soon_prune_item_ids(
-            db, normalized_candidate_ids
+            db,
+            normalized_candidate_ids,
+            configs,
         )
 
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
-    for service_type, service_client in service_clients:
-        service_movie_ids = movie_item_ids.get(service_type, set())
-        service_series_ids = series_item_ids.get(service_type, set())
+    for config in configs:
+        service_movie_ids = movie_item_ids.get(config.id, set())
+        service_series_ids = series_item_ids.get(config.id, set())
         if not service_movie_ids and not service_series_ids:
             continue
 
+        service_label = f"{config.service_type.value} (config {config.id})"
         titles = {
             collection_base_title,
             *(
-                [last_success_titles[service_type]]
-                if service_type in last_success_titles
+                [last_success_titles[config.id]]
+                if config.id in last_success_titles
                 else []
             ),
         }
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
         if service_client is None:
-            if service_type in last_success_titles:
+            if config.id in last_success_titles:
                 raise RuntimeError(
-                    f"{service_type.value} is unavailable; cannot safely prune "
+                    f"{service_label} is unavailable; cannot safely prune "
                     "its Leaving Soon collection"
                 )
             continue
@@ -4339,7 +4530,7 @@ async def _prune_leaving_soon_before_candidate_actions(
         prune_method = getattr(service_client, "prune_leaving_soon_items", None)
         if not callable(prune_method):
             raise RuntimeError(
-                f"{service_type.value} Leaving Soon prune method is unavailable"
+                f"{service_label} Leaving Soon prune method is unavailable"
             )
         prune_func = cast(Callable[..., Awaitable[Any]], prune_method)
         for title in titles:
@@ -4351,7 +4542,7 @@ async def _prune_leaving_soon_before_candidate_actions(
                 )
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed pruning {service_type.value} Leaving Soon collection "
+                    f"Failed pruning {service_label} Leaving Soon collection "
                     f"{title!r}: {e}"
                 ) from e
 
@@ -6381,14 +6572,7 @@ async def _load_path_mappings() -> list[dict[str, Any]]:
 
 def _main_media_server_type() -> Service | None:
     """Return the configured main media server type based on the active client."""
-    main_service = service_manager.main_media_server
-    if main_service is None:
-        return None
-    if main_service is service_manager.jellyfin:
-        return Service.JELLYFIN
-    if main_service is service_manager.emby:
-        return Service.EMBY
-    return Service.PLEX
+    return service_manager.main_media_server_type
 
 
 def _season_media_server_id(season: Season, service_type: Service | None) -> str | None:
@@ -6712,12 +6896,7 @@ async def _delete_movie_version_candidates(
             )
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     async with async_db() as db:
         version_ids = [
@@ -7475,7 +7654,7 @@ async def _delete_movie_candidates(
                                 await db.delete(reclaim_candidate)
 
                         movie_tmdb_id = movie_info.get("tmdb_id")
-                        if service_manager.seerr and movie and movie_tmdb_id:
+                        if service_manager.has_seerr and movie and movie_tmdb_id:
                             try:
                                 await _reset_seerr_request(
                                     movie_tmdb_id, MediaType.MOVIE
@@ -7548,14 +7727,7 @@ async def _delete_movie_candidates(
         unmonitor_events: list[dict[str, Any]] = []
         path_mappings = await _load_path_mappings()
         main_service = service_manager.main_media_server
-        if main_service is None:
-            unmonitor_service_type: Service | None = None
-        elif main_service is service_manager.jellyfin:
-            unmonitor_service_type = Service.JELLYFIN
-        elif main_service is service_manager.emby:
-            unmonitor_service_type = Service.EMBY
-        else:
-            unmonitor_service_type = Service.PLEX
+        unmonitor_service_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
                 seen_unmonitor_ids: set[int] = set()
@@ -7727,7 +7899,7 @@ async def _delete_movie_candidates(
                                 await db.delete(reclaim_candidate)
 
                         movie_tmdb_id = movie_info.get("tmdb_id")
-                        if service_manager.seerr and movie and movie_tmdb_id:
+                        if service_manager.has_seerr and movie and movie_tmdb_id:
                             try:
                                 await _reset_seerr_request(
                                     movie_tmdb_id, MediaType.MOVIE
@@ -8085,7 +8257,7 @@ async def _delete_series_candidates(
                         await db.delete(reclaim_candidate)
 
                     series_tmdb_id = series_info.get("tmdb_id")
-                    if service_manager.seerr and series and series_tmdb_id:
+                    if service_manager.has_seerr and series and series_tmdb_id:
                         try:
                             await _reset_seerr_request(series_tmdb_id, MediaType.SERIES)
                         except Exception as e:
@@ -8150,14 +8322,7 @@ async def _delete_series_candidates(
         unmonitor_series_events: list[dict[str, Any]] = []
         path_mappings_series = await _load_path_mappings()
         main_service_s = service_manager.main_media_server
-        if main_service_s is None:
-            unmonitor_svc_type: Service | None = None
-        elif main_service_s is service_manager.jellyfin:
-            unmonitor_svc_type = Service.JELLYFIN
-        elif main_service_s is service_manager.emby:
-            unmonitor_svc_type = Service.EMBY
-        else:
-            unmonitor_svc_type = Service.PLEX
+        unmonitor_svc_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
                 seen_series_unmonitor: set[int] = set()
@@ -8254,7 +8419,7 @@ async def _delete_series_candidates(
                         await db.delete(reclaim_candidate)
 
                     series_tmdb_id = series_info.get("tmdb_id")
-                    if service_manager.seerr and series and series_tmdb_id:
+                    if service_manager.has_seerr and series and series_tmdb_id:
                         try:
                             await _reset_seerr_request(series_tmdb_id, MediaType.SERIES)
                         except Exception as e:
@@ -8827,15 +8992,7 @@ async def _delete_season_candidates(
             await db.commit()
 
         deleted_count += 1
-        event_service_type: Service | None
-        if service_manager.main_media_server is service_manager.jellyfin:
-            event_service_type = Service.JELLYFIN
-        elif service_manager.main_media_server is service_manager.emby:
-            event_service_type = Service.EMBY
-        else:
-            event_service_type = (
-                Service.PLEX if service_manager.main_media_server else None
-            )
+        event_service_type: Service | None = service_manager.main_media_server_type
         await _dispatch_reclaim_event(
             action="unmonitored_only"
             if cand_arr_action == "unmonitor_only"
@@ -9402,12 +9559,7 @@ async def _delete_movies_via_media_server(
         LOG.warning("No main media server available for movie deletion fallback")
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     # load movies with their versions
     async with async_db() as db:
@@ -9474,7 +9626,7 @@ async def _delete_movies_via_media_server(
                 if cand:
                     await db.delete(cand)
 
-                if service_manager.seerr and movie.tmdb_id:
+                if service_manager.has_seerr and movie.tmdb_id:
                     try:
                         await _reset_seerr_request(movie.tmdb_id, MediaType.MOVIE)
                     except Exception as e:
@@ -9548,12 +9700,7 @@ async def _delete_series_via_media_server(
         LOG.warning("No main media server available for series deletion fallback")
         return 0
 
-    if main_service is service_manager.jellyfin:
-        main_service_type = Service.JELLYFIN
-    elif main_service is service_manager.emby:
-        main_service_type = Service.EMBY
-    else:
-        main_service_type = Service.PLEX
+    main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     # get series from database to access service refs
     async with async_db() as db:
@@ -9601,7 +9748,7 @@ async def _delete_series_via_media_server(
                 if cand:
                     await db.delete(cand)
 
-                if service_manager.seerr and series_obj.tmdb_id:
+                if service_manager.has_seerr and series_obj.tmdb_id:
                     try:
                         await _reset_seerr_request(series_obj.tmdb_id, MediaType.SERIES)
                     except Exception as e:
@@ -9641,35 +9788,69 @@ async def _delete_series_via_media_server(
     return deleted_count
 
 
-async def _reset_seerr_request(tmdb_id: int, media_type: MediaType) -> None:
+async def _reset_seerr_request(
+    tmdb_id: int,
+    media_type: MediaType,
+    *,
+    config_ids: Collection[int] | None = None,
+) -> None:
     """Remove requests and media items in Seerr (Overseerr/Jellyseerr) after media deletion.
 
     Args:
         tmdb_id: TMDB ID of the media
         media_type: Movie or Series
+        config_ids: Limit the fan-out to these Seerr configs; every configured
+            instance when omitted.
     """
-    if not service_manager.seerr:
+    clients = service_manager.seerr_clients()
+    if config_ids is not None:
+        clients = {
+            config_id: client
+            for config_id, client in clients.items()
+            if config_id in config_ids
+        }
+    if not clients:
         return
 
-    try:
-        if media_type is MediaType.MOVIE:
-            # delete all requests first
-            await service_manager.seerr.delete_movie_requests(tmdb_id)
-            LOG.debug(f"Deleted Seerr movie requests for TMDB ID {tmdb_id}")
-            # then delete the media item itself
-            await service_manager.seerr.delete_movie_media(tmdb_id)
-            LOG.debug(f"Deleted Seerr movie media for TMDB ID {tmdb_id}")
-        else:
-            # delete all requests first
-            await service_manager.seerr.delete_tv_requests(tmdb_id)
-            LOG.debug(f"Deleted Seerr TV requests for TMDB ID {tmdb_id}")
-            # then delete the media item itself
-            await service_manager.seerr.delete_tv_media(tmdb_id)
-            LOG.debug(f"Deleted Seerr TV media for TMDB ID {tmdb_id}")
-    except PermissionError as e:
-        LOG.warning(f"Seerr permission error for TMDB {tmdb_id}: {e}")
-    except Exception as e:
-        LOG.warning(f"Failed to delete Seerr data for TMDB {tmdb_id}: {e}")
+    # Per instance, so one Seerr refusing the delete does not leave the others
+    # holding a request for media that is already gone.
+    for config_id, client in clients.items():
+        try:
+            if media_type is MediaType.MOVIE:
+                # delete all requests first
+                await client.delete_movie_requests(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr movie requests for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+                # then delete the media item itself
+                await client.delete_movie_media(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr movie media for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+            else:
+                # delete all requests first
+                await client.delete_tv_requests(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr TV requests for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+                # then delete the media item itself
+                await client.delete_tv_media(tmdb_id)
+                LOG.debug(
+                    f"Deleted Seerr TV media for TMDB ID {tmdb_id} "
+                    f"on config {config_id}"
+                )
+        except PermissionError as e:
+            LOG.warning(
+                f"Seerr permission error for TMDB {tmdb_id} on config {config_id}: {e}"
+            )
+        except Exception as e:
+            LOG.warning(
+                f"Failed to delete Seerr data for TMDB {tmdb_id} "
+                f"on config {config_id}: {e}"
+            )
 
 
 async def delete_specific_candidates(
@@ -10518,11 +10699,12 @@ async def _move_specific_candidates_impl(
                 # never falls back to the normal destructive delete path.
                 try:
                     main_service = service_manager.main_media_server
+                    main_service_type = service_manager.main_media_server_type
                     if main_service and series_ref:
                         if is_episode and episode:
-                            if main_service is service_manager.jellyfin:
+                            if main_service_type is Service.JELLYFIN:
                                 episode_service_id = episode.jellyfin_episode_id
-                            elif main_service is service_manager.emby:
+                            elif main_service_type is Service.EMBY:
                                 episode_service_id = episode.emby_episode_id
                             else:
                                 episode_service_id = episode.plex_rating_key
@@ -10530,9 +10712,9 @@ async def _move_specific_candidates_impl(
                                 await main_service.delete_item(episode_service_id)
                         elif is_season and season:
                             # delete the season item from the media server
-                            if main_service is service_manager.jellyfin:
+                            if main_service_type is Service.JELLYFIN:
                                 season_service_id = season.jellyfin_season_id
-                            elif main_service is service_manager.emby:
+                            elif main_service_type is Service.EMBY:
                                 season_service_id = season.emby_season_id
                             else:
                                 season_service_id = season.plex_season_rating_key
