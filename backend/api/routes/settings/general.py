@@ -124,13 +124,13 @@ async def _cleanup_leaving_soon_collections_on_disable(
     configs_by_id = {config.id: config for config in configs}
 
     for config_id, previous_success_title in list(updated_titles.items()):
-        config = configs_by_id.get(config_id)
-        service_client = (
-            service_manager.get_media_server(config.service_type, config.id)
-            if config is not None
-            else None
-        )
-        if service_client is None:
+        if (config := configs_by_id.get(config_id)) is None:
+            continue
+        if (
+            service_client := service_manager.get_media_server(
+                config.service_type, config.id
+            )
+        ) is None:
             continue
 
         delete_method = getattr(service_client, "delete_leaving_soon_collections", None)

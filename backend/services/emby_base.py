@@ -746,7 +746,7 @@ class EmbyServiceBase:
             if not isinstance(vf, dict):
                 continue
             if vf.get("CollectionType") == media_type:
-                item_id = vf.get("ItemId")
+                item_id = vf.get("ItemId") or vf.get("Id")
                 name = vf.get("Name")
                 if item_id and name:
                     media_libs.append({"id": str(item_id), "name": str(name)})
