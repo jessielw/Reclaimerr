@@ -956,16 +956,18 @@ async def _upsert_service_config(
             "api_key must be resolved before calling _upsert_service_config"
         )
 
-    # if this server is being made main, clear is_main from all other media servers first
+    # if this server is being made main, clear is_main from every OTHER media
+    # server first - identity, not type. Two configs of the same type can both
+    # be media servers (two Plex servers, say), so excluding the whole type
+    # would leave the previous main flagged as well and produce two mains, which
+    # every "the main server" lookup reads with scalar_one_or_none().
     if data.is_main:
-        await db.execute(
-            sql_update(ServiceConfig)
-            .where(
-                ServiceConfig.service_type != data.service_type,
-                ServiceConfig.service_type.in_(MEDIA_SERVERS),
-            )
-            .values(is_main=False)
+        demote_others = sql_update(ServiceConfig).where(
+            ServiceConfig.service_type.in_(MEDIA_SERVERS)
         )
+        if data.id is not None:
+            demote_others = demote_others.where(ServiceConfig.id != data.id)
+        await db.execute(demote_others.values(is_main=False))
 
     service_name = data.name or _default_service_name(data.service_type)
     values: dict[str, Any] = dict(

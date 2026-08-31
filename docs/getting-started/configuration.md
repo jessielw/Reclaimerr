@@ -99,6 +99,10 @@ For a trusted-proxy session, the sidebar logout control only appears when `FORWA
 
 The main server is the only source of library and file-version rows. Every other configured server is linked: it contributes watch state and same-media matches, but never library contents.
 
+In **Settings -> Media Servers**, pick a type from the **Server type** list and choose **Add server**. Each server is configured in its own dialog -- name, base URL, API key or token -- and joins the list below once it saves, so a server is either fully configured or not there at all. The first server added becomes the main server automatically. Every server of the same type needs its own name, since a name identifies that server's libraries everywhere they are shown.
+
+Changing which server is main is the **Set as main** action on any linked server's card, confirmed first because it starts a full resync. **Edit** reopens the same dialog for an existing server, and a linked server can be deleted from its card; the main server cannot be deleted or disabled while it holds that role.
+
 Every library records the server it came from, and with more than one media server configured that server's name is shown beside it -- in a rule's Library Scope, on candidate and media views, and in the reason a rule gives for matching. Two servers can each hold a library called `Movies`, and the provider logo alone does not say whose. With a single media server the name is left off, since there is nothing to tell apart.
 
 Changing which server is main replaces the library list with the new server's. Rules scoped to a library the new server does not have are reported as stale in the sidebar rather than silently retargeted -- which matters most for Jellyfin and Emby, where a library's id is derived from its path and two servers holding a library at the same path report the same id.

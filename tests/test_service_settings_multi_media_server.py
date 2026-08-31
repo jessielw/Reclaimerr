@@ -250,6 +250,20 @@ def test_promoting_same_type_config_to_main_marks_main_switched(monkeypatch):
             # regression: a type-only comparison would see PLEX == PLEX and
             # report "sync" here, never triggering the clearing resync.
             assert response["sync_action"] == "resync"
+
+            # and the promotion must be exclusive: demoting only OTHER TYPES
+            # left both Plex configs flagged main, which every
+            # scalar_one_or_none() lookup of "the main server" then blew up on.
+            mains = (
+                (
+                    await db.execute(
+                        select(ServiceConfig).where(ServiceConfig.is_main.is_(True))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert [config.id for config in mains] == [cabin.id]
         await engine.dispose()
 
     asyncio.run(run())
