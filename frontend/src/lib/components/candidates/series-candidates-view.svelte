@@ -20,6 +20,7 @@
     groupEpisodesBySeason,
     newestCandidateCreatedAt,
     seriesGroupCountLabel,
+    seriesGroupSeasonLabel,
   } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
@@ -126,6 +127,7 @@
         row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
       )}
       {@const groupCountLabel = seriesGroupCountLabel(row.seasons)}
+      {@const seasonSummary = seriesGroupSeasonLabel(row.seasons)}
       {@const groupDateAdded = newestCandidateCreatedAt(
         row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
       )}
@@ -179,8 +181,11 @@
                     >
                   {/if}
                 </div>
-                <div class="mt-1 flex items-center gap-2">
+                <div class="mt-1 flex flex-wrap items-center gap-2">
                   <MediaTypeBadge mediaType={MediaType.Series} />
+                  {#if seasonSummary}
+                    <span class="text-xs text-foreground">{seasonSummary}</span>
+                  {/if}
                   <span class="text-xs text-amber-400">
                     {groupCountLabel}
                   </span>

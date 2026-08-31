@@ -277,6 +277,27 @@ export const seriesGroupCountLabel = (
     .join(", ");
 };
 
+/**
+ * Summarize the distinct seasons represented by a grouped series candidate.
+ * Episode-level candidates are included so their parent season remains visible
+ * before the group is expanded.
+ */
+export const seriesGroupSeasonLabel = (
+  entries: ReclaimCandidateEntry[],
+): string | null => {
+  const seasonNumbers = [
+    ...new Set(
+      entries
+        .map((entry) => entry.season_number)
+        .filter((seasonNumber): seasonNumber is number => seasonNumber != null),
+    ),
+  ].sort((left, right) => left - right);
+
+  if (seasonNumbers.length === 0) return null;
+
+  return `${seasonNumbers.length === 1 ? "Season" : "Seasons"} ${seasonNumbers.join(", ")}`;
+};
+
 export const groupEpisodesBySeason = (
   entries: ReclaimCandidateEntry[],
 ): [number, ReclaimCandidateEntry[]][] => {
