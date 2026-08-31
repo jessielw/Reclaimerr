@@ -30,7 +30,7 @@ Reclaimerr is configured through General Settings, service settings, and a small
 | `RECLAIMERR_TASK_ISOLATION` | Set to `off` to run heavy tasks inline instead of isolated child processes |
 | `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2) |
 
-Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy.
+Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy, and it is what lets notifications link back into Reclaimerr. When it is unset, notifications are still delivered but contain no links.
 
 ## Trusted Proxy Authentication
 
