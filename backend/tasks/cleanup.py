@@ -4202,13 +4202,12 @@ async def _cleanup_disabled_leaving_soon_collections(
     }
 
     for config_id, previous_success_title in list(updated_last_success_titles.items()):
-        config = configs_by_id.get(config_id)
-        service_client = (
-            service_manager.get_media_server(config.service_type, config.id)
-            if config is not None
-            else None
-        )
-        if service_client is None:
+        if (config := configs_by_id.get(config_id)) is None:
+            # keep title for retry while the config is unavailable/removed
+            continue
+        if (service_client := service_manager.get_media_server(
+            config.service_type, config.id
+        )) is None:
             # keep title for retry while the config is unavailable/removed
             continue
 
