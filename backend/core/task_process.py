@@ -165,8 +165,8 @@ async def run_task_in_subprocess(
         error = _child_error(result) or "unknown error"
         raise RuntimeError(f"Isolated task {task.friendly_name()} failed: {error}")
 
-    payload = result.get("result")
-    return payload if isinstance(payload, dict) else None
+    result_payload = result.get("result")
+    return result_payload if isinstance(result_payload, dict) else None
 
 
 def _run_task_in_blocking_subprocess(
@@ -228,8 +228,8 @@ def _run_task_in_blocking_subprocess(
         error = _child_error(result) or "unknown error"
         raise RuntimeError(f"Isolated task {task.friendly_name()} failed: {error}")
 
-    payload = result.get("result")
-    return payload if isinstance(payload, dict) else None
+    result_payload = result.get("result")
+    return result_payload if isinstance(result_payload, dict) else None
 
 
 def _task_child_command() -> list[str]:
