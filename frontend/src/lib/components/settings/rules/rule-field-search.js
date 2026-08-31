@@ -16,6 +16,18 @@ const PROVIDER_ALIASES = {
 
 /** @type {Record<string, string[]>} */
 const FIELD_ALIASES = {
+  "playback.fully_watched_usernames": [
+    "finished",
+    "completed",
+    "watched by user",
+    "fully watched by user",
+  ],
+  "series.fully_watched": [
+    "series finished",
+    "show fully watched",
+    "completed",
+  ],
+  "series.watched_percent": ["series progress", "show watched percent"],
   "series.status": ["tv status", "show status", "television status"],
   "sonarr.series_status": ["sonarr status", "tv status", "show status"],
   "rottentomatoes.tomato_meter": ["tomato score", "critic score"],

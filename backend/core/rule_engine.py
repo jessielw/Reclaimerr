@@ -76,6 +76,20 @@ USER_SCOPED_PLAYBACK_FIELDS = {
     "playback.user_watched_duration_minutes",
     "playback.user_watched_percent",
 }
+# Who individually finished the target, rather than who played any part of it
+# (PLAYBACK_RULE_FIELDS) or how long they played for
+# (USER_SCOPED_PLAYBACK_FIELDS). Served by its own resolver because completion
+# comes from the per-user watch tables, not the playback aggregates.
+WATCH_COMPLETION_RULE_FIELDS = {"playback.fully_watched_usernames"}
+# Episode-level watch progress rolled up to a season or a whole series. Both
+# read Sonarr's canonical episode inventory, so both need the same eager-loaded
+# episodes and the same "no inventory means unknown" handling.
+EPISODE_WATCH_PROGRESS_FIELDS = {
+    "season.fully_watched",
+    "season.watched_percent",
+    "series.fully_watched",
+    "series.watched_percent",
+}
 
 RuleDefinition = dict[str, Any]
 
@@ -152,6 +166,7 @@ FIELD_LABELS: dict[str, str] = {
     "playback.longest_duration_minutes": "Longest playback (minutes)",
     "playback.unique_user_count": "Playback user count",
     "playback.usernames": "Playback users",
+    "playback.fully_watched_usernames": "Fully watched by users",
     "playback.last_activity_at": "Last playback activity",
     "playback.days_since_last_activity": "Days since playback activity",
     "playback.user_watched_duration_minutes": "Playback duration by user (minutes)",
@@ -180,6 +195,8 @@ FIELD_LABELS: dict[str, str] = {
     "letterboxd.score": "Letterboxd score",
     "letterboxd.vote_count": "Letterboxd votes",
     "series.status": "Series status",
+    "series.fully_watched": "Series fully watched",
+    "series.watched_percent": "Series watched (%)",
     "series.tmdb_season_count": "TMDB season count",
     "series.library_season_count": "Library season count",
     "movie.version_count": "Movie version count",
@@ -280,6 +297,9 @@ BOOLEAN_REASON_COMPANIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "season.fully_watched": (
         ("season.watched_percent", "{value}% of Sonarr's episode list watched"),
     ),
+    "series.fully_watched": (
+        ("series.watched_percent", "{value}% of Sonarr's episode list watched"),
+    ),
     "watch.never_watched": (
         ("watch.view_count", "{value} views"),
         ("watch.last_viewed_at", "last watched {value}"),
@@ -367,6 +387,7 @@ NUMERIC_FIELDS = {
     "movie.version_count",
     "series.tmdb_season_count",
     "series.library_season_count",
+    "series.watched_percent",
     "media.duration",
     "disk.free_bytes",
     "disk.free_percent",
@@ -443,6 +464,7 @@ TEXT_FIELDS = {
     "favorites.usernames",
     "seerr.requested_by_user_ids",
     "playback.usernames",
+    "playback.fully_watched_usernames",
 }
 MULTI_VALUE_TEXT_FIELDS = {
     "arr.tags",
@@ -456,6 +478,7 @@ MULTI_VALUE_TEXT_FIELDS = {
     "tmdb.original_language",
     "tmdb.origin_country",
     "playback.usernames",
+    "playback.fully_watched_usernames",
     *MEDIA_SERVER_GENRE_FIELDS,
 }
 LANGUAGE_FIELDS = {
@@ -473,6 +496,7 @@ BOOLEAN_FIELDS = {
     "subtitle.has_forced",
     "season.fully_watched",
     "season.is_latest_season",
+    "series.fully_watched",
     "watch.never_watched",
     "favorites.exists",
     "playback.has_activity",
@@ -592,6 +616,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     **{field: set(MULTI_VALUE_TEXT_OPERATORS) for field in MEDIA_SERVER_GENRE_FIELDS},
     "media_server.collections": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
+    "playback.fully_watched_usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "favorites.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
@@ -687,6 +712,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
         *USER_SCOPED_PLAYBACK_FIELDS,
+        *WATCH_COMPLETION_RULE_FIELDS,
         "movie.version_count",
     },
     TARGET_SERIES: {
@@ -733,8 +759,10 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "rottentomatoes.tomato_meter",
         "rottentomatoes.tomato_vote_count",
         "series.status",
+        "series.fully_watched",
         "series.library_season_count",
         "series.tmdb_season_count",
+        "series.watched_percent",
         "sonarr.latest_season_has_unaired_episodes",
         "sonarr.latest_season_has_finale",
         "sonarr.series_status",
@@ -765,6 +793,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
         "playback.user_watched_duration_minutes",
+        *WATCH_COMPLETION_RULE_FIELDS,
     },
     TARGET_SEASON: {
         "anilist.favourites",
@@ -850,6 +879,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
         "playback.user_watched_duration_minutes",
+        *WATCH_COMPLETION_RULE_FIELDS,
     },
     TARGET_EPISODE: {
         "anilist.favourites",
@@ -930,6 +960,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "watch.view_count",
         *PLAYBACK_RULE_FIELDS,
         *USER_SCOPED_PLAYBACK_FIELDS,
+        *WATCH_COMPLETION_RULE_FIELDS,
     },
 }
 
@@ -1617,6 +1648,91 @@ class PlaybackUserHistoryResolver:
         return self._totals_by_target.get((target_scope, target_id))
 
 
+class WatchCompletionResolver:
+    """Holds who individually finished each target for one rule evaluation run.
+
+    Keyed by target coordinates -- ``(target_scope, tmdb_id, season_number,
+    episode_number)``, with movie versions using ``(TARGET_MOVIE_VERSION,
+    tmdb_id, None, None)`` -- rather than by database id, because the per-user
+    watch tables record plays against exactly those coordinates. Every version of
+    a multi-version movie therefore shares one answer, which is what "finished
+    the movie" means.
+
+    A missing key is unknown, never "nobody": a target whose media server cannot
+    report completion is left out entirely so an ``is false``-shaped condition
+    (``matches none``) cannot delete media purely because a server was
+    unreadable. An observable target nobody finished is present with an empty
+    set, which is a known fact and does match ``matches none``.
+    """
+
+    _ctx: ContextVar[WatchCompletionResolver | None] = ContextVar(
+        "watch_completion_resolver", default=None
+    )
+
+    __slots__ = ("_usernames_by_target",)
+
+    def __init__(
+        self,
+        usernames_by_target: Mapping[
+            tuple[str, int, int | None, int | None], Iterable[str]
+        ]
+        | None = None,
+    ) -> None:
+        self._usernames_by_target: dict[
+            tuple[str, int, int | None, int | None], list[str]
+        ] = {
+            key: sorted({text for value in names if (text := str(value).strip())})
+            for key, names in (usernames_by_target or {}).items()
+        }
+
+    def activate(self) -> None:
+        WatchCompletionResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> WatchCompletionResolver | None:
+        return cls._ctx.get()
+
+    def resolve(
+        self,
+        target_scope: str,
+        tmdb_id: int | None,
+        *,
+        season_number: int | None = None,
+        episode_number: int | None = None,
+    ) -> object:
+        """Return the usernames who finished this target, or unavailable."""
+        if tmdb_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        key = (target_scope, int(tmdb_id), season_number, episode_number)
+        usernames = self._usernames_by_target.get(key)
+        if usernames is None:
+            return RULE_VALUE_UNAVAILABLE
+        return list(usernames)
+
+
+def _watch_completion_context(
+    resolver: WatchCompletionResolver | None,
+    target_scope: str,
+    tmdb_id: int | None,
+    *,
+    season_number: int | None = None,
+    episode_number: int | None = None,
+) -> dict[str, object]:
+    """Build the per-user completion context value for one target."""
+    return {
+        "playback.fully_watched_usernames": (
+            resolver.resolve(
+                target_scope,
+                tmdb_id,
+                season_number=season_number,
+                episode_number=episode_number,
+            )
+            if resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+    }
+
+
 def _playback_context(
     resolver: PlaybackHistoryResolver | None,
     target_scope: str,
@@ -2298,6 +2414,7 @@ def _build_context(
     _sonarr_resolver = SonarrRuleDataResolver.current()
     _playback_resolver = PlaybackHistoryResolver.current()
     _playback_user_resolver = PlaybackUserHistoryResolver.current()
+    _watch_completion_resolver = WatchCompletionResolver.current()
     _arr_resolver = ArrRuleDataResolver.current()
     _favorites_resolver = FavoritesRuleDataResolver.current()
     _rank_resolver = RankRuleDataResolver.current()
@@ -2363,6 +2480,9 @@ def _build_context(
                 version.id,
                 include_percent=True,
                 runtime_seconds=(version.duration / 1000 if version.duration else None),
+            ),
+            **_watch_completion_context(
+                _watch_completion_resolver, TARGET_MOVIE_VERSION, movie.tmdb_id
             ),
             "tmdb.release_date": movie.tmdb_release_date,
             "tmdb.in_collection": (
@@ -2519,6 +2639,7 @@ def _build_context(
             if isinstance(_favorite_users, list)
             else RULE_VALUE_UNAVAILABLE
         )
+        series_fully_watched, series_watched_percent = _series_watch_progress(series)
         return {
             "library.id": [ref.library_id for ref in refs if ref.library_id],
             "media.title": series.title,
@@ -2539,6 +2660,9 @@ def _build_context(
             **_playback_context(_playback_resolver, TARGET_SERIES, series.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver, TARGET_SERIES, series.id
+            ),
+            **_watch_completion_context(
+                _watch_completion_resolver, TARGET_SERIES, series.tmdb_id
             ),
             "tmdb.first_air_date": series.tmdb_first_air_date,
             "tmdb.last_air_date": series.tmdb_last_air_date,
@@ -2581,6 +2705,16 @@ def _build_context(
             "series.status": series.status,
             "series.tmdb_season_count": series.season_count,
             "series.library_season_count": _library_season_count(series),
+            "series.fully_watched": (
+                series_fully_watched
+                if series_fully_watched is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
+            "series.watched_percent": (
+                series_watched_percent
+                if series_watched_percent is not None
+                else RULE_VALUE_UNAVAILABLE
+            ),
             "video.codec_family": series.video_codec_families,
             "audio.codec_family": series.audio_codec_families,
             "video.hdr": series.has_hdr,
@@ -2733,6 +2867,12 @@ def _build_context(
             **_playback_context(_playback_resolver, TARGET_SEASON, season.id),
             **_user_scoped_playback_context(
                 _playback_user_resolver, TARGET_SEASON, season.id
+            ),
+            **_watch_completion_context(
+                _watch_completion_resolver,
+                TARGET_SEASON,
+                series.tmdb_id,
+                season_number=season.season_number,
             ),
             "season.air_date": season.air_date,
             "season.days_since_air_date": _days_between(season.air_date, now),
@@ -2963,6 +3103,13 @@ def _build_context(
                 episode.id,
                 include_percent=True,
                 runtime_seconds=episode.runtime,
+            ),
+            **_watch_completion_context(
+                _watch_completion_resolver,
+                TARGET_EPISODE,
+                series.tmdb_id,
+                season_number=season.season_number,
+                episode_number=episode.episode_number,
             ),
             "episode.number": episode.episode_number,
             "episode.position_by_air_date": (
@@ -3490,8 +3637,8 @@ def _never_watched(
     return (view_count or 0) == 0
 
 
-def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
-    """Return season watch completion as (fully_watched, watched_percent).
+def _season_watch_counts(season: Season) -> tuple[int, int] | None:
+    """Return (watched, expected) episode counts for a season, or None if unknown.
 
     Sonarr's canonical episode inventory is the denominator. This prevents a season
     with every downloaded episode watched from appearing complete while Sonarr knows
@@ -3502,7 +3649,7 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
     """
     expected_episode_numbers = set(season.sonarr_episode_numbers or [])
     if not expected_episode_numbers:
-        return None, None
+        return None
 
     episodes = season.episodes or []
     watched_episode_numbers: set[int] = set()
@@ -3521,11 +3668,52 @@ def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
         if episode.last_viewed_at is None and (episode.view_count or 0) > 0:
             watched_episode_numbers.add(episode.episode_number)
 
-    watched_percent = round(
-        (len(watched_episode_numbers) / len(expected_episode_numbers)) * 100,
-        2,
-    )
-    return expected_episode_numbers.issubset(watched_episode_numbers), watched_percent
+    return len(watched_episode_numbers), len(expected_episode_numbers)
+
+
+def _watch_progress(counts: tuple[int, int] | None) -> tuple[bool | None, float | None]:
+    """Turn (watched, expected) counts into a (fully_watched, percent) pair."""
+    if counts is None:
+        return None, None
+    watched, expected = counts
+    if expected <= 0:
+        return None, None
+    return watched >= expected, round((watched / expected) * 100, 2)
+
+
+def _season_watch_progress(season: Season) -> tuple[bool | None, float | None]:
+    """Return season watch completion as (fully_watched, watched_percent)."""
+    return _watch_progress(_season_watch_counts(season))
+
+
+def _series_watch_progress(series: Series) -> tuple[bool | None, float | None]:
+    """Return whole-series watch completion as (fully_watched, watched_percent).
+
+    Every regular season has to be answerable for the series to be: a single
+    season with no synchronized Sonarr inventory leaves the series unknown rather
+    than quietly judging it on the seasons that did report. Season 0 specials are
+    excluded, matching `series.library_season_count` and the requester-watch
+    series rollup, so a show nobody watched the specials of can still complete.
+
+    The percentage is episode-weighted across seasons, not an average of season
+    percentages, so a long season counts for more than a short one.
+    """
+    regular_seasons = [
+        season for season in (series.seasons or []) if season.season_number > 0
+    ]
+    if not regular_seasons:
+        return None, None
+
+    watched_total = 0
+    expected_total = 0
+    for season in regular_seasons:
+        counts = _season_watch_counts(season)
+        if counts is None:
+            return None, None
+        watched_total += counts[0]
+        expected_total += counts[1]
+
+    return _watch_progress((watched_total, expected_total))
 
 
 def _days_between(value: datetime | None, now: datetime) -> int | None:

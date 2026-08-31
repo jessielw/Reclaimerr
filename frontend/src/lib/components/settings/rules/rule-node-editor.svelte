@@ -442,6 +442,13 @@
       defaultOperator: "contains_any",
     },
     {
+      value: "playback.fully_watched_usernames",
+      label: "Fully watched by users",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "contains_all",
+    },
+    {
       value: "playback.last_activity_at",
       label: "Last playback activity",
       kind: "temporal",
@@ -822,6 +829,20 @@
     {
       value: "anilist.favourites",
       label: "AniList favourites",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
+      value: "series.fully_watched",
+      label: "Series fully watched",
+      kind: "boolean",
+      operators: booleanOperators,
+      defaultOperator: "is_true",
+    },
+    {
+      value: "series.watched_percent",
+      label: "Series watched (%)",
       kind: "number",
       operators: numericOperators,
       defaultOperator: "greater_than_or_equal",
@@ -1261,6 +1282,7 @@
       ...PLAYBACK_FIELD_VALUES,
       "playback.user_watched_duration_minutes",
       "playback.user_watched_percent",
+      "playback.fully_watched_usernames",
       "movie.version_count",
       "rottentomatoes.popcorn_meter",
       "rottentomatoes.popcorn_vote_count",
@@ -1313,8 +1335,10 @@
       "rottentomatoes.tomato_meter",
       "rottentomatoes.tomato_vote_count",
       "series.status",
+      "series.fully_watched",
       "series.library_season_count",
       "series.tmdb_season_count",
+      "series.watched_percent",
       "sonarr.latest_season_has_unaired_episodes",
       "sonarr.latest_season_has_finale",
       "sonarr.series_status",
@@ -1343,6 +1367,7 @@
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
       "playback.user_watched_duration_minutes",
+      "playback.fully_watched_usernames",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1428,6 +1453,7 @@
       "watch.view_count",
       ...PLAYBACK_FIELD_VALUES,
       "playback.user_watched_duration_minutes",
+      "playback.fully_watched_usernames",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1510,6 +1536,7 @@
       ...PLAYBACK_FIELD_VALUES,
       "playback.user_watched_duration_minutes",
       "playback.user_watched_percent",
+      "playback.fully_watched_usernames",
       "trakt.rating",
       "trakt.vote_count",
     ]),
@@ -1734,6 +1761,14 @@
     !valuelessOperators.has(c.operator);
   const isUserScopedNumberInput = (c: RuleCondition) =>
     fieldConfig(c.field).kind === "user_scoped_number";
+  // Both playback username lists are filled from the same picker, so the button
+  // and its dialog have to agree on which fields offer it.
+  const PLAYBACK_USER_LIST_FIELDS = new Set([
+    "playback.usernames",
+    "playback.fully_watched_usernames",
+  ]);
+  const isPlaybackUserListInput = (c: RuleCondition) =>
+    PLAYBACK_USER_LIST_FIELDS.has(c.field) && listOperators.has(c.operator);
   const valuePlaceholder = (c: RuleCondition) => {
     if (
       c.operator === "matches_any_regex" ||
@@ -1744,6 +1779,8 @@
       return "Seerr requester IDs, instanceId:userId (for example: 7:3, 9:12)...";
     if (c.field === "playback.usernames")
       return "Playback usernames (comma-separated)...";
+    if (c.field === "playback.fully_watched_usernames")
+      return "Usernames who finished it (comma-separated)...";
     if (c.field === "tmdb.collection_name")
       return "Collection names (comma-separated)...";
     if (isGenreField(c.field)) return "Genres (comma-separated)...";
@@ -2497,7 +2534,7 @@
                 <span class="hidden md:inline">Pick Users</span>
               </Button>
             {/if}
-            {#if node.field === "playback.usernames" && listOperators.has(node.operator)}
+            {#if isPlaybackUserListInput(node)}
               <Button
                 size="sm"
                 variant="secondary"
@@ -2639,7 +2676,7 @@
     />
   {/if}
 
-  {#if node.field === "playback.usernames" && listOperators.has(node.operator)}
+  {#if isPlaybackUserListInput(node)}
     <PlaybackUserPicker
       bind:open={playbackUserPickerOpen}
       initialSelectedUsernames={normalizeValueList(node.value)}

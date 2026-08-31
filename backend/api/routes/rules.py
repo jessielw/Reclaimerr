@@ -37,6 +37,8 @@ from backend.core.utils.language import language_name, normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database import get_db
 from backend.database.models import (
+    MediaWatchUser,
+    MediaWatchUserEpisode,
     Movie,
     MovieVersion,
     PlaybackHistoryEvent,
@@ -707,16 +709,29 @@ async def get_playback_users(
     q: Annotated[str, Query()] = "",
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[PlaybackUserLookupResponse]:
-    """Return distinct usernames resolved from retained playback events."""
+    """Return distinct usernames known from playback and watch state.
 
-    rows = (
-        await db.execute(
-            select(
-                PlaybackHistoryEvent.source_username,
-                PlaybackHistoryEvent.source_service,
-            ).where(PlaybackHistoryEvent.source_username.is_not(None))
-        )
-    ).all()
+    Retained playback events are only half of it. Jellyfin, Emby and Plex report
+    current per-user watched state directly, and on an install without Tautulli
+    or the Playback Reporting plugin that is the only place a name appears -- so
+    listing events alone left the picker empty while the watch-based rule fields
+    had data for those very people.
+    """
+
+    rows: list[tuple[str | None, Service]] = []
+    for statement in (
+        select(
+            PlaybackHistoryEvent.source_username,
+            PlaybackHistoryEvent.source_service,
+        ).where(PlaybackHistoryEvent.source_username.is_not(None)),
+        select(MediaWatchUser.watch_user_key, MediaWatchUser.source_service),
+        select(
+            MediaWatchUserEpisode.watch_user_key,
+            MediaWatchUserEpisode.source_service,
+        ),
+    ):
+        rows.extend((await db.execute(statement)).all())
+
     by_username: dict[str, PlaybackUserLookupResponse] = {}
     for raw_username, source_service in rows:
         username = str(raw_username or "").strip()
@@ -1327,6 +1342,9 @@ async def preview_rule_matches(
             ),
             requester_watch_unavailable_count=(
                 preview_result.metadata.requester_watch_unavailable_count
+            ),
+            watch_completion_unavailable_count=(
+                preview_result.metadata.watch_completion_unavailable_count
             ),
             matched_count=preview_result.metadata.matched_count,
         ),

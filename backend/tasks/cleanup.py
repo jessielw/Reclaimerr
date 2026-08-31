@@ -25,6 +25,7 @@ from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import (
     ARR_ID_RULE_FIELDS,
     COLLECTION_RULE_FIELDS,
+    EPISODE_WATCH_PROGRESS_FIELDS,
     FAVORITES_RULE_FIELDS,
     PLAYBACK_RULE_FIELDS,
     RANK_RULE_FIELDS,
@@ -39,6 +40,7 @@ from backend.core.rule_engine import (
     TARGET_SEASON,
     TARGET_SERIES,
     USER_SCOPED_PLAYBACK_FIELDS,
+    WATCH_COMPLETION_RULE_FIELDS,
     ArrRuleDataResolver,
     CollectionSiblingRuleDataResolver,
     DiskStatsResolver,
@@ -49,6 +51,7 @@ from backend.core.rule_engine import (
     SeerrRequestResolver,
     SonarrRuleDataResolver,
     SonarrRuleValue,
+    WatchCompletionResolver,
     collect_rule_conditions,
     evaluate_advanced_rule,
     evaluate_advanced_rule_state,
@@ -970,6 +973,14 @@ async def collect_rule_preview_matches_with_metadata(
     metadata.seerr_unavailable = not seerr_ready
     metadata.seerr_error = seerr_error
 
+    await _activate_watch_completion_for_rules(
+        db,
+        list(rules),
+        require_fresh=require_fresh,
+        allow_stale_on_failure=not require_fresh,
+        metadata=metadata,
+    )
+
     sonarr_result = await _activate_sonarr_rule_data_for_rules(
         db,
         list(rules),
@@ -1630,6 +1641,9 @@ WATCH_SENSITIVE_RULE_FIELDS = frozenset(
         "seerr.requester_watched_after_request",
         "season.fully_watched",
         "season.watched_percent",
+        "series.fully_watched",
+        "series.watched_percent",
+        "playback.fully_watched_usernames",
         "watch.view_count",
         "watch.last_viewed_at",
         "watch.days_since_last_watched",
@@ -2550,16 +2564,20 @@ def _rule_uses_seerr_fields(rule: ReclaimRule) -> bool:
 
 
 def _rule_uses_season_episode_watch_fields(rule: ReclaimRule) -> bool:
-    """Return True if the rule references season episode-level watch progress fields."""
-    for _ in collect_rule_conditions(rule.definition, field="season.fully_watched"):
-        return True
-    for _ in collect_rule_conditions(rule.definition, field="season.watched_percent"):
-        return True
-    return False
+    """Return True if the rule references episode-level watch progress fields.
+
+    Covers the whole-series roll-up as well as the season fields: both are
+    computed from Sonarr's episode inventory and the locally stored episodes, so
+    both need the episodes eager-loaded and the same missing-inventory handling.
+    """
+    return any(
+        collect_rule_conditions(rule.definition, field=field)
+        for field in EPISODE_WATCH_PROGRESS_FIELDS
+    )
 
 
 def _rules_use_season_episode_watch_fields(rules: list[ReclaimRule]) -> bool:
-    """Return True if any rule references season episode-level watch progress fields."""
+    """Return True if any rule references episode-level watch progress fields."""
     return any(_rule_uses_season_episode_watch_fields(r) for r in rules)
 
 
@@ -3927,6 +3945,329 @@ async def _activate_seerr_request_resolver_for_rules(
     return True, snapshot_error
 
 
+# One person as one media server knows them: every name that account answers to.
+WatchPerson = frozenset[str]
+
+
+def _watch_person(
+    alias_index: AliasIndex, service: Service, watch_key: str
+) -> WatchPerson:
+    """Group one recorded watch key with the other names that account uses.
+
+    Only within a single observed service. A Plex server, the Tautulli beside it
+    and a Plex-bound Tracearr all describe the same accounts, so their names have
+    to merge or a play recorded under a Plex title would never satisfy a rule
+    naming the Tautulli username. Across servers it stays split, for the same
+    reason provider ids never bridge providers: two accounts sharing a name on
+    two different servers are not evidence of one person.
+    """
+    aliases = alias_index.get(service, {}).get(watch_key)
+    return frozenset(aliases) if aliases else frozenset({watch_key})
+
+
+def _completed_watchers(
+    watched_by_person: Mapping[WatchPerson, set[tuple[int, int]]],
+    expected: set[tuple[int, int]],
+) -> set[str]:
+    """Names of everyone whose own plays cover every expected episode."""
+    if not expected:
+        return set()
+    return {
+        name
+        for person, watched in watched_by_person.items()
+        if expected <= watched
+        for name in person
+    }
+
+
+async def _activate_watch_completion_for_rules(
+    db: AsyncSession,
+    rules: list[ReclaimRule],
+    *,
+    require_fresh: bool,
+    allow_stale_on_failure: bool,
+    metadata: RulePreviewMatchMetadata | None = None,
+) -> None:
+    """Activate per-user completion state for rules using `Fully watched by users`.
+
+    Answers "which people individually finished this", which no existing field
+    does: `season.fully_watched` reads the media server's own aggregate, which
+    unions every viewer together, and `playback.usernames` only asks who pressed
+    play. Completion is measured against Sonarr's episode inventory, the same
+    denominator `season.fully_watched` and `series.fully_watched` use, so a
+    season still carrying unaired episode numbers cannot read as finished just
+    because somebody caught up with what has downloaded so far.
+    """
+    if not _rules_use_any_field(rules, WATCH_COMPLETION_RULE_FIELDS):
+        WatchCompletionResolver({}).activate()
+        return
+
+    # Completion is read straight out of the persisted watch tables, so without
+    # this it silently reflects whenever Sync Media last ran. Match the playback
+    # path: refresh if stale for previews, require current data for scans.
+    await db.commit()
+    watch_ok, watch_error = await media_watch_snapshot_cache.ensure_fresh_snapshot(
+        force=require_fresh,
+        allow_stale_on_failure=allow_stale_on_failure,
+    )
+    if not watch_ok and watch_error:
+        LOG.warning(
+            "Watch snapshot refresh failed; completion conditions may be "
+            f"evaluated against stale data: {watch_error}"
+        )
+    elif watch_error:
+        LOG.debug(f"Using stale watch snapshot for completion rules: {watch_error}")
+
+    movie_targets = any(normalize_rule_target(r) == TARGET_MOVIE_VERSION for r in rules)
+    series_targets = any(
+        normalize_rule_target(r) in {TARGET_SERIES, TARGET_SEASON, TARGET_EPISODE}
+        for r in rules
+    )
+
+    movie_tmdb_ids: set[int] = set()
+    series_tmdb_ids: set[int] = set()
+    if movie_targets:
+        rows = (
+            await db.execute(select(Movie.tmdb_id).where(Movie.removed_at.is_(None)))
+        ).all()
+        movie_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
+    if series_targets:
+        rows = (
+            await db.execute(select(Series.tmdb_id).where(Series.removed_at.is_(None)))
+        ).all()
+        series_tmdb_ids = {tmdb_id for (tmdb_id,) in rows if tmdb_id is not None}
+
+    # tmdb id -> service -> watch keys that completed the movie
+    movie_watchers: dict[int, dict[Service, set[str]]] = {}
+    if movie_tmdb_ids:
+        movie_rows = (
+            await db.execute(
+                select(
+                    MediaWatchUser.tmdb_id,
+                    MediaWatchUser.source_service,
+                    MediaWatchUser.watch_user_key_normalized,
+                ).where(
+                    MediaWatchUser.media_type == MediaType.MOVIE,
+                    MediaWatchUser.tmdb_id.in_(movie_tmdb_ids),
+                )
+            )
+        ).all()
+        for tmdb_id, source_service, user_key in movie_rows:
+            watch_key = _normalize_watch_key(user_key)
+            if not watch_key:
+                continue
+            movie_watchers.setdefault(int(tmdb_id), {}).setdefault(
+                source_service, set()
+            ).add(watch_key)
+
+    # tmdb id -> service -> watch key -> completed (season, episode) coordinates
+    episode_watchers: dict[int, dict[Service, dict[str, set[tuple[int, int]]]]] = {}
+    if series_tmdb_ids:
+        episode_rows = (
+            await db.execute(
+                select(
+                    MediaWatchUserEpisode.series_tmdb_id,
+                    MediaWatchUserEpisode.source_service,
+                    MediaWatchUserEpisode.watch_user_key_normalized,
+                    MediaWatchUserEpisode.season_number,
+                    MediaWatchUserEpisode.episode_number,
+                ).where(MediaWatchUserEpisode.series_tmdb_id.in_(series_tmdb_ids))
+            )
+        ).all()
+        for (
+            tmdb_id,
+            source_service,
+            user_key,
+            season_number,
+            episode_number,
+        ) in episode_rows:
+            watch_key = _normalize_watch_key(user_key)
+            if not watch_key:
+                continue
+            episode_watchers.setdefault(int(tmdb_id), {}).setdefault(
+                source_service, {}
+            ).setdefault(watch_key, set()).add((int(season_number), int(episode_number)))
+
+    # Durable history carries completed plays the current native snapshot no
+    # longer describes, including ones that predate the copy on disk. Same
+    # evidence rule the requester-watch fields use.
+    active_tracearr_sources = await load_active_tracearr_sources(db)
+    durable_rows = (
+        await db.execute(
+            select(
+                PlaybackHistoryEvent.source_service,
+                PlaybackHistoryEvent.observed_service,
+                PlaybackHistoryEvent.provider_media_type,
+                PlaybackHistoryEvent.tmdb_id,
+                PlaybackHistoryEvent.season_number,
+                PlaybackHistoryEvent.episode_number,
+                PlaybackHistoryEvent.source_username,
+                PlaybackHistoryEvent.source_user_id,
+            ).where(
+                PlaybackHistoryEvent.completed.is_(True),
+                PlaybackHistoryEvent.tmdb_id.is_not(None),
+                PlaybackHistoryEvent.provider_media_type.in_(("movie", "episode")),
+                completion_evidence_event_clause(active_tracearr_sources),
+            )
+        )
+    ).all()
+    durable_completion_services: set[Service] = set()
+    for (
+        source_service,
+        observed_service,
+        provider_media_type,
+        tmdb_id,
+        season_number,
+        episode_number,
+        source_username,
+        source_user_id,
+    ) in durable_rows:
+        watch_key = _normalize_watch_key(source_username or source_user_id)
+        if not watch_key or tmdb_id is None:
+            continue
+        watch_service = observed_service or (
+            Service.PLEX if source_service is Service.TAUTULLI else source_service
+        )
+        durable_completion_services.add(watch_service)
+        if provider_media_type == "movie":
+            if int(tmdb_id) in movie_tmdb_ids:
+                movie_watchers.setdefault(int(tmdb_id), {}).setdefault(
+                    watch_service, set()
+                ).add(watch_key)
+            continue
+        if season_number is None or episode_number is None:
+            continue
+        if int(tmdb_id) not in series_tmdb_ids:
+            continue
+        episode_watchers.setdefault(int(tmdb_id), {}).setdefault(
+            watch_service, {}
+        ).setdefault(watch_key, set()).add((int(season_number), int(episode_number)))
+
+    unobservable_keys = await _unobservable_requester_watch_keys(
+        db,
+        movie_tmdb_ids=movie_tmdb_ids,
+        series_tmdb_ids=series_tmdb_ids,
+        durable_completion_services=durable_completion_services,
+    )
+    if metadata is not None:
+        metadata.watch_completion_unavailable_count = len(unobservable_keys)
+
+    alias_index = await load_watch_user_alias_index(db)
+
+    # Sonarr's canonical inventory is the denominator, exactly as it is for
+    # `season.fully_watched`. A season it cannot answer for is left out below so
+    # the field reads unknown rather than "nobody finished it".
+    expected_by_series: dict[int, dict[int, set[tuple[int, int]]]] = {}
+    seasons_without_inventory: dict[int, set[int]] = {}
+    local_episodes_by_series: dict[int, set[tuple[int, int]]] = {}
+    if series_tmdb_ids:
+        inventory_rows = (
+            await db.execute(
+                select(
+                    Series.tmdb_id,
+                    Season.season_number,
+                    Season.sonarr_episode_numbers,
+                )
+                .join(Season, Season.series_id == Series.id)
+                .where(Series.tmdb_id.in_(series_tmdb_ids))
+            )
+        ).all()
+        for tmdb_id, season_number, inventory in inventory_rows:
+            if tmdb_id is None:
+                continue
+            if not inventory:
+                seasons_without_inventory.setdefault(int(tmdb_id), set()).add(
+                    int(season_number)
+                )
+                continue
+            expected_by_series.setdefault(int(tmdb_id), {})[int(season_number)] = {
+                (int(season_number), int(number)) for number in inventory
+            }
+        local_rows = (
+            await db.execute(
+                select(
+                    Series.tmdb_id,
+                    Season.season_number,
+                    Episode.episode_number,
+                )
+                .join(Season, Season.series_id == Series.id)
+                .join(Episode, Episode.season_id == Season.id)
+                .where(Series.tmdb_id.in_(series_tmdb_ids))
+            )
+        ).all()
+        for tmdb_id, season_number, episode_number in local_rows:
+            if tmdb_id is None:
+                continue
+            local_episodes_by_series.setdefault(int(tmdb_id), set()).add(
+                (int(season_number), int(episode_number))
+            )
+
+    usernames_by_target: dict[tuple[str, int, int | None, int | None], set[str]] = {}
+
+    for tmdb_id in movie_tmdb_ids:
+        if (MediaType.MOVIE, tmdb_id) in unobservable_keys:
+            continue
+        names: set[str] = set()
+        for service, watch_keys in movie_watchers.get(tmdb_id, {}).items():
+            for watch_key in watch_keys:
+                names |= _watch_person(alias_index, service, watch_key)
+        usernames_by_target[(TARGET_MOVIE_VERSION, tmdb_id, None, None)] = names
+
+    for tmdb_id in series_tmdb_ids:
+        if (MediaType.SERIES, tmdb_id) in unobservable_keys:
+            continue
+        watched_by_person: dict[WatchPerson, set[tuple[int, int]]] = {}
+        for service, by_key in episode_watchers.get(tmdb_id, {}).items():
+            for watch_key, coordinates in by_key.items():
+                person = _watch_person(alias_index, service, watch_key)
+                watched_by_person.setdefault(person, set()).update(coordinates)
+
+        for coordinate in local_episodes_by_series.get(tmdb_id, set()):
+            usernames_by_target[
+                (TARGET_EPISODE, tmdb_id, coordinate[0], coordinate[1])
+            ] = {
+                name
+                for person, watched in watched_by_person.items()
+                if coordinate in watched
+                for name in person
+            }
+
+        expected_by_season = expected_by_series.get(tmdb_id, {})
+        for season_number, expected in expected_by_season.items():
+            usernames_by_target[(TARGET_SEASON, tmdb_id, season_number, None)] = (
+                _completed_watchers(watched_by_person, expected)
+            )
+
+        # Season 0 specials never count towards the series, matching
+        # `series.fully_watched` and the requester-watch series rollup. One
+        # regular season Sonarr cannot answer for leaves the whole series
+        # unknown rather than judging it on the seasons that did report.
+        regular_seasons = {
+            season_number for season_number in expected_by_season if season_number > 0
+        }
+        missing_regular = {
+            season_number
+            for season_number in seasons_without_inventory.get(tmdb_id, set())
+            if season_number > 0
+        }
+        if not regular_seasons or missing_regular:
+            continue
+        series_expected = {
+            coordinate
+            for season_number in regular_seasons
+            for coordinate in expected_by_season[season_number]
+        }
+        usernames_by_target[(TARGET_SERIES, tmdb_id, None, None)] = _completed_watchers(
+            watched_by_person, series_expected
+        )
+
+    WatchCompletionResolver(usernames_by_target).activate()
+    LOG.debug(
+        f"Activated watch completion resolver for {len(usernames_by_target)} target(s) "
+        f"across {len(movie_tmdb_ids)} movie and {len(series_tmdb_ids)} series key(s)"
+    )
+
+
 _LEAVING_SOON_MEDIA_SERVICES = {
     Service.PLEX,
     Service.JELLYFIN,
@@ -4650,6 +4991,13 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
                     f"this run: {seerr_skip_reason}"
                 )
 
+        await _activate_watch_completion_for_rules(
+            db,
+            list(rules),
+            require_fresh=True,
+            allow_stale_on_failure=False,
+        )
+
         sonarr_rule_result = await _activate_sonarr_rule_data_for_rules(
             db,
             list(rules),
@@ -4925,8 +5273,15 @@ async def _collect_series_candidate_records(
 
     # get all media items
     query_options = [selectinload(Series.service_refs)]
-    if _rules_use_field(rules, "series.library_season_count"):
-        query_options.append(selectinload(Series.seasons))
+    needs_episodes = _rules_use_season_episode_watch_fields(rules)
+    if needs_episodes or _rules_use_field(rules, "series.library_season_count"):
+        season_loader = selectinload(Series.seasons)
+        if needs_episodes:
+            # `series.fully_watched` counts episodes, and the relationships are
+            # lazy="noload", so without this the seasons look empty rather than
+            # raising and every series would read as unknown.
+            season_loader = season_loader.selectinload(Season.episodes)
+        query_options.append(season_loader)
     query = (
         select(Series)
         .where(
@@ -4991,6 +5346,17 @@ async def _collect_series_candidate_records(
         reasons: list[dict[str, Any]] = []
 
         for rule in rules:
+            if (
+                preview_metadata is not None
+                and _rule_uses_season_episode_watch_fields(rule)
+                and evaluate_advanced_rule_state(
+                    rule,
+                    target_scope=TARGET_SERIES,
+                    series=item,
+                )
+                is None
+            ):
+                _record_unavailable_series_inventory(preview_metadata, item)
             if _evaluate_movie_rule(item, rule, matched_criteria, reasons):
                 matched_rules.append(rule.id)
 
@@ -5957,6 +6323,28 @@ def _record_unavailable_season_inventory(
         metadata.season_inventory_unavailable_examples.append(
             f"{series.title} S{season.season_number:02d}"
         )
+
+
+def _record_unavailable_series_inventory(
+    metadata: RulePreviewMatchMetadata,
+    series: Series,
+) -> None:
+    """Record one preview-scoped series with unavailable Sonarr inventory.
+
+    Shares the season counters because it is the same missing data and the same
+    fix, and the example strings stay distinguishable: a season reads
+    "Title S01" while a whole series is just "Title". Season ids start at 1, so
+    0 cannot collide with a season key.
+    """
+    key = (series.id, 0)
+    if key in metadata.season_inventory_unavailable_keys:
+        return
+    metadata.season_inventory_unavailable_keys.add(key)
+    metadata.season_inventory_unavailable_count = len(
+        metadata.season_inventory_unavailable_keys
+    )
+    if len(metadata.season_inventory_unavailable_examples) < 5:
+        metadata.season_inventory_unavailable_examples.append(series.title)
 
 
 def _evaluate_rule_for_episode(

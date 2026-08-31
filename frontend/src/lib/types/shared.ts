@@ -1228,6 +1228,7 @@ export interface RulePreviewMetadata {
   /** Names of the Seerr instances that could not be read. */
   seerr_unavailable_instances?: string[];
   requester_watch_unavailable_count: number;
+  watch_completion_unavailable_count: number;
   matched_count: number;
 }
 

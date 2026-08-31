@@ -332,9 +332,9 @@ Use the **Why?** control on a preview row to see exactly how either field resolv
 
 ### Sonarr Rule Data
 
-`Season fully watched` and `Season watched (%)` use Sonarr's complete known episode inventory as their denominator. Episodes Sonarr knows about still count when they are unaired or do not have files, so six watched episodes out of seven known episodes is 85.71%, not complete. Run `Sync Media` after upgrading or after Sonarr discovers new episodes.
+`Season fully watched`, `Season watched (%)`, `Series fully watched`, and `Series watched (%)` use Sonarr's complete known episode inventory as their denominator. Episodes Sonarr knows about still count when they are unaired or do not have files, so six watched episodes out of seven known episodes is 85.71%, not complete. Run `Sync Media` after upgrading or after Sonarr discovers new episodes.
 
-Sonarr series are matched by TMDB id, falling back to TVDB id when Sonarr reports no TMDB id for a show. If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only seasons where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
+Sonarr series are matched by TMDB id, falling back to TVDB id when Sonarr reports no TMDB id for a show. If a season has no successfully synchronized Sonarr episode inventory, its watch completion is unknown. Boolean and numeric completion conditions do not match that season; Reclaimerr does not fall back to treating the currently downloaded episodes as the complete season. Preview warnings count only items where missing inventory affects the current rule after its other conditions are applied, and show up to five example titles to aid troubleshooting.
 
 `Sonarr series status` exposes Sonarr's canonical series status independently from the TMDB-backed `Series status` field. It is available to series, season, and episode rules with the values `continuing`, `ended`, `upcoming`, and `deleted`.
 
@@ -369,6 +369,31 @@ Latest season has finale is false
 
 The finale field depends on Sonarr's metadata and may remain false while a season is incomplete or its finale metadata has not been updated. Combine it with status, age, watch-history, or library conditions and inspect the preview before enabling the rule.
 
+### Whole-Series Completion
+
+`Series fully watched` and `Series watched (%)` are available to series rules only. They answer for the complete local series the way the season fields answer for one season:
+
+| Field | Meaning |
+| --- | --- |
+| Series fully watched | Every episode Sonarr knows about, in every regular local season, has been watched |
+| Series watched (%) | Watched episodes as a percentage of that same total |
+
+The percentage is episode-weighted across seasons rather than an average of the season percentages, so one watched episode of a nine-episode season plus a complete one-episode season is 10%, not 50%.
+
+Season 0 specials are excluded, matching `Library season count`, so specials nobody watched cannot hold a finished show back. Only the seasons you actually have are counted, so a series you keep one season of reads as fully watched once that season is -- the same "the complete local series" meaning the series scope carries everywhere else.
+
+**A single regular season Sonarr cannot answer for leaves the whole series unknown.** Judging the show on the seasons that did report would let an `is false` rule delete a series somebody finished, and an `is true` rule delete one that is merely unsynced. Unknown matches neither `is true` nor `is false`.
+
+These fields pair with `Sonarr series status` for the usual whole-series retention rule:
+
+```text
+AND
+  Sonarr series status = ended
+  Series fully watched is true
+```
+
+`Series fully watched` reads the media server's own watch state, which unions every viewer together. Use `Fully watched by users` below when the rule needs specific people to have finished it.
+
 ### Playback Activity and History
 
 Playback fields are available to movie-version, series, season, and episode rules. Reclaimerr stores current completed watch state directly from Jellyfin and Emby, then supplements it with compact events imported from the Jellyfin/Emby Playback Reporting plugin and Tautulli:
@@ -390,22 +415,54 @@ The thresholds are applied while history is imported, so a change only affects e
 
 #### Per-user playback conditions
 
-The fields above are aggregated across every user who played the media, so `Longest playback > 30` matches if _anyone_ watched 30+ minutes, even if the specific person you care about only watched a few seconds. Two additional fields scope playback to one or more chosen users instead:
+The fields above are aggregated across every user who played the media, so `Longest playback > 30` matches if _anyone_ watched 30+ minutes, even if the specific person you care about only watched a few seconds. Three additional fields scope playback to one or more chosen users instead:
 
 | Field | Meaning | Available scopes |
 | --- | --- | --- |
 | Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
 | Playback watched by user (%) | Selected user's total watched time as a percent of runtime | Movie version, episode only |
+| Fully watched by users | Who has individually finished the target | All scopes |
 
-Both fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option - use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
+The two duration fields are covered here; `Fully watched by users` has its own section below. Both duration fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option - use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
 
 `Playback watched by user (%)` is only available for movie-version and episode rules, since percent-watched needs a known runtime and only movie files and episodes have one on record (series and season rules can still use the minutes field). Episode runtimes are recorded during a media-server sync, so on an existing install episode percent rules stay unknown until the next sync has run.
 
 Both fields sum a user's playback across all of their sessions for the target, so resuming a paused movie across several sittings still counts toward the total. That also means percent is time watched rather than furthest position reached: re-watching pushes a user past 100%, and re-watching the same twenty minutes repeatedly accrues percent without the rest of the film ever being seen. Percent is measured against the runtime of the movie file the rule is evaluating, so on a movie kept in both a theatrical and an extended version the same watch time reads as a higher percent on the shorter file.
 
+#### Fully watched by users
+
+`Fully watched by users` lists the people who each finished the target on their own. It takes the usual list operators, so `matches all alice, bob` is true only when alice finished it **and** bob finished it, `matches any` when either did, and `matches none` when neither did. Pick the names from the same user picker the other playback-user fields use.
+
+What "finished" means depends on the rule target:
+
+| Scope | Finished means |
+| --- | --- |
+| Movie version | That user completed the movie |
+| Episode | That user completed that episode |
+| Season | That user completed every episode Sonarr knows about in that season |
+| Series | That user completed every episode Sonarr knows about, in every regular season |
+
+This is the field to reach for whenever a rule needs several named people to be done with something. The obvious-looking alternative does not work:
+
+```text
+AND
+  Season fully watched is true
+  Playback users matches all alice, bob
+```
+
+`Season fully watched` unions every viewer's progress together, so it is already true when alice finished the season and bob watched one episode of it, and `Playback users` only asks who pressed play. That rule matches a season bob has barely started. `Fully watched by users matches all alice, bob` does not.
+
+Completion is measured against Sonarr's episode inventory, the same denominator `Season fully watched` and `Series fully watched` use. A season still carrying unaired episode numbers therefore cannot read as finished just because somebody has caught up with everything that has downloaded so far. Episode targets need no denominator and stay answerable even when a season's inventory is missing. Season 0 specials are excluded from series completion.
+
+This is the opposite choice from `Seerr requester has watched`, which counts the episodes you actually have. That field guards `is false` deletion rules, where an unwatchable episode must not read as unwatched; this one is built for `matches all` deletion rules, where the stricter Sonarr denominator is the safe direction.
+
+Evidence is the same completed-play evidence the requester-watch fields use: current per-user watched state from Plex, Jellyfin, and Emby, merged with Tautulli or Tracearr events whose provider-native status is complete. A person recorded under several names on one media server -- a Plex title and the Tautulli username underneath it -- is matched under all of them, so any name the picker offers works. Progress is not combined across different media servers, for the same reason provider ids never bridge providers.
+
+A target nobody finished is an empty list, which is a known answer and does match `matches none`. A target whose media server cannot report completion is **unknown** instead, and matches neither `matches any` nor `matches none`, so an unreadable server cannot make a cleanup rule delete media somebody watched. The preview reports how many items were affected.
+
 Events are retained locally until their source service configuration is deleted. They are mapped by exact media-server IDs and stable TMDB, season-number, and episode-number identities, so imported history can survive provider retention cleanup and media deletion/re-addition. Title-only matching is never used.
 
-The existing `watch.*` fields continue to describe the current library copy. Native Jellyfin/Emby playback is current completed state and is refreshed by the **Refresh Playback Data** task every 15 minutes by default as well as by Sync Media. Imported plugin/Tautulli events are durable history and may include activity from before the current copy was added. For Jellyfin and Emby, native state is authoritative for **Playback users** and **Playback user count**: old Playback Reporting events do not keep a user matched after the media server no longer marks that user as watched. For a movie version or episode this is the exact item; for a season or series it means the user has completed at least one available local episode. This is not a per-user full-season/series completion check. When the same media is linked across servers, Reclaimerr combines each server's authoritative users; Jellyfin or Emby native state does not replace Plex users imported from Tautulli.
+The existing `watch.*` fields continue to describe the current library copy. Native Jellyfin/Emby playback is current completed state and is refreshed by the **Refresh Playback Data** task every 15 minutes by default as well as by Sync Media. Imported plugin/Tautulli events are durable history and may include activity from before the current copy was added. For Jellyfin and Emby, native state is authoritative for **Playback users** and **Playback user count**: old Playback Reporting events do not keep a user matched after the media server no longer marks that user as watched. For a movie version or episode this is the exact item; for a season or series it means the user has completed at least one available local episode. This is not a per-user full-season/series completion check; `Fully watched by users` is. When the same media is linked across servers, Reclaimerr combines each server's authoritative users; Jellyfin or Emby native state does not replace Plex users imported from Tautulli.
 
 `Playback activity` is either true or false when an applicable native snapshot or imported-history provider can observe the media target. Targets outside that coverage are unknown and match neither value. Marking an item watched without playing it is captured by Jellyfin/Emby's native current state after the next playback data refresh, but it does not create an imported playback event.
 

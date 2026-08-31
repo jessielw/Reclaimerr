@@ -739,6 +739,7 @@ class RulePreviewMetadata(BaseModel):
     # "Seerr" when only one of several is down.
     seerr_unavailable_instances: list[str] = Field(default_factory=list)
     requester_watch_unavailable_count: int = 0
+    watch_completion_unavailable_count: int = 0
     matched_count: int = 0
 
 

@@ -108,6 +108,7 @@ class RulePreviewMatchMetadata:
     seerr_error: str | None = None
     seerr_unavailable_instances: list[str] = field(default_factory=list)
     requester_watch_unavailable_count: int = 0
+    watch_completion_unavailable_count: int = 0
     matched_count: int = 0
 
 

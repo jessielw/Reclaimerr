@@ -1509,6 +1509,17 @@
           on this rule.
         </Notice>
       {/if}
+      {#if previewData?.metadata && previewData.metadata.watch_completion_unavailable_count > 0}
+        <Notice type="warning" title="Watch Completion Unavailable">
+          {previewData.metadata.watch_completion_unavailable_count} item{previewData
+            .metadata.watch_completion_unavailable_count === 1
+            ? ""
+            : "s"} sit on a media server whose watch state could not be read, so
+          <strong>Fully watched by users</strong> is unknown for them and
+          matched neither <em>matches any</em> nor <em>matches none</em>. Run a
+          media sync or check that server before relying on this rule.
+        </Notice>
+      {/if}
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
         <Notice type="warning" title="Sonarr Data Unavailable">
           Sonarr rule data could not be evaluated for
@@ -1524,11 +1535,11 @@
           The current rule required Sonarr's episode inventory, but it was
           unavailable for
           {previewData.metadata.season_inventory_unavailable_count}
-          evaluated season{previewData.metadata
+          evaluated item{previewData.metadata
             .season_inventory_unavailable_count === 1
             ? ""
-            : "s"}. Only those seasons were treated as unknown and did not
-          match. Run Sync Media to refresh the inventory.
+            : "s"}. Only those were treated as unknown and did not match. Run
+          Sync Media to refresh the inventory.
           {#if previewData.metadata.season_inventory_unavailable_examples.length > 0}
             Examples:
             {previewData.metadata.season_inventory_unavailable_examples.join(
