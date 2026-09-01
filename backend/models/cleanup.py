@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
 
@@ -64,6 +64,10 @@ class RuleImportResponse(BaseModel):
 
     imported: int
     errors: list[str]
+    # Rules that imported but need a look: a requester condition naming a Seerr
+    # this install does not have would match nobody, and silence about that is
+    # the failure the qualified-id format exists to prevent.
+    warnings: list[str] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -102,7 +106,9 @@ class RulePreviewMatchMetadata:
     playback_error: str | None = None
     seerr_unavailable: bool = False
     seerr_error: str | None = None
+    seerr_unavailable_instances: list[str] = field(default_factory=list)
     requester_watch_unavailable_count: int = 0
+    watch_completion_unavailable_count: int = 0
     matched_count: int = 0
 
 

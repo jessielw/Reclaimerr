@@ -133,9 +133,22 @@ export type LibraryType = {
   libraryId: string;
   libraryName: string;
   mediaType: MediaType;
+  /** The provider type (plex/jellyfin/emby), which two Plex servers share. */
   serviceType: SettingsTab;
+  /** The specific server, which is what tells those two Plex servers apart. */
+  serviceConfigId: number | null;
+  serviceName: string | null;
   selected: boolean;
 };
+
+/** A media library and the server that reported it. */
+export interface CandidateLibraryRef {
+  library_id: string;
+  library_name: string;
+  service: string | null;
+  service_config_id: number | null;
+  service_name: string | null;
+}
 
 export interface NotificationSetting {
   id: number;
@@ -188,6 +201,12 @@ export interface PathMapping {
 }
 
 export interface RequesterWatchUserMapping {
+  /**
+   * Which Seerr the requester belongs to. Null matches the *named* user on
+   * every instance - a user id names a different person on each, so an
+   * unscoped mapping matches on the username.
+   */
+  seerr_service_config_id: number | null;
   seerr_user_id: number | null;
   seerr_username: string | null;
   media_user_key: string;
@@ -203,6 +222,11 @@ export interface WatchUserLookup {
 }
 
 export interface SeerrUserLookup {
+  /** The instance-qualified identity a rule stores: "<configId>:<userId>". */
+  key: string;
+  service_config_id: number;
+  service_name: string | null;
+  /** What this Seerr calls the user, which is what its own UI shows. */
   id: number;
   username: string | null;
   display_name: string | null;
@@ -661,6 +685,8 @@ export interface MovieVersion {
   service_media_id: string;
   library_id: string;
   library_name: string;
+  service_config_id: number | null;
+  service_name: string | null;
   path: string | null;
   size: number;
   added_at: string | null;
@@ -677,7 +703,7 @@ export interface MovieWithStatus {
   versions: MovieVersion[];
   arr_refs: ArrRef[];
   arr_tags: string[];
-  seerr_url: string | null;
+  seerr_links: SeerrLink[];
   seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
@@ -730,6 +756,8 @@ export interface SeriesServiceRef {
   service_id: string;
   library_id: string;
   library_name: string;
+  service_config_id: number | null;
+  service_name: string | null;
   path: string | null;
 }
 
@@ -742,7 +770,7 @@ export interface SeriesWithStatus {
   service_refs: SeriesServiceRef[];
   arr_refs: ArrRef[];
   arr_tags: string[];
-  seerr_url: string | null;
+  seerr_links: SeerrLink[];
   seerr_requesters: SeerrRequester[];
   imdb_id: string | null;
   imdb_rating: number | null;
@@ -827,7 +855,17 @@ export interface ArrRef {
   item_url: string | null;
 }
 
+export interface SeerrLink {
+  service_config_id: number;
+  service_name: string | null;
+  item_url: string | null;
+}
+
 export interface SeerrRequester {
+  /** Instance-qualified, so user 3 on two Seerrs stays two people. */
+  key: string;
+  service_config_id: number;
+  service_name: string | null;
   user_id: number;
   display_name: string;
   username: string | null;
@@ -990,6 +1028,12 @@ export interface ProtectedEntry {
   episode_id: number | null;
   episode_number: number | null;
   episode_name: string | null;
+  version_file_name: string | null;
+  version_resolution: string | null;
+  version_size: number | null;
+  version_video_codec: string | null;
+  version_hdr: boolean | null;
+  version_dolby_vision: boolean | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
@@ -1020,7 +1064,7 @@ export interface ProtectedEntry {
   reason: string | null;
   protected_by_user_id: number | null;
   protected_by_username: string;
-  source: "manual" | "rule";
+  source: "manual" | "rule" | "api";
   source_rule_id: number | null;
   source_rule_name: string | null;
   source_rule_description: string | null;
@@ -1070,18 +1114,20 @@ export interface ReclaimCandidateEntry {
   vote_average: number | null;
   vote_count: number | null;
   tmdb_status: string | null;
-  media_library_names: string[] | null;
+  media_libraries: CandidateLibraryRef[] | null;
   media_added_at: string | null;
   media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
   arr_refs: ArrRef[];
   arr_tags: string[];
-  seerr_url: string | null;
+  seerr_links: SeerrLink[];
   seerr_requesters: SeerrRequester[];
   version_service: string | null;
   version_library_id: string | null;
   version_library_name: string | null;
+  version_service_config_id: number | null;
+  version_service_name: string | null;
   version_video_codec_family: string | null;
   version_audio_codec_family: string | null;
   version_video_width: number | null;
@@ -1153,13 +1199,7 @@ export interface ReclaimCandidateEntry {
   episode_id: number | null;
   episode_number: number | null;
   episode_name: string | null;
-  series_library_refs:
-    | {
-        library_id: string;
-        library_name: string;
-        service: string | null;
-      }[]
-    | null;
+  series_library_refs: CandidateLibraryRef[] | null;
 }
 
 export interface CandidateRuleFilterOption {
@@ -1191,12 +1231,20 @@ export interface RulePreviewMetadata {
   playback_error: string | null;
   seerr_unavailable: boolean;
   seerr_error: string | null;
+  /** Names of the Seerr instances that could not be read. */
+  seerr_unavailable_instances?: string[];
   requester_watch_unavailable_count: number;
+  watch_completion_unavailable_count: number;
   matched_count: number;
 }
 
 export interface RequesterWatchRequesterDetail {
+  /** Instance-qualified identity: "<configId>:<userId>". */
+  seerr_requester_key: string;
+  /** What that Seerr calls the user, which is what its own UI shows. */
   seerr_user_id: number;
+  service_config_id: number | null;
+  service_name: string | null;
   display_name: string | null;
   identity_keys: string[];
   requested_at: string | null;
@@ -1211,7 +1259,8 @@ export interface RequesterWatchRequesterDetail {
 export interface RequesterWatchEvidence {
   source_service: string;
   watch_user_key: string;
-  matched_requester_ids: number[];
+  /** Instance-qualified requester identities. */
+  matched_requester_ids: string[];
   watched_at: string | null;
   episodes: string[];
 }
@@ -1282,6 +1331,7 @@ export interface DashboardServiceSummary {
   url: string;
   enabled: boolean;
   last_sync_at: string | null;
+  is_main?: boolean;
 }
 
 export interface DashboardActivityItem {

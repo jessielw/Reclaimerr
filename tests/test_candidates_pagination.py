@@ -395,7 +395,9 @@ def test_get_candidates_search_keeps_series_group_intact() -> None:
     asyncio.run(run())
 
 
-def test_get_candidates_rule_filter_uses_exact_json_containment_before_grouping() -> None:
+def test_get_candidates_rule_filter_uses_exact_json_containment_before_grouping() -> (
+    None
+):
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -518,9 +520,7 @@ def test_candidate_rule_filter_options_include_disabled_candidate_rules_only() -
             )
             await db_session.commit()
 
-            options = await get_candidate_rule_filter_options(
-                _admin_user(), db_session
-            )
+            options = await get_candidate_rule_filter_options(_admin_user(), db_session)
 
             assert [(option.name, option.enabled) for option in options] == [
                 ("Disabled candidate", False),
@@ -641,31 +641,41 @@ def test_get_candidates_includes_media_page_metadata() -> None:
             by_id = {item.id: item for item in response.items}
 
             alpha = by_id[ids["alpha_candidate_id"]]
-            assert alpha.media_library_names == ["Movies"]
+            assert [lib.library_name for lib in alpha.media_libraries or []] == [
+                "Movies"
+            ]
             assert alpha.media_added_at == "2025-01-01T10:00:00+00:00"
             assert alpha.media_last_viewed_at == "2025-05-01T10:00:00+00:00"
             assert alpha.media_view_count == 3
 
             bravo_v1 = by_id[ids["bravo_candidate_ids"][0]]
-            assert bravo_v1.media_library_names == ["Movies"]
+            assert [lib.library_name for lib in bravo_v1.media_libraries or []] == [
+                "Movies"
+            ]
             assert bravo_v1.media_added_at == "2025-02-01T10:00:00+00:00"
             assert bravo_v1.media_last_viewed_at == "2025-05-02T10:00:00+00:00"
             assert bravo_v1.media_view_count == 4
 
             charlie_whole = by_id[ids["charlie_candidate_ids"][0]]
-            assert charlie_whole.media_library_names == ["TV Shows"]
+            assert [
+                lib.library_name for lib in charlie_whole.media_libraries or []
+            ] == ["TV Shows"]
             assert charlie_whole.media_added_at == "2025-01-03T10:00:00+00:00"
             assert charlie_whole.media_last_viewed_at == "2025-05-03T10:00:00+00:00"
             assert charlie_whole.media_view_count == 5
 
             charlie_season = by_id[ids["charlie_candidate_ids"][1]]
-            assert charlie_season.media_library_names == ["TV Shows"]
+            assert [
+                lib.library_name for lib in charlie_season.media_libraries or []
+            ] == ["TV Shows"]
             assert charlie_season.media_added_at == "2025-03-01T10:00:00+00:00"
             assert charlie_season.media_last_viewed_at == "2025-05-05T10:00:00+00:00"
             assert charlie_season.media_view_count == 7
 
             charlie_episode = by_id[ids["charlie_candidate_ids"][2]]
-            assert charlie_episode.media_library_names == ["TV Shows"]
+            assert [
+                lib.library_name for lib in charlie_episode.media_libraries or []
+            ] == ["TV Shows"]
             assert charlie_episode.media_added_at is None
             assert charlie_episode.media_last_viewed_at == "2025-05-06T10:00:00+00:00"
             assert charlie_episode.media_view_count == 8
@@ -735,24 +745,33 @@ def test_get_candidates_includes_origin_metadata() -> None:
             )
             await db_session.commit()
 
+            seerr_id = seerr_config.id
+
+            def qualified(user_id: int) -> str:
+                return f"{seerr_id}:{user_id}"
+
             snapshot = SeerrRequestSnapshot(
                 requester_ids_by_key={
-                    (MediaType.MOVIE, 101): {7, 8},
-                    (MediaType.SERIES, 201): {9},
+                    (MediaType.MOVIE, 101): {qualified(7), qualified(8)},
+                    (MediaType.SERIES, 201): {qualified(9)},
                 },
                 first_request_at_by_key_user={},
                 requester_identity_keys_by_user_id={},
                 latest_active_request_at_by_key={},
-                requester_ids_by_series_season={(201, 1): {10}},
+                requester_ids_by_series_season={(201, 1): {qualified(10)}},
                 requester_users_by_id={
-                    7: SeerrUser(
+                    qualified(7): SeerrUser(
                         id=7,
                         username="alex",
                         display_name="Alex Smith",
                     ),
-                    8: SeerrUser(id=8, username="bea", display_name=None),
-                    9: SeerrUser(id=9, username="casey", display_name="Casey"),
-                    10: SeerrUser(id=10, username="devon", display_name="Devon"),
+                    qualified(8): SeerrUser(id=8, username="bea", display_name=None),
+                    qualified(9): SeerrUser(
+                        id=9, username="casey", display_name="Casey"
+                    ),
+                    qualified(10): SeerrUser(
+                        id=10, username="devon", display_name="Devon"
+                    ),
                 },
             )
             get_snapshot = AsyncMock(return_value=(snapshot, None))
@@ -774,7 +793,14 @@ def test_get_candidates_includes_origin_metadata() -> None:
             by_id = {item.id: item for item in response.items}
             alpha_entry = by_id[ids["alpha_candidate_id"]]
             assert alpha_entry.arr_tags == ["requested", "keep"]
-            assert alpha_entry.seerr_url == "https://seerr.example/seerr/movie/101"
+            assert [link.item_url for link in alpha_entry.seerr_links] == [
+                "https://seerr.example/seerr/movie/101"
+            ]
+            assert alpha_entry.seerr_links[0].service_name == "Seerr"
+            assert [item.key for item in alpha_entry.seerr_requesters] == [
+                qualified(7),
+                qualified(8),
+            ]
             assert [item.display_name for item in alpha_entry.seerr_requesters] == [
                 "Alex Smith",
                 "bea",
@@ -788,7 +814,9 @@ def test_get_candidates_includes_origin_metadata() -> None:
 
             charlie_whole = by_id[ids["charlie_candidate_ids"][0]]
             assert charlie_whole.arr_tags == ["anime"]
-            assert charlie_whole.seerr_url == "https://seerr.example/seerr/tv/201"
+            assert [link.item_url for link in charlie_whole.seerr_links] == [
+                "https://seerr.example/seerr/tv/201"
+            ]
             assert [item.display_name for item in charlie_whole.seerr_requesters] == [
                 "Casey"
             ]

@@ -227,6 +227,10 @@ class ServiceConfig(Base):
     # designates this as the sole source-of-truth for physical file versions;
     # only one media server may have is_main=True at a time
     is_main: Mapped[bool] = mapped_column(Boolean, default=False)
+    # media servers only: when this specific server last had its data pulled.
+    # The main server records the end of a full media sync, a linked server the
+    # end of its own linked-data sync, so the two never report each other's time.
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=func.now(),
@@ -236,9 +240,21 @@ class ServiceConfig(Base):
 
 
 class ServiceMediaLibrary(Base):
-    """Media libraries available from the main media server."""
+    """Media libraries available from the main media server.
+
+    Only the main server contributes library rows, but the row records which
+    config that was: it is what lets the UI name the server a library belongs
+    to, and it keeps two servers' identically-numbered libraries apart.
+    Jellyfin and Emby derive a library's id from its path, so two servers each
+    holding a library at the same path report the same id.
+    """
 
     __tablename__ = "service_media_libraries"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_config_id", "library_id", name="uq_service_media_library_config"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, init=False, autoincrement=True
@@ -246,6 +262,13 @@ class ServiceMediaLibrary(Base):
     library_id: Mapped[str] = mapped_column(String(50))
     library_name: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    # nullable: an install that has not designated a main server yet has no
+    # config to point at. The next library sync adopts or removes the row.
+    service_config_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+        default=None,
+    )
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
@@ -804,7 +827,7 @@ class SupplementalMediaMatch(Base):
     __tablename__ = "supplemental_media_matches"
     __table_args__ = (
         UniqueConstraint(
-            "source_service",
+            "source_service_config_id",
             "source_item_id",
             "media_type",
             name="uq_supplemental_media_match_source_item",
@@ -816,6 +839,12 @@ class SupplementalMediaMatch(Base):
     )
 
     source_service: Mapped[Service] = mapped_column(Enum(Service), index=True)
+    # the specific media server config this match was contributed by - required
+    # to disambiguate multiple ServiceConfig rows of the same service_type
+    source_service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"),
+        index=True,
+    )
     source_item_id: Mapped[str] = mapped_column(String(100))
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), index=True)
 
@@ -827,6 +856,13 @@ class SupplementalMediaMatch(Base):
     )
     season_id: Mapped[int | None] = mapped_column(
         ForeignKey("seasons.id"), index=True, default=None
+    )
+    # Only a server of a type the main server does not provide can write its
+    # episode ids to episodes.<service>_episode_id, so a linked server of the
+    # main server's own type records them here instead. Without it, its episode
+    # plays have no id to resolve through at all.
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id"), index=True, default=None
     )
     source_media_id: Mapped[str | None] = mapped_column(String(100), default=None)
     path_tail: Mapped[str | None] = mapped_column(String(1024), default=None)
@@ -1088,6 +1124,16 @@ class PlaybackHistoryEvent(Base):
     duration_seconds: Mapped[int] = mapped_column(Integer)
     observed_service: Mapped[Service | None] = mapped_column(
         Enum(Service), default=None, index=True
+    )
+    # which media server config the play happened on. one provider config can
+    # observe several servers of the same type (a Tracearr instance bound to two
+    # Plex servers), and item ids are only unique within a single server, so
+    # identity resolution has to know which server an event came from. null for
+    # legacy rows and for providers that cannot name their server.
+    observed_service_config_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
     )
     completed: Mapped[bool | None] = mapped_column(Boolean, default=None, index=True)
     source_user_id: Mapped[str | None] = mapped_column(

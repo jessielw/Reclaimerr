@@ -29,7 +29,6 @@ from backend.database.models import (
     Season,
     Series,
     SeriesServiceRef,
-    ServiceMediaLibrary,
     User,
 )
 from backend.enums import (
@@ -65,7 +64,10 @@ from backend.models.media import (
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
-from backend.services.media_origins import load_media_origin_lookup
+from backend.services.media_origins import (
+    load_library_origins,
+    load_media_origin_lookup,
+)
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -565,6 +567,7 @@ async def get_movies(
     # fetch status information for all movies
     movie_ids = [m.id for m in movies]
     origin_lookup = await load_media_origin_lookup(db, movie_ids=movie_ids)
+    library_origins = await load_library_origins(db)
 
     # get candidates
     candidates_result = await db.execute(
@@ -647,6 +650,8 @@ async def get_movies(
                     service_media_id=v.service_media_id,
                     library_id=v.library_id,
                     library_name=v.library_name,
+                    service_config_id=library_origins.config_id_for(v.library_id),
+                    service_name=library_origins.name_for(v.library_id),
                     path=v.path,
                     size=v.size,
                     added_at=to_utc_isoformat(v.added_at),
@@ -688,7 +693,7 @@ async def get_movies(
             ],
             "arr_refs": origin_lookup.arr_refs(MediaType.MOVIE, movie.id),
             "arr_tags": movie.arr_tags or [],
-            "seerr_url": origin_lookup.seerr_url(MediaType.MOVIE, movie.tmdb_id),
+            "seerr_links": origin_lookup.seerr_links(MediaType.MOVIE, movie.tmdb_id),
             "seerr_requesters": origin_lookup.seerr_requesters(
                 MediaType.MOVIE, movie.tmdb_id
             ),
@@ -831,6 +836,7 @@ async def get_series(
     # fetch status information for all series
     series_ids = [s.id for s in series_list]
     origin_lookup = await load_media_origin_lookup(db, series_ids=series_ids)
+    library_origins = await load_library_origins(db)
 
     # count library seasons per series (one GROUP BY query for the whole page)
     season_counts_result = await db.execute(
@@ -946,13 +952,15 @@ async def get_series(
                     service_id=ref.service_id,
                     library_id=ref.library_id,
                     library_name=ref.library_name,
+                    service_config_id=library_origins.config_id_for(ref.library_id),
+                    service_name=library_origins.name_for(ref.library_id),
                     path=ref.path,
                 )
                 for ref in series.service_refs
             ],
             "arr_refs": origin_lookup.arr_refs(MediaType.SERIES, series.id),
             "arr_tags": series.arr_tags or [],
-            "seerr_url": origin_lookup.seerr_url(MediaType.SERIES, series.tmdb_id),
+            "seerr_links": origin_lookup.seerr_links(MediaType.SERIES, series.tmdb_id),
             "seerr_requesters": origin_lookup.seerr_requesters(
                 MediaType.SERIES, series.tmdb_id
             ),
@@ -1634,29 +1642,40 @@ async def get_candidates(
             else:
                 pending_series.add(series_id)
 
-    global_library_name_by_id: dict[str, str] = {}
-    libraries_result = await db.execute(
-        select(ServiceMediaLibrary.library_id, ServiceMediaLibrary.library_name)
-    )
-    for library_id, library_name in libraries_result.all():
-        if not library_id or not library_name:
-            continue
-        if library_id not in global_library_name_by_id:
-            global_library_name_by_id[library_id] = library_name
+    library_origins = await load_library_origins(db)
+    global_library_name_by_id: dict[str, str] = {
+        library_id: origin.label(qualify=library_origins.qualify)
+        for library_id, origin in library_origins.origins.items()
+    }
 
-    movie_library_names_by_id: dict[int, list[str]] = {}
+    # Deduped by library id, not by name: two servers can both call a library
+    # "Movies", and collapsing them would hide one of them entirely.
+    movie_libraries_by_id: dict[int, list[CandidateLibraryRef]] = {}
     if movie_ids:
         movie_versions_result = await db.execute(
-            select(MovieVersion.movie_id, MovieVersion.library_name).where(
-                MovieVersion.movie_id.in_(movie_ids)
-            )
+            select(
+                MovieVersion.movie_id,
+                MovieVersion.library_id,
+                MovieVersion.library_name,
+                MovieVersion.service,
+            ).where(MovieVersion.movie_id.in_(movie_ids))
         )
-        for movie_id, library_name in movie_versions_result.all():
-            if movie_id is None or not library_name:
+        for movie_id, library_id, library_name, service in movie_versions_result.all():
+            if movie_id is None or not library_id or not library_name:
                 continue
-            names = movie_library_names_by_id.setdefault(movie_id, [])
-            if library_name.casefold() not in {name.casefold() for name in names}:
-                names.append(library_name)
+            refs = movie_libraries_by_id.setdefault(movie_id, [])
+            if any(ref.library_id == library_id for ref in refs):
+                continue
+            origin = library_origins.get(library_id)
+            refs.append(
+                CandidateLibraryRef(
+                    library_id=library_id,
+                    library_name=library_name,
+                    service=service.value if service is not None else None,
+                    service_config_id=origin.service_config_id if origin else None,
+                    service_name=library_origins.name_for(library_id),
+                )
+            )
 
     series_library_refs_by_id: dict[int, list[CandidateLibraryRef]] = {}
     if series_ids:
@@ -1674,11 +1693,14 @@ async def get_candidates(
             refs = series_library_refs_by_id.setdefault(series_id, [])
             if any(ref.library_id == library_id for ref in refs):
                 continue
+            origin = library_origins.get(library_id)
             refs.append(
                 CandidateLibraryRef(
                     library_id=library_id,
                     library_name=library_name,
                     service=service.value if service is not None else None,
+                    service_config_id=origin.service_config_id if origin else None,
+                    service_name=library_origins.name_for(library_id),
                 )
             )
 
@@ -1796,10 +1818,24 @@ async def get_candidates(
         vote_count = row.movie_vote_count if is_movie else row.series_vote_count
         tmdb_status = row.movie_status if is_movie else row.series_status
         if is_movie:
-            media_library_names = (
-                [row.version_library_name]
+            media_libraries = (
+                [
+                    CandidateLibraryRef(
+                        library_id=row.version_library_id or "",
+                        library_name=row.version_library_name,
+                        service=(
+                            row.version_service.value
+                            if row.version_service is not None
+                            else None
+                        ),
+                        service_config_id=library_origins.config_id_for(
+                            row.version_library_id
+                        ),
+                        service_name=library_origins.name_for(row.version_library_id),
+                    )
+                ]
                 if row.version_library_name
-                else movie_library_names_by_id.get(c.movie_id or -1)
+                else movie_libraries_by_id.get(c.movie_id or -1)
             )
             media_added_at = (
                 row.version_added_at
@@ -1814,10 +1850,9 @@ async def get_candidates(
             media_last_viewed_at = row.movie_last_viewed_at
             media_view_count = row.movie_view_count
         else:
-            media_library_names = [
-                ref.library_name
-                for ref in series_library_refs_by_id.get(c.series_id or -1, [])
-            ] or None
+            media_libraries = (
+                list(series_library_refs_by_id.get(c.series_id or -1, [])) or None
+            )
             if c.episode_id is not None:
                 media_added_at = None
                 media_arr_added_at = row.episode_arr_added_at
@@ -1934,7 +1969,7 @@ async def get_candidates(
                 vote_average=vote_average,
                 vote_count=vote_count,
                 tmdb_status=tmdb_status,
-                media_library_names=media_library_names,
+                media_libraries=media_libraries,
                 media_added_at=to_utc_isoformat(media_added_at),
                 media_arr_added_at=to_utc_isoformat(media_arr_added_at),
                 media_last_viewed_at=to_utc_isoformat(media_last_viewed_at),
@@ -1942,7 +1977,7 @@ async def get_candidates(
                 arr_refs=origin_lookup.arr_refs(c.media_type, media_id),
                 arr_tags=(row.movie_arr_tags if is_movie else row.series_arr_tags)
                 or [],
-                seerr_url=origin_lookup.seerr_url(c.media_type, tmdb_id),
+                seerr_links=origin_lookup.seerr_links(c.media_type, tmdb_id),
                 seerr_requesters=origin_lookup.seerr_requesters(
                     c.media_type,
                     tmdb_id,
@@ -1959,6 +1994,10 @@ async def get_candidates(
                 else None,
                 version_library_id=row.version_library_id,
                 version_library_name=row.version_library_name,
+                version_service_config_id=library_origins.config_id_for(
+                    row.version_library_id
+                ),
+                version_service_name=library_origins.name_for(row.version_library_id),
                 version_video_codec_family=row.version_video_codec_family,
                 version_audio_codec_family=row.version_audio_codec_family,
                 version_video_width=row.version_video_width,

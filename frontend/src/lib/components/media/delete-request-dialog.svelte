@@ -370,7 +370,8 @@
                               />
                               <div class="min-w-0">
                                 <p class="font-medium text-foreground">
-                                  {version.library_name} - {version.service}
+                                  {version.library_name} - {version.service_name ||
+                                    version.service}
                                 </p>
                                 <p
                                   class="break-all text-sm text-muted-foreground"

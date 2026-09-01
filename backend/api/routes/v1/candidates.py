@@ -19,6 +19,10 @@ from backend.core.api_tokens import (
     ApiPrincipal,
     require_api_scope,
 )
+from backend.core.protection_scope import (
+    movie_scope_overlap_clause,
+    series_scope_overlap_clause,
+)
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import get_db
@@ -316,21 +320,17 @@ async def permanently_protect_candidate(
         if candidate.media_type is MediaType.MOVIE:
             query = query.where(
                 ProtectedMedia.movie_id == candidate.movie_id,
-                or_(
-                    ProtectedMedia.movie_version_id.is_(None),
-                    ProtectedMedia.movie_version_id == candidate.movie_version_id,
+                movie_scope_overlap_clause(
+                    ProtectedMedia, movie_version_id=candidate.movie_version_id
                 ),
             )
         else:
             query = query.where(
                 ProtectedMedia.series_id == candidate.series_id,
-                or_(
-                    ProtectedMedia.season_id.is_(None),
-                    ProtectedMedia.season_id == candidate.season_id,
-                ),
-                or_(
-                    ProtectedMedia.episode_id.is_(None),
-                    ProtectedMedia.episode_id == candidate.episode_id,
+                series_scope_overlap_clause(
+                    ProtectedMedia,
+                    season_id=candidate.season_id,
+                    episode_id=candidate.episode_id,
                 ),
             )
         protection = (await db.execute(query.limit(1))).scalar_one_or_none()

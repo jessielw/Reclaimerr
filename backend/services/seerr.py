@@ -15,6 +15,7 @@ from tenacity import (
 
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.enums import MediaType, SeerrRequestStatus
+from backend.models.services.health import HealthResult
 from backend.models.services.seerr import (
     SeerrPageInfo,
     SeerrRequest,
@@ -386,13 +387,15 @@ class SeerrClient:
             return status_code, response.json()
         return status_code, None
 
-    async def health(self) -> bool:
-        """Check server health and API key."""
+    async def health(self) -> HealthResult:
+        """Check server health and API key, reporting why it failed."""
         try:
-            await self._make_request("GET", "auth/me")
-            return True
-        except Exception:
-            return False
+            await self._make_request(
+                "GET", "auth/me", error_context="Seerr health check"
+            )
+        except Exception as exc:
+            return HealthResult.failed(exc)
+        return HealthResult.healthy()
 
     async def get_user_requests(
         self, user_id: int, take: int = 20, skip: int = 0

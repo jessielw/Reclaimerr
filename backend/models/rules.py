@@ -47,6 +47,11 @@ class RulePreviewRequest(BaseModel):
 
 
 class SeerrUserLookupResponse(BaseModel):
+    # The instance-qualified identity a rule stores. `id` beside it is what that
+    # Seerr calls the user, which is what its own UI shows.
+    key: str
+    service_config_id: int
+    service_name: str | None = None
     id: int
     username: str | None = None
     display_name: str | None = None

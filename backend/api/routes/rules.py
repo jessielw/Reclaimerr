@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.candidate_views import build_rule_preview_items
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
-from backend.core.rule_actions import normalize_arr_service_config_ids
+from backend.core.rule_actions import (
+    collect_seerr_config_ids,
+    has_unqualified_seerr_requesters,
+    normalize_arr_service_config_ids,
+    qualify_seerr_requesters_in_definition,
+)
 from backend.core.rule_engine import (
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
@@ -32,12 +37,15 @@ from backend.core.utils.language import language_name, normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
 from backend.database import get_db
 from backend.database.models import (
+    MediaWatchUser,
+    MediaWatchUserEpisode,
     Movie,
     MovieVersion,
     PlaybackHistoryEvent,
     ReclaimRule,
     Series,
     SeriesServiceRef,
+    ServiceConfig,
     ServiceMediaLibrary,
     User,
 )
@@ -636,29 +644,48 @@ async def explain_requester_watch_state(
 @router.get("/rules/seerr-users", response_model=list[SeerrUserLookupResponse])
 async def get_seerr_users(
     _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     q: Annotated[str, Query()] = "",
     limit: Annotated[int, Query(ge=1, le=500)] = 25,
 ) -> list[SeerrUserLookupResponse]:
-    """Return cached Seerr users for requester rule picker."""
-    users = await seerr_snapshot_cache.get_users()
-    if not users:
+    """Return cached Seerr users for requester rule picker.
+
+    Users are returned per Seerr instance and identified by their qualified key,
+    so two instances numbering different people 3 stay two pickable entries.
+    """
+    entries = await seerr_snapshot_cache.get_users()
+    if not entries:
         # bypass cache retry to recover from transient empty states if needed
-        users = await seerr_snapshot_cache.get_users(force_refresh=True)
+        entries = await seerr_snapshot_cache.get_users(force_refresh=True)
+
+    names_by_config_id = {
+        config_id: (name or "Seerr")
+        for config_id, name in (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.name).where(
+                    ServiceConfig.service_type == Service.SEERR
+                )
+            )
+        ).all()
+    }
 
     response_users = [
         SeerrUserLookupResponse(
-            id=user.id,
-            username=user.username,
-            display_name=user.display_name,
+            key=entry.qualified_id,
+            service_config_id=entry.service_config_id,
+            service_name=names_by_config_id.get(entry.service_config_id),
+            id=entry.user.id,
+            username=entry.user.username,
+            display_name=entry.user.display_name,
             identities=sorted(
                 {
                     text
-                    for value in user.identity_values()
+                    for value in entry.user.identity_values()
                     if (text := str(value or "").strip())
                 }
             ),
         )
-        for user in users
+        for entry in entries
     ]
     needle = q.strip().lower()
     if needle:
@@ -666,8 +693,10 @@ async def get_seerr_users(
             user
             for user in response_users
             if needle in str(user.id)
+            or needle in user.key
             or needle in (user.username or "").lower()
             or needle in (user.display_name or "").lower()
+            or needle in (user.service_name or "").lower()
             or any(needle in identity.lower() for identity in user.identities)
         ]
     return response_users[:limit]
@@ -680,16 +709,29 @@ async def get_playback_users(
     q: Annotated[str, Query()] = "",
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[PlaybackUserLookupResponse]:
-    """Return distinct usernames resolved from retained playback events."""
+    """Return distinct usernames known from playback and watch state.
 
-    rows = (
-        await db.execute(
-            select(
-                PlaybackHistoryEvent.source_username,
-                PlaybackHistoryEvent.source_service,
-            ).where(PlaybackHistoryEvent.source_username.is_not(None))
-        )
-    ).all()
+    Retained playback events are only half of it. Jellyfin, Emby and Plex report
+    current per-user watched state directly, and on an install without Tautulli
+    or the Playback Reporting plugin that is the only place a name appears -- so
+    listing events alone left the picker empty while the watch-based rule fields
+    had data for those very people.
+    """
+
+    rows: list[tuple[str | None, Service]] = []
+    for statement in (
+        select(
+            PlaybackHistoryEvent.source_username,
+            PlaybackHistoryEvent.source_service,
+        ).where(PlaybackHistoryEvent.source_username.is_not(None)),
+        select(MediaWatchUser.watch_user_key, MediaWatchUser.source_service),
+        select(
+            MediaWatchUserEpisode.watch_user_key,
+            MediaWatchUserEpisode.source_service,
+        ),
+    ):
+        rows.extend((await db.execute(statement)).tuples().all())
+
     by_username: dict[str, PlaybackUserLookupResponse] = {}
     for raw_username, source_service in rows:
         username = str(raw_username or "").strip()
@@ -1295,11 +1337,57 @@ async def preview_rule_matches(
             playback_error=preview_result.metadata.playback_error,
             seerr_unavailable=preview_result.metadata.seerr_unavailable,
             seerr_error=preview_result.metadata.seerr_error,
+            seerr_unavailable_instances=(
+                preview_result.metadata.seerr_unavailable_instances
+            ),
             requester_watch_unavailable_count=(
                 preview_result.metadata.requester_watch_unavailable_count
             ),
+            watch_completion_unavailable_count=(
+                preview_result.metadata.watch_completion_unavailable_count
+            ),
             matched_count=preview_result.metadata.matched_count,
         ),
+    )
+
+
+def _resolve_imported_seerr_requesters(
+    definition: dict[str, Any], seerr_config_ids: set[int]
+) -> None:
+    """Qualify bare Seerr requester ids in a rule arriving through import.
+
+    Rules exported before Seerr became multi-instance name requesters by a bare
+    user id. Migration ``d7f3b2a9c604`` rewrote the ones already in the
+    database; this is the same rewrite for one coming back in from a file, and
+    it follows the same rule -- qualify against the single configured Seerr, and
+    refuse rather than guess when there is not exactly one. Guessing is what the
+    qualified format exists to prevent: a bare id names a different person on
+    every instance, and one that matches nobody paired with `is not any of`
+    matches everything, turning a protect rule into a delete rule.
+    """
+    if len(seerr_config_ids) == 1:
+        qualify_seerr_requesters_in_definition(definition, next(iter(seerr_config_ids)))
+        return
+
+    if not has_unqualified_seerr_requesters(definition):
+        return
+
+    if not seerr_config_ids:
+        reason = (
+            "no Seerr is configured, so there is nothing to attach them to. "
+            "Configure your Seerr first, then import this file again"
+        )
+    else:
+        reason = (
+            f"{len(seerr_config_ids)} Seerr instances are configured, and a bare "
+            "ID names a different person on each, so it cannot be guessed. "
+            "Write them as instanceId:userId in the file, or rebuild the rule "
+            "in the rule editor"
+        )
+    raise ValueError(
+        "This rule names Seerr requesters by a bare user ID, which is how rules "
+        "were written before Reclaimerr supported several Seerr instances -- "
+        f"{reason}."
     )
 
 
@@ -1314,11 +1402,25 @@ async def import_rules(
     used_names: set[str] = set(existing_names_result.scalars().all())
     imported = 0
     errors: list[str] = []
+    warnings: list[str] = []
+
+    seerr_config_ids = set(
+        (
+            await db.execute(
+                select(ServiceConfig.id).where(
+                    ServiceConfig.service_type == Service.SEERR
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     for rule_data in payload.rules:
         try:
             if not rule_data.target_scope:
                 raise ValueError("Rules require target_scope")
+            _resolve_imported_seerr_requesters(rule_data.definition, seerr_config_ids)
             try:
                 validate_rule_definition(
                     rule_data.definition, target_scope=rule_data.target_scope
@@ -1354,6 +1456,17 @@ async def import_rules(
             db.add(new_rule)
             used_names.add(name)
             imported += 1
+
+            unknown = sorted(
+                collect_seerr_config_ids(rule_data.definition) - seerr_config_ids
+            )
+            if unknown:
+                warnings.append(
+                    f"{name}: names Seerr requesters from instance(s) "
+                    f"{', '.join(str(i) for i in unknown)}, which are not "
+                    "configured here. Those conditions match nobody until you "
+                    "re-pick the requesters in the rule editor."
+                )
         except Exception as e:
             errors.append(f"{rule_data.name}: {e}")
 
@@ -1361,8 +1474,12 @@ async def import_rules(
         await db.commit()
         await _sync_stale_library_notice(db)
         LOG.info(f"Imported {imported} cleanup rule(s)")
+        if warnings:
+            LOG.warning(
+                f"{len(warnings)} imported rule(s) reference an unconfigured Seerr"
+            )
 
-    return RuleImportResponse(imported=imported, errors=errors)
+    return RuleImportResponse(imported=imported, errors=errors, warnings=warnings)
 
 
 @router.post("/rules/{rule_id}", response_model=CleanupRuleResponse)

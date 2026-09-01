@@ -204,6 +204,98 @@ def test_resolve_or_create_user_aggregates_case_insensitive_usernames() -> None:
     asyncio.run(run())
 
 
+def test_two_plex_configs_produce_independent_identities_for_same_source_user_id() -> (
+    None
+):
+    """Regression: MediaUserIdentity must disambiguate by
+    source_service_config_id, not just source_service + source_user_id.
+
+    Two independent physical Plex servers can each hand out the same local
+    source_user_id (e.g. "1" for their first user), and different real
+    people can be signed in under it - identities from each server must
+    never collide or get attributed to the wrong config."""
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            plex_house = _new_service_config(
+                service_type=Service.PLEX,
+                name="plex-house",
+            )
+            plex_cabin = _new_service_config(
+                service_type=Service.PLEX,
+                name="plex-cabin",
+            )
+            db_session.add_all([plex_house, plex_cabin])
+            await db_session.commit()
+            await db_session.refresh(plex_house)
+            await db_session.refresh(plex_cabin)
+
+            house_identity = DiscoveredMediaUser(
+                source_service=Service.PLEX,
+                source_service_config_id=plex_house.id,
+                source_service_name=plex_house.name,
+                source_user_id="1",
+                username="alice",
+                username_normalized="alice",
+                email=None,
+                display_name="Alice",
+                raw={"source": "plex-house"},
+            )
+            cabin_identity = DiscoveredMediaUser(
+                source_service=Service.PLEX,
+                source_service_config_id=plex_cabin.id,
+                source_service_name=plex_cabin.name,
+                source_user_id="1",
+                username="bob",
+                username_normalized="bob",
+                email=None,
+                display_name="Bob",
+                raw={"source": "plex-cabin"},
+            )
+
+            resolved_alice = await resolve_or_create_user_for_identity(
+                db_session, identity=house_identity
+            )
+            resolved_bob = await resolve_or_create_user_for_identity(
+                db_session, identity=cabin_identity
+            )
+            await db_session.commit()
+
+            # same source_user_id ("1") on two different configs must not
+            # collide into one local user
+            assert resolved_alice.id != resolved_bob.id
+
+            identities = (
+                (
+                    await db_session.execute(
+                        select(MediaUserIdentity).order_by(MediaUserIdentity.id.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(identities) == 2
+            by_config = {
+                identity.source_service_config_id: identity.user_id
+                for identity in identities
+            }
+            assert by_config == {
+                plex_house.id: resolved_alice.id,
+                plex_cabin.id: resolved_bob.id,
+            }
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_authenticate_emby_family_credentials_sets_admin_role(monkeypatch) -> None:
     async def run() -> None:
         provider = MediaAuthProvider(

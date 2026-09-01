@@ -49,54 +49,96 @@ _LEAVING_SOON_MEDIA_SERVICES = {
 }
 
 
-def _normalize_leaving_soon_last_success_titles(
+async def _normalize_leaving_soon_last_success_titles(
+    db: AsyncSession,
     raw_titles: object,
-) -> dict[Service, str]:
+) -> dict[int, str]:
+    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
+
+    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
+    key that isn't a valid config id is resolved to whichever ServiceConfig
+    currently has that service_type, so upgrading loses no in-flight state.
+    Callers should always write the new shape back.
+    """
     if not isinstance(raw_titles, Mapping):
         return {}
-    normalized_titles: dict[Service, str] = {}
-    for raw_service, raw_title in raw_titles.items():
+    normalized_titles: dict[int, str] = {}
+    legacy_type_titles: dict[Service, str] = {}
+    for raw_key, raw_title in raw_titles.items():
+        title = normalize_leaving_soon_collection_title(str(raw_title))
         try:
-            service = Service(str(raw_service))
+            normalized_titles[int(raw_key)] = title
+            continue
+        except (TypeError, ValueError):
+            pass
+        try:
+            service = Service(str(raw_key))
         except Exception:
             continue
-        if service not in _LEAVING_SOON_MEDIA_SERVICES:
-            continue
-        normalized_titles[service] = normalize_leaving_soon_collection_title(
-            str(raw_title)
-        )
+        if service in _LEAVING_SOON_MEDIA_SERVICES:
+            legacy_type_titles[service] = title
+
+    if legacy_type_titles:
+        rows = (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.service_type).where(
+                    ServiceConfig.service_type.in_(legacy_type_titles.keys())
+                )
+            )
+        ).all()
+        config_id_by_type: dict[Service, int] = {}
+        for config_id, service_type in rows:
+            config_id_by_type.setdefault(service_type, config_id)
+        for service, title in legacy_type_titles.items():
+            config_id = config_id_by_type.get(service)
+            if config_id is not None and config_id not in normalized_titles:
+                normalized_titles[config_id] = title
+
     return normalized_titles
 
 
 async def _cleanup_leaving_soon_collections_on_disable(
+    db: AsyncSession,
     settings: GeneralSettings,
 ) -> None:
-    normalized_titles = _normalize_leaving_soon_last_success_titles(
-        settings.leaving_soon_last_success_titles
+    normalized_titles = await _normalize_leaving_soon_last_success_titles(
+        db, settings.leaving_soon_last_success_titles
     )
     if not normalized_titles:
         return
 
     updated_titles = dict(normalized_titles)
     titles_changed = False
-    service_clients: list[tuple[Service, Any]] = [
-        (Service.PLEX, service_manager.plex),
-        (Service.JELLYFIN, service_manager.jellyfin),
-        (Service.EMBY, service_manager.emby),
-    ]
-    for service_type, service_client in service_clients:
-        previous_success_title = updated_titles.get(service_type)
-        if previous_success_title is None:
+    configs = (
+        (
+            await db.execute(
+                select(ServiceConfig).where(
+                    ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                    ServiceConfig.enabled.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    configs_by_id = {config.id: config for config in configs}
+
+    for config_id, previous_success_title in list(updated_titles.items()):
+        if (config := configs_by_id.get(config_id)) is None:
             continue
-        if service_client is None:
+        if (
+            service_client := service_manager.get_media_server(
+                config.service_type, config.id
+            )
+        ) is None:
             continue
 
         delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
         if not callable(delete_method):
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
-                f"{service_type.value}; cannot remove title "
-                f"{previous_success_title!r} on disable"
+                f"{config.service_type.value} (config {config_id}); cannot remove "
+                f"title {previous_success_title!r} on disable"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
@@ -105,20 +147,18 @@ async def _cleanup_leaving_soon_collections_on_disable(
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
-                f"{service_type.value} on disable (title "
-                f"{previous_success_title!r}): {e}"
+                f"{config.service_type.value} (config {config_id}) on disable "
+                f"(title {previous_success_title!r}): {e}"
             )
             continue
 
-        del updated_titles[service_type]
+        del updated_titles[config_id]
         titles_changed = True
 
     if not titles_changed:
         return
     settings.leaving_soon_last_success_titles = {
-        service.value: title
-        for service, title in updated_titles.items()
-        if service in _LEAVING_SOON_MEDIA_SERVICES
+        str(config_id): title for config_id, title in updated_titles.items()
     }
 
 
@@ -194,7 +234,7 @@ async def update_general_settings(
     settings.leaving_soon_enabled = request.leaving_soon_enabled
     settings.leaving_soon_collection_title = current_leaving_soon_title
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
-        await _cleanup_leaving_soon_collections_on_disable(settings)
+        await _cleanup_leaving_soon_collections_on_disable(db, settings)
 
     # update metadata
     settings.updated_at = datetime.now(UTC)

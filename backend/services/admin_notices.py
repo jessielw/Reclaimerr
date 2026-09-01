@@ -3,11 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.rule_engine import collect_rule_library_ids
-from backend.database.models import AdminNotice, ReclaimRule, ServiceMediaLibrary
+from backend.database.models import (
+    AdminNotice,
+    ReclaimRule,
+    ServiceConfig,
+    ServiceMediaLibrary,
+)
 
 NOTICE_KEY_UPDATE_AVAILABLE = "update_available"
 NOTICE_KEY_SEERR_RULE_SKIP = "seerr_rules_skipped"
@@ -21,16 +26,24 @@ def _normalize_context(context: dict[str, Any] | None) -> dict[str, Any] | None:
     return context if isinstance(context, dict) else None
 
 
-def _render_stale_library_notice_message(stale_rule_names: list[str]) -> str:
+def _render_stale_library_notice_message(
+    stale_rule_names: list[str], main_server_name: str | None = None
+) -> str:
     names = ", ".join(f'"{n}"' for n in stale_rule_names[:3])
     suffix = (
         f" and {len(stale_rule_names) - 3} more" if len(stale_rule_names) > 3 else ""
     )
+    source = (
+        f"{main_server_name}, the main media server"
+        if main_server_name
+        else "the main media server"
+    )
     return (
-        f"The following rules have library filters referencing libraries that no "
-        f"longer exist (likely from a previous media server): {names}{suffix}. "
-        f"Cleanup scans will produce no candidates until the library filters are "
-        f"updated or cleared."
+        f"The following rules have library filters referencing libraries that "
+        f"{source} does not report: {names}{suffix}. Libraries only ever come "
+        f"from the main server, so this usually means a different server was "
+        f"promoted to main. Cleanup scans will produce no candidates until the "
+        f"library filters are updated or cleared."
     )
 
 
@@ -389,7 +402,28 @@ async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:
     """Checks for any reclaim rules that reference library IDs that no longer exist,
     and creates or resolves a notice accordingly. Returns a list of rule names that have
     stale library references."""
-    known_lib_result = await db.execute(select(ServiceMediaLibrary.library_id))
+    # Scoped to the current main server: only main contributes libraries, so a
+    # row left behind by a previously-main server must not keep a rule looking
+    # valid. Rows predating the service_config_id column (NULL) are still
+    # counted - the next sync adopts or removes them.
+    main_row = (
+        await db.execute(
+            select(ServiceConfig.id, ServiceConfig.name).where(
+                ServiceConfig.is_main == True  # noqa: E712
+            )
+        )
+    ).first()
+    main_config_id = main_row[0] if main_row else None
+    main_server_name = (main_row[1] or None) if main_row else None
+
+    known_lib_result = await db.execute(
+        select(ServiceMediaLibrary.library_id).where(
+            or_(
+                ServiceMediaLibrary.service_config_id == main_config_id,
+                ServiceMediaLibrary.service_config_id.is_(None),
+            )
+        )
+    )
     known_library_ids: set[str] = {row[0] for row in known_lib_result.all()}
 
     rules_result = await db.execute(
@@ -410,7 +444,9 @@ async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:
             kind="stale_library_ids",
             severity="warning",
             title="Stale library filters in cleanup rules",
-            message=_render_stale_library_notice_message(stale_rule_names),
+            message=_render_stale_library_notice_message(
+                stale_rule_names, main_server_name
+            ),
             action_label="Go to Rules",
             action_href="#/settings",
             context_json={"rule_names": stale_rule_names},

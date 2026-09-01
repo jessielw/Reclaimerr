@@ -30,6 +30,8 @@ async def run_task_child() -> int:
         raw_request = sys.stdin.readline()
         request = json.loads(raw_request)
         task = Task(str(request["task"]))
+        raw_config_id = request.get("service_config_id")
+        service_config_id = None if raw_config_id is None else int(raw_config_id)
     except Exception as exc:
         _write_result({"ok": False, "error": f"Invalid task child request: {exc}"})
         return 2
@@ -37,7 +39,7 @@ async def run_task_child() -> int:
     try:
         if task in SERVICE_BOOTSTRAP_TASKS:
             await load_enabled_services()
-        result = await run_task_with_memory_cleanup(task)
+        result = await run_task_with_memory_cleanup(task, service_config_id)
         _write_result({"ok": True, "result": result})
         return 0
     except Exception as exc:

@@ -42,7 +42,7 @@ from backend.tasks.sync import (
     sync_media_libraries,
 )
 from backend.tasks.update_check import check_app_updates
-from backend.user_types import MEDIA_SERVERS, MediaServerType
+from backend.user_types import MEDIA_SERVERS
 
 MAIN_SERVER_REQUIRED_TASKS: frozenset[Task] = frozenset(
     {
@@ -94,13 +94,26 @@ async def is_task_enabled(task: Task) -> bool:
     return True if enabled is None else bool(enabled)
 
 
-async def _get_active_task_job(task: Task) -> BackgroundJob | None:
+def _task_dedupe_key(task: Task, service_config_id: int | None) -> str:
+    """Dedupe key for one queued task run.
+
+    Config-scoped runs get their own key so refreshing one linked media server
+    is not swallowed as a duplicate of a run against a different one.
+    """
+    if service_config_id is None:
+        return f"task-run-{task}"
+    return f"task-run-{task}-config-{service_config_id}"
+
+
+async def _get_active_task_job(
+    task: Task, service_config_id: int | None = None
+) -> BackgroundJob | None:
     async with async_db() as session:
         result = await session.execute(
             select(BackgroundJob)
             .where(
                 BackgroundJob.job_type == BackgroundJobType.TASK_RUN,
-                BackgroundJob.dedupe_key == f"task-run-{task}",
+                BackgroundJob.dedupe_key == _task_dedupe_key(task, service_config_id),
                 BackgroundJob.status.in_(
                     [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]
                 ),
@@ -115,15 +128,18 @@ async def request_task_run(
     task: Task,
     *,
     trigger: Literal["manual", "scheduled", "system"] = "manual",
+    service_config_id: int | None = None,
 ) -> tuple[BackgroundJob | None, bool]:
     if not await is_task_enabled(task):
         raise ValueError(f"Task '{task.value}' is disabled")
 
     queued_job = await enqueue_background_job(
         job_type=BackgroundJobType.TASK_RUN,
-        payload=TaskRunJobPayload(task=task, trigger=trigger).model_dump(mode="json"),
+        payload=TaskRunJobPayload(
+            task=task, trigger=trigger, service_config_id=service_config_id
+        ).model_dump(mode="json"),
         scheduled_at=datetime.now(UTC),
-        dedupe_key=f"task-run-{task}",
+        dedupe_key=_task_dedupe_key(task, service_config_id),
         skip_if_active=True,
         priority=(
             BackgroundJobPriority.LOW
@@ -134,7 +150,7 @@ async def request_task_run(
     if queued_job is not None:
         return queued_job, True
 
-    return await _get_active_task_job(task), False
+    return await _get_active_task_job(task, service_config_id), False
 
 
 async def enqueue_task_run(task: Task) -> bool:
@@ -158,25 +174,32 @@ async def enqueue_scheduled_task(task: Task) -> None:
         )
 
 
-async def _run_linked_data_sync() -> None:
+async def _run_linked_data_sync(service_config_id: int | None = None) -> None:
     async with async_db() as session:
-        result = await session.execute(
-            select(ServiceConfig).where(
-                ServiceConfig.service_type.in_(MEDIA_SERVERS),
-                ServiceConfig.enabled.is_(True),
-            )
+        query = select(ServiceConfig).where(
+            ServiceConfig.service_type.in_(MEDIA_SERVERS),
+            ServiceConfig.enabled.is_(True),
         )
+        if service_config_id is not None:
+            query = query.where(ServiceConfig.id == service_config_id)
+        result = await session.execute(query)
         media_servers = result.scalars().all()
 
-    main_service_type = None
-    for service_config in media_servers:
-        if service_config.is_main:
-            main_service_type = service_config.service_type
-            break
+    if service_config_id is not None and not media_servers:
+        raise RuntimeError(
+            f"Media server {service_config_id} is not configured or not enabled"
+        )
 
+    # compared by is_main, not type, so a non-main config of the SAME type as
+    # main is still correctly treated as linked (see sync.py's sync_media())
     for service_config in media_servers:
-        if service_config.service_type != main_service_type:
-            await sync_linked_data(service_config.service_type)  # type: ignore
+        if not service_config.is_main:
+            await sync_linked_data(service_config)
+        elif service_config_id is not None:
+            raise RuntimeError(
+                f"{service_config.name or service_config.service_type.title()} is the "
+                "main media server; use Sync Media to refresh it"
+            )
 
 
 async def _ensure_main_media_server_for_task(task: Task) -> None:
@@ -199,7 +222,9 @@ async def _ensure_main_media_server_for_task(task: Task) -> None:
         )
 
 
-async def execute_task(task: Task) -> dict[str, Any] | None:
+async def execute_task(
+    task: Task, service_config_id: int | None = None
+) -> dict[str, Any] | None:
     if not await is_task_enabled(task):
         LOG.info(f"Skipped task execution for {task.friendly_name()} (disabled)")
         return None
@@ -211,7 +236,7 @@ async def execute_task(task: Task) -> dict[str, Any] | None:
     if task is Task.SYNC_MEDIA_LIBRARIES:
         return await sync_media_libraries()
     if task is Task.SYNC_LINKED_DATA:
-        await _run_linked_data_sync()
+        await _run_linked_data_sync(service_config_id)
         return None
     if task is Task.REFRESH_PLAYBACK_HISTORY:
         return await refresh_playback_history_task()

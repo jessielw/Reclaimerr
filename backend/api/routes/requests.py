@@ -14,6 +14,12 @@ from backend.core.auth import (
     require_permission,
 )
 from backend.core.logger import LOG
+from backend.core.protection_scope import (
+    active_protection_clause,
+    movie_scope_overlap_clause,
+    series_scope_overlap_clause,
+    upsert_protection,
+)
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
@@ -123,27 +129,6 @@ def _series_scope_covered_candidate_clause(
     return true()
 
 
-def _series_scope_overlap_clause(
-    model: type[ProtectedMedia] | type[ProtectionRequest],
-    *,
-    season_id: int | None,
-    episode_id: int | None,
-) -> ColumnElement[bool]:
-    """Build a SQLAlchemy clause to match entries that overlap with the specified season/episode scope."""
-    if episode_id is not None:
-        return or_(
-            and_(model.season_id.is_(None), model.episode_id.is_(None)),
-            and_(model.season_id == season_id, model.episode_id.is_(None)),
-            model.episode_id == episode_id,
-        )
-    if season_id is not None:
-        return or_(
-            and_(model.season_id.is_(None), model.episode_id.is_(None)),
-            and_(model.season_id == season_id, model.episode_id.is_(None)),
-        )
-    return and_(model.season_id.is_(None), model.episode_id.is_(None))
-
-
 async def resolve_effective_protection(
     db: AsyncSession,
     request: ProtectionRequest,
@@ -158,12 +143,14 @@ async def resolve_effective_protection(
     if request.media_type == MediaType.MOVIE:
         protected_query = protected_query.where(
             ProtectedMedia.movie_id == request.movie_id,
-            ProtectedMedia.movie_version_id == request.movie_version_id,
+            movie_scope_overlap_clause(
+                ProtectedMedia, movie_version_id=request.movie_version_id
+            ),
         )
     else:
         protected_query = protected_query.where(
             ProtectedMedia.series_id == request.series_id,
-            _series_scope_overlap_clause(
+            series_scope_overlap_clause(
                 ProtectedMedia,
                 season_id=request.season_id,
                 episode_id=request.episode_id,
@@ -179,6 +166,9 @@ async def resolve_effective_protection(
                 0
                 if request.episode_id is not None
                 and entry.episode_id == request.episode_id
+                else 0
+                if request.movie_version_id is not None
+                and entry.movie_version_id == request.movie_version_id
                 else 1
                 if request.season_id is not None
                 and entry.season_id == request.season_id
@@ -364,17 +354,20 @@ async def create_protection_request(
 
     # check if already protected
     protected_query = select(ProtectedMedia).where(
-        ProtectedMedia.media_type == request_data.media_type
+        ProtectedMedia.media_type == request_data.media_type,
+        active_protection_clause(datetime.now(UTC)),
     )
     if request_data.media_type is MediaType.MOVIE:
         protected_query = protected_query.where(
             ProtectedMedia.movie_id == request_data.media_id,
-            ProtectedMedia.movie_version_id == request_data.movie_version_id,
+            movie_scope_overlap_clause(
+                ProtectedMedia, movie_version_id=request_data.movie_version_id
+            ),
         )
     else:
         protected_query = protected_query.where(
             ProtectedMedia.series_id == request_data.media_id,
-            _series_scope_overlap_clause(
+            series_scope_overlap_clause(
                 ProtectedMedia,
                 season_id=season.id if season else None,
                 episode_id=episode.id if episode else None,
@@ -397,12 +390,14 @@ async def create_protection_request(
     if request_data.media_type == MediaType.MOVIE:
         existing_query = existing_query.where(
             ProtectionRequest.movie_id == request_data.media_id,
-            ProtectionRequest.movie_version_id == request_data.movie_version_id,
+            movie_scope_overlap_clause(
+                ProtectionRequest, movie_version_id=request_data.movie_version_id
+            ),
         )
     else:
         existing_query = existing_query.where(
             ProtectionRequest.series_id == request_data.media_id,
-            _series_scope_overlap_clause(
+            series_scope_overlap_clause(
                 ProtectionRequest,
                 season_id=season.id if season else None,
                 episode_id=episode.id if episode else None,
@@ -506,7 +501,8 @@ async def create_protection_request(
             bl_permanent = False
             bl_expires_at = requested_expires_at
 
-        protection_entry = ProtectedMedia(
+        await upsert_protection(
+            db,
             media_type=request_data.media_type,
             movie_id=request_data.media_id
             if request_data.media_type == MediaType.MOVIE
@@ -522,7 +518,6 @@ async def create_protection_request(
             permanent=bl_permanent,
             expires_at=bl_expires_at,
         )
-        db.add(protection_entry)
 
         if request_data.media_type is MediaType.MOVIE:
             if candidate:
@@ -849,8 +844,11 @@ async def approve_request(
         approved_permanent = True
         approved_expires_at = None
 
-    # add to protected list
-    protection_entry = ProtectedMedia(
+    # add to the protected list, or widen the protection that already covers this
+    # target -- two people can hold a pending request for the same thing, and
+    # approving the second must not create a second entry
+    await upsert_protection(
+        db,
         media_type=request.media_type,
         movie_id=request.movie_id,
         movie_version_id=request.movie_version_id,
@@ -862,7 +860,6 @@ async def approve_request(
         permanent=approved_permanent,
         expires_at=approved_expires_at,
     )
-    db.add(protection_entry)
 
     # remove from candidates if present
     if request.candidate_id:

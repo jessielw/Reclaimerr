@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.requests import Request
@@ -16,10 +16,15 @@ from backend.api.routes.account import (
     revoke_session,
 )
 from backend.api.routes.auth import logout
-from backend.core.auth import COOKIE_NAME, create_access_token, get_current_user
+from backend.core.auth import (
+    COOKIE_NAME,
+    create_access_token,
+    get_current_user,
+    has_permission,
+)
 from backend.database import Base
 from backend.database.models import User, UserSession
-from backend.enums import UserRole
+from backend.enums import Permission, UserRole
 
 
 def _make_request_with_cookie(token: str | None = None) -> Request:
@@ -79,7 +84,7 @@ def test_get_current_user_requires_sid_claim() -> None:
     asyncio.run(run())
 
 
-def test_get_current_user_accepts_active_session() -> None:
+def test_get_current_user_accepts_active_session(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -87,6 +92,8 @@ def test_get_current_user_accepts_active_session() -> None:
         session_maker = async_sessionmaker(
             engine, expire_on_commit=False, class_=AsyncSession
         )
+        # the last_seen_at touch runs in its own session, not the request's
+        monkeypatch.setattr("backend.core.auth.async_db", session_maker)
 
         async with session_maker() as db_session:
             user = _new_user("sid_user")
@@ -119,12 +126,16 @@ def test_get_current_user_accepts_active_session() -> None:
             assert request.state.session_id == session_id
             await db_session.commit()
 
-            refreshed = await db_session.execute(
-                select(UserSession).where(UserSession.session_id == session_id)
+            # read the column directly - the touch writes through its own
+            # session, so the request session's identity map still holds the
+            # value it loaded
+            updated_last_seen = await db_session.scalar(
+                select(UserSession.last_seen_at).where(
+                    UserSession.session_id == session_id
+                )
             )
-            updated_session = refreshed.scalar_one()
-            assert updated_session.last_seen_at is not None
-            assert updated_session.last_seen_at > old_last_seen
+            assert updated_last_seen is not None
+            assert updated_last_seen.replace(tzinfo=UTC) > old_last_seen
 
         await engine.dispose()
 
@@ -273,5 +284,83 @@ def test_logout_clears_cookie_when_session_revoke_hits_sqlite_lock() -> None:
         set_cookie = response.headers.get("set-cookie", "")
         assert COOKIE_NAME in set_cookie
         assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie.lower()
+
+    asyncio.run(run())
+
+
+def test_busy_session_touch_leaves_request_user_loaded(monkeypatch) -> None:
+    """A locked database during the last_seen_at touch must not expire current_user.
+
+    Rolling the request's own session back expires every ORM object loaded through
+    it, so the next `current_user.role` read became a lazy refresh from a sync
+    context and raised `MissingGreenlet` (greenlet_spawn has not been called).
+    """
+
+    class _LockedTouchSession:
+        def __init__(self) -> None:
+            self.rollback_called = False
+
+        async def __aenter__(self) -> "_LockedTouchSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> bool:
+            return False
+
+        async def execute(self, *_: object, **__: object) -> object:
+            raise OperationalError(
+                "UPDATE user_sessions", {}, Exception("database is locked")
+            )
+
+        async def commit(self) -> None:  # pragma: no cover - never reached
+            raise AssertionError("commit should not run for a locked touch")
+
+        async def rollback(self) -> None:
+            self.rollback_called = True
+
+    touch_session = _LockedTouchSession()
+    monkeypatch.setattr("backend.core.auth.async_db", lambda: touch_session)
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with session_maker() as db_session:
+            user = _new_user("busy_db_user")
+            db_session.add(user)
+            await db_session.commit()
+            await db_session.refresh(user)
+
+            session_id = "session-busy"
+            user_session = UserSession(
+                user_id=user.id,
+                session_id=session_id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                user_agent="pytest-agent",
+                ip_address="127.0.0.1",
+                last_seen_at=datetime.now(UTC) - timedelta(minutes=30),
+            )
+            db_session.add(user_session)
+            await db_session.commit()
+
+            token = create_access_token(
+                data={"sub": str(user.id)},
+                token_version=user.token_version,
+                session_id=session_id,
+            )
+
+            authed_user = await get_current_user(
+                _make_request_with_cookie(token), db_session
+            )
+
+            assert touch_session.rollback_called is True
+            assert inspect(authed_user).expired is False
+            # would raise MissingGreenlet if the request session had been rolled back
+            assert has_permission(authed_user, Permission.MANAGE_REQUESTS) is False
+
+        await engine.dispose()
 
     asyncio.run(run())

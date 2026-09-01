@@ -101,7 +101,11 @@ The lookup endpoints are admin-only helpers used by the rule editor. Language re
 
 Rule actions support `outcome: "candidate"` and `outcome: "protect"`. Existing rules without an outcome remain candidate rules for compatibility. Protection previews include items that are already protected because the preview reports what the rule itself matches.
 
-Protected-entry responses include `source`, `source_rule_id`, and `source_rule_name`. Entries with `source: "rule"` are managed by cleanup scans; duration updates and direct deletion return `409 Conflict`.
+Protected-entry responses include `source`, `source_rule_id`, and `source_rule_name`. Entries with `source: "rule"` are managed by cleanup scans; duration updates and direct deletion return `409 Conflict`. Movie entries scoped to a single file also carry `version_file_name`, `version_resolution`, `version_size`, `version_video_codec`, `version_hdr`, and `version_dolby_vision`, so the page can name the file a protection covers.
+
+`GET /api/protected` lists only protections that are still in force. An expired entry protects nothing -- every enforcement query already ignores it -- so it is omitted from both the page and its total.
+
+Protection scopes overlap rather than match exactly. A whole-movie protection already covers every version of that movie, so `POST /api/protected` and `POST /api/protection-requests` refuse a per-version protection on top of one, the same way a series-wide protection has always refused a season-scoped one. Approving a protection request reuses an overlapping protection and widens it if the approval grants longer, instead of creating a second entry.
 
 ## Internal Behavior Notes
 

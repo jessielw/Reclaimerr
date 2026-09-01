@@ -16,7 +16,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
+from backend.models.services.health import HealthResult
 
 TRACEARR_API_PREFIX = "/api/v2/public"
 TRACEARR_PAGE_SIZE = 100
@@ -232,37 +233,58 @@ class TracearrClient:
         next_cursor = str(meta.get("nextCursor") or "").strip() if meta else ""
         return _mapping_list(payload.get("data")), next_cursor or None
 
-    async def health(self) -> bool:
+    async def health(self) -> HealthResult:
+        """Check the public API contract, reporting which part of it failed."""
         try:
             document = await self.get_openapi_document()
-            info = _mapping(document.get("info"))
-            paths = _mapping(document.get("paths"))
-            version = str(info.get("version") or "") if info else ""
-            required_paths = {
-                f"{TRACEARR_API_PREFIX}/history",
-                f"{TRACEARR_API_PREFIX}/users",
-                f"{TRACEARR_API_PREFIX}/libraries",
-                f"{TRACEARR_API_PREFIX}/recently-added",
-            }
-            return bool(
-                document.get("openapi")
-                and info
-                and info.get("title") == "Tracearr Public API"
-                and _is_supported_version(version)
-                and paths
-                and required_paths.issubset(paths)
+        except Exception as exc:
+            return HealthResult.failed(
+                format_http_failure(action="Tracearr health check", exception=exc)
             )
-        except Exception:
-            return False
+
+        info = _mapping(document.get("info"))
+        paths = _mapping(document.get("paths"))
+        version = str(info.get("version") or "") if info else ""
+        required_paths = {
+            f"{TRACEARR_API_PREFIX}/history",
+            f"{TRACEARR_API_PREFIX}/users",
+            f"{TRACEARR_API_PREFIX}/libraries",
+            f"{TRACEARR_API_PREFIX}/recently-added",
+        }
+        if not document.get("openapi") or not info:
+            return HealthResult.failed(
+                "Tracearr did not return an OpenAPI document; check that the URL "
+                "points at Tracearr itself and not a proxy or login page"
+            )
+        if info.get("title") != "Tracearr Public API":
+            return HealthResult.failed(
+                f"Unexpected OpenAPI title {info.get('title')!r}; expected "
+                "'Tracearr Public API'"
+            )
+        if not _is_supported_version(version):
+            return HealthResult.failed(
+                f"Tracearr public API version {version or 'unknown'} is not supported; "
+                "2.0.0 or newer is required"
+            )
+        missing = (
+            sorted(required_paths - set(paths)) if paths else sorted(required_paths)
+        )
+        if missing:
+            return HealthResult.failed(
+                f"Tracearr public API is missing required path(s): {', '.join(missing)}"
+            )
+        return HealthResult.healthy()
 
     @staticmethod
     async def test_service(url: str, api_key: str) -> bool:
         client = TracearrClient(api_key=api_key, base_url=url, timeout=10)
         try:
-            if await client.health():
+            health = await client.health()
+            if health:
                 return True
             raise ValueError(
-                "Tracearr did not expose a compatible public API v2 document"
+                health.detail
+                or "Tracearr did not expose a compatible public API v2 document"
             )
         finally:
             await client.session.close()

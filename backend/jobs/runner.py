@@ -37,7 +37,7 @@ async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
 
     if job.job_type is BackgroundJobType.TASK_RUN:
         task_payload = TaskRunJobPayload.model_validate(job.payload)
-        return await run_task_job(task_payload.task)
+        return await run_task_job(task_payload.task, task_payload.service_config_id)
 
     if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
         file_op_payload = CandidateFileOpJobPayload.model_validate(job.payload)

@@ -3,6 +3,7 @@ import { fileNameFromPath } from "$lib/utils/candidate-rules";
 import type {
   ArrRef,
   ReclaimCandidateEntry,
+  SeerrLink,
   SeerrRequester,
 } from "$lib/types/shared";
 
@@ -11,7 +12,7 @@ export const UNKNOWN_VALUE = "Unknown";
 export type CandidateOriginMetadata = {
   arrRefs: ArrRef[];
   arrTags: string[];
-  seerrUrl: string | null;
+  seerrLinks: SeerrLink[];
   seerrRequesters: SeerrRequester[];
 };
 
@@ -20,8 +21,10 @@ export const candidateOriginMetadata = (
 ): CandidateOriginMetadata => {
   const arrRefs = new Map<string, ArrRef>();
   const arrTags = new Set<string>();
-  const seerrRequesters = new Map<number, SeerrRequester>();
-  let seerrUrl: string | null = null;
+  // Keyed by the qualified id, not the bare one: the same user number on two
+  // Seerrs is two people and must not collapse into one badge.
+  const seerrRequesters = new Map<string, SeerrRequester>();
+  const seerrLinks = new Map<number, SeerrLink>();
 
   for (const entry of entries) {
     for (const ref of entry.arr_refs) {
@@ -29,15 +32,17 @@ export const candidateOriginMetadata = (
     }
     for (const tag of entry.arr_tags) arrTags.add(tag);
     for (const requester of entry.seerr_requesters) {
-      seerrRequesters.set(requester.user_id, requester);
+      seerrRequesters.set(requester.key, requester);
     }
-    seerrUrl ??= entry.seerr_url;
+    for (const link of entry.seerr_links) {
+      seerrLinks.set(link.service_config_id, link);
+    }
   }
 
   return {
     arrRefs: [...arrRefs.values()],
     arrTags: [...arrTags].sort((left, right) => left.localeCompare(right)),
-    seerrUrl,
+    seerrLinks: [...seerrLinks.values()],
     seerrRequesters: [...seerrRequesters.values()].sort((left, right) =>
       left.display_name.localeCompare(right.display_name),
     ),
@@ -145,13 +150,34 @@ export type CandidateMetaField = {
   valueClass?: string;
 };
 
+/** A library, labelled with its server when the payload names one.
+ *
+ * Two media servers can each hold a library called "Movies", so the bare name
+ * is only unambiguous when the backend leaves `service_name` unset -- which it
+ * does whenever a single media server is configured.
+ */
+const libraryLabel = (
+  name: string,
+  serviceName: string | null | undefined,
+): string => (serviceName ? `${name} (${serviceName})` : name);
+
 export const candidateLibraryNames = (
   entry: ReclaimCandidateEntry,
 ): string[] => {
-  if (entry.media_library_names?.length) return entry.media_library_names;
-  if (entry.version_library_name) return [entry.version_library_name];
+  if (entry.media_libraries?.length) {
+    return entry.media_libraries.map((lib) =>
+      libraryLabel(lib.library_name, lib.service_name),
+    );
+  }
+  if (entry.version_library_name) {
+    return [
+      libraryLabel(entry.version_library_name, entry.version_service_name),
+    ];
+  }
   if (entry.series_library_refs?.length) {
-    return entry.series_library_refs.map((ref) => ref.library_name);
+    return entry.series_library_refs.map((ref) =>
+      libraryLabel(ref.library_name, ref.service_name),
+    );
   }
   return [];
 };
@@ -249,6 +275,27 @@ export const seriesGroupCountLabel = (
   ]
     .filter(Boolean)
     .join(", ");
+};
+
+/**
+ * Summarize the distinct seasons represented by a grouped series candidate.
+ * Episode-level candidates are included so their parent season remains visible
+ * before the group is expanded.
+ */
+export const seriesGroupSeasonLabel = (
+  entries: ReclaimCandidateEntry[],
+): string | null => {
+  const seasonNumbers = [
+    ...new Set(
+      entries
+        .map((entry) => entry.season_number)
+        .filter((seasonNumber): seasonNumber is number => seasonNumber != null),
+    ),
+  ].sort((left, right) => left - right);
+
+  if (seasonNumbers.length === 0) return null;
+
+  return `${seasonNumbers.length === 1 ? "Season" : "Seasons"} ${seasonNumbers.join(", ")}`;
 };
 
 export const groupEpisodesBySeason = (

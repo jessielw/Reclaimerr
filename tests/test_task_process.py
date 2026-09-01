@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import StringIO
 
 from backend.core import task_child, task_process
@@ -57,8 +58,9 @@ def test_delete_task_child_bootstraps_services_before_execution(monkeypatch) -> 
     async def load_services() -> None:
         events.append("bootstrap")
 
-    async def run_task(task: Task) -> dict[str, int]:
+    async def run_task(task: Task, service_config_id: int | None = None) -> dict[str, int]:
         assert task is Task.DELETE_CLEANUP_CANDIDATES
+        assert service_config_id is None
         events.append("execute")
         return {"deleted": 1}
 
@@ -220,7 +222,7 @@ def test_run_task_in_subprocess_falls_back_inline_for_unsupported_non_windows_lo
     async def unsupported_subprocess(*_args, **_kwargs):
         raise NotImplementedError
 
-    async def inline_fallback(task: Task):
+    async def inline_fallback(task: Task, _service_config_id: int | None = None):
         return {"task": task.value}
 
     monkeypatch.setattr(task_process.os, "name", "posix")
@@ -234,3 +236,50 @@ def test_run_task_in_subprocess_falls_back_inline_for_unsupported_non_windows_lo
     result = asyncio.run(task_process.run_task_in_subprocess(Task.IMDB_RATINGS_REFRESH))
 
     assert result == {"task": Task.IMDB_RATINGS_REFRESH.value}
+
+
+def test_subprocess_request_carries_the_scoped_service_config(monkeypatch) -> None:
+    """A config-scoped run has to survive the trip through the isolated child."""
+    captured: dict[str, object] = {}
+
+    def blocking_child(_task: Task, request: bytes, _env, _command):
+        captured.update(json.loads(request.decode()))
+        return None
+
+    monkeypatch.setattr(task_process.os, "name", "nt")
+    monkeypatch.setattr(
+        task_process, "_run_task_in_blocking_subprocess", blocking_child
+    )
+
+    asyncio.run(task_process.run_task_in_subprocess(Task.SYNC_LINKED_DATA, 4))
+
+    assert captured == {
+        "task": Task.SYNC_LINKED_DATA.value,
+        "service_config_id": 4,
+    }
+
+
+async def _noop() -> None:
+    return None
+
+
+def test_task_child_forwards_the_scoped_service_config(monkeypatch) -> None:
+    seen: list[int | None] = []
+
+    async def run_task(_task: Task, service_config_id: int | None = None) -> None:
+        seen.append(service_config_id)
+        return None
+
+    request = json.dumps(
+        {"task": Task.SYNC_LINKED_DATA.value, "service_config_id": 4}
+    )
+    monkeypatch.setattr(task_child.sys, "stdin", StringIO(request + "\n"))
+    monkeypatch.setattr(task_child, "load_enabled_services", _noop)
+    monkeypatch.setattr(task_child, "run_task_with_memory_cleanup", run_task)
+    monkeypatch.setattr(task_child.service_manager, "clear_all", _noop)
+    monkeypatch.setattr(task_child, "close_db", _noop)
+    monkeypatch.setattr(task_child.LOG, "stop", lambda: None)
+    monkeypatch.setattr(task_child, "_write_result", lambda _payload: None)
+
+    assert asyncio.run(task_child.run_task_child()) == 0
+    assert seen == [4]

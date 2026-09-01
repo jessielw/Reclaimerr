@@ -4,11 +4,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.auth import get_current_user, has_permission, require_page_access
+from backend.core.protection_scope import (
+    active_protection_clause,
+    movie_scope_overlap_clause,
+    series_scope_overlap_clause,
+)
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import (
@@ -75,36 +79,6 @@ async def _resolve_series_scope(
         return season, None
 
     return None, None
-
-
-def _series_scope_overlap_clause(
-    *,
-    season_id: int | None,
-    episode_id: int | None,
-) -> ColumnElement[bool]:
-    """Construct a SQLAlchemy clause to check for overlapping protection scopes based on season and episode IDs."""
-    if episode_id is not None:
-        return or_(
-            and_(
-                ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None)
-            ),
-            and_(
-                ProtectedMedia.season_id == season_id,
-                ProtectedMedia.episode_id.is_(None),
-            ),
-            ProtectedMedia.episode_id == episode_id,
-        )
-    if season_id is not None:
-        return or_(
-            and_(
-                ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None)
-            ),
-            and_(
-                ProtectedMedia.season_id == season_id,
-                ProtectedMedia.episode_id.is_(None),
-            ),
-        )
-    return and_(ProtectedMedia.season_id.is_(None), ProtectedMedia.episode_id.is_(None))
 
 
 def can_manage_protection(user: User) -> bool:
@@ -211,11 +185,18 @@ async def get_protected_entries(
             User.username.label("actor_username"),
             ReclaimRule.name.label("source_rule_name"),
             ReclaimRule.description.label("source_rule_description"),
+            MovieVersion.file_name.label("version_file_name"),
+            MovieVersion.video_resolution.label("version_resolution"),
+            MovieVersion.size.label("version_size"),
+            MovieVersion.video_codec.label("version_video_codec"),
+            MovieVersion.video_hdr.label("version_hdr"),
+            MovieVersion.video_dolby_vision.label("version_dolby_vision"),
         )
         .outerjoin(Movie, Movie.id == ProtectedMedia.movie_id)
         .outerjoin(Series, Series.id == ProtectedMedia.series_id)
         .outerjoin(Season, Season.id == ProtectedMedia.season_id)
         .outerjoin(Episode, Episode.id == ProtectedMedia.episode_id)
+        .outerjoin(MovieVersion, MovieVersion.id == ProtectedMedia.movie_version_id)
         .outerjoin(User, User.id == ProtectedMedia.protected_by_user_id)
         .outerjoin(ReclaimRule, ReclaimRule.id == ProtectedMedia.source_rule_id)
     )
@@ -245,10 +226,13 @@ async def get_protected_entries(
 
     # manual protections survive a soft-delete of their media, so a protected
     # entry can outlive the row it points at. Hide those from both the page and
-    # its count, or the two disagree.
+    # its count, or the two disagree. An expired entry is hidden for the same
+    # reason: it protects nothing, every enforcement query already ignores it,
+    # and left visible it reads as a duplicate of whatever replaced it.
     live_media_filter = (
         or_(ProtectedMedia.movie_id.is_(None), Movie.removed_at.is_(None)),
         or_(ProtectedMedia.series_id.is_(None), Series.removed_at.is_(None)),
+        active_protection_clause(datetime.now(UTC)),
     )
     base_query = base_query.where(*live_media_filter)
     count_query = count_query.where(*live_media_filter)
@@ -440,6 +424,12 @@ async def get_protected_entries(
                 episode_id=entry.episode_id,
                 episode_number=row.episode_number,
                 episode_name=row.episode_name,
+                version_file_name=row.version_file_name,
+                version_resolution=row.version_resolution,
+                version_size=row.version_size,
+                version_video_codec=row.version_video_codec,
+                version_hdr=row.version_hdr,
+                version_dolby_vision=row.version_dolby_vision,
                 media_title=media_title,
                 media_year=media_year,
                 poster_url=poster_url,
@@ -518,6 +508,7 @@ async def create_protection_entry(
     media = None
     season: Season | None = None
     episode: Episode | None = None
+    version: MovieVersion | None = None
     if request_data.media_type is MediaType.MOVIE:
         if request_data.movie_version_id is not None:
             version_result = await db.execute(
@@ -526,7 +517,8 @@ async def create_protection_entry(
                     MovieVersion.movie_id == request_data.media_id,
                 )
             )
-            if version_result.scalar_one_or_none() is None:
+            version = version_result.scalar_one_or_none()
+            if version is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Movie version not found",
@@ -544,10 +536,13 @@ async def create_protection_entry(
         )
         media = media_result.scalar_one_or_none()
         existing_query = select(ProtectedMedia).where(
-            ProtectedMedia.source == "manual",
+            ProtectedMedia.source != "rule",
             ProtectedMedia.media_type == MediaType.MOVIE,
             ProtectedMedia.movie_id == request_data.media_id,
-            ProtectedMedia.movie_version_id == request_data.movie_version_id,
+            movie_scope_overlap_clause(
+                ProtectedMedia, movie_version_id=request_data.movie_version_id
+            ),
+            active_protection_clause(datetime.now(UTC)),
         )
     else:
         if request_data.movie_version_id is not None:
@@ -569,13 +564,15 @@ async def create_protection_entry(
         )
         media = media_result.scalar_one_or_none()
         existing_query = select(ProtectedMedia).where(
-            ProtectedMedia.source == "manual",
+            ProtectedMedia.source != "rule",
             ProtectedMedia.media_type == MediaType.SERIES,
             ProtectedMedia.series_id == request_data.media_id,
-            _series_scope_overlap_clause(
+            series_scope_overlap_clause(
+                ProtectedMedia,
                 season_id=season.id if season else None,
                 episode_id=episode.id if episode else None,
             ),
+            active_protection_clause(datetime.now(UTC)),
         )
 
     if not media:
@@ -627,6 +624,12 @@ async def create_protection_entry(
         episode_id=new_entry.episode_id,
         episode_number=episode.episode_number if episode else None,
         episode_name=episode.name if episode else None,
+        version_file_name=version.file_name if version else None,
+        version_resolution=version.video_resolution if version else None,
+        version_size=version.size if version else None,
+        version_video_codec=version.video_codec if version else None,
+        version_hdr=version.video_hdr if version else None,
+        version_dolby_vision=version.video_dolby_vision if version else None,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,
@@ -744,6 +747,11 @@ async def update_protection_duration(
     actor = actor_result.scalar_one_or_none()
     season = await db.get(Season, entry.season_id) if entry.season_id else None
     episode = await db.get(Episode, entry.episode_id) if entry.episode_id else None
+    version = (
+        await db.get(MovieVersion, entry.movie_version_id)
+        if entry.movie_version_id
+        else None
+    )
     expires_at_value = entry.expires_at
 
     return ProtectedEntryResponse(
@@ -756,6 +764,12 @@ async def update_protection_duration(
         episode_id=entry.episode_id,
         episode_number=episode.episode_number if episode else None,
         episode_name=episode.name if episode else None,
+        version_file_name=version.file_name if version else None,
+        version_resolution=version.video_resolution if version else None,
+        version_size=version.size if version else None,
+        version_video_codec=version.video_codec if version else None,
+        version_hdr=version.video_hdr if version else None,
+        version_dolby_vision=version.video_dolby_vision if version else None,
         media_title=media.title,
         media_year=media.year,
         poster_url=media.poster_url,

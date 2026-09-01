@@ -442,3 +442,183 @@ def test_stale_service_toggle_cannot_restore_deleted_config(monkeypatch):
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def _seerr_rule(name: str, values: list[str]) -> ReclaimRule:
+    """A rule whose requester condition sits inside a nested group."""
+    return ReclaimRule(
+        name=name,
+        media_type=MediaType.MOVIE,
+        enabled=True,
+        target_scope="movie_version",
+        definition={
+            "version": 1,
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "type": "group",
+                        "op": "or",
+                        "children": [
+                            {
+                                "type": "condition",
+                                "field": "seerr.requested_by_user_ids",
+                                "operator": "contains_any",
+                                "value": values,
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+        action={"arr_action": "delete"},
+    )
+
+
+def _requester_condition(rule: ReclaimRule) -> dict:
+    return rule.definition["root"]["children"][0]["children"][0]
+
+
+def test_deleting_one_seerr_leaves_the_other_working(monkeypatch):
+    """Two Seerrs, one deleted: only its requesters leave the rule."""
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            overseerr = ServiceConfig(
+                service_type=Service.SEERR,
+                name="Overseerr",
+                base_url="http://overseerr.local",
+                api_key=fer_encrypt("a"),
+                enabled=True,
+            )
+            jellyseerr = ServiceConfig(
+                service_type=Service.SEERR,
+                name="Jellyseerr",
+                base_url="http://jellyseerr.local",
+                api_key=fer_encrypt("b"),
+                enabled=True,
+            )
+            db_session.add_all([overseerr, jellyseerr])
+            await db_session.flush()
+
+            rule = _seerr_rule(
+                "Mixed rule",
+                [f"{overseerr.id}:3", f"{jellyseerr.id}:3"],
+            )
+            settings = GeneralSettings(
+                requester_watch_user_mappings=[
+                    {
+                        "seerr_service_config_id": overseerr.id,
+                        "seerr_user_id": 3,
+                        "media_user_key": "alice",
+                    },
+                    {
+                        "seerr_service_config_id": jellyseerr.id,
+                        "seerr_user_id": 3,
+                        "media_user_key": "bob",
+                    },
+                ]
+            )
+            db_session.add_all([rule, settings])
+            await db_session.commit()
+            await db_session.refresh(rule)
+            deleted_id = overseerr.id
+            kept_id = jellyseerr.id
+
+            monkeypatch.setattr(
+                service_runtime,
+                "clear_deleted_service_runtime",
+                AsyncMock(return_value=None),
+            )
+
+            response = await delete_service_settings(
+                deleted_id, _admin_user(), db_session
+            )
+
+            assert response["data"]["removed_requester_mappings"] == 1
+            assert response["data"]["disabled_rule_count"] == 0
+            assert [item["id"] for item in response["data"]["affected_rules"]] == [
+                rule.id
+            ]
+
+            await db_session.refresh(rule)
+            assert _requester_condition(rule)["value"] == [f"{kept_id}:3"]
+            assert rule.enabled is True
+
+            refreshed_settings = (
+                (await db_session.execute(select(GeneralSettings))).scalars().first()
+            )
+            assert refreshed_settings is not None
+            assert [
+                mapping["seerr_service_config_id"]
+                for mapping in refreshed_settings.requester_watch_user_mappings
+            ] == [kept_id]
+
+            remaining = (
+                (
+                    await db_session.execute(
+                        select(ServiceConfig).where(
+                            ServiceConfig.service_type == Service.SEERR
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert [config.id for config in remaining] == [kept_id]
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_deleting_the_last_seerr_disables_rules_left_with_no_requesters(monkeypatch):
+    """An emptied value list is not "matches nothing" -- `not_contains_any`
+    against it matches everything, which would flip a protect into a delete."""
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            seerr = ServiceConfig(
+                service_type=Service.SEERR,
+                name="Overseerr",
+                base_url="http://overseerr.local",
+                api_key=fer_encrypt("a"),
+                enabled=True,
+            )
+            db_session.add(seerr)
+            await db_session.flush()
+
+            rule = _seerr_rule("Only rule", [f"{seerr.id}:3"])
+            db_session.add(rule)
+            await db_session.commit()
+            await db_session.refresh(rule)
+
+            monkeypatch.setattr(
+                service_runtime,
+                "clear_deleted_service_runtime",
+                AsyncMock(return_value=None),
+            )
+
+            response = await delete_service_settings(
+                seerr.id, _admin_user(), db_session
+            )
+
+            assert response["data"]["disabled_rule_count"] == 1
+            await db_session.refresh(rule)
+            assert rule.enabled is False
+            assert _requester_condition(rule)["value"] == []
+        await engine.dispose()
+
+    asyncio.run(run())

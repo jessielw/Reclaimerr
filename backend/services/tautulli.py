@@ -15,7 +15,8 @@ from tenacity import (
 )
 
 from backend.core.utils.misc import as_int
-from backend.core.utils.request import should_retry_on_status
+from backend.core.utils.request import format_http_failure, should_retry_on_status
+from backend.models.services.health import HealthResult
 
 
 def _mapping_from(data: Mapping[str, object], key: str) -> Mapping[str, object] | None:
@@ -81,14 +82,21 @@ class TautulliClient:
         resp: dict[str, object] = response.json()
         return resp
 
-    async def health(self) -> bool:
-        """Check server health and API key."""
+    async def health(self) -> HealthResult:
+        """Check server health and API key, reporting why it failed."""
         try:
             data = await self._make_request("status")
-            response = _mapping_from(data, "response")
-            return bool(response and response.get("result") == "success")
-        except Exception:
-            return False
+        except Exception as exc:
+            return HealthResult.failed(
+                format_http_failure(action="Tautulli health check", exception=exc)
+            )
+        response = _mapping_from(data, "response")
+        if response and response.get("result") == "success":
+            return HealthResult.healthy()
+        return HealthResult.failed(
+            "Tautulli status command did not report success "
+            f"(result={response.get('result') if response else None})"
+        )
 
     async def get_history(
         self,

@@ -30,6 +30,8 @@ class DashboardServiceSummary(BaseModel):
     url: str
     enabled: bool
     last_sync_at: str | None
+    # media servers only: whether this is the main (library-owning) server
+    is_main: bool = False
 
 
 class DashboardActivityItem(BaseModel):

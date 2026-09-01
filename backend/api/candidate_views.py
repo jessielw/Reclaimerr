@@ -15,7 +15,6 @@ from backend.database.models import (
     Season,
     Series,
     SeriesServiceRef,
-    ServiceMediaLibrary,
 )
 from backend.enums import MediaType
 from backend.models.cleanup import MatchedCandidateRecord
@@ -25,6 +24,7 @@ from backend.models.media import (
     CandidateReasonPart,
     RulePreviewEntry,
 )
+from backend.services.media_origins import load_library_origins
 
 _VALUELESS_OPERATORS = {"exists", "not_exists", "is_true", "is_false"}
 _NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
@@ -56,7 +56,12 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _normalize_library_value(value: Any, library_name_by_id: dict[str, str]) -> Any:
-    """Normalize library ID values to library names using the provided mapping."""
+    """Render library ID values as their display labels.
+
+    The mapping already carries whichever server a library belongs to, so with
+    several media servers configured this reads "Movies (Plex - Basement)"
+    rather than a bare name that could name either server's library.
+    """
     if isinstance(value, list):
         normalized = [
             library_name_by_id.get(str(item), item) if item is not None else item
@@ -251,13 +256,11 @@ async def build_rule_preview_items(
         )
         episodes_by_id = {ep.id: ep for ep in episodes_result.scalars().all()}
 
-    global_library_name_by_id: dict[str, str] = {}
-    libraries_result = await db.execute(
-        select(ServiceMediaLibrary.library_id, ServiceMediaLibrary.library_name)
-    )
-    for library_id, library_name in libraries_result.all():
-        if library_id and library_name and library_id not in global_library_name_by_id:
-            global_library_name_by_id[library_id] = library_name
+    library_origins = await load_library_origins(db)
+    global_library_name_by_id: dict[str, str] = {
+        library_id: origin.label(qualify=library_origins.qualify)
+        for library_id, origin in library_origins.origins.items()
+    }
 
     series_library_refs_by_id: dict[int, list[CandidateLibraryRef]] = {}
     if series_ids:
@@ -275,11 +278,14 @@ async def build_rule_preview_items(
             refs = series_library_refs_by_id.setdefault(series_id, [])
             if any(ref.library_id == library_id for ref in refs):
                 continue
+            origin = library_origins.get(library_id)
             refs.append(
                 CandidateLibraryRef(
                     library_id=library_id,
                     library_name=library_name,
                     service=service.value if service is not None else None,
+                    service_config_id=origin.service_config_id if origin else None,
+                    service_name=library_origins.name_for(library_id),
                 )
             )
 
@@ -309,11 +315,19 @@ async def build_rule_preview_items(
         if media_id is None or media_title is None:
             continue
 
+        # Fall back to the name the media row carries for libraries the server
+        # no longer reports, still qualified where the origin is known.
         library_name_by_id = dict(global_library_name_by_id)
         if version and version.library_id and version.library_name:
-            library_name_by_id[version.library_id] = version.library_name
+            library_name_by_id.setdefault(
+                version.library_id,
+                library_origins.label(version.library_id, version.library_name),
+            )
         for ref in series_library_refs_by_id.get(record.series_id or -1, []):
-            library_name_by_id[ref.library_id] = ref.library_name
+            library_name_by_id.setdefault(
+                ref.library_id,
+                library_origins.label(ref.library_id, ref.library_name),
+            )
 
         normalized_reasons = normalize_reason_parts(
             record.reason_data,

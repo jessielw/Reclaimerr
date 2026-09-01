@@ -5,6 +5,7 @@ from typing import Any
 
 import apprise
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from tenacity import (
     RetryError,
@@ -19,6 +20,7 @@ from tenacity import (
 from backend.core.logger import LOG
 from backend.database import async_db
 from backend.database.models import (
+    GeneralSettings,
     Movie,
     MovieVersion,
     NotificationSetting,
@@ -42,6 +44,51 @@ __all__ = [
 ]
 
 _DEFAULT_BODY_FORMAT = apprise.NotifyFormat.MARKDOWN
+
+# Frontend uses hash routing, so deep links are "<application_url>/#<route>".
+# Admin notices render in the sidebar rather than on their own page, so the
+# notice-backed types point at the app root instead.
+_NOTIFICATION_LINKS: dict[NotificationType, tuple[str, str]] = {
+    NotificationType.NEW_CLEANUP_CANDIDATES: ("/candidates", "View cleanup candidates"),
+    NotificationType.REQUEST_APPROVED: ("/requests", "View your requests"),
+    NotificationType.REQUEST_DECLINED: ("/requests", "View your requests"),
+    NotificationType.ADMIN_NEW_DELETE_REQUEST: ("/requests", "View requests"),
+    NotificationType.ADMIN_NEW_PROTECTION_REQUEST: ("/requests", "View requests"),
+    NotificationType.ADMIN_REQUEST_CANCELLED: ("/requests", "View requests"),
+    NotificationType.ADMIN_DELETE_EXECUTION_FAILED: ("/requests", "View requests"),
+    NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: ("/requests", "View requests"),
+    NotificationType.DELETE_REQUEST_EXECUTION_FAILED: ("/requests", "View requests"),
+    NotificationType.ADMIN_MESSAGE: ("/", "Open Reclaimerr"),
+    NotificationType.TASK_FAILURE: ("/", "Open Reclaimerr"),
+}
+
+
+async def _get_application_url(session: AsyncSession) -> str | None:
+    """Return the configured public application URL, or None when unset."""
+    result = await session.execute(select(GeneralSettings.application_url))
+    application_url = result.scalars().first()
+    if not application_url:
+        return None
+    return application_url.strip().rstrip("/") or None
+
+
+def _notification_link(
+    notification_type: NotificationType,
+    application_url: str | None,
+) -> str | None:
+    """Build a markdown deep link for a notification type.
+
+    Returns None when no public application URL is configured; every transport
+    Apprise supports renders markdown links natively, so no HTML is needed.
+    """
+    base = (application_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    target = _NOTIFICATION_LINKS.get(notification_type)
+    if not target:
+        return None
+    route, label = target
+    return f"[{label}]({base}/#{route})"
 
 
 def request_scope_label(
@@ -104,6 +151,29 @@ def _format_cleanup_candidate_line(
 
 
 def _compose_notification(
+    *,
+    notification_type: NotificationType,
+    setting: NotificationSetting,
+    fallback_title: str,
+    fallback_message: str,
+    context: dict[str, Any] | None = None,
+    application_url: str | None = None,
+) -> tuple[str, str, apprise.NotifyFormat]:
+    """Compose a notification and append a deep link back into the app."""
+    title, message, body_format = _compose_body(
+        notification_type=notification_type,
+        setting=setting,
+        fallback_title=fallback_title,
+        fallback_message=fallback_message,
+        context=context,
+    )
+    link = _notification_link(notification_type, application_url)
+    if link:
+        message = f"{message}\n\n{link}"
+    return title, message, body_format
+
+
+def _compose_body(
     *,
     notification_type: NotificationType,
     setting: NotificationSetting,
@@ -447,6 +517,8 @@ async def notify_user(
             )
             return results
 
+        application_url = await _get_application_url(session)
+
         for setting in eligible_settings:
             composed_title, composed_message, composed_format = _compose_notification(
                 notification_type=notification_type,
@@ -454,6 +526,7 @@ async def notify_user(
                 fallback_title=title,
                 fallback_message=message,
                 context=context,
+                application_url=application_url,
             )
             success = await send_notification(
                 url=setting.url,
@@ -580,6 +653,7 @@ async def notify_all_users(
         )
         result = await session.execute(stmt)
         users = result.scalars().all()
+        application_url = await _get_application_url(session)
 
     if not users:
         LOG.debug("No active users found to send notification to")
@@ -607,6 +681,7 @@ async def notify_all_users(
                 fallback_title=title,
                 fallback_message=message,
                 context=context,
+                application_url=application_url,
             )
             success = await send_notification(
                 url=setting.url,

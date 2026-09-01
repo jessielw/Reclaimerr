@@ -29,6 +29,7 @@
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { toast } from "svelte-sonner";
   import {
+    MEDIA_SERVERS,
     MediaType,
     SettingsTab,
     type LibraryType,
@@ -139,6 +140,7 @@
         ? [initial.action.sonarr_service_config_id]
         : []),
   );
+  let mediaServerCount = $state(0);
   let radarrInstances = $state<ArrInstance[]>([]);
   let sonarrInstances = $state<ArrInstance[]>([]);
   let saving = $state(false);
@@ -175,6 +177,41 @@
   const scopeLibraries = $derived(
     libraries.filter((library) => library.mediaType === selectedMediaType),
   );
+
+  // One media server needs no disambiguation; several do. Libraries only ever
+  // come from the main server, so this names that server rather than telling
+  // several apart -- but with a second Plex configured, "Movies" alone does
+  // not say whose Movies the rule is scoped to.
+  const qualifyLibraries = $derived(mediaServerCount > 1);
+
+  const libraryInstanceLabel = (library: LibraryType) =>
+    library.serviceName ||
+    (library.serviceConfigId !== null
+      ? `${library.serviceType} #${library.serviceConfigId}`
+      : library.serviceType);
+
+  const libraryGroups = $derived.by(() => {
+    const byInstance = new Map<
+      string,
+      { key: string; label: string; libraries: LibraryType[] }
+    >();
+    for (const library of scopeLibraries) {
+      const key = `${library.serviceType}:${library.serviceConfigId ?? "?"}`;
+      const existing = byInstance.get(key);
+      if (existing) {
+        existing.libraries.push(library);
+        continue;
+      }
+      byInstance.set(key, {
+        key,
+        label: libraryInstanceLabel(library),
+        libraries: [library],
+      });
+    }
+    return [...byInstance.values()].sort((l, r) =>
+      l.label.localeCompare(r.label),
+    );
+  });
   const scopeLibraryIds = $derived(
     new Set(scopeLibraries.map((library) => library.libraryId)),
   );
@@ -607,6 +644,13 @@
     );
     radarrInstances = services.radarr?.instances ?? [];
     sonarrInstances = services.sonarr?.instances ?? [];
+    // Counted across every media server type, not just the one that is main:
+    // it is what decides whether a bare library name is ambiguous.
+    mediaServerCount = MEDIA_SERVERS.reduce(
+      (total, serverKey) =>
+        total + (services[serverKey]?.instances?.length ?? 0),
+      0,
+    );
   };
 
   const save = async () => {
@@ -1049,6 +1093,12 @@
         Select libraries this rule should target. Leave all unselected to apply
         the rule to every library in this target.
       </p>
+      {#if qualifyLibraries}
+        <p class="text-xs text-muted-foreground mt-1">
+          Libraries come from the main media server. Linked servers contribute
+          watch data, not library contents.
+        </p>
+      {/if}
     </div>
 
     {#if hasCustomLibraryCondition}
@@ -1069,33 +1119,46 @@
     {/if}
 
     {#if scopeLibraries.length > 0}
-      <div class="space-y-2">
-        {#each scopeLibraries as library}
-          <div class="flex items-center gap-2">
-            <Switch
-              id={`scope-library-${library.libraryId}`}
-              checked={selectedScopeLibraryIds.includes(library.libraryId)}
-              disabled={hasCustomLibraryCondition || evaluatingLibraryChange}
-              onCheckedChange={(checked) =>
-                void updateScopeLibrarySelection(library.libraryId, checked)}
-            />
-            <div class="flex items-center gap-1.5">
-              <div class="w-4 h-4 shrink-0">
-                {#if library.serviceType === SettingsTab.Jellyfin}
-                  <JellyfinSVG />
-                {:else if library.serviceType === SettingsTab.Plex}
-                  <PlexSVG />
-                {:else if library.serviceType === SettingsTab.Emby}
-                  <EmbySVG />
-                {/if}
-              </div>
-              <Label
-                class="text-foreground"
-                for={`scope-library-${library.libraryId}`}
+      <div class="space-y-4">
+        {#each libraryGroups as group (group.key)}
+          <div class="space-y-2">
+            {#if qualifyLibraries}
+              <p
+                class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
               >
-                {library.libraryName}
-              </Label>
-            </div>
+                {group.label} <span class="normal-case">(main)</span>
+              </p>
+            {/if}
+            {#each group.libraries as library (`${group.key}:${library.libraryId}`)}
+              {@const switchId = `scope-library-${group.key}-${library.libraryId}`}
+              <div class="flex items-center gap-2">
+                <Switch
+                  id={switchId}
+                  checked={selectedScopeLibraryIds.includes(library.libraryId)}
+                  disabled={hasCustomLibraryCondition ||
+                    evaluatingLibraryChange}
+                  onCheckedChange={(checked) =>
+                    void updateScopeLibrarySelection(
+                      library.libraryId,
+                      checked,
+                    )}
+                />
+                <div class="flex items-center gap-1.5">
+                  <div class="w-4 h-4 shrink-0">
+                    {#if library.serviceType === SettingsTab.Jellyfin}
+                      <JellyfinSVG />
+                    {:else if library.serviceType === SettingsTab.Plex}
+                      <PlexSVG />
+                    {:else if library.serviceType === SettingsTab.Emby}
+                      <EmbySVG />
+                    {/if}
+                  </div>
+                  <Label class="text-foreground" for={switchId}>
+                    {library.libraryName}
+                  </Label>
+                </div>
+              </div>
+            {/each}
           </div>
         {/each}
       </div>
@@ -1418,9 +1481,18 @@
         {/if}
       </div>
       {#if previewData?.metadata && previewData.metadata.seerr_unavailable}
+        {@const unavailableInstances =
+          previewData.metadata.seerr_unavailable_instances ?? []}
         <Notice type="warning" title="Seerr Data Unavailable">
-          Seerr request data could not be loaded, so every Seerr condition was
-          unknown and matched nothing. This preview is not a reliable answer.
+          {#if unavailableInstances.length > 0}
+            {unavailableInstances.join(", ")} could not be read. Every Seerr condition
+            is answered from all configured instances at once, so one of them being
+            unreachable makes the whole answer unknown rather than partly right.
+          {:else}
+            Seerr request data could not be loaded, so every Seerr condition was
+            unknown and matched nothing.
+          {/if}
+          This preview is not a reliable answer.
           {#if previewData.metadata.seerr_error}
             {previewData.metadata.seerr_error}
           {/if}
@@ -1435,6 +1507,17 @@
           <strong>Seerr requester has watched</strong> is unknown for them and matched
           neither true nor false. Run a media sync or check that server before relying
           on this rule.
+        </Notice>
+      {/if}
+      {#if previewData?.metadata && previewData.metadata.watch_completion_unavailable_count > 0}
+        <Notice type="warning" title="Watch Completion Unavailable">
+          {previewData.metadata.watch_completion_unavailable_count} item{previewData
+            .metadata.watch_completion_unavailable_count === 1
+            ? ""
+            : "s"} sit on a media server whose watch state could not be read, so
+          <strong>Fully watched by users</strong> is unknown for them and
+          matched neither <em>matches any</em> nor <em>matches none</em>. Run a
+          media sync or check that server before relying on this rule.
         </Notice>
       {/if}
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}
@@ -1452,11 +1535,11 @@
           The current rule required Sonarr's episode inventory, but it was
           unavailable for
           {previewData.metadata.season_inventory_unavailable_count}
-          evaluated season{previewData.metadata
+          evaluated item{previewData.metadata
             .season_inventory_unavailable_count === 1
             ? ""
-            : "s"}. Only those seasons were treated as unknown and did not
-          match. Run Sync Media to refresh the inventory.
+            : "s"}. Only those were treated as unknown and did not match. Run
+          Sync Media to refresh the inventory.
           {#if previewData.metadata.season_inventory_unavailable_examples.length > 0}
             Examples:
             {previewData.metadata.season_inventory_unavailable_examples.join(
@@ -1689,9 +1772,11 @@
                   <div>
                     {requester.display_name ??
                       `User ${requester.seerr_user_id}`}
-                    <span class="text-muted-foreground"
-                      >(id {requester.seerr_user_id})</span
-                    >
+                    <span class="text-muted-foreground">
+                      (id {requester.seerr_user_id}{requester.service_name
+                        ? ` on ${requester.service_name}`
+                        : ""})
+                    </span>
                   </div>
                   <div class="mt-1 text-muted-foreground break-all">
                     Seerr identities: {requester.identity_keys.join(", ") ||

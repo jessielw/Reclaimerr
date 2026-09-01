@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 import niquests.exceptions as niq_exceptions
 import urllib3.exceptions as url3_exceptions
 
 from backend.core.logger import LOG
 from backend.enums import Service
+from backend.models.services.health import HealthResult
 from backend.services.emby import EmbyService
 from backend.services.external_ratings import MDBListClient, OMDbClient
 from backend.services.jellyfin import JellyfinService
@@ -14,6 +17,17 @@ from backend.services.seerr import SeerrClient
 from backend.services.sonarr import SonarrClient
 from backend.services.tautulli import TautulliClient
 from backend.services.tracearr import TracearrClient
+
+
+def _health_failure(service_name: str, base_url: str, health: HealthResult) -> str:
+    """Compose one failure message that names the cause, not just the URL.
+
+    A bare "health check failed: <url>" cannot tell DNS from TLS from a 401 from
+    a 403 served by a reverse proxy sitting in front of the service, which is
+    the difference between a Reclaimerr bug and a misconfigured proxy.
+    """
+    message = f"{service_name} service health check failed: {base_url}"
+    return f"{message} - {health.detail}" if health.detail else message
 
 
 class ServiceManager:
@@ -31,11 +45,15 @@ class ServiceManager:
         self._jellyfin: JellyfinService | None = None
         self._emby: EmbyService | None = None
         self._plex: PlexService | None = None
+        self._jellyfin_clients: dict[int, JellyfinService] = {}
+        self._emby_clients: dict[int, EmbyService] = {}
+        self._plex_clients: dict[int, PlexService] = {}
         self._radarr: RadarrClient | None = None
         self._sonarr: SonarrClient | None = None
         self._radarr_clients: dict[int, RadarrClient] = {}
         self._sonarr_clients: dict[int, SonarrClient] = {}
         self._seerr: SeerrClient | None = None
+        self._seerr_clients: dict[int, SeerrClient] = {}
         self._tautulli: TautulliClient | None = None
         self._tracearr: TracearrClient | None = None
 
@@ -54,6 +72,34 @@ class ServiceManager:
         self._main_media_server = service
 
     @property
+    def main_media_server_type(self) -> Service | None:
+        """Get the Service type of the current main media server.
+
+        The single source of truth for "what type is main" - use this instead
+        of identity-comparing against `service_manager.jellyfin`/`.emby`, which
+        is ambiguous once a type has multiple configured instances.
+        """
+        main = self._main_media_server
+        if main is None:
+            return None
+        if isinstance(main, JellyfinService):
+            return Service.JELLYFIN
+        if isinstance(main, EmbyService):
+            return Service.EMBY
+        if isinstance(main, PlexService):
+            return Service.PLEX
+        # Fallback for objects that aren't real client subclasses (e.g. test
+        # doubles): identity-match against each type's default client, same
+        # mechanism the old call sites used directly.
+        if main is self._jellyfin:
+            return Service.JELLYFIN
+        if main is self._emby:
+            return Service.EMBY
+        if main is self._plex:
+            return Service.PLEX
+        return None
+
+    @property
     def jellyfin(self) -> JellyfinService | None:
         """Get Jellyfin service (must be initialized first)."""
         return self._jellyfin
@@ -67,6 +113,34 @@ class ServiceManager:
     def plex(self) -> PlexService | None:
         """Get Plex service (must be initialized first)."""
         return self._plex
+
+    def get_media_server(
+        self, service_type: Service, config_id: int | None = None
+    ) -> JellyfinService | EmbyService | PlexService | None:
+        """Get a media server client by service type and config ID (must be
+        initialized first). If config_id is None, return the type's default
+        (last-initialized) client, matching `return_service`'s behavior."""
+        if service_type is Service.JELLYFIN:
+            return (
+                self._jellyfin_clients.get(config_id) if config_id else self._jellyfin
+            )
+        if service_type is Service.EMBY:
+            return self._emby_clients.get(config_id) if config_id else self._emby
+        if service_type is Service.PLEX:
+            return self._plex_clients.get(config_id) if config_id else self._plex
+        return None
+
+    def media_server_clients(
+        self, service_type: Service
+    ) -> dict[int, JellyfinService | EmbyService | PlexService]:
+        """Get all clients of a media server type as a dict of config_id to client."""
+        if service_type is Service.JELLYFIN:
+            return dict(self._jellyfin_clients)
+        if service_type is Service.EMBY:
+            return dict(self._emby_clients)
+        if service_type is Service.PLEX:
+            return dict(self._plex_clients)
+        return {}
 
     @property
     def radarr(self) -> RadarrClient | None:
@@ -102,8 +176,30 @@ class ServiceManager:
 
     @property
     def seerr(self) -> SeerrClient | None:
-        """Get Seerr service (must be initialized first)."""
-        return self._seerr
+        """Get Seerr service (must be initialized first).
+
+        With several Seerrs configured this is an arbitrary one of them, kept
+        only for callers that just need to know whether any Seerr is reachable.
+        Anything that reads request data must go through `seerr_clients()` so it
+        sees every instance.
+        """
+        return self._seerr or next(iter(self._seerr_clients.values()), None)
+
+    @property
+    def has_seerr(self) -> bool:
+        """Whether any Seerr instance is initialized."""
+        return bool(self._seerr_clients) or self._seerr is not None
+
+    def get_seerr(self, config_id: int | None = None) -> SeerrClient | None:
+        """Get a Seerr client by config ID (must be initialized first). If
+        config_id is None, return the type's default client."""
+        if config_id is None:
+            return self.seerr
+        return self._seerr_clients.get(config_id)
+
+    def seerr_clients(self) -> dict[int, SeerrClient]:
+        """Get all Seerr clients as a dict of config_id to client."""
+        return dict(self._seerr_clients)
 
     @property
     def tautulli(self) -> TautulliClient | None:
@@ -123,7 +219,7 @@ class ServiceManager:
             "plex": self._plex is not None,
             "radarr": self.radarr is not None,
             "sonarr": self.sonarr is not None,
-            "seerr": self._seerr is not None,
+            "seerr": self.has_seerr,
             "tautulli": self._tautulli is not None,
             "tracearr": self._tracearr is not None,
         }
@@ -197,7 +293,7 @@ class ServiceManager:
         elif service_type is Service.SONARR:
             return self._sonarr
         elif service_type is Service.SEERR:
-            return self._seerr
+            return self.seerr
         elif service_type is Service.TAUTULLI:
             return self._tautulli
         elif service_type is Service.TRACEARR:
@@ -205,61 +301,82 @@ class ServiceManager:
         return None
 
     async def initialize_jellyfin(
-        self, base_url: str, api_key: str, is_main: bool
+        self,
+        base_url: str,
+        api_key: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> JellyfinService | None:
         """Initialize Jellyfin service with provided config."""
         try:
-            self._jellyfin = JellyfinService(
+            client = JellyfinService(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._jellyfin.health():
-                LOG.error(f"Jellyfin service health check failed: {base_url}")
-                raise ValueError(f"Jellyfin service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Jellyfin", base_url, health))
+            if config_id is not None:
+                self._jellyfin_clients[config_id] = client
+            self._jellyfin = client
             LOG.info(f"Jellyfin service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._jellyfin
-            return self._jellyfin
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Jellyfin service: {e}")
             return None
 
     async def initialize_emby(
-        self, base_url: str, api_key: str, is_main: bool
+        self,
+        base_url: str,
+        api_key: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> EmbyService | None:
         """Initialize Emby service with provided config."""
         try:
-            self._emby = EmbyService(
+            client = EmbyService(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._emby.health():
-                LOG.error(f"Emby service health check failed: {base_url}")
-                raise ValueError(f"Emby service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Emby", base_url, health))
+            if config_id is not None:
+                self._emby_clients[config_id] = client
+            self._emby = client
             LOG.info(f"Emby service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._emby
-            return self._emby
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Emby service: {e}")
             return None
 
     async def initialize_plex(
-        self, base_url: str, token: str, is_main: bool
+        self,
+        base_url: str,
+        token: str,
+        is_main: bool,
+        config_id: int | None = None,
     ) -> PlexService | None:
         """Initialize Plex service with provided config."""
         try:
-            self._plex = PlexService(
+            client = PlexService(
                 token=token,
                 plex_url=base_url,
             )
-            if not await self._plex.health():
-                LOG.error(f"Plex service health check failed: {base_url}")
-                raise ValueError(f"Plex service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Plex", base_url, health))
+            if config_id is not None:
+                self._plex_clients[config_id] = client
+            self._plex = client
             LOG.info(f"Plex service initialized: {base_url}")
             if is_main:
-                self._main_media_server = self._plex
-            return self._plex
+                self._main_media_server = client
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Plex service: {e}")
             return None
@@ -278,9 +395,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Radarr service health check failed: {base_url}")
-                raise ValueError(f"Radarr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Radarr", base_url, health))
             if config_id is not None:
                 self._radarr_clients[config_id] = client
             self._radarr = client
@@ -304,9 +421,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Sonarr service health check failed: {base_url}")
-                raise ValueError(f"Sonarr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Sonarr", base_url, health))
             if config_id is not None:
                 self._sonarr_clients[config_id] = client
             self._sonarr = client
@@ -316,18 +433,26 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Sonarr service: {e}")
             return None
 
-    async def initialize_seerr(self, base_url: str, api_key: str) -> SeerrClient | None:
+    async def initialize_seerr(
+        self,
+        base_url: str,
+        api_key: str,
+        config_id: int | None = None,
+    ) -> SeerrClient | None:
         """Initialize Seerr service with provided config."""
         try:
-            self._seerr = SeerrClient(
+            client = SeerrClient(
                 api_key=api_key,
                 base_url=base_url,
             )
-            if not await self._seerr.health():
-                LOG.error(f"Seerr service health check failed: {base_url}")
-                raise ValueError(f"Seerr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Seerr", base_url, health))
+            if config_id is not None:
+                self._seerr_clients[config_id] = client
+            self._seerr = client
             LOG.info(f"Seerr service initialized: {base_url}")
-            return self._seerr
+            return client
         except Exception as e:
             LOG.error(f"Failed to initialize Seerr service: {e}")
             return None
@@ -342,9 +467,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await self._tautulli.health():
-                LOG.error(f"Tautulli service health check failed: {base_url}")
-                raise ValueError(f"Tautulli service health check failed: {base_url}")
+            health = await self._tautulli.health()
+            if not health:
+                raise ValueError(_health_failure("Tautulli", base_url, health))
             LOG.info(f"Tautulli service initialized: {base_url}")
             return self._tautulli
         except Exception as e:
@@ -362,9 +487,9 @@ class ServiceManager:
                 base_url=base_url,
                 timeout=timeout,
             )
-            if not await client.health():
-                LOG.error(f"Tracearr service health check failed: {base_url}")
-                raise ValueError(f"Tracearr service health check failed: {base_url}")
+            health = await client.health()
+            if not health:
+                raise ValueError(_health_failure("Tracearr", base_url, health))
             self._tracearr = client
             LOG.info(f"Tracearr service initialized: {base_url}")
             return self._tracearr
@@ -375,31 +500,85 @@ class ServiceManager:
             LOG.error(f"Failed to initialize Tracearr service: {e}")
             return None
 
-    async def clear_jellyfin(self) -> None:
-        """Clear Jellyfin service (call before reinitializing)."""
-        if self._main_media_server is self._jellyfin:
+    async def clear_jellyfin(self, config_id: int | None = None) -> None:
+        """Clear Jellyfin service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Jellyfin instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._jellyfin_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._jellyfin is client:
+                self._jellyfin = next(iter(self._jellyfin_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, JellyfinService):
             self._main_media_server = None
         if self._jellyfin and self._jellyfin.session:
             await self._jellyfin.session.close()
+        for client in self._jellyfin_clients.values():
+            if client is not self._jellyfin and client.session:
+                await client.session.close()
+        if self._jellyfin or self._jellyfin_clients:
             LOG.info("Jellyfin service cleared")
+        self._jellyfin_clients = {}
         self._jellyfin = None
 
-    async def clear_emby(self) -> None:
-        """Clear Emby service (call before reinitializing)."""
-        if self._main_media_server is self._emby:
+    async def clear_emby(self, config_id: int | None = None) -> None:
+        """Clear Emby service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Emby instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._emby_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._emby is client:
+                self._emby = next(iter(self._emby_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, EmbyService):
             self._main_media_server = None
         if self._emby and self._emby.session:
             await self._emby.session.close()
+        for client in self._emby_clients.values():
+            if client is not self._emby and client.session:
+                await client.session.close()
+        if self._emby or self._emby_clients:
             LOG.info("Emby service cleared")
+        self._emby_clients = {}
         self._emby = None
 
-    async def clear_plex(self) -> None:
-        """Clear Plex service (call before reinitializing)."""
-        if self._main_media_server is self._plex:
+    async def clear_plex(self, config_id: int | None = None) -> None:
+        """Clear Plex service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Plex instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._plex_clients.pop(config_id, None)
+            if self._main_media_server is client and client is not None:
+                self._main_media_server = None
+            if client and client.session:
+                await client.session.close()
+            if self._plex is client:
+                self._plex = next(iter(self._plex_clients.values()), None)
+            return
+
+        if isinstance(self._main_media_server, PlexService):
             self._main_media_server = None
         if self._plex and self._plex.session:
             await self._plex.session.close()
+        for client in self._plex_clients.values():
+            if client is not self._plex and client.session:
+                await client.session.close()
+        if self._plex or self._plex_clients:
             LOG.info("Plex service cleared")
+        self._plex_clients = {}
         self._plex = None
 
     async def clear_radarr(self, config_id: int | None = None) -> None:
@@ -440,11 +619,26 @@ class ServiceManager:
         self._sonarr_clients = {}
         self._sonarr = None
 
-    async def clear_seerr(self) -> None:
-        """Clear Seerr service (call before reinitializing)."""
+    async def clear_seerr(self, config_id: int | None = None) -> None:
+        """Clear Seerr service(s) (call before reinitializing).
+
+        If config_id is given, clear only that instance; otherwise clear all
+        Seerr instances (mirrors clear_radarr/clear_sonarr)."""
+        if config_id is not None:
+            client = self._seerr_clients.pop(config_id, None)
+            if client and client.session:
+                await client.session.close()
+            if self._seerr is client:
+                self._seerr = next(iter(self._seerr_clients.values()), None)
+            return
+
         if self._seerr and self._seerr.session:
             await self._seerr.session.close()
             LOG.info("Seerr service cleared")
+        for client in self._seerr_clients.values():
+            if client is not self._seerr and client.session:
+                await client.session.close()
+        self._seerr_clients = {}
         self._seerr = None
 
     async def clear_tautulli(self) -> None:
@@ -475,7 +669,20 @@ class ServiceManager:
 
     def clear_transient_caches(self) -> None:
         """Clear large transient caches on long-lived service clients."""
-        for client in (self._plex, self._main_media_server):
+        seen: set[int] = set()
+        clients: list[Any] = [
+            self._main_media_server,
+            self._jellyfin,
+            self._emby,
+            self._plex,
+            *self._jellyfin_clients.values(),
+            *self._emby_clients.values(),
+            *self._plex_clients.values(),
+        ]
+        for client in clients:
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
             clear_method = getattr(client, "clear_transient_caches", None)
             if callable(clear_method):
                 clear_method()

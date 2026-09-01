@@ -87,10 +87,15 @@
     {
       label: "Services",
       value: item.series_library_refs?.length
-        ? item.series_library_refs
-            .map((ref) => toTitleCase(ref.service ?? ""))
-            .filter(Boolean)
-            .join(", ")
+        ? [
+            ...new Set(
+              item.series_library_refs
+                .map(
+                  (ref) => ref.service_name || toTitleCase(ref.service ?? ""),
+                )
+                .filter(Boolean),
+            ),
+          ].join(", ")
         : unknownValue,
     },
     ...candidateMediaMetaFields(item, formatDate),

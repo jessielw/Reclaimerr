@@ -73,7 +73,7 @@ def test_seerr_snapshot_uses_latest_pending_or_approved_request() -> None:
             ),
         )
         cache = SeerrSnapshotCache()
-        with patch.object(service_manager, "_seerr", fake_client):
+        with patch.object(service_manager, "_seerr_clients", {7: fake_client}):
             snapshot, error = await cache.get_request_snapshot(
                 require_fresh=True, allow_stale_on_failure=False
             )
@@ -114,20 +114,20 @@ def test_seerr_snapshot_enriches_requester_identity_from_user_directory() -> Non
             ),
         )
         cache = SeerrSnapshotCache()
-        with patch.object(service_manager, "_seerr", fake_client):
+        with patch.object(service_manager, "_seerr_clients", {7: fake_client}):
             snapshot, error = await cache.get_request_snapshot(
                 require_fresh=True, allow_stale_on_failure=False
             )
 
         assert error is None
         assert snapshot is not None
-        assert snapshot.requester_identity_keys_by_user_id[16] == {
+        assert snapshot.requester_identity_keys_by_user_id["7:16"] == {
             "nwilson3000",
             "n wilson",
             "nwilson@example.com",
         }
-        assert snapshot.requester_users_by_id[16].display_name == "N Wilson"
-        assert snapshot.requester_users_by_id[16].username == "nwilson3000"
+        assert snapshot.requester_users_by_id["7:16"].display_name == "N Wilson"
+        assert snapshot.requester_users_by_id["7:16"].username == "nwilson3000"
 
     asyncio.run(run())
 
@@ -163,16 +163,16 @@ def test_seerr_snapshot_preserves_requested_seasons_and_excludes_declined() -> N
             get_all_requests=AsyncMock(return_value=[accepted, declined]),
             get_all_users=AsyncMock(return_value=[]),
         )
-        with patch.object(service_manager, "_seerr", fake_client):
+        with patch.object(service_manager, "_seerr_clients", {7: fake_client}):
             snapshot, error = await cache.get_request_snapshot(
                 require_fresh=True, allow_stale_on_failure=False
             )
 
         assert error is None
         assert snapshot is not None
-        assert snapshot.requester_ids_by_series_season == {(5920, 3): {101}}
+        assert snapshot.requester_ids_by_series_season == {(5920, 3): {"7:101"}}
         assert snapshot.first_request_at_by_series_season_user == {
-            (5920, 3): {101: requested_at}
+            (5920, 3): {"7:101": requested_at}
         }
 
     asyncio.run(run())
@@ -318,7 +318,7 @@ def test_watch_bar_is_the_earliest_request_not_the_latest() -> None:
             get_all_requests=AsyncMock(return_value=[original, four_k]),
             get_all_users=AsyncMock(return_value=[]),
         )
-        with patch.object(service_manager, "_seerr", fake_client):
+        with patch.object(service_manager, "_seerr_clients", {7: fake_client}):
             snapshot, error = await cache.get_request_snapshot(
                 require_fresh=True, allow_stale_on_failure=False
             )
@@ -326,9 +326,9 @@ def test_watch_bar_is_the_earliest_request_not_the_latest() -> None:
         assert error is None
         assert snapshot is not None
         media_key = (MediaType.SERIES, 5920)
-        assert snapshot.first_request_at_by_key_user[media_key] == {101: first}
+        assert snapshot.first_request_at_by_key_user[media_key] == {"7:101": first}
         assert snapshot.first_request_at_by_series_season_user[(5920, 6)] == {
-            101: first
+            "7:101": first
         }
         # Request *age* is a different question and still tracks the newest.
         assert snapshot.latest_active_request_at_by_key[media_key] == reissued
