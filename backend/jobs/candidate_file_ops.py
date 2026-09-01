@@ -35,7 +35,11 @@ from backend.services.notifications import (
     notify_user,
     request_scope_label,
 )
-from backend.tasks.cleanup import delete_specific_candidates, move_specific_candidates
+from backend.tasks.cleanup import (
+    delete_specific_candidates,
+    move_specific_candidates,
+    reconcile_candidate_arr_tags,
+)
 
 
 async def queue_candidate_file_op_job(
@@ -288,6 +292,14 @@ async def _run_candidate_file_op_job_unlocked(
                 fallback_error=str(exc),
             )
         raise
+    finally:
+        # unmonitor-only and move leave the item in the arr, so candidates this
+        # job removed must lose their managed tag now. A run that removed
+        # nothing changed no candidacy and needs no arr round trip.
+        if succeeded:
+            await reconcile_candidate_arr_tags(
+                f"manual candidate {payload.operation.value}"
+            )
 
     await _persist_progress(
         current_item_label=None,

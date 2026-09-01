@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, delete, or_, select, true
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
@@ -51,6 +52,7 @@ from backend.services.notifications import (
     notify_user,
     request_scope_label,
 )
+from backend.tasks.cleanup import drop_managed_arr_tags_for_media
 
 router = APIRouter(prefix="/api", tags=["protection-requests"])
 
@@ -450,6 +452,7 @@ async def create_protection_request(
     now = datetime.now(UTC)
     bl_permanent: bool | None = None
     bl_expires_at: datetime | None = None
+    dropped_candidate = False
 
     # create exception request
     target_scope = (
@@ -522,20 +525,39 @@ async def create_protection_request(
         if request_data.media_type is MediaType.MOVIE:
             if candidate:
                 await db.delete(candidate)
+                dropped_candidate = True
         else:
-            await db.execute(
-                delete(ReclaimCandidate).where(
-                    ReclaimCandidate.media_type == MediaType.SERIES,
-                    ReclaimCandidate.series_id == request_data.media_id,
-                    _series_scope_covered_candidate_clause(
-                        season_id=season.id if season else None,
-                        episode_id=episode.id if episode else None,
-                    ),
-                )
+            removed = cast(
+                CursorResult[Any],
+                await db.execute(
+                    delete(ReclaimCandidate).where(
+                        ReclaimCandidate.media_type == MediaType.SERIES,
+                        ReclaimCandidate.series_id == request_data.media_id,
+                        _series_scope_covered_candidate_clause(
+                            season_id=season.id if season else None,
+                            episode_id=episode.id if episode else None,
+                        ),
+                    )
+                ),
             )
+            dropped_candidate = bool(removed.rowcount)
 
     await db.commit()
     await db.refresh(protection_request)
+
+    if dropped_candidate:
+        # the item stopped being a candidate, so it must not keep the tag a rule
+        # gave it until the next full reconciliation
+        await drop_managed_arr_tags_for_media(
+            db,
+            media_type=request_data.media_type,
+            movie_id=request_data.media_id
+            if request_data.media_type is MediaType.MOVIE
+            else None,
+            series_id=request_data.media_id
+            if request_data.media_type is MediaType.SERIES
+            else None,
+        )
 
     if auto_approve:
         LOG.info(
@@ -862,6 +884,7 @@ async def approve_request(
     )
 
     # remove from candidates if present
+    dropped_candidate = False
     if request.candidate_id:
         candidate_result = await db.execute(
             select(ReclaimCandidate).where(ReclaimCandidate.id == request.candidate_id)
@@ -869,9 +892,20 @@ async def approve_request(
         candidate = candidate_result.scalar_one_or_none()
         if candidate:
             await db.delete(candidate)
+            dropped_candidate = True
 
     await db.commit()
     await db.refresh(request)
+
+    if dropped_candidate:
+        # the item stopped being a candidate, so it must not keep the tag a rule
+        # gave it until the next full reconciliation
+        await drop_managed_arr_tags_for_media(
+            db,
+            media_type=request.media_type,
+            movie_id=request.movie_id,
+            series_id=request.series_id,
+        )
 
     LOG.info(
         f"User {manager.username} approved exception request {request_id} "

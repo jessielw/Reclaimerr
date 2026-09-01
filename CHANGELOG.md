@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-01
+
+### Fixed
+
+- A rule's managed `rec-*` tag stayed on a movie or series in Radarr/Sonarr after the item stopped being a cleanup candidate. Tag reconciliation only ran inside the scheduled **Tag Cleanup Candidates** task, so a scan that dropped an item -- because a rule condition changed, or because the item picked up an exclusion tag -- left the tag behind until that task next ran, up to a day later. Tags are now reconciled at the end of every cleanup scan, after an automatic deletion run, and after a manual delete or move job, so a managed tag is present only while the item is a current candidate. It matters beyond the scan because unmonitor-only and move actions leave the item in the arr with its tag after it has left the candidate list. Approving a protection or exception request takes the tag off the one title it protects straight away, asking the arr about that item alone rather than running the full sweep inside a request. Reconciliation is best effort throughout: an unreachable Radarr or Sonarr is logged and never fails the work that triggered it.
+
 ## [0.4.0] - 2026-09-01
 
 ### Added
