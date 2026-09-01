@@ -149,7 +149,9 @@ from backend.services.playback_history import (
     log_playback_rule_coverage,
     refresh_playback_history,
 )
+from backend.services.radarr import RadarrClient
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
+from backend.services.sonarr import SonarrClient
 from backend.services.watch_identity import (
     AliasIndex,
     expand_watch_keys,
@@ -160,6 +162,8 @@ from backend.utils.helpers import normalize_leaving_soon_collection_title
 __all__ = [
     "scan_cleanup_candidates",
     "tag_cleanup_candidates",
+    "reconcile_candidate_arr_tags",
+    "drop_managed_arr_tags_for_media",
     "delete_cleanup_candidates",
     "delete_specific_candidates",
     "move_specific_candidates",
@@ -1195,6 +1199,9 @@ async def scan_cleanup_candidates() -> None:
                             )
                         except Exception as e:
                             LOG.error(f"Error sending cleanup scan notification: {e}")
+                # candidates that dropped out of this scan must not keep their
+                # managed tag until the next scheduled tag sync
+                await reconcile_candidate_arr_tags("cleanup scan")
             except Exception as e:
                 LOG.error(f"Error scanning cleanup candidates: {e}", exc_info=True)
                 raise
@@ -6410,6 +6417,180 @@ async def _tag_cleanup_candidates_unlocked() -> None:
             raise
 
 
+async def reconcile_candidate_arr_tags(context: str) -> None:
+    """Re-sync rule scoped rec-* tags after the candidate set changed.
+
+    Managed tags mirror current candidacy, so an item that stops being a
+    candidate has to lose its tag right away instead of keeping it until the
+    next scheduled tag sync. Best effort: a tagging failure never fails the
+    work that triggered the reconciliation.
+    """
+    if not service_manager.radarr and not service_manager.sonarr:
+        return
+
+    try:
+        movies_tagged, movies_untagged = await _sync_rule_radarr_tags()
+        series_tagged, series_untagged = await _sync_rule_sonarr_tags()
+    except Exception as e:
+        LOG.warning(f"Tag reconciliation after {context} failed: {e}")
+        return
+
+    message = (
+        f"Tag reconciliation after {context}: "
+        f"Movies ({movies_tagged} tagged, {movies_untagged} untagged), "
+        f"Series ({series_tagged} tagged, {series_untagged} untagged)"
+    )
+    if movies_tagged or movies_untagged or series_tagged or series_untagged:
+        LOG.info(message)
+    else:
+        LOG.debug(message)
+
+
+# tag labels Reclaimerr writes itself. "rec-" is what rules produce today,
+# "reclaimerr" covers tags left by older releases.
+MANAGED_ARR_TAG_PREFIXES = ("rec-", "reclaimerr")
+
+
+def _is_managed_arr_tag(label: str) -> bool:
+    """Whether an arr tag belongs to Reclaimerr rather than to the user."""
+    lowered = label.lower()
+    return any(lowered.startswith(prefix) for prefix in MANAGED_ARR_TAG_PREFIXES)
+
+
+async def drop_managed_arr_tags_for_media(
+    db: AsyncSession,
+    *,
+    media_type: MediaType,
+    movie_id: int | None = None,
+    series_id: int | None = None,
+) -> None:
+    """Strip managed tags one item no longer earns, without a full tag sync.
+
+    ``reconcile_candidate_arr_tags`` walks every item in every arr, which is far
+    too much work to do inside a request. Protecting a single title still has to
+    take its tag away immediately, so this asks the arr about that one item and
+    removes only the managed tags no remaining candidate for it still expects.
+
+    Must be called after the candidate rows have been committed, since what the
+    item still expects is read back from them. Best effort: an arr that cannot
+    be reached is logged and leaves the tag for the next full reconciliation.
+    """
+    if not service_manager.radarr and not service_manager.sonarr:
+        return
+
+    if media_type is MediaType.MOVIE:
+        if movie_id is None:
+            return
+        service: Literal["radarr", "sonarr"] = "radarr"
+        clients = service_manager.radarr_clients()
+        if not clients and service_manager.radarr:
+            clients = {0: service_manager.radarr}
+        ref_rows = (
+            await db.execute(
+                select(MovieArrRef.service_config_id, MovieArrRef.arr_movie_id).where(
+                    MovieArrRef.movie_id == movie_id
+                )
+            )
+        ).all()
+        matched_rule_id_rows = (
+            await db.execute(
+                select(ReclaimCandidate.matched_rule_ids).where(
+                    ReclaimCandidate.media_type == MediaType.MOVIE,
+                    ReclaimCandidate.movie_id == movie_id,
+                )
+            )
+        ).scalars()
+    else:
+        if series_id is None:
+            return
+        service = "sonarr"
+        clients = service_manager.sonarr_clients()
+        if not clients and service_manager.sonarr:
+            clients = {0: service_manager.sonarr}
+        ref_rows = (
+            await db.execute(
+                select(
+                    SeriesArrRef.service_config_id, SeriesArrRef.arr_series_id
+                ).where(SeriesArrRef.series_id == series_id)
+            )
+        ).all()
+        matched_rule_id_rows = (
+            await db.execute(
+                select(ReclaimCandidate.matched_rule_ids).where(
+                    ReclaimCandidate.media_type == MediaType.SERIES,
+                    ReclaimCandidate.series_id == series_id,
+                )
+            )
+        ).scalars()
+
+    if not clients or not ref_rows:
+        return
+
+    rules = (
+        (await db.execute(select(ReclaimRule).where(ReclaimRule.enabled == True)))
+        .scalars()
+        .all()
+    )
+    rules_by_id = {rule.id: rule for rule in rules}
+
+    # a candidate under another scope (another season, another movie version)
+    # can still earn the same tag, so keep what any survivor expects
+    expected_by_config: dict[int, set[str]] = {}
+    for matched_rule_ids in matched_rule_id_rows:
+        for rule_id in matched_rule_ids or []:
+            rule = rules_by_id.get(rule_id)
+            if rule is None:
+                continue
+            tag = _managed_tag_for_rule(rule)
+            if not tag:
+                continue
+            for config_id in _rule_arr_config_ids(rule, service):
+                expected_by_config.setdefault(config_id, set()).add(tag)
+
+    for config_id, arr_item_id in ref_rows:
+        client = clients.get(config_id)
+        if client is None or arr_item_id is None:
+            continue
+        expected = expected_by_config.get(config_id, set())
+        try:
+            # ``clients`` only ever holds the one service's clients, so the
+            # branch already picked by ``media_type`` names the right type
+            if media_type is MediaType.MOVIE:
+                item = await cast(RadarrClient, client).get_movie(arr_item_id)
+            else:
+                item = await cast(SonarrClient, client).get_series(arr_item_id)
+            item_tag_ids = set(getattr(item, "tags", None) or [])
+            if not item_tag_ids:
+                continue
+
+            labels_by_id = {tag.id: tag.label for tag in await client.get_tags()}
+            stale = [
+                (tag_id, label)
+                for tag_id in item_tag_ids
+                if (label := labels_by_id.get(tag_id)) is not None
+                and _is_managed_arr_tag(label)
+                and label.lower() not in expected
+            ]
+            for tag_id, label in stale:
+                if media_type is MediaType.MOVIE:
+                    await cast(RadarrClient, client).remove_tag_from_movies(
+                        [arr_item_id], tag_id
+                    )
+                else:
+                    await cast(SonarrClient, client).remove_tag_from_series(
+                        [arr_item_id], tag_id
+                    )
+                LOG.info(
+                    f"Removed tag '{label}' from {service} item {arr_item_id} "
+                    "that is no longer a cleanup candidate"
+                )
+        except Exception as e:
+            LOG.warning(
+                f"Could not drop managed tags for {service} item {arr_item_id} "
+                f"on config {config_id}: {e}"
+            )
+
+
 def _rule_action(rule: ReclaimRule) -> dict[str, Any]:
     """Get the action dictionary for a rule, or an empty dictionary if none."""
     return rule.action or {}
@@ -6712,11 +6893,7 @@ async def _sync_expected_arr_tags(
     managed_stale_tags = [
         tag
         for tag in tags
-        if (
-            tag.label.lower().startswith("rec-")
-            or tag.label.lower().startswith("reclaimerr")
-        )
-        and tag.label.lower() not in active_labels
+        if _is_managed_arr_tag(tag.label) and tag.label.lower() not in active_labels
     ]
 
     tagged_count = 0
@@ -6750,7 +6927,7 @@ async def _sync_expected_arr_tags(
             )
 
     for tag_label, tag in tag_by_label.items():
-        if not tag_label.startswith("rec-") or tag_label not in active_labels:
+        if not _is_managed_arr_tag(tag_label) or tag_label not in active_labels:
             continue
         expected_ids = expected_by_tag.get(tag_label, set())
         to_remove = [
@@ -6880,6 +7057,10 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
             eligible_ids,
             approved_by="system:auto-delete",
         )
+        # unmonitor-only and move actions leave the item in the arr, so drop the
+        # managed tag now that it is no longer a candidate
+        if deleted_count:
+            await reconcile_candidate_arr_tags("automatic candidate deletion")
         summary = {
             "eligible": len(eligible_ids),
             "waiting": waiting_count,
