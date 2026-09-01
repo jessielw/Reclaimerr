@@ -730,7 +730,7 @@ async def get_playback_users(
             MediaWatchUserEpisode.source_service,
         ),
     ):
-        rows.extend((await db.execute(statement)).all())
+        rows.extend((await db.execute(statement)).tuples().all())
 
     by_username: dict[str, PlaybackUserLookupResponse] = {}
     for raw_username, source_service in rows:
