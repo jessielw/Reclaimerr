@@ -18,6 +18,7 @@
     type PaginatedResponse,
   } from "$lib/types/shared";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
+  import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
   import {
     createPerPageState,
     createFilterState,
@@ -217,7 +218,8 @@
       return entry.episode_name ? `${label} "${entry.episode_name}"` : label;
     }
     if (entry.season_number != null) return `Season ${entry.season_number}`;
-    if (entry.movie_version_id != null) return "Specific version";
+    if (entry.movie_version_id != null)
+      return entry.version_file_name ?? "Specific version";
     return entry.media_type === MediaType.Movie
       ? "Whole movie"
       : "Whole series";
@@ -575,9 +577,50 @@
                           ? ` (${entry.media_year})`
                           : ""}
                       </div>
-                      <div class="text-xs text-muted-foreground mt-1">
+                      <div
+                        class="text-xs text-muted-foreground mt-1 break-all"
+                        title={entry.version_file_name ?? undefined}
+                      >
                         {formatTarget(entry)}
                       </div>
+                      {#if entry.movie_version_id != null}
+                        <div
+                          class="mt-1.5 flex flex-wrap gap-1 text-foreground/75"
+                        >
+                          {#if entry.version_resolution}
+                            <span
+                              class="rounded-full border bg-muted px-2 py-0 text-xs"
+                              >{cleanResolutionString(
+                                entry.version_resolution,
+                              )}</span
+                            >
+                          {/if}
+                          {#if entry.version_video_codec}
+                            <span
+                              class="rounded-full border bg-muted px-2 py-0 text-xs"
+                              >{entry.version_video_codec.toUpperCase()}</span
+                            >
+                          {/if}
+                          {#if entry.version_hdr}
+                            <span
+                              class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                              >HDR</span
+                            >
+                          {/if}
+                          {#if entry.version_dolby_vision}
+                            <span
+                              class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
+                              >Dolby Vision</span
+                            >
+                          {/if}
+                          {#if entry.version_size}
+                            <span
+                              class="rounded-full border bg-muted px-2 py-0 text-xs"
+                              >{formatFileSize(entry.version_size)}</span
+                            >
+                          {/if}
+                        </div>
+                      {/if}
                       <MetadataSources
                         tmdbId={entry.tmdb_id}
                         tmdbMediaType={entry.media_type === MediaType.Series

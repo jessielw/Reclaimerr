@@ -15,6 +15,12 @@ class ProtectedEntryResponse(BaseModel):
     episode_id: int | None = None
     episode_number: int | None = None
     episode_name: str | None = None
+    version_file_name: str | None = None
+    version_resolution: str | None = None
+    version_size: int | None = None
+    version_video_codec: str | None = None
+    version_hdr: bool | None = None
+    version_dolby_vision: bool | None = None
     media_title: str
     media_year: int | None
     poster_url: str | None
@@ -45,7 +51,7 @@ class ProtectedEntryResponse(BaseModel):
     reason: str | None
     protected_by_user_id: int | None
     protected_by_username: str
-    source: Literal["manual", "rule"] = "manual"
+    source: Literal["manual", "rule", "api"] = "manual"
     source_rule_id: int | None = None
     source_rule_name: str | None = None
     source_rule_description: str | None = None

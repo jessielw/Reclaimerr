@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,6 +13,11 @@ from backend.core.auth import (
     require_permission,
 )
 from backend.core.logger import LOG
+from backend.core.protection_scope import (
+    active_protection_clause,
+    movie_scope_overlap_clause,
+    series_scope_overlap_clause,
+)
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
@@ -96,38 +101,6 @@ async def _resolve_series_scope(
         return season, None
 
     return None, None
-
-
-def _series_scope_overlap_clause(
-    model: type[DeleteRequest] | type[ProtectedMedia],
-    *,
-    season_id: int | None,
-    episode_id: int | None,
-) -> ColumnElement[bool]:
-    """Build a SQLAlchemy clause to match delete requests or protections that overlap
-    with the specified series scope."""
-    if episode_id is not None:
-        return or_(
-            and_(model.season_id.is_(None), model.episode_id.is_(None)),
-            and_(model.season_id == season_id, model.episode_id.is_(None)),
-            model.episode_id == episode_id,
-        )
-    if season_id is not None:
-        return or_(
-            and_(model.season_id.is_(None), model.episode_id.is_(None)),
-            and_(model.season_id == season_id, model.episode_id.is_(None)),
-        )
-    return and_(model.season_id.is_(None), model.episode_id.is_(None))
-
-
-def _active_protection_filter() -> ColumnElement[bool]:
-    """Check for active protection."""
-    now = datetime.now(UTC)
-    return or_(
-        ProtectedMedia.permanent.is_(True),
-        ProtectedMedia.expires_at.is_(None),
-        ProtectedMedia.expires_at > now,
-    )
 
 
 async def _get_delete_request_media(
@@ -562,17 +535,20 @@ async def create_delete_request(
                 episode_id=request_data.episode_id,
             )
 
-    protected_query = select(ProtectedMedia).where(_active_protection_filter())
+    protected_query = select(ProtectedMedia).where(
+        active_protection_clause(datetime.now(UTC))
+    )
     if request_data.media_type is MediaType.MOVIE:
         if request_data.movie_version_id is not None:
             protected_query = protected_query.where(
                 ProtectedMedia.movie_id == request_data.media_id,
-                or_(
-                    ProtectedMedia.movie_version_id.is_(None),
-                    ProtectedMedia.movie_version_id == request_data.movie_version_id,
+                movie_scope_overlap_clause(
+                    ProtectedMedia, movie_version_id=request_data.movie_version_id
                 ),
             )
         else:
+            # deleting the whole movie is blocked by a protection on any one of its
+            # versions, which is wider than the protection-side overlap rule
             protected_query = protected_query.where(
                 ProtectedMedia.movie_id == request_data.media_id
             )
@@ -580,7 +556,7 @@ async def create_delete_request(
         if season is not None or episode is not None:
             protected_query = protected_query.where(
                 ProtectedMedia.series_id == request_data.media_id,
-                _series_scope_overlap_clause(
+                series_scope_overlap_clause(
                     ProtectedMedia,
                     season_id=season.id if season else None,
                     episode_id=episode.id if episode else None,
@@ -589,7 +565,7 @@ async def create_delete_request(
         else:
             protected_query = protected_query.where(
                 ProtectedMedia.series_id == request_data.media_id,
-                _series_scope_overlap_clause(
+                series_scope_overlap_clause(
                     ProtectedMedia,
                     season_id=None,
                     episode_id=None,
@@ -616,7 +592,7 @@ async def create_delete_request(
     else:
         existing_query = existing_query.where(
             DeleteRequest.series_id == request_data.media_id,
-            _series_scope_overlap_clause(
+            series_scope_overlap_clause(
                 DeleteRequest,
                 season_id=season.id if season else None,
                 episode_id=episode.id if episode else None,

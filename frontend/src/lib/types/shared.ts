@@ -1028,6 +1028,12 @@ export interface ProtectedEntry {
   episode_id: number | null;
   episode_number: number | null;
   episode_name: string | null;
+  version_file_name: string | null;
+  version_resolution: string | null;
+  version_size: number | null;
+  version_video_codec: string | null;
+  version_hdr: boolean | null;
+  version_dolby_vision: boolean | null;
   media_title: string;
   media_year: number | null;
   poster_url: string | null;
@@ -1058,7 +1064,7 @@ export interface ProtectedEntry {
   reason: string | null;
   protected_by_user_id: number | null;
   protected_by_username: string;
-  source: "manual" | "rule";
+  source: "manual" | "rule" | "api";
   source_rule_id: number | null;
   source_rule_name: string | null;
   source_rule_description: string | null;

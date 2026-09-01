@@ -10,6 +10,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
+from backend.core.protection_scope import detach_movie_version_references
 from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.tmdb import AsyncTMDBClient
@@ -1268,8 +1269,16 @@ async def _upsert_movie_versions(
             ev.added_at = ver.added_at
 
     # prune stale versions - all incoming versions come from the authoritative main server
-    for key, ev in existing.items():
-        if key not in incoming_keys:
+    stale_versions = [ev for key, ev in existing.items() if key not in incoming_keys]
+    if stale_versions:
+        # a replaced file gets a new row id (the fingerprint fallback above only
+        # rescues renames), so everything scoped to the departing version has to go
+        # with it - otherwise the old protection lingers, protects nothing, and
+        # shows up beside the replacement as a duplicate.
+        await detach_movie_version_references(
+            session, [ev.id for ev in stale_versions]
+        )
+        for ev in stale_versions:
             await session.delete(ev)
 
     # size = sum of incoming versions (all stale versions are being deleted)

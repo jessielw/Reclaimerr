@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
+from backend.core.protection_scope import detach_movie_version_references
 from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import (
     ARR_ID_RULE_FIELDS,
@@ -7387,6 +7388,7 @@ async def _delete_movie_version_candidates(
                     movie_db = movie_result.scalar_one_or_none()
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
+                    await detach_movie_version_references(db, [ver_db.id])
                     await db.delete(ver_db)
                     await db.flush()
                     movie_db = await _soft_remove_movie_if_empty(db, ver_db.movie_id)
@@ -8004,6 +8006,9 @@ async def _delete_movie_candidates(
                                 if history_size and movie.size is not None:
                                     movie.size = max(0, movie.size - history_size)
                                 if concrete_delete_target_version_ids:
+                                    await detach_movie_version_references(
+                                        db, concrete_delete_target_version_ids
+                                    )
                                     await db.execute(
                                         delete(MovieVersion).where(
                                             MovieVersion.id.in_(
@@ -8235,6 +8240,9 @@ async def _delete_movie_candidates(
                                     )
                                     if deleted_size and movie.size is not None:
                                         movie.size = max(0, movie.size - deleted_size)
+                                    await detach_movie_version_references(
+                                        db, concrete_unmonitor_target_version_ids
+                                    )
                                     await db.execute(
                                         delete(MovieVersion).where(
                                             MovieVersion.id.in_(
@@ -10743,6 +10751,7 @@ async def _move_specific_candidates_impl(
                     movie_db = movie_result.scalar_one_or_none()
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
+                    await detach_movie_version_references(db, [ver_db.id])
                     await db.delete(ver_db)
                     await db.flush()
                     await _soft_remove_movie_if_empty(db, ver_db.movie_id)

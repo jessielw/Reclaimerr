@@ -86,6 +86,10 @@ Media lists support title search, canonical provider IDs, status, pagination, so
 
 Protections can target a movie, movie version, series, season, or episode. The root media item may be selected by its Reclaimerr ID or TMDB ID. Omitting `expires_at` creates a permanent protection; providing a future timestamp creates a temporary one.
 
+`POST /api/v1/protections` reuses an active protection whose scope already covers the target rather than creating a second one, and reports `created: false` when it does. A whole-movie protection covers every version of that movie, so protecting one version of an already-protected movie returns the existing protection. An existing protection is only ever widened -- permanent wins, and an expiry only moves later.
+
+A protection scoped to a movie version is removed when that file leaves the library, since it no longer protects anything. Replacing a file on disk gives it a new version ID, so re-protect the replacement if you want it kept.
+
 ```bash
 curl -X POST \
   -H "Authorization: Bearer $RECLAIMERR_TOKEN" \

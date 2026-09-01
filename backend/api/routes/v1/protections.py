@@ -17,6 +17,11 @@ from backend.core.api_tokens import (
     ApiPrincipal,
     require_api_scope,
 )
+from backend.core.protection_scope import (
+    active_protection_clause,
+    movie_scope_overlap_clause,
+    series_scope_overlap_clause,
+)
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import get_db
@@ -43,10 +48,6 @@ from backend.services.lifecycle_webhooks import (
 )
 
 router = APIRouter(tags=["v1:protections"])
-
-
-def _active_filter(now: datetime) -> ColumnElement[bool]:
-    return or_(ProtectedMedia.permanent.is_(True), ProtectedMedia.expires_at > now)
 
 
 def _nullable_match(
@@ -240,7 +241,7 @@ async def list_protections(
             )
         )
     if active_only:
-        filters.append(_active_filter(datetime.now(UTC)))
+        filters.append(active_protection_clause(datetime.now(UTC)))
     # manual protections outlive a soft-delete of their media; exclude any whose
     # movie or series is currently tombstoned. This query has no joins, so the
     # membership test is expressed as a subquery.
@@ -327,13 +328,17 @@ async def create_protection(
         exact = and_(
             ProtectedMedia.media_type == request.media_type,
             _nullable_match(ProtectedMedia.movie_id, movie_id),
-            _nullable_match(
-                ProtectedMedia.movie_version_id, version.id if version else None
-            ),
             _nullable_match(ProtectedMedia.series_id, series_id),
-            _nullable_match(ProtectedMedia.season_id, season.id if season else None),
-            _nullable_match(ProtectedMedia.episode_id, episode.id if episode else None),
-            _active_filter(datetime.now(UTC)),
+            movie_scope_overlap_clause(
+                ProtectedMedia, movie_version_id=version.id if version else None
+            )
+            if movie_id is not None
+            else series_scope_overlap_clause(
+                ProtectedMedia,
+                season_id=season.id if season else None,
+                episode_id=episode.id if episode else None,
+            ),
+            active_protection_clause(datetime.now(UTC)),
         )
         protection = (
             await db.execute(select(ProtectedMedia).where(exact).limit(1))
