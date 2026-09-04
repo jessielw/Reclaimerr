@@ -4,7 +4,7 @@ from typing import Any
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
@@ -25,13 +25,28 @@ engine = create_async_engine(
 )
 
 
+# PRAGMA foreign_keys is connection state, not database state, so it has to be
+# set on every connection the pool hands out. Setting it per request instead
+# left enforcement down to whoever opened the connection first: a background
+# task that borrowed a connection a request had already used ran with foreign
+# keys on, the same task on a fresh connection ran with them off, so ON DELETE
+# CASCADE / SET NULL fired or silently did not depending on pool luck.
+#
+# Migrations are the one place it has to stay off: a SQLite batch rebuild drops
+# and renames tables other tables reference, which enforcement refuses. It also
+# cannot be turned off per statement, because PRAGMA foreign_keys is a no-op
+# inside a transaction and migrations run in one - hence the flag here.
+_migrating = False
+
+
 @event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_conn: Any, _connection_record: Any) -> None:
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.execute("PRAGMA journal_mode=WAL")
-    # cursor.execute("PRAGMA foreign_keys=ON")
+    if not _migrating:
+        cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
@@ -56,7 +71,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     async with async_db() as session:
         try:
-            await session.execute(text("PRAGMA foreign_keys=ON"))
             yield session
             await session.commit()
         except Exception:
@@ -76,10 +90,21 @@ async def init_db() -> None:
     cfg.set_main_option(
         "script_location", str(Path(__file__).resolve().parent.parent / "alembic")
     )
-    async with engine.begin() as conn:
-        # inject the open connection into config.attributes so env.py reuses
-        # it directly instead of opening a second conflicting SQLite connection.
-        await conn.run_sync(_run_alembic_upgrade, cfg)
+    global _migrating
+    _migrating = True
+    try:
+        async with engine.begin() as conn:
+            # inject the open connection into config.attributes so env.py reuses
+            # it directly instead of opening a second conflicting SQLite connection.
+            await conn.run_sync(_run_alembic_upgrade, cfg)
+    finally:
+        _migrating = False
+
+    # The migration connection goes back to the pool with foreign keys off.
+    # Drop it so the next checkout reconnects through the hook above and every
+    # connection the app runs on enforces them. Nothing else has touched the
+    # pool yet - init_db is the first thing startup does with the database.
+    await engine.dispose()
 
 
 def _run_alembic_upgrade(sync_conn: Any, cfg: AlembicConfig) -> None:

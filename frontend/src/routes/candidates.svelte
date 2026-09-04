@@ -61,6 +61,7 @@
     processed?: number;
     succeeded?: number;
     failed?: number;
+    errors?: string[];
   }
 
   const sortByOptions = [
@@ -500,9 +501,11 @@
       );
     }
     if (result && (result.failed ?? 0) > 0) {
-      toast.error(
-        `${result.failed} item${result.failed === 1 ? "" : "s"} could not be ${candidateJobOperation(job) === "move" ? "moved" : "deleted"}.`,
-      );
+      // the backend records why each item failed - show it instead of leaving
+      // the user to guess from a bare count
+      const reasons = (result.errors ?? []).slice(0, 3).join("\n");
+      const summary = `${result.failed} item${result.failed === 1 ? "" : "s"} could not be ${candidateJobOperation(job) === "move" ? "moved" : "deleted"}.`;
+      toast.error(reasons ? `${summary}\n${reasons}` : summary);
     }
     if (!result) {
       toast.success(

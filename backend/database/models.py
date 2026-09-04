@@ -854,15 +854,18 @@ class SupplementalMediaMatch(Base):
     series_id: Mapped[int | None] = mapped_column(
         ForeignKey("series.id"), index=True, default=None
     )
+    # CASCADE, not SET NULL: a row is keyed to one linked-server item, so a
+    # season match whose local season is gone maps nothing. Nulling it would
+    # leave it looking like a series-level match for a season's item id.
     season_id: Mapped[int | None] = mapped_column(
-        ForeignKey("seasons.id"), index=True, default=None
+        ForeignKey("seasons.id", ondelete="CASCADE"), index=True, default=None
     )
     # Only a server of a type the main server does not provide can write its
     # episode ids to episodes.<service>_episode_id, so a linked server of the
     # main server's own type records them here instead. Without it, its episode
     # plays have no id to resolve through at all.
     episode_id: Mapped[int | None] = mapped_column(
-        ForeignKey("episodes.id"), index=True, default=None
+        ForeignKey("episodes.id", ondelete="CASCADE"), index=True, default=None
     )
     source_media_id: Mapped[str | None] = mapped_column(String(100), default=None)
     path_tail: Mapped[str | None] = mapped_column(String(1024), default=None)

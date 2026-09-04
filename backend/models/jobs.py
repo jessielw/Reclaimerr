@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.enums import CandidateFileOpOperation, MediaType, Service, Task
 
@@ -73,3 +73,5 @@ class CandidateFileOpJobResult(BaseModel):
     processed: int
     succeeded: int
     failed: int
+    # per item "<label>: <reason>" for each failure, so the UI can say why
+    errors: list[str] = Field(default_factory=list)

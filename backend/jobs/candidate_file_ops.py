@@ -77,6 +77,14 @@ async def queue_candidate_file_op_job(
     return job
 
 
+async def _candidate_failure_reason(candidate_id: int) -> str:
+    """Read back the reason the cleanup task recorded for a failed candidate."""
+    async with async_db() as db:
+        candidate = await db.get(ReclaimCandidate, candidate_id)
+        reason = candidate.last_delete_error if candidate is not None else None
+    return reason or "Failed for an unknown reason - check the logs"
+
+
 async def _finalize_delete_request_job(
     *,
     delete_request_id: int,
@@ -197,6 +205,12 @@ async def _run_candidate_file_op_job_unlocked(
     failed = 0
     completed_items = 0
     total_items = len(payload.candidate_ids)
+    errors: list[str] = []
+
+    def _record_error(label: str, reason: str) -> None:
+        """Keep the per item failure reason for the job result / UI."""
+        summarized = summarize_error_message(reason, max_chars=300) or reason
+        errors.append(f"{label}: {summarized}")
 
     async def _persist_progress(
         *,
@@ -241,6 +255,9 @@ async def _run_candidate_file_op_job_unlocked(
                     f"Skipping protected candidate {candidate_id} during manual "
                     f"{payload.operation.value} operation"
                 )
+                _record_error(
+                    current_item_label, "Skipped because the item is protected"
+                )
                 failed += 1
                 completed_items += 1
                 await _persist_progress(
@@ -268,6 +285,12 @@ async def _run_candidate_file_op_job_unlocked(
             if item_succeeded == 0 and item_failed == 0:
                 # a prior cascading delete/move may already have removed this candidate.
                 item_succeeded = 1
+
+            if item_failed:
+                _record_error(
+                    current_item_label,
+                    await _candidate_failure_reason(candidate_id),
+                )
 
             succeeded += item_succeeded
             failed += item_failed
@@ -311,6 +334,7 @@ async def _run_candidate_file_op_job_unlocked(
         processed=total_items,
         succeeded=succeeded,
         failed=failed,
+        errors=errors,
     )
 
     if payload.delete_request_id is not None:

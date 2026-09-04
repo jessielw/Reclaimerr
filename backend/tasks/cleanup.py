@@ -809,6 +809,26 @@ async def _filter_series_candidates_by_favorites(
     return filtered, len(candidates) - len(filtered)
 
 
+async def _drop_orphaned_candidates(
+    db: AsyncSession, candidate_col: Any, media_id: int
+) -> None:
+    """Remove candidates left pointing at a medium that was just tombstoned.
+
+    Every scoped delete handler joins its candidates to a live media row, so a
+    candidate left behind here can never be acted on again - it just fails with
+    nothing to show for it every time someone retries. The reclaim scan rebuilds
+    candidates, so dropping them costs nothing, and it matches what the sync task
+    already does when it tombstones a row.
+    """
+    result = await db.execute(delete(ReclaimCandidate).where(candidate_col == media_id))
+    dropped = result.rowcount or 0  # type: ignore[reportAttributeAccessIssue]
+    if dropped:
+        LOG.debug(
+            f"Dropped {dropped} candidate(s) left over from tombstoned "
+            f"{candidate_col.key} {media_id}"
+        )
+
+
 async def _soft_remove_movie_if_empty(
     db: AsyncSession, movie_id: int | None
 ) -> Movie | None:
@@ -828,6 +848,7 @@ async def _soft_remove_movie_if_empty(
         return movie
     movie.removed_at = datetime.now(UTC)
     movie.added_at = None
+    await _drop_orphaned_candidates(db, ReclaimCandidate.movie_id, movie_id)
     return movie
 
 
@@ -850,6 +871,7 @@ async def _soft_remove_series_if_empty(
         return series
     series.removed_at = datetime.now(UTC)
     series.added_at = None
+    await _drop_orphaned_candidates(db, ReclaimCandidate.series_id, series_id)
     return series
 
 
@@ -7128,6 +7150,192 @@ async def _mark_unexplained_delete_failures(
     await _mark_candidate_delete_failures(remaining_ids, error)
 
 
+async def _reset_candidate_delete_errors(candidate_ids: Iterable[int]) -> None:
+    """Clear the previous attempt's error so this attempt reports its own reason.
+
+    Without this a candidate that already failed once keeps that error forever,
+    and every diagnosis that only fills in a blank error stays silent on retries.
+    """
+    unique_ids = {candidate_id for candidate_id in candidate_ids if candidate_id}
+    if not unique_ids:
+        return
+
+    async with async_db() as db:
+        await db.execute(
+            update(ReclaimCandidate)
+            .where(ReclaimCandidate.id.in_(unique_ids))
+            .where(ReclaimCandidate.last_delete_error.isnot(None))
+            .values(last_delete_error=None)
+        )
+        await db.commit()
+
+
+async def _diagnose_unhandled_delete_failures(candidate_ids: Iterable[int]) -> None:
+    """Explain, per candidate, why no scoped delete handler could act on it.
+
+    Every scoped handler joins the candidate to its media row and skips rows the
+    join drops, so a candidate pointing at a missing or tombstoned medium falls
+    straight through the dispatch without any handler ever seeing it. That used
+    to surface as a bare "0 processed, 1 failed" with nothing in the log, so the
+    reason is resolved here and written to both the log and the candidate.
+    """
+    unique_ids = {candidate_id for candidate_id in candidate_ids if candidate_id}
+    if not unique_ids:
+        return
+
+    generic = (
+        "Candidate delete failed before a scoped handler could complete. "
+        "The candidate may be stale, have an invalid scope, lack an active "
+        "Arr/media-server route, or have failed in a branch without a more "
+        "specific error."
+    )
+
+    async with async_db() as db:
+        # only candidates with no specific error yet still need a diagnosis
+        remaining_ids = [
+            row[0]
+            for row in (
+                await db.execute(
+                    select(ReclaimCandidate.id)
+                    .where(ReclaimCandidate.id.in_(unique_ids))
+                    .where(ReclaimCandidate.last_delete_error.is_(None))
+                )
+            ).all()
+        ]
+        if not remaining_ids:
+            return
+
+        rows = (
+            await db.execute(
+                select(
+                    ReclaimCandidate.id,
+                    ReclaimCandidate.media_type,
+                    ReclaimCandidate.movie_id,
+                    ReclaimCandidate.series_id,
+                    ReclaimCandidate.season_id,
+                    ReclaimCandidate.episode_id,
+                    Movie.id,
+                    Movie.title,
+                    Movie.removed_at,
+                    Series.id,
+                    Series.title,
+                    Series.removed_at,
+                )
+                .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+                .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+                .where(ReclaimCandidate.id.in_(remaining_ids))
+            )
+        ).all()
+
+    diagnosed: dict[int, str] = {}
+    for (
+        candidate_id,
+        media_type,
+        movie_id,
+        series_id,
+        season_id,
+        episode_id,
+        movie_row_id,
+        movie_title,
+        movie_removed_at,
+        series_row_id,
+        series_title,
+        series_removed_at,
+    ) in rows:
+        if media_type is MediaType.MOVIE:
+            label = f"movie '{movie_title or 'unknown'}'"
+            if movie_id is None:
+                reason = (
+                    "Stale candidate: it is not linked to a movie. Re-run the "
+                    "reclaim scan to rebuild candidates."
+                )
+            elif movie_row_id is None:
+                reason = (
+                    f"Stale candidate: movie id {movie_id} no longer exists in "
+                    "Reclaimerr. Re-run the reclaim scan to rebuild candidates."
+                )
+            elif movie_removed_at is not None:
+                reason = (
+                    f"Stale candidate: {label} is tombstoned in Reclaimerr "
+                    f"(removed_at {movie_removed_at}), so no delete handler will "
+                    "touch it. Re-run a library sync and reclaim scan to clear it."
+                )
+            else:
+                reason = generic
+        else:
+            scope = (
+                "episode"
+                if episode_id is not None
+                else "season"
+                if season_id is not None
+                else "series"
+            )
+            label = f"series '{series_title or 'unknown'}' ({scope} scope)"
+            if series_id is None:
+                reason = (
+                    "Stale candidate: it is not linked to a series. Re-run the "
+                    "reclaim scan to rebuild candidates."
+                )
+            elif series_row_id is None:
+                reason = (
+                    f"Stale candidate: series id {series_id} no longer exists in "
+                    "Reclaimerr. Re-run the reclaim scan to rebuild candidates."
+                )
+            elif series_removed_at is not None:
+                reason = (
+                    f"Stale candidate: {label} is tombstoned in Reclaimerr "
+                    f"(removed_at {series_removed_at}), so no delete handler will "
+                    "touch it. Re-run a library sync and reclaim scan to clear it."
+                )
+            else:
+                reason = generic
+
+        diagnosed[candidate_id] = reason
+        LOG.warning(f"Candidate {candidate_id} ({label}) not deleted: {reason}")
+
+    for candidate_id in remaining_ids:
+        if candidate_id not in diagnosed:
+            LOG.warning(f"Candidate {candidate_id} not deleted: {generic}")
+            diagnosed[candidate_id] = generic
+
+    for candidate_id, reason in diagnosed.items():
+        await _mark_candidate_delete_failure(candidate_id, reason)
+
+
+def _has_delete_route(media_type: MediaType) -> bool:
+    """Whether a client capable of carrying out this delete is loaded."""
+    arr = (
+        service_manager.radarr
+        if media_type is MediaType.MOVIE
+        else service_manager.sonarr
+    )
+    return bool(arr or service_manager.main_media_server)
+
+
+async def _mark_no_delete_route(
+    candidate_ids: Iterable[int], media_type: MediaType
+) -> None:
+    """Record (and log) that no service is available to carry out the deletion.
+
+    Reaching this means every client that could remove the media is missing from
+    the service manager, so the delete has nowhere to go. Usually the service
+    failed to initialize at startup (see the bootstrap errors in the log) or the
+    config was disabled/removed since the candidate was found.
+    """
+    unique_ids = {candidate_id for candidate_id in candidate_ids if candidate_id}
+    if not unique_ids:
+        return
+
+    arr_name = "Radarr" if media_type is MediaType.MOVIE else "Sonarr"
+    error = (
+        f"No delete route available: no {arr_name} instance and no main media "
+        "server are initialized. Check that the service configs are enabled and "
+        "look for service initialization errors in the startup log."
+    )
+    LOG.error(f"{error} Affected {media_type.value} candidate(s): {sorted(unique_ids)}")
+    await _mark_candidate_delete_failures(unique_ids, error)
+
+
 async def _load_path_mappings() -> list[dict[str, Any]]:
     """Load path mappings from GeneralSettings (returns empty list if unset)."""
     async with async_db() as db:
@@ -10506,17 +10714,21 @@ async def _delete_specific_candidates_impl(
     }
     delete_ids = found_ids - move_ids
     delete_restrict = frozenset(delete_ids)
-    types = {
-        media_type
-        for candidate_id, media_type, _rule_ids in rows
-        if candidate_id in delete_ids
-    }
+    delete_ids_by_type: dict[MediaType, set[int]] = {}
+    for candidate_id, media_type, _rule_ids in rows:
+        if candidate_id in delete_ids:
+            delete_ids_by_type.setdefault(media_type, set()).add(candidate_id)
+    types = set(delete_ids_by_type)
 
     LOG.info(
         f"Manual deletion of {len(found_ids)} candidate(s) requested "
         f"({len(move_ids)} move-routed, {len(delete_ids)} delete-routed, "
         f"movies={MediaType.MOVIE in types}, series={MediaType.SERIES in types})"
     )
+
+    # a leftover error from an earlier attempt would suppress this attempt's
+    # diagnosis, so every candidate starts this run with a blank error
+    await _reset_candidate_delete_errors(delete_ids)
 
     moved = 0
     move_failed = 0
@@ -10526,38 +10738,36 @@ async def _delete_specific_candidates_impl(
         )
 
     delete_deleted = 0
-    if MediaType.MOVIE in types and (
-        service_manager.radarr or service_manager.main_media_server
-    ):
-        delete_deleted += await _delete_movie_candidates(
-            restrict_to_ids=delete_restrict, approved_by=approved_by
-        )
+    if MediaType.MOVIE in types:
+        if _has_delete_route(MediaType.MOVIE):
+            delete_deleted += await _delete_movie_candidates(
+                restrict_to_ids=delete_restrict, approved_by=approved_by
+            )
+        else:
+            await _mark_no_delete_route(
+                delete_ids_by_type[MediaType.MOVIE], MediaType.MOVIE
+            )
 
-    if MediaType.SERIES in types and (
-        service_manager.sonarr or service_manager.main_media_server
-    ):
-        delete_deleted += await _delete_series_candidates(
-            restrict_to_ids=delete_restrict, approved_by=approved_by
-        )
-        delete_deleted += await _delete_season_candidates(
-            restrict_to_ids=delete_restrict, approved_by=approved_by
-        )
-        delete_deleted += await _delete_episode_candidates(
-            restrict_to_ids=delete_restrict, approved_by=approved_by
-        )
+    if MediaType.SERIES in types:
+        if _has_delete_route(MediaType.SERIES):
+            delete_deleted += await _delete_series_candidates(
+                restrict_to_ids=delete_restrict, approved_by=approved_by
+            )
+            delete_deleted += await _delete_season_candidates(
+                restrict_to_ids=delete_restrict, approved_by=approved_by
+            )
+            delete_deleted += await _delete_episode_candidates(
+                restrict_to_ids=delete_restrict, approved_by=approved_by
+            )
+        else:
+            await _mark_no_delete_route(
+                delete_ids_by_type[MediaType.SERIES], MediaType.SERIES
+            )
 
     delete_failed = max(0, len(delete_ids) - delete_deleted)
     failed = move_failed + delete_failed
     if delete_failed:
-        await _mark_unexplained_delete_failures(
-            delete_ids,
-            (
-                "Candidate delete failed before a scoped handler could complete. "
-                "The candidate may be stale, have an invalid scope, lack an active "
-                "Arr/media-server route, or have failed in a branch without a more "
-                "specific error."
-            ),
-        )
+        await _diagnose_unhandled_delete_failures(delete_ids)
     processed = moved + delete_deleted
     LOG.info(f"Manual deletion complete: {processed} processed, {failed} failed")
     return processed, failed

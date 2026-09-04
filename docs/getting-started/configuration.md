@@ -29,6 +29,10 @@ Reclaimerr is configured through General Settings, service settings, and a small
 | `ADMIN_PASSWORD` | Initial admin password or admin password reset on startup |
 | `RECLAIMERR_TASK_ISOLATION` | Set to `off` to run heavy tasks inline instead of isolated child processes |
 | `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2) |
+| `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, or `CRITICAL` |
+| `LOG_RETENTION_DAYS` | Days of rotated log files to keep (default: 30) |
+
+`LOG_LEVEL` is read once at startup and there is no in-app switch for it, so raising it means setting the variable and restarting the container. Confirm it took effect by looking for the `Log level: LogLevel.DEBUG` line the API logs on boot - if that line says `LogLevel.INFO`, the variable did not reach the container and debug lines will be missing no matter what else is configured.
 
 Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy, and it is what lets notifications link back into Reclaimerr. When it is unset, notifications are still delivered but contain no links.
 

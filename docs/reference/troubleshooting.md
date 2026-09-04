@@ -41,6 +41,14 @@
 - Pending protection requests block automatic deletion.
 - Pending delete requests also block automatic deletion.
 
+## A Manual Deletion Reports "Failed" With No Reason
+
+Deleting from the Candidates page ends in `Manual deletion complete: 0 processed, 1 failed` in the log, and the toast says the item could not be deleted. The reason is on the line just above it, at `WARNING` or `ERROR`, and it is also stored on the candidate and repeated in the toast. The usual causes:
+
+- **`No delete route available`** - no Radarr/Sonarr instance and no main media server are initialized, so there is nowhere to send the delete. This is normally a service that failed to start up rather than one that is misconfigured now: search the log from the last boot for `service initialization failed`. Restarting Reclaimerr re-runs the connection, and the Test button in Settings does not, so a passing Test does not prove the running instance has a usable client.
+- **`Stale candidate: ... is tombstoned in Reclaimerr`** - the movie or series behind the candidate is marked removed, so no handler will act on it. Run a library sync followed by a reclaim scan to clear the leftover candidate.
+- **`Stale candidate: ... no longer exists`** - the candidate points at a media row that is gone. A reclaim scan rebuilds candidates and clears it.
+
 ## A Configured Service Is Offline
 
 You can disable or delete an existing service configuration even when the external service is unreachable. The Test action and enabling a service still require connectivity.
