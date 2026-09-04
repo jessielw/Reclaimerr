@@ -623,6 +623,7 @@ export interface CandidateFileOpJobResult {
   processed: number;
   succeeded: number;
   failed: number;
+  errors?: string[];
 }
 
 export interface CandidateFileOpJobPayload {

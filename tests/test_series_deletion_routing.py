@@ -410,7 +410,7 @@ def test_whole_series_sonarr_batch_failure_records_candidate_error(
     asyncio.run(run())
 
 
-def test_invalid_series_candidate_shape_records_unexplained_failure(
+def test_invalid_series_candidate_shape_records_diagnosed_failure(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -450,9 +450,7 @@ def test_invalid_series_candidate_shape_records_unexplained_failure(
                 assert candidate is not None
                 assert candidate.delete_attempts == 1
                 assert candidate.last_delete_error is not None
-                assert "failed before a scoped handler could complete" in (
-                    candidate.last_delete_error
-                )
+                assert "not linked to a series" in candidate.last_delete_error
         finally:
             await engine.dispose()
 
