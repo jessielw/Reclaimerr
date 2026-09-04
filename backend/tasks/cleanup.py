@@ -821,7 +821,7 @@ async def _drop_orphaned_candidates(
     already does when it tombstones a row.
     """
     result = await db.execute(delete(ReclaimCandidate).where(candidate_col == media_id))
-    dropped = result.rowcount or 0
+    dropped = result.rowcount or 0  # type: ignore[reportAttributeAccessIssue]
     if dropped:
         LOG.debug(
             f"Dropped {dropped} candidate(s) left over from tombstoned "
