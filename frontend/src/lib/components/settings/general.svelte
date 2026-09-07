@@ -27,6 +27,11 @@
     PAGE_ACCESS_OPTIONS,
   } from "$lib/page-access";
 
+  // Reclaimerr manages exactly these two collections per media server. Keep in
+  // sync with backend/utils/helpers.py.
+  const DEFAULT_LEAVING_SOON_MOVIE_TITLE = "Leaving Soon [Movies]";
+  const DEFAULT_LEAVING_SOON_SERIES_TITLE = "Leaving Soon [Series]";
+
   // props
   interface Props {
     svgIcon: Component | null;
@@ -70,7 +75,24 @@
     ...DEFAULT_NEW_USER_ALLOWED_PAGES,
   ]);
   let leavingSoonEnabled = $state(false);
-  let leavingSoonCollectionTitle = $state("Leaving Soon");
+  let leavingSoonMovieCollectionTitle = $state(
+    DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+  );
+  let leavingSoonSeriesCollectionTitle = $state(
+    DEFAULT_LEAVING_SOON_SERIES_TITLE,
+  );
+  const leavingSoonMovieTitle = $derived(
+    leavingSoonMovieCollectionTitle.trim() || DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+  );
+  const leavingSoonSeriesTitle = $derived(
+    leavingSoonSeriesCollectionTitle.trim() ||
+      DEFAULT_LEAVING_SOON_SERIES_TITLE,
+  );
+  const leavingSoonTitlesCollide = $derived(
+    leavingSoonEnabled &&
+      leavingSoonMovieTitle.toLowerCase() ===
+        leavingSoonSeriesTitle.toLowerCase(),
+  );
   let defaultArrDeleteBehavior = $state<
     "unmonitor" | "unmonitor_only" | "remove_if_empty"
   >("unmonitor");
@@ -106,6 +128,12 @@
 
   // save settings
   const saveSettings = async () => {
+    if (leavingSoonTitlesCollide) {
+      toast.error(
+        "Leaving Soon movie and series collections must have different names",
+      );
+      return;
+    }
     savingSettings = true;
     try {
       // validate input before saving
@@ -167,7 +195,8 @@
         requester_watch_ignore_request_date: requesterWatchIgnoreRequestDate,
         default_allowed_pages: defaultAllowedPages,
         leaving_soon_enabled: leavingSoonEnabled,
-        leaving_soon_collection_title: leavingSoonCollectionTitle,
+        leaving_soon_movie_collection_title: leavingSoonMovieTitle,
+        leaving_soon_series_collection_title: leavingSoonSeriesTitle,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -332,8 +361,12 @@
             ? settings.default_allowed_pages
             : [...DEFAULT_NEW_USER_ALLOWED_PAGES];
         leavingSoonEnabled = settings.leaving_soon_enabled ?? false;
-        leavingSoonCollectionTitle =
-          settings.leaving_soon_collection_title ?? "Leaving Soon";
+        leavingSoonMovieCollectionTitle =
+          settings.leaving_soon_movie_collection_title ??
+          DEFAULT_LEAVING_SOON_MOVIE_TITLE;
+        leavingSoonSeriesCollectionTitle =
+          settings.leaving_soon_series_collection_title ??
+          DEFAULT_LEAVING_SOON_SERIES_TITLE;
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -624,36 +657,58 @@
       </p>
 
       {#if leavingSoonEnabled}
-        <div class="max-w-md">
-          <Label for="leavingSoonCollectionTitle" class="mb-2">
-            <span class="text-sm text-foreground">Collection Base Title</span>
-          </Label>
-          <Input
-            id="leavingSoonCollectionTitle"
-            name="leavingSoonCollectionTitle"
-            type="text"
-            class="input-hover-el text-foreground placeholder:text-muted-foreground"
-            placeholder="Leaving Soon"
-            bind:value={leavingSoonCollectionTitle}
-            maxlength={50}
-          />
+        <div class="grid gap-4 sm:grid-cols-2 max-w-2xl">
+          <div>
+            <Label for="leavingSoonMovieCollectionTitle" class="mb-2">
+              <span class="text-sm text-foreground">Movie Collection Name</span>
+            </Label>
+            <Input
+              id="leavingSoonMovieCollectionTitle"
+              name="leavingSoonMovieCollectionTitle"
+              type="text"
+              class="input-hover-el text-foreground placeholder:text-muted-foreground"
+              placeholder={DEFAULT_LEAVING_SOON_MOVIE_TITLE}
+              bind:value={leavingSoonMovieCollectionTitle}
+              maxlength={100}
+            />
+          </div>
+          <div>
+            <Label for="leavingSoonSeriesCollectionTitle" class="mb-2">
+              <span class="text-sm text-foreground">Series Collection Name</span
+              >
+            </Label>
+            <Input
+              id="leavingSoonSeriesCollectionTitle"
+              name="leavingSoonSeriesCollectionTitle"
+              type="text"
+              class="input-hover-el text-foreground placeholder:text-muted-foreground"
+              placeholder={DEFAULT_LEAVING_SOON_SERIES_TITLE}
+              bind:value={leavingSoonSeriesCollectionTitle}
+              maxlength={100}
+            />
+          </div>
         </div>
         <p class="text-xs text-muted-foreground mt-2 break-all">
-          Reclaimerr manages two collections per server:
-          <strong
-            >{leavingSoonCollectionTitle || "Leaving Soon"} [Movies]</strong
-          >
-          and
-          <strong
-            >{leavingSoonCollectionTitle || "Leaving Soon"} [Series]</strong
-          >.
+          Reclaimerr manages exactly these two collections per server. Names are
+          used verbatim - leave a field blank to fall back to
+          <strong>{DEFAULT_LEAVING_SOON_MOVIE_TITLE}</strong>
+          or <strong>{DEFAULT_LEAVING_SOON_SERIES_TITLE}</strong>.
         </p>
+        {#if leavingSoonTitlesCollide}
+          <p class="text-xs text-destructive mt-2">
+            The movie and series collections must have different names.
+          </p>
+        {/if}
         <Notice class="mt-2" type="info" title="Note">
           Plex stores collections <strong>per library</strong>, while Jellyfin
           and Emby use
-          <strong>global</strong> collections. On Plex, the "Leaving Soon"
-          collection is split across libraries; on Jellyfin and Emby it appears
-          in a single global collection.
+          <strong>global</strong> collections. On Plex, each collection is split
+          across libraries; on Jellyfin and Emby it appears as a single global
+          collection.
+          <br />
+          <br />
+          Renaming a collection here moves it: Reclaimerr deletes the collection under
+          the old name on the next scan and rebuilds it under the new one.
           <br />
           <br />
           <strong
@@ -970,7 +1025,7 @@
     <div class="flex gap-3 justify-end">
       <Button
         onclick={saveSettings}
-        disabled={savingSettings}
+        disabled={savingSettings || leavingSoonTitlesCollide}
         class="cursor-pointer gap-2"
       >
         {#if savingSettings}

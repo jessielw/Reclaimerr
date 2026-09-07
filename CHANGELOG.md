@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The Leaving Soon collections can now be named whatever you want. **Settings -> General -> Leaving Soon Collections** takes a name for the movie collection and a name for the series collection instead of one base title that Reclaimerr appended `[Movies]` and `[Series]` to, so a row can read `Expiring Films` rather than `Leaving Soon [Movies]`. Existing names are carried over on upgrade -- a base title of `Leaving Soon` becomes `Leaving Soon [Movies]` and `Leaving Soon [Series]`, which is what the collections were already called, so nothing is renamed on your servers. Reclaimerr still manages exactly two collections per media server; the two names have to differ, because Jellyfin and Emby collections are global and one shared name would resolve to a single collection with each half of the sync stripping out the other half's items. Renaming a collection still moves it: the collection under the old name is deleted and rebuilt under the new one on the next scan, and now only the half you actually renamed is touched, so renaming the movie collection leaves the series collection and its artwork alone.
+
+### Fixed
+
+- Reclaimerr's own Leaving Soon collections are no longer counted as user-curated collections by the collection sibling rule fields. The exclusion compared against the literal name `Leaving Soon`, but the collections have always been called `Leaving Soon [Movies]` and `Leaving Soon [Series]`, so it never matched anything -- and with the names now configurable it could not have. It reads the configured names instead.
+
 ## [0.4.1] - 2026-09-04
 
 ### Fixed

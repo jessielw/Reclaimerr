@@ -14,7 +14,7 @@ Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect
 
 | Feature | What It Gives You |
 | --- | --- |
-| Leaving Soon | A visible collection for items that are approaching removal |
+| Leaving Soon | Named, auto-synced collections for items that are approaching removal |
 | Scheduled tasks | Automated sync, scanning, and optional deletion workflows |
 | Protection flow | Keep items out of deletion while a request is pending or approved |
 | Reclaim history | Audit what happened, when it happened, and who approved it |

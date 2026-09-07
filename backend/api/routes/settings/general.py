@@ -37,71 +37,24 @@ from backend.models.settings import (
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.watch_identity import merge_directory_accounts
-from backend.utils.helpers import normalize_leaving_soon_collection_title
+from backend.tasks.cleanup import (
+    LEAVING_SOON_MEDIA_SERVICES,
+    normalize_leaving_soon_last_success_titles,
+    serialize_leaving_soon_last_success_titles,
+)
+from backend.utils.helpers import (
+    normalize_leaving_soon_movie_title,
+    normalize_leaving_soon_series_title,
+)
 
 router = APIRouter(tags=["settings", "general"])
-
-
-_LEAVING_SOON_MEDIA_SERVICES = {
-    Service.PLEX,
-    Service.JELLYFIN,
-    Service.EMBY,
-}
-
-
-async def _normalize_leaving_soon_last_success_titles(
-    db: AsyncSession,
-    raw_titles: object,
-) -> dict[int, str]:
-    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
-
-    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
-    key that isn't a valid config id is resolved to whichever ServiceConfig
-    currently has that service_type, so upgrading loses no in-flight state.
-    Callers should always write the new shape back.
-    """
-    if not isinstance(raw_titles, Mapping):
-        return {}
-    normalized_titles: dict[int, str] = {}
-    legacy_type_titles: dict[Service, str] = {}
-    for raw_key, raw_title in raw_titles.items():
-        title = normalize_leaving_soon_collection_title(str(raw_title))
-        try:
-            normalized_titles[int(raw_key)] = title
-            continue
-        except (TypeError, ValueError):
-            pass
-        try:
-            service = Service(str(raw_key))
-        except Exception:
-            continue
-        if service in _LEAVING_SOON_MEDIA_SERVICES:
-            legacy_type_titles[service] = title
-
-    if legacy_type_titles:
-        rows = (
-            await db.execute(
-                select(ServiceConfig.id, ServiceConfig.service_type).where(
-                    ServiceConfig.service_type.in_(legacy_type_titles.keys())
-                )
-            )
-        ).all()
-        config_id_by_type: dict[Service, int] = {}
-        for config_id, service_type in rows:
-            config_id_by_type.setdefault(service_type, config_id)
-        for service, title in legacy_type_titles.items():
-            config_id = config_id_by_type.get(service)
-            if config_id is not None and config_id not in normalized_titles:
-                normalized_titles[config_id] = title
-
-    return normalized_titles
 
 
 async def _cleanup_leaving_soon_collections_on_disable(
     db: AsyncSession,
     settings: GeneralSettings,
 ) -> None:
-    normalized_titles = await _normalize_leaving_soon_last_success_titles(
+    normalized_titles = await normalize_leaving_soon_last_success_titles(
         db, settings.leaving_soon_last_success_titles
     )
     if not normalized_titles:
@@ -113,7 +66,7 @@ async def _cleanup_leaving_soon_collections_on_disable(
         (
             await db.execute(
                 select(ServiceConfig).where(
-                    ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                    ServiceConfig.service_type.in_(LEAVING_SOON_MEDIA_SERVICES),
                     ServiceConfig.enabled.is_(True),
                 )
             )
@@ -123,7 +76,7 @@ async def _cleanup_leaving_soon_collections_on_disable(
     )
     configs_by_id = {config.id: config for config in configs}
 
-    for config_id, previous_success_title in list(updated_titles.items()):
+    for config_id, previous_titles in list(updated_titles.items()):
         if (config := configs_by_id.get(config_id)) is None:
             continue
         if (
@@ -138,17 +91,22 @@ async def _cleanup_leaving_soon_collections_on_disable(
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
                 f"{config.service_type.value} (config {config_id}); cannot remove "
-                f"title {previous_success_title!r} on disable"
+                f"titles {previous_titles.movies!r} / {previous_titles.series!r} "
+                "on disable"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
         try:
-            await delete_func(base_title=previous_success_title)
+            await delete_func(
+                movie_title=previous_titles.movies,
+                series_title=previous_titles.series,
+            )
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
                 f"{config.service_type.value} (config {config_id}) on disable "
-                f"(title {previous_success_title!r}): {e}"
+                f"(titles {previous_titles.movies!r} / "
+                f"{previous_titles.series!r}): {e}"
             )
             continue
 
@@ -157,9 +115,9 @@ async def _cleanup_leaving_soon_collections_on_disable(
 
     if not titles_changed:
         return
-    settings.leaving_soon_last_success_titles = {
-        str(config_id): title for config_id, title in updated_titles.items()
-    }
+    settings.leaving_soon_last_success_titles = (
+        serialize_leaving_soon_last_success_titles(updated_titles)
+    )
 
 
 @router.get("/general")
@@ -197,8 +155,11 @@ async def update_general_settings(
     if not settings:
         raise HTTPException(status_code=404, detail="General settings not found")
 
-    current_leaving_soon_title = normalize_leaving_soon_collection_title(
-        request.leaving_soon_collection_title
+    current_leaving_soon_movie_title = normalize_leaving_soon_movie_title(
+        request.leaving_soon_movie_collection_title
+    )
+    current_leaving_soon_series_title = normalize_leaving_soon_series_title(
+        request.leaving_soon_series_collection_title
     )
     was_leaving_soon_enabled = bool(settings.leaving_soon_enabled)
 
@@ -232,7 +193,8 @@ async def update_general_settings(
         page.value for page in request.default_allowed_pages
     ]
     settings.leaving_soon_enabled = request.leaving_soon_enabled
-    settings.leaving_soon_collection_title = current_leaving_soon_title
+    settings.leaving_soon_movie_collection_title = current_leaving_soon_movie_title
+    settings.leaving_soon_series_collection_title = current_leaving_soon_series_title
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
         await _cleanup_leaving_soon_collections_on_disable(db, settings)
 

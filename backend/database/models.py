@@ -39,6 +39,10 @@ from backend.user_types import (
     AudioCodecFamily,
     VideoCodecFamily,
 )
+from backend.utils.helpers import (
+    DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+    DEFAULT_LEAVING_SOON_SERIES_TITLE,
+)
 
 
 class User(Base):
@@ -392,10 +396,14 @@ class GeneralSettings(Base):
 
     # leaving soon collection sync
     leaving_soon_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    leaving_soon_collection_title: Mapped[str] = mapped_column(
-        String(255), default="Leaving Soon"
+    leaving_soon_movie_collection_title: Mapped[str] = mapped_column(
+        String(255), default=DEFAULT_LEAVING_SOON_MOVIE_TITLE
     )
-    leaving_soon_last_success_titles: Mapped[dict[str, str]] = mapped_column(
+    leaving_soon_series_collection_title: Mapped[str] = mapped_column(
+        String(255), default=DEFAULT_LEAVING_SOON_SERIES_TITLE
+    )
+    # {service_config_id: {"movies": <title>, "series": <title>}}
+    leaving_soon_last_success_titles: Mapped[dict[str, dict[str, str]]] = mapped_column(
         JSON, default_factory=dict
     )
 

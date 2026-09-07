@@ -52,7 +52,8 @@ class LeavingSoonAdapterPruneTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeEmby()
         await EmbyServiceBase.prune_leaving_soon_items(
             fake,  # type: ignore[arg-type]
-            base_title="Leaving Soon",
+            movie_title="Leaving Soon [Movies]",
+            series_title="Leaving Soon [Series]",
             movie_item_ids={"remove", "not-present"},
             series_item_ids=set(),
         )
@@ -96,7 +97,8 @@ class LeavingSoonAdapterPruneTests(unittest.IsolatedAsyncioTestCase):
         fake = FakePlex()
         await PlexService.prune_leaving_soon_items(
             fake,  # type: ignore[arg-type]
-            base_title="Leaving Soon",
+            movie_title="Leaving Soon [Movies]",
+            series_title="Leaving Soon [Series]",
             movie_item_ids={"remove"},
             series_item_ids=set(),
         )
@@ -498,13 +500,15 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         async with self.sessionmaker() as db:
-            # last_success_titles intentionally uses the legacy {service_type:
-            # title} shape here to also exercise the backward-compat migration
-            # in _normalize_leaving_soon_last_success_titles.
+            # last_success_titles intentionally uses the legacy
+            # {service_type: <base title>} shape here to also exercise the
+            # backward-compat migration in
+            # normalize_leaving_soon_last_success_titles.
             db.add(
                 GeneralSettings(
                     leaving_soon_enabled=True,
-                    leaving_soon_collection_title="Leaving Soon",
+                    leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                    leaving_soon_series_collection_title="Leaving Soon [Series]",
                     leaving_soon_last_success_titles={
                         Service.PLEX.value: "Old Soon",
                         Service.JELLYFIN.value: "Leaving Soon",
@@ -593,9 +597,17 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
             cleanup.service_manager._plex_clients = previous_plex_clients
             cleanup.service_manager._jellyfin_clients = previous_jellyfin_clients
 
+        # the legacy base titles expand into the suffixed pair the clients
+        # used to build themselves, so a pre-upgrade rename stays prunable
         self.assertEqual(
-            {call["base_title"] for call in fake_plex.calls},
-            {"Leaving Soon", "Old Soon"},
+            {
+                (call["movie_title"], call["series_title"])
+                for call in fake_plex.calls
+            },
+            {
+                ("Leaving Soon [Movies]", "Leaving Soon [Series]"),
+                ("Old Soon [Movies]", "Old Soon [Series]"),
+            },
         )
         self.assertTrue(
             all(call["movie_item_ids"] == {"plex-item"} for call in fake_plex.calls)

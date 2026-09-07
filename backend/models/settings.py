@@ -14,7 +14,13 @@ from backend.user_types import (
     MEDIA_SERVERS,
     MediaServerType,
 )
-from backend.utils.helpers import normalize_leaving_soon_collection_title
+from backend.utils.helpers import (
+    DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+    DEFAULT_LEAVING_SOON_SERIES_TITLE,
+    MAX_LEAVING_SOON_TITLE_LENGTH,
+    normalize_leaving_soon_movie_title,
+    normalize_leaving_soon_series_title,
+)
 
 
 def _validate_notification_url(url: str) -> None:
@@ -311,7 +317,14 @@ class GeneralSettingsResponse(BaseModel):
         ]
     )
     leaving_soon_enabled: bool = False
-    leaving_soon_collection_title: str = "Leaving Soon"
+    leaving_soon_movie_collection_title: str = Field(
+        default=DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+        max_length=MAX_LEAVING_SOON_TITLE_LENGTH,
+    )
+    leaving_soon_series_collection_title: str = Field(
+        default=DEFAULT_LEAVING_SOON_SERIES_TITLE,
+        max_length=MAX_LEAVING_SOON_TITLE_LENGTH,
+    )
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -362,11 +375,27 @@ class GeneralSettingsResponse(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def normalize_leaving_soon_title(self) -> GeneralSettingsResponse:
-        title = normalize_leaving_soon_collection_title(
-            self.leaving_soon_collection_title
+    def normalize_leaving_soon_titles(self) -> GeneralSettingsResponse:
+        """Normalize both managed collection titles and keep them distinct.
+
+        Jellyfin and Emby collections are global, so two managed collections
+        sharing a name would resolve to the same BoxSet and each sync half
+        would strip out the other half's items.
+        """
+        self.leaving_soon_movie_collection_title = normalize_leaving_soon_movie_title(
+            self.leaving_soon_movie_collection_title
         )
-        self.leaving_soon_collection_title = title
+        self.leaving_soon_series_collection_title = normalize_leaving_soon_series_title(
+            self.leaving_soon_series_collection_title
+        )
+        if (
+            self.leaving_soon_movie_collection_title.casefold()
+            == self.leaving_soon_series_collection_title.casefold()
+        ):
+            raise PydanticCustomError(
+                "leaving_soon_collection_titles",
+                "Leaving Soon movie and series collection titles must be different",
+            )
         return self
 
     @model_validator(mode="after")

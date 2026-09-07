@@ -52,7 +52,8 @@
     requester_watch_ignore_request_date: false,
     default_allowed_pages: [...DEFAULT_NEW_USER_ALLOWED_PAGES],
     leaving_soon_enabled: false,
-    leaving_soon_collection_title: "Leaving Soon",
+    leaving_soon_movie_collection_title: "Leaving Soon [Movies]",
+    leaving_soon_series_collection_title: "Leaving Soon [Series]",
   };
 
   let loading = $state(true);

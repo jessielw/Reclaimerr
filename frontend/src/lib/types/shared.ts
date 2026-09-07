@@ -311,7 +311,8 @@ export interface GeneralSettings {
   requester_watch_ignore_request_date: boolean;
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
-  leaving_soon_collection_title: string;
+  leaving_soon_movie_collection_title: string;
+  leaving_soon_series_collection_title: string;
 }
 
 export type ApiTokenScope =

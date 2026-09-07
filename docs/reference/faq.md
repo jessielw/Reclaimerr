@@ -21,6 +21,10 @@ The most common reasons are:
 
 Leaving Soon exposes a managed collection of items that are approaching their reclaim deadline. It is a collection view, not poster editing.
 
+Reclaimerr manages exactly two collections per media server, one for movies and one for series. Both names are configurable under **Settings > General > Leaving Soon Collections** and default to `Leaving Soon [Movies]` and `Leaving Soon [Series]`. The two names must differ, because Jellyfin and Emby collections are global and a shared name would resolve to a single collection.
+
+Renaming a collection in Reclaimerr moves it: on the next scan the collection under the old name is deleted and rebuilt under the new one, so any artwork you set on it is lost. Renaming a collection **on the media server** instead is not supported - Reclaimerr finds its collections by name and will simply create a new one.
+
 ## How do I troubleshoot task failures?
 
 Check the task history first, then confirm the connected media server is reachable and the main server is configured. If you are behind a reverse proxy, verify the forwarded headers and trusted hosts.

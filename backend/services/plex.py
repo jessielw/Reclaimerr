@@ -43,7 +43,6 @@ from backend.models.media import (
 )
 from backend.models.services.health import HealthResult
 from backend.models.services.plex import PlexMovie, PlexSeries
-from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
@@ -252,56 +251,63 @@ class PlexService:
     async def sync_leaving_soon_collections(
         self,
         *,
-        base_title: str,
+        movie_title: str | None,
+        series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
     ) -> None:
-        """Sync managed Leaving Soon collections for movies and series."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._sync_leaving_soon_collection_for_type(
-            section_type="movie",
-            collection_title=f"{collection_base} [Movies]",
-            expected_item_ids=movie_item_ids,
-        )
-        await self._sync_leaving_soon_collection_for_type(
-            section_type="show",
-            collection_title=f"{collection_base} [Series]",
-            expected_item_ids=series_item_ids,
-        )
+        """Sync managed Leaving Soon collections for movies and series.
 
-    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
-        """Delete managed Leaving Soon collections for a specific base title."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._sync_leaving_soon_collection_for_type(
-            section_type="movie",
-            collection_title=f"{collection_base} [Movies]",
-            expected_item_ids=set(),
-        )
-        await self._sync_leaving_soon_collection_for_type(
-            section_type="show",
-            collection_title=f"{collection_base} [Series]",
-            expected_item_ids=set(),
+        Titles are supplied by the caller; a blank title skips that half.
+        """
+        if movie_title := str(movie_title or "").strip():
+            await self._sync_leaving_soon_collection_for_type(
+                section_type="movie",
+                collection_title=movie_title,
+                expected_item_ids=movie_item_ids,
+            )
+        if series_title := str(series_title or "").strip():
+            await self._sync_leaving_soon_collection_for_type(
+                section_type="show",
+                collection_title=series_title,
+                expected_item_ids=series_item_ids,
+            )
+
+    async def delete_leaving_soon_collections(
+        self,
+        *,
+        movie_title: str | None = None,
+        series_title: str | None = None,
+    ) -> None:
+        """Delete managed Leaving Soon collections by title."""
+        await self.sync_leaving_soon_collections(
+            movie_title=movie_title,
+            series_title=series_title,
+            movie_item_ids=set(),
+            series_item_ids=set(),
         )
 
     async def prune_leaving_soon_items(
         self,
         *,
-        base_title: str,
+        movie_title: str | None,
+        series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
     ) -> None:
         """Remove items from managed collections before destructive media actions."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._prune_leaving_soon_collection_for_type(
-            section_type="movie",
-            collection_title=f"{collection_base} [Movies]",
-            item_ids=movie_item_ids,
-        )
-        await self._prune_leaving_soon_collection_for_type(
-            section_type="show",
-            collection_title=f"{collection_base} [Series]",
-            item_ids=series_item_ids,
-        )
+        if movie_title := str(movie_title or "").strip():
+            await self._prune_leaving_soon_collection_for_type(
+                section_type="movie",
+                collection_title=movie_title,
+                item_ids=movie_item_ids,
+            )
+        if series_title := str(series_title or "").strip():
+            await self._prune_leaving_soon_collection_for_type(
+                section_type="show",
+                collection_title=series_title,
+                item_ids=series_item_ids,
+            )
 
     async def _prune_leaving_soon_collection_for_type(
         self,
