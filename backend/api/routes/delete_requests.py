@@ -650,6 +650,7 @@ async def create_delete_request(
             context={
                 "actor": user.username,
                 "media_title": media.title,
+                "media_year": media.year,
                 "media_type": request_data.media_type.value,
                 "reason": request_data.reason,
                 "request_id": delete_request.id,
@@ -899,7 +900,16 @@ async def approve_delete_request(
             message=f"Your delete request for {media.title} was approved and queued for execution",
             context={
                 "media_title": media.title,
+                "media_year": media.year,
                 "media_type": tracked_request.media_type.value,
+                "scope": request_scope_label(
+                    tracked_request.target_scope,
+                    tracked_request.season_number_snapshot,
+                    tracked_request.episode_number_snapshot,
+                    tracked_request.episode_name_snapshot,
+                ),
+                "request_id": tracked_request.id,
+                "request_type": "Deletion",
                 "reason": tracked_request.reason,
                 "admin_notes": tracked_request.admin_notes,
             },
@@ -961,7 +971,16 @@ async def deny_delete_request(
             message=f"Your delete request for {media.title} has been denied",
             context={
                 "media_title": media.title,
+                "media_year": media.year,
                 "media_type": request.media_type.value,
+                "scope": request_scope_label(
+                    request.target_scope,
+                    request.season_number_snapshot,
+                    request.episode_number_snapshot,
+                    request.episode_name_snapshot,
+                ),
+                "request_id": request.id,
+                "request_type": "Deletion",
                 "reason": request.reason,
                 "admin_notes": review_data.admin_notes,
             },

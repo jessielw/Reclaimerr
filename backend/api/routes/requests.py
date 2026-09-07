@@ -579,6 +579,7 @@ async def create_protection_request(
                 context={
                     "actor": user.username,
                     "media_title": media.title,
+                    "media_year": media.year,
                     "media_type": request_data.media_type.value,
                     "reason": request_data.reason,
                     "request_id": protection_request.id,
@@ -921,7 +922,16 @@ async def approve_request(
             message=f"Your request for {media.title} has been approved",
             context={
                 "media_title": media.title,
+                "media_year": media.year,
                 "media_type": request.media_type.value,
+                "scope": request_scope_label(
+                    request.target_scope,
+                    request.season_number_snapshot,
+                    request.episode_number_snapshot,
+                    request.episode_name_snapshot,
+                ),
+                "request_id": request.id,
+                "request_type": "Protection",
                 "reason": request.reason,
                 "admin_notes": review_data.admin_notes,
             },
@@ -1025,7 +1035,16 @@ async def deny_request(
             message=f"Your request for {media.title} has been denied",
             context={
                 "media_title": media.title,
+                "media_year": media.year,
                 "media_type": request.media_type.value,
+                "scope": request_scope_label(
+                    request.target_scope,
+                    request.season_number_snapshot,
+                    request.episode_number_snapshot,
+                    request.episode_name_snapshot,
+                ),
+                "request_id": request.id,
+                "request_type": "Protection",
                 "reason": request.reason,
                 "admin_notes": review_data.admin_notes,
             },

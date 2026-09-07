@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import apprise
@@ -44,6 +45,32 @@ __all__ = [
 ]
 
 _DEFAULT_BODY_FORMAT = apprise.NotifyFormat.MARKDOWN
+
+# Separates facts on a single line, e.g. "The Matrix (1999) · Season 2 · 8.4 GB".
+_SEPARATOR = " · "
+
+# Bodies stay under the tightest transport limit (Discord embeds cap at 4096)
+# so a long candidate list arrives as one message instead of several fragments.
+_MAX_BODY_CHARS = 3500
+_MAX_ERROR_CHARS = 1500
+_MAX_TITLE_SUBJECT_CHARS = 80
+_MAX_REASON_TOKENS = 3
+
+# Apprise maps the notify type onto each transport's own severity styling,
+# which is what colours a Discord embed or picks an ntfy/Gotify priority.
+_NOTIFY_TYPES: dict[NotificationType, apprise.NotifyType] = {
+    NotificationType.NEW_CLEANUP_CANDIDATES: apprise.NotifyType.INFO,
+    NotificationType.REQUEST_APPROVED: apprise.NotifyType.SUCCESS,
+    NotificationType.REQUEST_DECLINED: apprise.NotifyType.WARNING,
+    NotificationType.ADMIN_MESSAGE: apprise.NotifyType.WARNING,
+    NotificationType.TASK_FAILURE: apprise.NotifyType.FAILURE,
+    NotificationType.ADMIN_NEW_DELETE_REQUEST: apprise.NotifyType.INFO,
+    NotificationType.ADMIN_NEW_PROTECTION_REQUEST: apprise.NotifyType.INFO,
+    NotificationType.ADMIN_REQUEST_CANCELLED: apprise.NotifyType.WARNING,
+    NotificationType.ADMIN_DELETE_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
+    NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: apprise.NotifyType.SUCCESS,
+    NotificationType.DELETE_REQUEST_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
+}
 
 # Frontend uses hash routing, so deep links are "<application_url>/#<route>".
 # Admin notices render in the sidebar rather than on their own page, so the
@@ -106,8 +133,19 @@ def request_scope_label(
     return (target_scope or "media").replace("_", " ").title()
 
 
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    """Return the singular or plural noun for a count."""
+    return singular if count == 1 else (plural or f"{singular}s")
+
+
+def _humanize(value: Any) -> str:
+    """Turn an enum-ish value such as "movie_version" into "Movie version"."""
+    text = str(value or "").strip().replace("_", " ")
+    return text[:1].upper() + text[1:] if text else ""
+
+
 def _format_bytes(value: int | None) -> str:
-    """ "Format a byte value into a readable string."""
+    """Format a byte value into a readable string."""
     if not value or value <= 0:
         return "0 B"
     units = ("B", "KB", "MB", "GB", "TB")
@@ -119,35 +157,178 @@ def _format_bytes(value: int | None) -> str:
     return f"{size:.1f} {units[idx]}" if idx > 0 else f"{int(size)} {units[idx]}"
 
 
+def _code(value: str) -> str:
+    """Wrap a value in an inline code span.
+
+    File names carry underscores and asterisks that markdown would otherwise
+    swallow as emphasis, so anything verbatim goes inside a span.
+    """
+    text = value.replace("`", "'")
+    return f"`{text}`"
+
+
+def _code_block(value: str, *, max_chars: int = _MAX_ERROR_CHARS) -> list[str]:
+    """Render an error blob as a fenced block so markdown leaves it alone."""
+    text = value.strip().replace("```", "'''")
+    if len(text) > max_chars:
+        text = f"{text[:max_chars].rstrip()}\n[truncated]"
+    return ["```", text, "```"]
+
+
+def _field_lines(fields: Iterable[tuple[str, Any]]) -> list[str]:
+    """Render label/value pairs as a markdown list, skipping empty values.
+
+    Only the label is emphasized; values stay verbatim so titles and paths
+    containing markdown punctuation cannot break the rest of the body.
+    """
+    lines: list[str] = []
+    for label, value in fields:
+        text = str(value).strip() if value is not None else ""
+        if text:
+            lines.append(f"- **{label}:** {text}")
+    return lines
+
+
+def _media_label(title: Any, year: Any = None) -> str:
+    """Return "Title (Year)" when a year is known, otherwise just the title."""
+    text = str(title or "").strip()
+    if not text:
+        return ""
+    return f"{text} ({year})" if isinstance(year, int) else text
+
+
+def _request_label(request_id: Any, request_type: Any) -> str:
+    """Combine the request id and kind into a single readable field value."""
+    parts: list[str] = []
+    if request_id is not None and str(request_id).strip():
+        parts.append(f"#{request_id}")
+    kind = str(request_type or "").strip()
+    if kind:
+        parts.append(kind)
+    return _SEPARATOR.join(parts)
+
+
+def _body(lead: str, fields: list[str], error: Any = None) -> str:
+    """Assemble a lead sentence, a field list, and an optional error block."""
+    blocks: list[str] = []
+    if lead:
+        blocks.append(lead)
+    if fields:
+        blocks.append("\n".join(fields))
+    error_text = str(error).strip() if error is not None else ""
+    if error_text:
+        blocks.append("\n".join(["**Error**", *_code_block(error_text)]))
+    return "\n\n".join(blocks)
+
+
+def _truncate_body(body: str, *, max_chars: int = _MAX_BODY_CHARS) -> str:
+    """Trim an over-long body on a line boundary so transports do not split it."""
+    if len(body) <= max_chars:
+        return body
+    kept = body[:max_chars]
+    cut = kept.rfind("\n")
+    if cut > max_chars // 2:
+        kept = kept[:cut]
+    return f"{kept.rstrip()}\n\n[message truncated]"
+
+
+def _notify_type_for(notification_type: NotificationType) -> apprise.NotifyType:
+    """Return the Apprise severity, which drives colour on rich transports."""
+    return _NOTIFY_TYPES.get(notification_type, apprise.NotifyType.INFO)
+
+
+def _compose_title(
+    notification_type: NotificationType,
+    fallback_title: str,
+    context: dict[str, Any],
+) -> str:
+    """Append the notification's subject to the title.
+
+    Push transports show the title alone on a lock screen, so naming the media
+    or task there is what makes an alert readable without opening it.
+    """
+    title = fallback_title.strip() or "Reclaimerr"
+    if notification_type is NotificationType.NEW_CLEANUP_CANDIDATES:
+        return title
+    if notification_type is NotificationType.TASK_FAILURE:
+        subject = str(context.get("task_name") or "").strip()
+    else:
+        subject = str(context.get("media_title") or "").strip()
+    if not subject or subject.lower() in title.lower():
+        return title
+    if len(subject) > _MAX_TITLE_SUBJECT_CHARS:
+        subject = f"{subject[: _MAX_TITLE_SUBJECT_CHARS - 1].rstrip()}…"
+    return f"{title}: {subject}"
+
+
 def _format_cleanup_candidate_line(
     candidate: dict[str, Any], *, include_reason: bool = False
 ) -> str:
-    """ "Format a single cleanup candidate into a readable line for notifications."""
-    title = str(candidate.get("media_title") or "Unknown")
-    year = candidate.get("media_year")
+    """Format a single cleanup candidate as one scannable bullet."""
     media_type = str(candidate.get("media_type") or "").lower()
     season_number = candidate.get("season_number")
     episode_number = candidate.get("episode_number")
     version_file_name = str(candidate.get("version_file_name") or "").strip()
-    size_label = _format_bytes(int(candidate.get("estimated_space_bytes") or 0))
 
-    scope_parts: list[str] = []
+    parts = [
+        _media_label(
+            candidate.get("media_title") or "Unknown", candidate.get("media_year")
+        )
+    ]
     if media_type == "series" and isinstance(season_number, int):
         if isinstance(episode_number, int):
-            scope_parts.append(f"S{season_number:02d}E{episode_number:02d}")
+            parts.append(f"S{season_number:02d}E{episode_number:02d}")
         else:
-            scope_parts.append(f"Season {season_number}")
+            parts.append(f"Season {season_number}")
     elif version_file_name:
-        scope_parts.append(version_file_name)
+        parts.append(_code(version_file_name))
+    parts.append(_format_bytes(int(candidate.get("estimated_space_bytes") or 0)))
 
-    year_part = f" ({year})" if isinstance(year, int) else ""
-    scope_suffix = f" - {', '.join(scope_parts)}" if scope_parts else ""
-    line = f"- {title}{year_part}{scope_suffix} - {size_label}"
+    line = f"- {_SEPARATOR.join(parts)}"
     if include_reason:
         reasons = candidate.get("reason_tokens")
-        if isinstance(reasons, list) and reasons:
-            line += f" [{str(reasons[0])}]"
+        if isinstance(reasons, list):
+            tokens = [
+                str(reason).strip()
+                for reason in reasons[:_MAX_REASON_TOKENS]
+                if str(reason).strip()
+            ]
+            if tokens:
+                line += f" — {', '.join(tokens)}"
     return line
+
+
+def _cleanup_candidate_lines(
+    candidates: list[dict[str, Any]], *, include_reasons: bool
+) -> list[str]:
+    """Group the shown candidates by media type so the list reads in blocks."""
+    grouped: dict[str, list[dict[str, Any]]] = {"Movies": [], "Series": [], "Other": []}
+    for candidate in candidates:
+        media_type = str(candidate.get("media_type") or "").lower()
+        key = (
+            "Movies"
+            if media_type == "movie"
+            else "Series"
+            if media_type == "series"
+            else "Other"
+        )
+        grouped[key].append(candidate)
+
+    populated = [(label, items) for label, items in grouped.items() if items]
+    # a lone group needs no heading; the bullets already read as one list
+    show_headings = len(populated) > 1
+
+    lines: list[str] = []
+    for label, items in populated:
+        if show_headings:
+            if lines:
+                lines.append("")
+            lines.append(f"**{label}**")
+        lines.extend(
+            _format_cleanup_candidate_line(item, include_reason=include_reasons)
+            for item in items
+        )
+    return lines
 
 
 def _compose_notification(
@@ -167,6 +348,7 @@ def _compose_notification(
         fallback_message=fallback_message,
         context=context,
     )
+    message = _truncate_body(message)
     link = _notification_link(notification_type, application_url)
     if link:
         message = f"{message}\n\n{link}"
@@ -181,82 +363,53 @@ def _compose_body(
     fallback_message: str,
     context: dict[str, Any] | None = None,
 ) -> tuple[str, str, apprise.NotifyFormat]:
-    """ "Compose a notification title and message based on the notification type, user preferences, and context."""
+    """Compose the title and markdown body for a notification.
+
+    Every body follows the same shape: a lead sentence, an optional list of
+    labelled fields, then any error output inside a fenced block.
+    """
     preferences = normalize_notification_preferences(setting.preferences)
     context = context or {}
     pref = preferences.get(notification_type.value, {})
     detail = str(pref.get("detail") or "").lower()
+    title = _compose_title(notification_type, fallback_title, context)
+    lead = fallback_message.strip()
 
     if notification_type is NotificationType.NEW_CLEANUP_CANDIDATES:
         count = int(context.get("created_count") or 0)
         total_bytes = int(context.get("total_reclaimable_bytes") or 0)
         candidates = context.get("candidates")
         candidates = candidates if isinstance(candidates, list) else []
+        noun = _plural(count, "cleanup candidate")
         if detail == "count_only":
-            return (
-                fallback_title,
-                f"{count} new cleanup candidate(s).",
-                _DEFAULT_BODY_FORMAT,
-            )
+            return title, f"**{count}** new {noun}.", _DEFAULT_BODY_FORMAT
 
         max_items = int(pref.get("max_items") or 5)
         max_items = min(max(max_items, 1), 20)
-        include_reasons = detail == "top_n_with_reasons"
-        top = candidates[:max_items]
-        extra = max(0, len(candidates) - len(top))
+        shown = [item for item in candidates[:max_items] if isinstance(item, dict)]
+        extra = max(0, len(candidates) - len(shown))
         lines = [
-            f"{count} new cleanup candidate(s) identified.",
-            f"Estimated reclaimable size: {_format_bytes(total_bytes)}",
+            f"**{count}** new {noun}{_SEPARATOR}"
+            f"**{_format_bytes(total_bytes)}** reclaimable"
         ]
-        if top:
+        if shown:
             lines.append("")
-            lines.append("Top candidates:")
             lines.extend(
-                _format_cleanup_candidate_line(item, include_reason=include_reasons)
-                for item in top
-                if isinstance(item, dict)
+                _cleanup_candidate_lines(
+                    shown, include_reasons=detail == "top_n_with_reasons"
+                )
             )
             if extra > 0:
-                lines.append(f"- +{extra} more")
-        return fallback_title, "\n".join(lines), _DEFAULT_BODY_FORMAT
+                lines.append("")
+                lines.append(f"_and {extra} more_")
+        return title, "\n".join(lines), _DEFAULT_BODY_FORMAT
+
+    if detail == "compact":
+        return title, lead, _DEFAULT_BODY_FORMAT
 
     if notification_type in {
         NotificationType.REQUEST_APPROVED,
         NotificationType.REQUEST_DECLINED,
-    }:
-        if detail == "compact":
-            return fallback_title, fallback_message, _DEFAULT_BODY_FORMAT
-        media_title = str(context.get("media_title") or "").strip()
-        media_type = str(context.get("media_type") or "").strip()
-        reason = str(context.get("reason") or "").strip()
-        admin_notes = str(context.get("admin_notes") or "").strip()
-        lines = [fallback_message]
-        if media_title:
-            lines.append(f"Media: {media_title}")
-        if media_type:
-            lines.append(f"Type: {media_type}")
-        if reason:
-            lines.append(f"Reason: {reason}")
-        if admin_notes:
-            lines.append(f"Admin notes: {admin_notes}")
-        return fallback_title, "\n".join(lines), _DEFAULT_BODY_FORMAT
-
-    if notification_type is NotificationType.ADMIN_MESSAGE:
-        if detail == "compact":
-            return fallback_title, fallback_message, _DEFAULT_BODY_FORMAT
-        lines = [fallback_message]
-        actor = str(context.get("actor") or "").strip()
-        media_title = str(context.get("media_title") or "").strip()
-        reason = str(context.get("reason") or "").strip()
-        if actor:
-            lines.append(f"By: {actor}")
-        if media_title:
-            lines.append(f"Media: {media_title}")
-        if reason:
-            lines.append(f"Reason: {reason}")
-        return fallback_title, "\n".join(lines), _DEFAULT_BODY_FORMAT
-
-    if notification_type in {
         NotificationType.ADMIN_NEW_DELETE_REQUEST,
         NotificationType.ADMIN_NEW_PROTECTION_REQUEST,
         NotificationType.ADMIN_REQUEST_CANCELLED,
@@ -264,33 +417,47 @@ def _compose_body(
         NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED,
     }:
-        if detail == "compact":
-            return fallback_title, fallback_message, _DEFAULT_BODY_FORMAT
-        fields = (
-            ("Request ID", context.get("request_id")),
-            ("Request type", context.get("request_type")),
-            ("By", context.get("actor")),
-            ("Media", context.get("media_title")),
-            ("Type", context.get("media_type")),
-            ("Scope", context.get("scope")),
-            ("Reason", context.get("reason")),
-            ("Admin notes", context.get("admin_notes")),
-            ("Error", context.get("error")),
+        fields = _field_lines(
+            (
+                (
+                    "Media",
+                    _media_label(context.get("media_title"), context.get("media_year")),
+                ),
+                ("Type", _humanize(context.get("media_type"))),
+                ("Scope", context.get("scope")),
+                ("Requested by", context.get("actor")),
+                (
+                    "Request",
+                    _request_label(
+                        context.get("request_id"), context.get("request_type")
+                    ),
+                ),
+                ("Reason", context.get("reason")),
+                ("Admin notes", context.get("admin_notes")),
+            )
         )
-        lines = [fallback_message]
-        lines.extend(f"{label}: {value}" for label, value in fields if value)
-        return fallback_title, "\n".join(lines), _DEFAULT_BODY_FORMAT
+        return title, _body(lead, fields, context.get("error")), _DEFAULT_BODY_FORMAT
+
+    if notification_type is NotificationType.ADMIN_MESSAGE:
+        fields = _field_lines(
+            (
+                ("By", context.get("actor")),
+                (
+                    "Media",
+                    _media_label(context.get("media_title"), context.get("media_year")),
+                ),
+                ("Reason", context.get("reason")),
+            )
+        )
+        return title, _body(lead, fields, context.get("error")), _DEFAULT_BODY_FORMAT
 
     if notification_type is NotificationType.TASK_FAILURE:
-        if detail == "compact":
-            return fallback_title, fallback_message, _DEFAULT_BODY_FORMAT
-        task_name = str(context.get("task_name") or "").strip()
+        # the title already names the task, so only the error adds anything
         error = str(context.get("error_message") or "").strip()
-        if task_name and error:
-            msg = f"Task: {task_name}\nError:\n{error[:1500]}"
-            return fallback_title, msg, _DEFAULT_BODY_FORMAT
+        if error:
+            return title, _body(lead, [], error), _DEFAULT_BODY_FORMAT
 
-    return fallback_title, fallback_message, _DEFAULT_BODY_FORMAT
+    return title, lead, _DEFAULT_BODY_FORMAT
 
 
 async def build_cleanup_notification_context(
@@ -469,6 +636,7 @@ async def send_notification(
     title: str,
     message: str,
     body_format: apprise.NotifyFormat = _DEFAULT_BODY_FORMAT,
+    notify_type: apprise.NotifyType = apprise.NotifyType.INFO,
 ) -> bool:
     """Send a single notification to a specific URL with automatic retry logic."""
     ap = apprise.Apprise()
@@ -479,6 +647,7 @@ async def send_notification(
             body=message,
             title=title,
             body_format=body_format,
+            notify_type=notify_type,
         )
         if not result:
             LOG.warning(f"Apprise returned False for notification to {url}")
@@ -533,6 +702,7 @@ async def notify_user(
                 title=composed_title,
                 message=composed_message,
                 body_format=composed_format or body_format,
+                notify_type=_notify_type_for(notification_type),
             )
 
             if success:
@@ -688,6 +858,7 @@ async def notify_all_users(
                 title=composed_title,
                 message=composed_message,
                 body_format=composed_format or body_format,
+                notify_type=_notify_type_for(notification_type),
             )
 
             if success:
@@ -743,9 +914,18 @@ async def test_notification_url(
     try:
         return await send_notification(
             url=url,
-            title="This is a test notification from Reclaimerr",
-            message="If you received this, your notification settings are working correctly!",
+            title="Reclaimerr test notification",
+            message=_body(
+                "Your notification settings are working correctly.",
+                _field_lines(
+                    (
+                        ("Source", "Reclaimerr"),
+                        ("Delivered", datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")),
+                    )
+                ),
+            ),
             body_format=_DEFAULT_BODY_FORMAT,
+            notify_type=apprise.NotifyType.SUCCESS,
         ), None
     except RetryError:
         LOG.error(f"Failed to send notification after multiple attempts to {url}")

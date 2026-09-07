@@ -48,9 +48,9 @@ def test_compose_appends_link_to_body() -> None:
         application_url=APP_URL,
     )
 
-    assert title == "Request approved"
+    assert title == "Request approved: Example Movie"
     assert message.startswith("Your request was approved")
-    assert "Media: Example Movie" in message
+    assert "- **Media:** Example Movie" in message
     assert message.endswith(f"\n\n[View your requests]({APP_URL}/#/requests)")
 
 
