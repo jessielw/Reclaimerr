@@ -25,6 +25,8 @@ Reclaimerr manages exactly two collections per media server, one for movies and 
 
 Renaming a collection in Reclaimerr moves it: on the next scan the collection under the old name is deleted and rebuilt under the new one, so any artwork you set on it is lost. Renaming a collection **on the media server** instead is not supported - Reclaimerr finds its collections by name and will simply create a new one.
 
+**Collection Sort** decides the order of items inside the collection. `Server default` leaves whatever ordering the collection already has alone, `Alphabetical` sorts by title, and `Leaving soonest first` puts whatever disappears next at the front. This is **Plex only**: Plex stores a collection's order on the server, while Jellyfin and Emby have no equivalent - a collection there is ordered by whatever each client decides - so the setting is ignored on those servers.
+
 ## How do I troubleshoot task failures?
 
 Check the task history first, then confirm the connected media server is reachable and the main server is configured. If you are behind a reverse proxy, verify the forwarded headers and trusted hosts.

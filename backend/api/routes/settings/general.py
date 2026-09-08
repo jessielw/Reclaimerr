@@ -195,6 +195,7 @@ async def update_general_settings(
     settings.leaving_soon_enabled = request.leaving_soon_enabled
     settings.leaving_soon_movie_collection_title = current_leaving_soon_movie_title
     settings.leaving_soon_series_collection_title = current_leaving_soon_series_title
+    settings.leaving_soon_collection_sort = request.leaving_soon_collection_sort.value
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
         await _cleanup_leaving_soon_collections_on_disable(db, settings)
 

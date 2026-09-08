@@ -26,6 +26,7 @@ from backend.enums import (
     BackgroundJobPriority,
     BackgroundJobStatus,
     BackgroundJobType,
+    LeavingSoonCollectionSort,
     MediaType,
     ProtectionRequestStatus,
     ScheduleType,
@@ -401,6 +402,10 @@ class GeneralSettings(Base):
     )
     leaving_soon_series_collection_title: Mapped[str] = mapped_column(
         String(255), default=DEFAULT_LEAVING_SOON_SERIES_TITLE
+    )
+    # how items are ordered inside the managed collections; Plex only.
+    leaving_soon_collection_sort: Mapped[str] = mapped_column(
+        String(32), default=LeavingSoonCollectionSort.DEFAULT.value
     )
     # {service_config_id: {"movies": <title>, "series": <title>}}
     leaving_soon_last_success_titles: Mapped[dict[str, dict[str, str]]] = mapped_column(

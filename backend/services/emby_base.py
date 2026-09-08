@@ -28,7 +28,7 @@ from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.enums import MediaType, Service
+from backend.enums import LeavingSoonCollectionSort, MediaType, Service
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -215,11 +215,22 @@ class EmbyServiceBase:
         series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
     ) -> None:
         """Sync managed Leaving Soon collections for movies and series.
 
         Titles are supplied by the caller; a blank title skips that half.
+
+        `collection_sort` and `item_deadlines` are accepted and ignored. A
+        BoxSet only exposes DisplayOrder (PremiereDate or SortName) and has no
+        item-move endpoint, so an explicit order cannot be expressed; the only
+        way to force one would be rewriting each item's ForcedSortName, which
+        would reorder the user's whole library, not just this collection.
         """
+        del collection_sort, item_deadlines
         if movie_title := str(movie_title or "").strip():
             await self._sync_leaving_soon_collection(
                 collection_title=movie_title,
@@ -254,8 +265,16 @@ class EmbyServiceBase:
         series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
     ) -> None:
-        """Remove items from managed collections before destructive media actions."""
+        """Remove items from managed collections before destructive media actions.
+
+        `collection_sort` is accepted and ignored; see
+        `sync_leaving_soon_collections`.
+        """
+        del collection_sort
         if movie_title := str(movie_title or "").strip():
             await self._prune_leaving_soon_collection(
                 collection_title=movie_title,

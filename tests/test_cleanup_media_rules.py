@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +50,7 @@ from backend.database.models import (
     ServiceConfig,
     User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import LeavingSoonCollectionSort, MediaType, Service
 from backend.models.cleanup import RulePreviewMatchMetadata
 from backend.services.seerr_cache import SeerrRequestSnapshot, SeerrSnapshotState
 from backend.tasks import cleanup as cleanup_tasks
@@ -361,6 +362,10 @@ class _LeavingSoonSyncServiceFake:
         series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
     ) -> None:
         if self._fail_sync:
             raise RuntimeError("sync failure")
@@ -370,6 +375,8 @@ class _LeavingSoonSyncServiceFake:
                 "series_title": series_title,
                 "movie_item_ids": set(movie_item_ids),
                 "series_item_ids": set(series_item_ids),
+                "collection_sort": collection_sort,
+                "item_deadlines": dict(item_deadlines or {}),
             }
         )
 

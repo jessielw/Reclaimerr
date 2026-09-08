@@ -17,6 +17,7 @@
   import {
     PageAccess,
     type GeneralSettings,
+    type LeavingSoonCollectionSort,
     type PathMapping,
     type RequesterWatchUserMapping,
   } from "$lib/types/shared";
@@ -31,6 +32,11 @@
   // sync with backend/utils/helpers.py.
   const DEFAULT_LEAVING_SOON_MOVIE_TITLE = "Leaving Soon [Movies]";
   const DEFAULT_LEAVING_SOON_SERIES_TITLE = "Leaving Soon [Series]";
+  const LEAVING_SOON_SORT_LABELS: Record<LeavingSoonCollectionSort, string> = {
+    default: "Server default (don't change it)",
+    alpha: "Alphabetical",
+    leaving_soonest: "Leaving soonest first",
+  };
 
   // props
   interface Props {
@@ -81,6 +87,7 @@
   let leavingSoonSeriesCollectionTitle = $state(
     DEFAULT_LEAVING_SOON_SERIES_TITLE,
   );
+  let leavingSoonCollectionSort = $state<LeavingSoonCollectionSort>("default");
   const leavingSoonMovieTitle = $derived(
     leavingSoonMovieCollectionTitle.trim() || DEFAULT_LEAVING_SOON_MOVIE_TITLE,
   );
@@ -197,6 +204,7 @@
         leaving_soon_enabled: leavingSoonEnabled,
         leaving_soon_movie_collection_title: leavingSoonMovieTitle,
         leaving_soon_series_collection_title: leavingSoonSeriesTitle,
+        leaving_soon_collection_sort: leavingSoonCollectionSort,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -367,6 +375,8 @@
         leavingSoonSeriesCollectionTitle =
           settings.leaving_soon_series_collection_title ??
           DEFAULT_LEAVING_SOON_SERIES_TITLE;
+        leavingSoonCollectionSort =
+          settings.leaving_soon_collection_sort ?? "default";
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -699,6 +709,40 @@
             The movie and series collections must have different names.
           </p>
         {/if}
+        <div class="mt-4 max-w-md">
+          <Label for="leavingSoonCollectionSort" class="mb-2">
+            <span class="text-sm text-foreground">Collection Sort (Plex)</span>
+          </Label>
+          <Select.Root
+            type="single"
+            bind:value={leavingSoonCollectionSort}
+            name="leavingSoonCollectionSort"
+          >
+            <Select.Trigger
+              id="leavingSoonCollectionSort"
+              class="w-full cursor-pointer text-foreground"
+            >
+              {LEAVING_SOON_SORT_LABELS[leavingSoonCollectionSort]}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="default" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.default}
+              </Select.Item>
+              <Select.Item value="alpha" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.alpha}
+              </Select.Item>
+              <Select.Item value="leaving_soonest" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.leaving_soonest}
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+          <p class="text-xs text-muted-foreground mt-2">
+            <strong>Leaving soonest first</strong> orders the collection by each
+            item's deletion deadline, so whatever disappears next sits at the
+            front.
+            <strong>Server default</strong> leaves the collection's own ordering untouched.
+          </p>
+        </div>
         <Notice class="mt-2" type="info" title="Note">
           Plex stores collections <strong>per library</strong>, while Jellyfin
           and Emby use
@@ -715,6 +759,11 @@
             >Do not rename or modify these collections on the media server -
             Reclaimerr depends on their names to manage them.</strong
           >
+          <br />
+          <br />
+          Collection sort applies to <strong>Plex only</strong>. Jellyfin and
+          Emby have no server-side ordering for a collection - each client
+          decides how to sort it - so the setting is ignored there.
         </Notice>
       {/if}
     </div>

@@ -8,7 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import MediaType, NotificationType, PageAccess, Service
+from backend.enums import (
+    LeavingSoonCollectionSort,
+    MediaType,
+    NotificationType,
+    PageAccess,
+    Service,
+)
 from backend.user_types import (
     DEFAULT_NEW_USER_ALLOWED_PAGES,
     MEDIA_SERVERS,
@@ -18,6 +24,7 @@ from backend.utils.helpers import (
     DEFAULT_LEAVING_SOON_MOVIE_TITLE,
     DEFAULT_LEAVING_SOON_SERIES_TITLE,
     MAX_LEAVING_SOON_TITLE_LENGTH,
+    normalize_leaving_soon_collection_sort,
     normalize_leaving_soon_movie_title,
     normalize_leaving_soon_series_title,
 )
@@ -325,6 +332,9 @@ class GeneralSettingsResponse(BaseModel):
         default=DEFAULT_LEAVING_SOON_SERIES_TITLE,
         max_length=MAX_LEAVING_SOON_TITLE_LENGTH,
     )
+    leaving_soon_collection_sort: LeavingSoonCollectionSort = (
+        LeavingSoonCollectionSort.DEFAULT
+    )
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -397,6 +407,20 @@ class GeneralSettingsResponse(BaseModel):
                 "Leaving Soon movie and series collection titles must be different",
             )
         return self
+
+    @field_validator("leaving_soon_collection_sort", mode="before")
+    @classmethod
+    def coerce_leaving_soon_collection_sort(
+        cls, value: object
+    ) -> LeavingSoonCollectionSort:
+        """Coerce an unknown or blank collection sort back to the default.
+
+        Runs before enum parsing so a value this build does not recognize -
+        a row written by a newer version, or hand-edited - degrades to leaving
+        the collection ordering untouched instead of failing the whole settings
+        read with a validation error.
+        """
+        return normalize_leaving_soon_collection_sort(value)
 
     @model_validator(mode="after")
     def normalize_requester_watch_user_mappings(self) -> GeneralSettingsResponse:

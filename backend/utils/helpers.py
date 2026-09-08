@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from backend.enums import LeavingSoonCollectionSort
 
 __all__ = [
     "DEFAULT_LEAVING_SOON_BASE_TITLE",
@@ -10,9 +13,11 @@ __all__ = [
     "MAX_LEAVING_SOON_TITLE_LENGTH",
     "LeavingSoonTitles",
     "leaving_soon_titles_from_base_title",
+    "normalize_leaving_soon_collection_sort",
     "normalize_leaving_soon_movie_title",
     "normalize_leaving_soon_series_title",
     "normalize_leaving_soon_titles",
+    "order_leaving_soon_item_ids",
 ]
 
 DEFAULT_LEAVING_SOON_BASE_TITLE = "Leaving Soon"
@@ -48,6 +53,19 @@ def normalize_leaving_soon_series_title(value: object) -> str:
     return _normalize_title(value, DEFAULT_LEAVING_SOON_SERIES_TITLE)
 
 
+def normalize_leaving_soon_collection_sort(value: object) -> LeavingSoonCollectionSort:
+    """Normalize a persisted collection sort, falling back to the default.
+
+    Blank, unknown, and legacy values all resolve to DEFAULT so an install that
+    predates the setting - or one whose column holds a value written by a newer
+    build - keeps the untouched-collection behavior instead of erroring.
+    """
+    try:
+        return LeavingSoonCollectionSort(str(value or "").strip().lower())
+    except ValueError:
+        return LeavingSoonCollectionSort.DEFAULT
+
+
 def leaving_soon_titles_from_base_title(value: object) -> LeavingSoonTitles:
     """Expand a legacy single base title into the movie/series pair.
 
@@ -72,3 +90,29 @@ def normalize_leaving_soon_titles(value: object) -> LeavingSoonTitles:
             series=normalize_leaving_soon_series_title(value.get("series")),
         )
     return leaving_soon_titles_from_base_title(value)
+
+
+def order_leaving_soon_item_ids(
+    item_ids: Iterable[str],
+    *,
+    collection_sort: LeavingSoonCollectionSort,
+    item_deadlines: Mapping[str, datetime] | None = None,
+) -> list[str]:
+    """Order server item IDs for the configured collection sort.
+
+    Only `leaving_soonest` needs an explicit order - alphabetical is computed
+    by the media server itself, and the default leaves the server alone - so
+    every other mode falls back to the lexicographic order the collection sync
+    has always used. An item with no known deadline sorts last, and the ID
+    breaks ties so repeated runs produce the same order.
+    """
+    normalized = sorted(
+        {stripped for item_id in item_ids if (stripped := str(item_id).strip())}
+    )
+    if collection_sort is not LeavingSoonCollectionSort.LEAVING_SOONEST:
+        return normalized
+    deadlines = item_deadlines or {}
+    latest = datetime.max.replace(tzinfo=UTC)
+    return sorted(
+        normalized, key=lambda item_id: (deadlines.get(item_id, latest), item_id)
+    )

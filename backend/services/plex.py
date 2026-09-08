@@ -30,7 +30,7 @@ from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.enums import MediaType, Service
+from backend.enums import LeavingSoonCollectionSort, MediaType, Service
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -43,6 +43,7 @@ from backend.models.media import (
 )
 from backend.models.services.health import HealthResult
 from backend.models.services.plex import PlexMovie, PlexSeries
+from backend.utils.helpers import order_leaving_soon_item_ids
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
 _HistEntry = tuple[int, datetime | None, int]
@@ -54,6 +55,12 @@ PLEX_OWNER_ACCOUNT_ID = "1"
 _METADATA_BATCH_SIZE = 50
 _EPISODE_METADATA_BATCH_SIZE = 100
 _SECTION_METADATA_PAGE_SIZE = 1000
+# Plex's collection order advanced setting; DEFAULT is absent on purpose so
+# it never touches whatever the user already picked for the collection.
+_PLEX_COLLECTION_SORT_PREFS = {
+    LeavingSoonCollectionSort.ALPHA: "1",
+    LeavingSoonCollectionSort.LEAVING_SOONEST: "2",
+}
 _ANIME_LIST_URL = (
     "https://raw.githubusercontent.com/Anime-Lists/anime-lists/"
     "master/anime-list-full.xml"
@@ -255,22 +262,32 @@ class PlexService:
         series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
     ) -> None:
         """Sync managed Leaving Soon collections for movies and series.
 
         Titles are supplied by the caller; a blank title skips that half.
+        `item_deadlines` maps a rating key to its auto-delete deadline and is
+        only read for the `leaving_soonest` sort.
         """
         if movie_title := str(movie_title or "").strip():
             await self._sync_leaving_soon_collection_for_type(
                 section_type="movie",
                 collection_title=movie_title,
                 expected_item_ids=movie_item_ids,
+                collection_sort=collection_sort,
+                item_deadlines=item_deadlines,
             )
         if series_title := str(series_title or "").strip():
             await self._sync_leaving_soon_collection_for_type(
                 section_type="show",
                 collection_title=series_title,
                 expected_item_ids=series_item_ids,
+                collection_sort=collection_sort,
+                item_deadlines=item_deadlines,
             )
 
     async def delete_leaving_soon_collections(
@@ -294,6 +311,9 @@ class PlexService:
         series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
     ) -> None:
         """Remove items from managed collections before destructive media actions."""
         if movie_title := str(movie_title or "").strip():
@@ -301,12 +321,14 @@ class PlexService:
                 section_type="movie",
                 collection_title=movie_title,
                 item_ids=movie_item_ids,
+                collection_sort=collection_sort,
             )
         if series_title := str(series_title or "").strip():
             await self._prune_leaving_soon_collection_for_type(
                 section_type="show",
                 collection_title=series_title,
                 item_ids=series_item_ids,
+                collection_sort=collection_sort,
             )
 
     async def _prune_leaving_soon_collection_for_type(
@@ -315,6 +337,9 @@ class PlexService:
         section_type: str,
         collection_title: str,
         item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
     ) -> None:
         normalized_item_ids = {
             str(item_id).strip() for item_id in item_ids if str(item_id).strip()
@@ -329,20 +354,36 @@ class PlexService:
                 collection_title=collection_title,
             )
             for collection_id in collection_ids:
-                current_item_ids = await self._get_collection_child_ids(collection_id)
-                if not current_item_ids.intersection(normalized_item_ids):
+                current_item_ids = await self._get_collection_child_ids_ordered(
+                    collection_id
+                )
+                if not set(current_item_ids).intersection(normalized_item_ids):
                     continue
-                remaining_item_ids = current_item_ids - normalized_item_ids
+                # keep survivors in the order Plex already shows them, so a
+                # prune does not scramble the collection between the media
+                # action and the reconcile that follows it
+                remaining_item_ids = [
+                    item_id
+                    for item_id in current_item_ids
+                    if item_id not in normalized_item_ids
+                ]
                 await self._delete_collection(
                     section_id=section_id,
                     collection_id=collection_id,
                 )
                 if remaining_item_ids:
-                    await self._create_collection(
+                    new_collection_id = await self._create_collection(
                         section_id=section_id,
                         section_type=section_type,
                         collection_title=collection_title,
                         item_ids=remaining_item_ids,
+                    )
+                    await self._apply_collection_sort(
+                        collection_id=new_collection_id,
+                        section_id=section_id,
+                        collection_title=collection_title,
+                        collection_sort=collection_sort,
+                        ordered_item_ids=remaining_item_ids,
                     )
 
     async def _sync_leaving_soon_collection_for_type(
@@ -351,6 +392,10 @@ class PlexService:
         section_type: str,
         collection_title: str,
         expected_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
     ) -> None:
         section_ids = await self._get_section_ids_by_type(section_type)
         if not section_ids:
@@ -382,11 +427,23 @@ class PlexService:
             if not section_expected_ids:
                 continue
 
-            await self._create_collection(
+            ordered_item_ids = order_leaving_soon_item_ids(
+                section_expected_ids,
+                collection_sort=collection_sort,
+                item_deadlines=item_deadlines,
+            )
+            new_collection_id = await self._create_collection(
                 section_id=section_id,
                 section_type=section_type,
                 collection_title=collection_title,
-                item_ids=section_expected_ids,
+                item_ids=ordered_item_ids,
+            )
+            await self._apply_collection_sort(
+                collection_id=new_collection_id,
+                section_id=section_id,
+                collection_title=collection_title,
+                collection_sort=collection_sort,
+                ordered_item_ids=ordered_item_ids,
             )
 
     async def _get_section_ids_by_type(self, section_type: str) -> list[str]:
@@ -418,7 +475,8 @@ class PlexService:
                 collection_ids.append(collection_id)
         return collection_ids
 
-    async def _get_collection_child_ids(self, collection_id: str) -> set[str]:
+    async def _get_collection_child_ids_ordered(self, collection_id: str) -> list[str]:
+        """Return a collection's rating keys in the order Plex serves them."""
         try:
             data, _ = await self._make_request(
                 f"library/metadata/{collection_id}/children",
@@ -426,15 +484,20 @@ class PlexService:
             )
         except Exception:
             LOG.debug(f"Failed to fetch Plex collection children for {collection_id}")
-            return set()
+            return []
         if not isinstance(data, dict):
-            return set()
-        item_ids: set[str] = set()
+            return []
+        item_ids: list[str] = []
+        seen: set[str] = set()
         for item in self._extract_metadata_items(data):
             item_id = str(item.get("ratingKey", "")).strip()
-            if item_id:
-                item_ids.add(item_id)
+            if item_id and item_id not in seen:
+                seen.add(item_id)
+                item_ids.append(item_id)
         return item_ids
+
+    async def _get_collection_child_ids(self, collection_id: str) -> set[str]:
+        return set(await self._get_collection_child_ids_ordered(collection_id))
 
     async def _get_collection_names_by_item_id(
         self, section_id: str
@@ -465,10 +528,15 @@ class PlexService:
         section_id: str,
         section_type: str,
         collection_title: str,
-        item_ids: set[str],
-    ) -> None:
+        item_ids: Sequence[str],
+    ) -> str | None:
+        """Create a collection from an ordered list of rating keys.
+
+        Returns the new collection's rating key so the caller can apply a sort
+        preference to it, or None when Plex answered without usable metadata.
+        """
         if not item_ids:
-            return
+            return None
         uri = await self._build_item_uri(item_ids)
         collection_type = 1 if section_type == "movie" else 2
         response = await self.session.post(
@@ -483,6 +551,112 @@ class PlexService:
             timeout=60,
         )
         response.raise_for_status()
+        try:
+            for item in self._extract_metadata_items(response.json()):
+                if rating_key := str(item.get("ratingKey", "")).strip():
+                    return rating_key
+        except Exception:
+            LOG.debug(
+                f"Plex returned no usable metadata for new collection "
+                f"{collection_title!r}"
+            )
+        return None
+
+    async def _apply_collection_sort(
+        self,
+        *,
+        collection_id: str | None,
+        section_id: str,
+        collection_title: str,
+        collection_sort: LeavingSoonCollectionSort,
+        ordered_item_ids: Sequence[str],
+    ) -> None:
+        """Push the configured ordering onto a freshly built collection.
+
+        Returns before doing any work on the default sort, so an install that
+        never opted in pays nothing - not even the lookup that recovers the new
+        collection's rating key when Plex answers the create without one.
+
+        Best-effort otherwise: a server that rejects the preference or a move
+        must not fail the sync, or the caller would stop recording the titles
+        it just synced and rename cleanup would stall.
+        """
+        pref_value = _PLEX_COLLECTION_SORT_PREFS.get(collection_sort)
+        if pref_value is None:
+            return
+        if collection_id is None:
+            collection_ids = await self._find_collection_ids_by_title(
+                section_id=section_id,
+                collection_title=collection_title,
+            )
+            if not collection_ids:
+                LOG.warning(
+                    "Could not resolve the new Plex collection "
+                    f"{collection_title!r}; leaving its sort order unset"
+                )
+                return
+            collection_id = collection_ids[0]
+        try:
+            response = await self.session.put(
+                f"{self.plex_url}/library/metadata/{collection_id}/prefs",
+                params={"collectionSort": pref_value},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except Exception as e:
+            LOG.warning(f"Failed setting Plex collection sort on {collection_id}: {e}")
+            return
+
+        if collection_sort is not LeavingSoonCollectionSort.LEAVING_SOONEST:
+            # alphabetical is computed by Plex itself; only a custom order
+            # needs the item positions pushed
+            return
+        await self._reorder_collection_items(
+            collection_id=collection_id,
+            ordered_item_ids=ordered_item_ids,
+        )
+
+    async def _reorder_collection_items(
+        self, *, collection_id: str, ordered_item_ids: Sequence[str]
+    ) -> None:
+        """Move each item into place, skipping the work when already correct.
+
+        Plex seeds a new collection from the order of the create URI, so the
+        read-back usually matches and no moves are issued at all. The move pass
+        is the fallback for servers that ignore that ordering.
+        """
+        if not ordered_item_ids:
+            return
+        current_order = await self._get_collection_child_ids_ordered(collection_id)
+        if list(current_order) == list(ordered_item_ids):
+            return
+
+        failed_item_ids: list[str] = []
+        previous_item_id: str | None = None
+        for item_id in ordered_item_ids:
+            # no `after` puts the item first; otherwise it lands just after the
+            # item already placed before it
+            params = {"after": previous_item_id} if previous_item_id else None
+            try:
+                response = await self.session.put(
+                    f"{self.plex_url}/library/collections/{collection_id}"
+                    f"/items/{item_id}/move",
+                    params=params,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                previous_item_id = item_id
+            except Exception:
+                # keep going so one rejected move does not leave the rest of
+                # the collection half sorted
+                failed_item_ids.append(item_id)
+
+        if failed_item_ids:
+            LOG.warning(
+                f"Reordered Plex collection {collection_id} with "
+                f"{len(failed_item_ids)} failed move(s): "
+                f"{', '.join(failed_item_ids)}"
+            )
 
     async def _delete_collection(self, *, section_id: str, collection_id: str) -> None:
         # Preferred endpoint: collection is a metadata item, delete by ratingKey.
@@ -519,7 +693,7 @@ class PlexService:
                 )
             ) from e
 
-    async def _build_item_uri(self, item_ids: set[str]) -> str:
+    async def _build_item_uri(self, item_ids: Sequence[str]) -> str:
         identity, _ = await self._make_request("identity")
         media_container = (
             identity.get("MediaContainer", {}) if isinstance(identity, dict) else {}
@@ -527,10 +701,16 @@ class PlexService:
         machine_id = str(media_container.get("machineIdentifier", "")).strip()
         if not machine_id:
             raise ValueError("Missing Plex machine identifier")
-        sorted_item_ids = sorted({str(item_id).strip() for item_id in item_ids})
+        # dedupe without reordering: the caller decides the order, and Plex
+        # seeds a new collection's custom order from the order given here
+        ordered_item_ids = list(
+            dict.fromkeys(
+                stripped for item_id in item_ids if (stripped := str(item_id).strip())
+            )
+        )
         return (
             f"server://{machine_id}/com.plexapp.plugins.library/library/metadata/"
-            + ",".join(sorted_item_ids)
+            + ",".join(ordered_item_ids)
         )
 
     async def _resolve_item_section_ids(self, item_ids: set[str]) -> dict[str, str]:

@@ -313,7 +313,12 @@ export interface GeneralSettings {
   leaving_soon_enabled: boolean;
   leaving_soon_movie_collection_title: string;
   leaving_soon_series_collection_title: string;
+  leaving_soon_collection_sort: LeavingSoonCollectionSort;
 }
+
+// Plex only - Emby and Jellyfin expose no server-side collection ordering.
+// Keep in sync with backend/enums/media.py.
+export type LeavingSoonCollectionSort = "default" | "alpha" | "leaving_soonest";
 
 export type ApiTokenScope =
   | "candidates:read"
