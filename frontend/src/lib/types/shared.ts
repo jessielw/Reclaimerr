@@ -311,8 +311,18 @@ export interface GeneralSettings {
   requester_watch_ignore_request_date: boolean;
   default_allowed_pages: PageAccess[];
   leaving_soon_enabled: boolean;
-  leaving_soon_collection_title: string;
+  leaving_soon_movie_collection_title: string;
+  leaving_soon_series_collection_title: string;
+  leaving_soon_collection_sort: LeavingSoonCollectionSort;
+  // filenames served from /static/collection-posters; managed by the poster
+  // upload and delete endpoints, never sent back on the settings PUT.
+  leaving_soon_movie_poster_path: string | null;
+  leaving_soon_series_poster_path: string | null;
 }
+
+// Plex only - Emby and Jellyfin expose no server-side collection ordering.
+// Keep in sync with backend/enums/media.py.
+export type LeavingSoonCollectionSort = "default" | "alpha" | "leaving_soonest";
 
 export type ApiTokenScope =
   | "candidates:read"

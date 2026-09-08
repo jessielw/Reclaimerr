@@ -3,13 +3,14 @@
   import type { Component } from "svelte";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
-  import { get_api, post_api, put_api } from "$lib/api";
+  import { delete_api, get_api, post_api, put_api } from "$lib/api";
   import { toast } from "svelte-sonner";
   import { Button } from "$lib/components/ui/button/index.js";
   import Save from "@lucide/svelte/icons/save";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import PowerOff from "@lucide/svelte/icons/power-off";
+  import ImageUp from "@lucide/svelte/icons/image-up";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { Checkbox } from "$lib/components/ui/checkbox/index.js";
@@ -17,6 +18,7 @@
   import {
     PageAccess,
     type GeneralSettings,
+    type LeavingSoonCollectionSort,
     type PathMapping,
     type RequesterWatchUserMapping,
   } from "$lib/types/shared";
@@ -26,6 +28,16 @@
     DEFAULT_NEW_USER_ALLOWED_PAGES,
     PAGE_ACCESS_OPTIONS,
   } from "$lib/page-access";
+
+  // Reclaimerr manages exactly these two collections per media server. Keep in
+  // sync with backend/utils/helpers.py.
+  const DEFAULT_LEAVING_SOON_MOVIE_TITLE = "Leaving Soon [Movies]";
+  const DEFAULT_LEAVING_SOON_SERIES_TITLE = "Leaving Soon [Series]";
+  const LEAVING_SOON_SORT_LABELS: Record<LeavingSoonCollectionSort, string> = {
+    default: "Server default (don't change it)",
+    alpha: "Alphabetical",
+    leaving_soonest: "Leaving soonest first",
+  };
 
   // props
   interface Props {
@@ -70,7 +82,40 @@
     ...DEFAULT_NEW_USER_ALLOWED_PAGES,
   ]);
   let leavingSoonEnabled = $state(false);
-  let leavingSoonCollectionTitle = $state("Leaving Soon");
+  let leavingSoonMovieCollectionTitle = $state(
+    DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+  );
+  let leavingSoonSeriesCollectionTitle = $state(
+    DEFAULT_LEAVING_SOON_SERIES_TITLE,
+  );
+  let leavingSoonCollectionSort = $state<LeavingSoonCollectionSort>("default");
+  // posters are saved the moment they are picked, unlike everything else on
+  // this page, so they are keyed by kind rather than folded into the payload
+  type PosterKind = "movies" | "series";
+  let leavingSoonPosters = $state<Record<PosterKind, string | null>>({
+    movies: null,
+    series: null,
+  });
+  let posterBusy = $state<Record<PosterKind, boolean>>({
+    movies: false,
+    series: false,
+  });
+  let posterInputs: Record<PosterKind, HTMLInputElement | null> = {
+    movies: null,
+    series: null,
+  };
+  const leavingSoonMovieTitle = $derived(
+    leavingSoonMovieCollectionTitle.trim() || DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+  );
+  const leavingSoonSeriesTitle = $derived(
+    leavingSoonSeriesCollectionTitle.trim() ||
+      DEFAULT_LEAVING_SOON_SERIES_TITLE,
+  );
+  const leavingSoonTitlesCollide = $derived(
+    leavingSoonEnabled &&
+      leavingSoonMovieTitle.toLowerCase() ===
+        leavingSoonSeriesTitle.toLowerCase(),
+  );
   let defaultArrDeleteBehavior = $state<
     "unmonitor" | "unmonitor_only" | "remove_if_empty"
   >("unmonitor");
@@ -106,6 +151,12 @@
 
   // save settings
   const saveSettings = async () => {
+    if (leavingSoonTitlesCollide) {
+      toast.error(
+        "Leaving Soon movie and series collections must have different names",
+      );
+      return;
+    }
     savingSettings = true;
     try {
       // validate input before saving
@@ -167,7 +218,9 @@
         requester_watch_ignore_request_date: requesterWatchIgnoreRequestDate,
         default_allowed_pages: defaultAllowedPages,
         leaving_soon_enabled: leavingSoonEnabled,
-        leaving_soon_collection_title: leavingSoonCollectionTitle,
+        leaving_soon_movie_collection_title: leavingSoonMovieTitle,
+        leaving_soon_series_collection_title: leavingSoonSeriesTitle,
+        leaving_soon_collection_sort: leavingSoonCollectionSort,
       });
       toast.success("General settings saved");
     } catch (error) {
@@ -271,6 +324,53 @@
   };
 
   // shutdown app (desktop mode ONLY and requires admin)
+  const POSTER_LABELS: Record<PosterKind, string> = {
+    movies: "Movie",
+    series: "Series",
+  };
+
+  const posterUrl = (kind: PosterKind): string | null => {
+    const filename = leavingSoonPosters[kind];
+    return filename ? `/static/collection-posters/${filename}` : null;
+  };
+
+  const uploadPoster = async (kind: PosterKind, event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // clear the input so re-picking the same file still fires a change event
+    input.value = "";
+    if (!file) return;
+
+    posterBusy = { ...posterBusy, [kind]: true };
+    try {
+      const formData = new FormData();
+      formData.append("poster", file);
+      const response: { message: string; path: string } = await post_api(
+        `/api/settings/general/leaving-soon-poster/${kind}`,
+        formData,
+      );
+      leavingSoonPosters = { ...leavingSoonPosters, [kind]: response.path };
+      toast.success(`${POSTER_LABELS[kind]} collection poster uploaded`);
+    } catch (error: any) {
+      toast.error(`Failed to upload poster: ${error.message}`);
+    } finally {
+      posterBusy = { ...posterBusy, [kind]: false };
+    }
+  };
+
+  const removePoster = async (kind: PosterKind) => {
+    posterBusy = { ...posterBusy, [kind]: true };
+    try {
+      await delete_api(`/api/settings/general/leaving-soon-poster/${kind}`);
+      leavingSoonPosters = { ...leavingSoonPosters, [kind]: null };
+      toast.success(`${POSTER_LABELS[kind]} collection poster removed`);
+    } catch (error: any) {
+      toast.error(`Failed to remove poster: ${error.message}`);
+    } finally {
+      posterBusy = { ...posterBusy, [kind]: false };
+    }
+  };
+
   const shutdownApp = async () => {
     if (shuttingDown || shutdownDone) return;
     shuttingDown = true;
@@ -332,8 +432,18 @@
             ? settings.default_allowed_pages
             : [...DEFAULT_NEW_USER_ALLOWED_PAGES];
         leavingSoonEnabled = settings.leaving_soon_enabled ?? false;
-        leavingSoonCollectionTitle =
-          settings.leaving_soon_collection_title ?? "Leaving Soon";
+        leavingSoonMovieCollectionTitle =
+          settings.leaving_soon_movie_collection_title ??
+          DEFAULT_LEAVING_SOON_MOVIE_TITLE;
+        leavingSoonSeriesCollectionTitle =
+          settings.leaving_soon_series_collection_title ??
+          DEFAULT_LEAVING_SOON_SERIES_TITLE;
+        leavingSoonCollectionSort =
+          settings.leaving_soon_collection_sort ?? "default";
+        leavingSoonPosters = {
+          movies: settings.leaving_soon_movie_poster_path ?? null,
+          series: settings.leaving_soon_series_poster_path ?? null,
+        };
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -624,42 +734,192 @@
       </p>
 
       {#if leavingSoonEnabled}
-        <div class="max-w-md">
-          <Label for="leavingSoonCollectionTitle" class="mb-2">
-            <span class="text-sm text-foreground">Collection Base Title</span>
-          </Label>
-          <Input
-            id="leavingSoonCollectionTitle"
-            name="leavingSoonCollectionTitle"
-            type="text"
-            class="input-hover-el text-foreground placeholder:text-muted-foreground"
-            placeholder="Leaving Soon"
-            bind:value={leavingSoonCollectionTitle}
-            maxlength={50}
-          />
+        <div class="grid gap-4 sm:grid-cols-2 max-w-2xl">
+          <div>
+            <Label for="leavingSoonMovieCollectionTitle" class="mb-2">
+              <span class="text-sm text-foreground">Movie Collection Name</span>
+            </Label>
+            <Input
+              id="leavingSoonMovieCollectionTitle"
+              name="leavingSoonMovieCollectionTitle"
+              type="text"
+              class="input-hover-el text-foreground placeholder:text-muted-foreground"
+              placeholder={DEFAULT_LEAVING_SOON_MOVIE_TITLE}
+              bind:value={leavingSoonMovieCollectionTitle}
+              maxlength={100}
+            />
+          </div>
+          <div>
+            <Label for="leavingSoonSeriesCollectionTitle" class="mb-2">
+              <span class="text-sm text-foreground">Series Collection Name</span
+              >
+            </Label>
+            <Input
+              id="leavingSoonSeriesCollectionTitle"
+              name="leavingSoonSeriesCollectionTitle"
+              type="text"
+              class="input-hover-el text-foreground placeholder:text-muted-foreground"
+              placeholder={DEFAULT_LEAVING_SOON_SERIES_TITLE}
+              bind:value={leavingSoonSeriesCollectionTitle}
+              maxlength={100}
+            />
+          </div>
         </div>
         <p class="text-xs text-muted-foreground mt-2 break-all">
-          Reclaimerr manages two collections per server:
-          <strong
-            >{leavingSoonCollectionTitle || "Leaving Soon"} [Movies]</strong
-          >
-          and
-          <strong
-            >{leavingSoonCollectionTitle || "Leaving Soon"} [Series]</strong
-          >.
+          Reclaimerr manages exactly these two collections per server. Names are
+          used verbatim - leave a field blank to fall back to
+          <strong>{DEFAULT_LEAVING_SOON_MOVIE_TITLE}</strong>
+          or <strong>{DEFAULT_LEAVING_SOON_SERIES_TITLE}</strong>.
         </p>
+        {#if leavingSoonTitlesCollide}
+          <p class="text-xs text-destructive mt-2">
+            The movie and series collections must have different names.
+          </p>
+        {/if}
+        <div class="mt-4 max-w-md">
+          <Label for="leavingSoonCollectionSort" class="mb-2">
+            <span class="text-sm text-foreground">Collection Sort (Plex)</span>
+          </Label>
+          <Select.Root
+            type="single"
+            bind:value={leavingSoonCollectionSort}
+            name="leavingSoonCollectionSort"
+          >
+            <Select.Trigger
+              id="leavingSoonCollectionSort"
+              class="w-full cursor-pointer text-foreground"
+            >
+              {LEAVING_SOON_SORT_LABELS[leavingSoonCollectionSort]}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="default" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.default}
+              </Select.Item>
+              <Select.Item value="alpha" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.alpha}
+              </Select.Item>
+              <Select.Item value="leaving_soonest" class="cursor-pointer">
+                {LEAVING_SOON_SORT_LABELS.leaving_soonest}
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+          <p class="text-xs text-muted-foreground mt-2">
+            <strong>Leaving soonest first</strong> orders the collection by each
+            item's deletion deadline, so whatever disappears next sits at the
+            front.
+            <strong>Server default</strong> leaves the collection's own ordering untouched.
+          </p>
+        </div>
+
+        <!-- custom collection posters -->
+        <div class="mt-4">
+          <span class="text-sm text-foreground font-medium"
+            >Custom collection posters</span
+          >
+          <p class="text-xs text-muted-foreground mt-1">
+            Upload your own cover art for the managed collections. Unlike the
+            rest of this page, a poster is saved as soon as you pick it - there
+            is nothing to Save.
+          </p>
+          <div class="grid gap-4 sm:grid-cols-2 max-w-2xl mt-3">
+            {#each ["movies", "series"] as const as kind (kind)}
+              <div class="flex gap-3">
+                <div
+                  class="w-24 shrink-0 aspect-2/3 rounded-md border bg-muted/50 overflow-hidden flex items-center justify-center"
+                >
+                  {#if posterUrl(kind)}
+                    <img
+                      src={posterUrl(kind)}
+                      alt="{POSTER_LABELS[kind]} collection poster"
+                      class="w-full h-full object-cover"
+                    />
+                  {:else}
+                    <span
+                      class="text-[0.65rem] text-muted-foreground text-center px-2"
+                    >
+                      No custom poster
+                    </span>
+                  {/if}
+                </div>
+                <div class="flex flex-col gap-2 justify-center">
+                  <span class="text-sm text-foreground"
+                    >{POSTER_LABELS[kind]} collection</span
+                  >
+                  <input
+                    type="file"
+                    class="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    bind:this={posterInputs[kind]}
+                    onchange={(event) => uploadPoster(kind, event)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    class="cursor-pointer"
+                    disabled={posterBusy[kind]}
+                    onclick={() => posterInputs[kind]?.click()}
+                  >
+                    {#if posterBusy[kind]}
+                      <Spinner class="size-4" />
+                    {:else}
+                      <ImageUp class="size-4" />
+                    {/if}
+                    {leavingSoonPosters[kind]
+                      ? "Replace poster"
+                      : "Upload poster"}
+                  </Button>
+                  {#if leavingSoonPosters[kind]}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="cursor-pointer text-destructive"
+                      disabled={posterBusy[kind]}
+                      onclick={() => removePoster(kind)}
+                    >
+                      <Trash2 class="size-4" />
+                      Remove
+                    </Button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+          <p class="text-xs text-muted-foreground mt-3">
+            JPEG, PNG, or WebP up to 5 MB. The image is re-encoded to JPEG and
+            stored locally, then pushed to your enabled Plex, Jellyfin, and Emby
+            servers. Reclaimerr re-applies it on <strong>every sync</strong>, so
+            other tools that manage collection artwork (e.g. Kometa,
+            Posterizarr) will be overwritten.
+          </p>
+          <p class="text-xs text-muted-foreground mt-2">
+            Removing a poster only stops Reclaimerr pushing it. On Plex it
+            disappears at the next sync, which rebuilds the collection; on
+            Jellyfin and Emby the last poster pushed stays until you change it
+            there.
+          </p>
+        </div>
+
         <Notice class="mt-2" type="info" title="Note">
           Plex stores collections <strong>per library</strong>, while Jellyfin
           and Emby use
-          <strong>global</strong> collections. On Plex, the "Leaving Soon"
-          collection is split across libraries; on Jellyfin and Emby it appears
-          in a single global collection.
+          <strong>global</strong> collections. On Plex, each collection is split
+          across libraries; on Jellyfin and Emby it appears as a single global
+          collection.
+          <br />
+          <br />
+          Renaming a collection here moves it: Reclaimerr deletes the collection under
+          the old name on the next scan and rebuilds it under the new one.
           <br />
           <br />
           <strong
             >Do not rename or modify these collections on the media server -
             Reclaimerr depends on their names to manage them.</strong
           >
+          <br />
+          <br />
+          Collection sort applies to <strong>Plex only</strong>. Jellyfin and
+          Emby have no server-side ordering for a collection - each client
+          decides how to sort it - so the setting is ignored there.
         </Notice>
       {/if}
     </div>
@@ -970,7 +1230,7 @@
     <div class="flex gap-3 justify-end">
       <Button
         onclick={saveSettings}
-        disabled={savingSettings}
+        disabled={savingSettings || leavingSoonTitlesCollide}
         class="cursor-pointer gap-2"
       >
         {#if savingSettings}

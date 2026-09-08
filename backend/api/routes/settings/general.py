@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -13,6 +22,10 @@ from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.image_handling import (
+    delete_collection_poster,
+    save_collection_poster_from_bytes,
+)
 from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
@@ -37,71 +50,25 @@ from backend.models.settings import (
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.watch_identity import merge_directory_accounts
-from backend.utils.helpers import normalize_leaving_soon_collection_title
+from backend.tasks.cleanup import (
+    LEAVING_SOON_MEDIA_SERVICES,
+    normalize_leaving_soon_last_success_titles,
+    push_leaving_soon_posters,
+    serialize_leaving_soon_last_success_titles,
+)
+from backend.utils.helpers import (
+    normalize_leaving_soon_movie_title,
+    normalize_leaving_soon_series_title,
+)
 
 router = APIRouter(tags=["settings", "general"])
-
-
-_LEAVING_SOON_MEDIA_SERVICES = {
-    Service.PLEX,
-    Service.JELLYFIN,
-    Service.EMBY,
-}
-
-
-async def _normalize_leaving_soon_last_success_titles(
-    db: AsyncSession,
-    raw_titles: object,
-) -> dict[int, str]:
-    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
-
-    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
-    key that isn't a valid config id is resolved to whichever ServiceConfig
-    currently has that service_type, so upgrading loses no in-flight state.
-    Callers should always write the new shape back.
-    """
-    if not isinstance(raw_titles, Mapping):
-        return {}
-    normalized_titles: dict[int, str] = {}
-    legacy_type_titles: dict[Service, str] = {}
-    for raw_key, raw_title in raw_titles.items():
-        title = normalize_leaving_soon_collection_title(str(raw_title))
-        try:
-            normalized_titles[int(raw_key)] = title
-            continue
-        except (TypeError, ValueError):
-            pass
-        try:
-            service = Service(str(raw_key))
-        except Exception:
-            continue
-        if service in _LEAVING_SOON_MEDIA_SERVICES:
-            legacy_type_titles[service] = title
-
-    if legacy_type_titles:
-        rows = (
-            await db.execute(
-                select(ServiceConfig.id, ServiceConfig.service_type).where(
-                    ServiceConfig.service_type.in_(legacy_type_titles.keys())
-                )
-            )
-        ).all()
-        config_id_by_type: dict[Service, int] = {}
-        for config_id, service_type in rows:
-            config_id_by_type.setdefault(service_type, config_id)
-        for service, title in legacy_type_titles.items():
-            config_id = config_id_by_type.get(service)
-            if config_id is not None and config_id not in normalized_titles:
-                normalized_titles[config_id] = title
-
-    return normalized_titles
 
 
 async def _cleanup_leaving_soon_collections_on_disable(
     db: AsyncSession,
     settings: GeneralSettings,
 ) -> None:
-    normalized_titles = await _normalize_leaving_soon_last_success_titles(
+    normalized_titles = await normalize_leaving_soon_last_success_titles(
         db, settings.leaving_soon_last_success_titles
     )
     if not normalized_titles:
@@ -113,7 +80,7 @@ async def _cleanup_leaving_soon_collections_on_disable(
         (
             await db.execute(
                 select(ServiceConfig).where(
-                    ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                    ServiceConfig.service_type.in_(LEAVING_SOON_MEDIA_SERVICES),
                     ServiceConfig.enabled.is_(True),
                 )
             )
@@ -123,7 +90,7 @@ async def _cleanup_leaving_soon_collections_on_disable(
     )
     configs_by_id = {config.id: config for config in configs}
 
-    for config_id, previous_success_title in list(updated_titles.items()):
+    for config_id, previous_titles in list(updated_titles.items()):
         if (config := configs_by_id.get(config_id)) is None:
             continue
         if (
@@ -138,17 +105,22 @@ async def _cleanup_leaving_soon_collections_on_disable(
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
                 f"{config.service_type.value} (config {config_id}); cannot remove "
-                f"title {previous_success_title!r} on disable"
+                f"titles {previous_titles.movies!r} / {previous_titles.series!r} "
+                "on disable"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
         try:
-            await delete_func(base_title=previous_success_title)
+            await delete_func(
+                movie_title=previous_titles.movies,
+                series_title=previous_titles.series,
+            )
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
                 f"{config.service_type.value} (config {config_id}) on disable "
-                f"(title {previous_success_title!r}): {e}"
+                f"(titles {previous_titles.movies!r} / "
+                f"{previous_titles.series!r}): {e}"
             )
             continue
 
@@ -157,9 +129,9 @@ async def _cleanup_leaving_soon_collections_on_disable(
 
     if not titles_changed:
         return
-    settings.leaving_soon_last_success_titles = {
-        str(config_id): title for config_id, title in updated_titles.items()
-    }
+    settings.leaving_soon_last_success_titles = (
+        serialize_leaving_soon_last_success_titles(updated_titles)
+    )
 
 
 @router.get("/general")
@@ -197,8 +169,11 @@ async def update_general_settings(
     if not settings:
         raise HTTPException(status_code=404, detail="General settings not found")
 
-    current_leaving_soon_title = normalize_leaving_soon_collection_title(
-        request.leaving_soon_collection_title
+    current_leaving_soon_movie_title = normalize_leaving_soon_movie_title(
+        request.leaving_soon_movie_collection_title
+    )
+    current_leaving_soon_series_title = normalize_leaving_soon_series_title(
+        request.leaving_soon_series_collection_title
     )
     was_leaving_soon_enabled = bool(settings.leaving_soon_enabled)
 
@@ -232,7 +207,13 @@ async def update_general_settings(
         page.value for page in request.default_allowed_pages
     ]
     settings.leaving_soon_enabled = request.leaving_soon_enabled
-    settings.leaving_soon_collection_title = current_leaving_soon_title
+    settings.leaving_soon_movie_collection_title = current_leaving_soon_movie_title
+    settings.leaving_soon_series_collection_title = current_leaving_soon_series_title
+    settings.leaving_soon_collection_sort = request.leaving_soon_collection_sort.value
+    # leaving_soon_*_poster_path is deliberately not copied from the request:
+    # the poster upload and delete endpoints own those columns. A client that
+    # loaded this settings body before an upload would otherwise save its way
+    # over a poster it never knew about.
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
         await _cleanup_leaving_soon_collections_on_disable(db, settings)
 
@@ -244,6 +225,111 @@ async def update_general_settings(
     await db.commit()
     await db.refresh(settings)
     return GeneralSettingsResponse.model_validate(settings)
+
+
+_POSTER_COLUMNS: dict[str, str] = {
+    "movies": "leaving_soon_movie_poster_path",
+    "series": "leaving_soon_series_poster_path",
+}
+# JPEG, PNG, and WebP only - an animated poster is not a thing on any of the
+# three servers, and everything is re-encoded to JPEG anyway.
+_POSTER_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_POSTER_MAX_SIZE = 5 * 1024 * 1024
+
+
+async def _get_general_settings_row(db: AsyncSession) -> GeneralSettings:
+    settings = (await db.execute(select(GeneralSettings))).scalars().first()
+    if not settings:
+        raise HTTPException(status_code=404, detail="General settings not found")
+    return settings
+
+
+@router.post("/general/leaving-soon-poster/{kind}")
+async def upload_leaving_soon_poster(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    poster: UploadFile = File(...),
+) -> dict[str, str | None]:
+    """Upload the custom poster for one managed Leaving Soon collection."""
+    if not poster.content_type or poster.content_type not in _POSTER_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a JPEG, PNG, or WebP image",
+        )
+
+    contents = await poster.read()
+    if len(contents) > _POSTER_MAX_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image file must be smaller than 5 MB",
+        )
+
+    settings = await _get_general_settings_row(db)
+    column = _POSTER_COLUMNS[kind]
+    old_filename = getattr(settings, column)
+
+    # run CPU-bound image processing in thread pool to avoid blocking event loop
+    try:
+        filename = await asyncio.to_thread(
+            save_collection_poster_from_bytes,
+            contents,
+            old_filename,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not read that image: {e}",
+        ) from e
+
+    setattr(settings, column, filename)
+    settings.updated_at = datetime.now(UTC)
+    settings.updated_by_user_id = admin.id
+    db.add(settings)
+    await db.commit()
+
+    LOG.info(f"User {admin.username} uploaded the {kind} Leaving Soon poster")
+
+    # push it now so the collection does not wear stale artwork until the next
+    # scan; failures are logged per server rather than failing a saved upload
+    await push_leaving_soon_posters(db)
+
+    return {"message": "Poster uploaded successfully", "path": filename}
+
+
+@router.delete("/general/leaving-soon-poster/{kind}")
+async def delete_leaving_soon_poster(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str | None]:
+    """Clear the custom poster for one managed Leaving Soon collection.
+
+    The image on the media server is left as it is. On Plex it disappears on the
+    next sync, which rebuilds the collection from scratch; on Jellyfin and Emby
+    the last poster Reclaimerr pushed stays until it is changed there.
+    """
+    settings = await _get_general_settings_row(db)
+    column = _POSTER_COLUMNS[kind]
+    if (old_filename := getattr(settings, column)) is None:
+        return {"message": "No poster to remove", "path": None}
+
+    try:
+        delete_collection_poster(old_filename)
+    except Exception:
+        # the file is already unreachable or unremovable; dropping the reference
+        # is still the right outcome, so do not strand the setting on it
+        LOG.warning(f"Could not remove the {kind} Leaving Soon poster from disk")
+
+    setattr(settings, column, None)
+    settings.updated_at = datetime.now(UTC)
+    settings.updated_by_user_id = admin.id
+    db.add(settings)
+    await db.commit()
+
+    LOG.info(f"User {admin.username} removed the {kind} Leaving Soon poster")
+
+    return {"message": "Poster removed successfully", "path": None}
 
 
 @router.get(

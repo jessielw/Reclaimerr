@@ -136,6 +136,7 @@ async def _finalize_delete_request_job(
             "request_id": delete_request.id,
             "request_type": "Deletion",
             "media_title": media.title if media else "Unknown media",
+            "media_year": media.year if media else None,
             "media_type": delete_request.media_type.value,
             "scope": request_scope_label(
                 delete_request.target_scope,

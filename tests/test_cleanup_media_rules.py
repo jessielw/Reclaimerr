@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -49,7 +51,7 @@ from backend.database.models import (
     ServiceConfig,
     User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import LeavingSoonCollectionSort, MediaType, Service
 from backend.models.cleanup import RulePreviewMatchMetadata
 from backend.services.seerr_cache import SeerrRequestSnapshot, SeerrSnapshotState
 from backend.tasks import cleanup as cleanup_tasks
@@ -71,7 +73,6 @@ from backend.tasks.cleanup import (
     collect_rule_preview_matches_with_metadata,
     explain_requester_watch,
 )
-from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 
 def _make_rule(media_type: MediaType, **overrides: object) -> ReclaimRule:
@@ -351,32 +352,49 @@ class _LeavingSoonSyncServiceFake:
         fail_delete_titles: set[str] | None = None,
     ) -> None:
         self.calls: list[dict[str, object]] = []
-        self.delete_calls: list[str] = []
+        self.delete_calls: list[tuple[str | None, str | None]] = []
         self._fail_sync = fail_sync
         self._fail_delete_titles = set(fail_delete_titles or set())
 
     async def sync_leaving_soon_collections(
         self,
         *,
-        base_title: str,
+        movie_title: str | None,
+        series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
         if self._fail_sync:
             raise RuntimeError("sync failure")
         self.calls.append(
             {
-                "base_title": base_title,
+                "movie_title": movie_title,
+                "series_title": series_title,
                 "movie_item_ids": set(movie_item_ids),
                 "series_item_ids": set(series_item_ids),
+                "collection_sort": collection_sort,
+                "item_deadlines": dict(item_deadlines or {}),
+                "movie_poster": movie_poster,
+                "series_poster": series_poster,
             }
         )
 
-    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
-        normalized = normalize_leaving_soon_collection_title(base_title)
-        self.delete_calls.append(normalized)
-        if normalized in self._fail_delete_titles:
-            raise RuntimeError(f"delete failure for {normalized}")
+    async def delete_leaving_soon_collections(
+        self,
+        *,
+        movie_title: str | None = None,
+        series_title: str | None = None,
+    ) -> None:
+        self.delete_calls.append((movie_title, series_title))
+        failed = self._fail_delete_titles & {movie_title, series_title}
+        if failed:
+            raise RuntimeError(f"delete failure for {sorted(failed)}")
 
 
 class _SonarrTagRefreshClientFake:
@@ -5804,7 +5822,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=True,
-                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
             )
             rule = _make_rule(
                 MediaType.MOVIE,
@@ -5854,7 +5873,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(fake_plex.calls), 1)
         call = fake_plex.calls[0]
-        self.assertEqual(call["base_title"], "Leaving Soon")
+        self.assertEqual(call["movie_title"], "Leaving Soon [Movies]")
+        self.assertEqual(call["series_title"], "Leaving Soon [Series]")
         self.assertEqual(call["movie_item_ids"], {"plex-item-5001"})
         self.assertEqual(call["series_item_ids"], set())
         self.assertEqual(fake_plex.delete_calls, [])
@@ -5863,14 +5883,92 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
-                {str(plex_config_id): "Leaving Soon"},
+                {
+                    str(plex_config_id): {
+                        "movies": "Leaving Soon [Movies]",
+                        "series": "Leaving Soon [Series]",
+                    }
+                },
             )
+
+    async def test_scan_hands_configured_posters_to_the_sync(self) -> None:
+        # Plex rebuilds these collections on every run, so the poster has to
+        # travel with the sync or the artwork dies with the old collection
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
+            )
+            settings.leaving_soon_movie_poster_path = "movies.jpg"
+            settings.leaving_soon_series_poster_path = "missing.jpg"
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5011, size=3 * 1024**3)
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
+            await db.flush()
+            plex_config_id = plex_config.id
+
+            version = _make_movie_version(
+                service_media_id="mv-5011",
+                service_item_id="plex-item-5011",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        poster_root = TemporaryDirectory()
+        self.addCleanup(poster_root.cleanup)
+        poster_dir = Path(poster_root.name)
+        (poster_dir / "movies.jpg").write_bytes(b"movie-poster-bytes")
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
+        try:
+            with patch.object(
+                cleanup_tasks.settings, "collection_posters_dir", poster_dir
+            ):
+                async with self._sessionmaker() as db:
+                    result = await _scan_with_db(db)
+                    self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["movie_poster"], b"movie-poster-bytes")
+        # a poster whose file has gone missing degrades to no artwork rather
+        # than failing the sync it was about to travel with
+        self.assertIsNone(call["series_poster"])
 
     async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=False,
-                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
             )
             rule = _make_rule(
                 MediaType.MOVIE,
@@ -5924,7 +6022,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=False,
-                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
                 leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
             )
             rule = _make_rule(
@@ -5974,7 +6073,10 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
-        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Leaving Soon [Movies]", "Leaving Soon [Series]")],
+        )
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
@@ -5986,7 +6088,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=False,
-                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
                 leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
             )
             rule = _make_rule(
@@ -6016,7 +6119,9 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             db.add(version)
             await db.commit()
 
-        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Leaving Soon"})
+        fake_plex = _LeavingSoonSyncServiceFake(
+            fail_delete_titles={"Leaving Soon [Movies]"}
+        )
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
@@ -6036,7 +6141,10 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
-        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Leaving Soon [Movies]", "Leaving Soon [Series]")],
+        )
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
@@ -6054,7 +6162,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=True,
-                leaving_soon_collection_title="Leaving Soon",
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
             )
             rule = _make_rule(
                 MediaType.SERIES,
@@ -6120,7 +6229,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=True,
-                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_movie_collection_title="Latest Soon [Movies]",
+                leaving_soon_series_collection_title="Latest Soon [Series]",
                 leaving_soon_last_success_titles={Service.PLEX.value: "Leaving Soon"},
             )
             rule = _make_rule(
@@ -6170,21 +6280,115 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(len(fake_plex.calls), 1)
-        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
-        self.assertEqual(fake_plex.delete_calls, ["Leaving Soon"])
+        self.assertEqual(fake_plex.calls[0]["movie_title"], "Latest Soon [Movies]")
+        self.assertEqual(fake_plex.calls[0]["series_title"], "Latest Soon [Series]")
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Leaving Soon [Movies]", "Leaving Soon [Series]")],
+        )
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
             self.assertEqual(
                 settings.leaving_soon_last_success_titles,
-                {str(plex_config_id): "Latest Soon"},
+                {
+                    str(plex_config_id): {
+                        "movies": "Latest Soon [Movies]",
+                        "series": "Latest Soon [Series]",
+                    }
+                },
+            )
+
+    async def test_scan_renames_only_the_half_that_changed(self) -> None:
+        """Renaming one collection must not disturb the other.
+
+        Deleting and recreating an untouched collection would drop whatever
+        artwork the user set on it, so only the renamed half is cleaned up.
+        """
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_movie_collection_title="Expiring Films",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
+                leaving_soon_last_success_titles={
+                    Service.PLEX.value: "Leaving Soon",
+                },
+            )
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5007, size=3 * 1024**3)
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
+            await db.flush()
+            plex_config_id = plex_config.id
+
+            version = _make_movie_version(
+                service_media_id="mv-5007",
+                service_item_id="plex-item-5007",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
+        try:
+            async with self._sessionmaker() as db:
+                result = await _scan_with_db(db)
+                self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
+
+        # only the movie half carries an old title to remove
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Leaving Soon [Movies]", None)],
+        )
+        self.assertEqual(len(fake_plex.calls), 1)
+        self.assertEqual(fake_plex.calls[0]["movie_title"], "Expiring Films")
+        self.assertEqual(
+            fake_plex.calls[0]["series_title"], "Leaving Soon [Series]"
+        )
+
+        async with self._sessionmaker() as db:
+            settings = (await db.execute(select(GeneralSettings))).scalar_one()
+            self.assertEqual(
+                settings.leaving_soon_last_success_titles,
+                {
+                    str(plex_config_id): {
+                        "movies": "Expiring Films",
+                        "series": "Leaving Soon [Series]",
+                    }
+                },
             )
 
     async def test_scan_keeps_last_success_title_when_old_cleanup_fails(self) -> None:
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=True,
-                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_movie_collection_title="Latest Soon [Movies]",
+                leaving_soon_series_collection_title="Latest Soon [Series]",
                 leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
             )
             rule = _make_rule(
@@ -6214,7 +6418,9 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             db.add(version)
             await db.commit()
 
-        fake_plex = _LeavingSoonSyncServiceFake(fail_delete_titles={"Old A"})
+        fake_plex = _LeavingSoonSyncServiceFake(
+            fail_delete_titles={"Old A [Movies]"}
+        )
         previous_plex = cleanup_tasks.service_manager._plex
         previous_jellyfin = cleanup_tasks.service_manager._jellyfin
         previous_emby = cleanup_tasks.service_manager._emby
@@ -6233,9 +6439,13 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._emby = previous_emby
             cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
-        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Old A [Movies]", "Old A [Series]")],
+        )
         self.assertEqual(len(fake_plex.calls), 1)
-        self.assertEqual(fake_plex.calls[0]["base_title"], "Latest Soon")
+        self.assertEqual(fake_plex.calls[0]["movie_title"], "Latest Soon [Movies]")
+        self.assertEqual(fake_plex.calls[0]["series_title"], "Latest Soon [Series]")
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()
@@ -6250,7 +6460,8 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async with self._sessionmaker() as db:
             settings = GeneralSettings(
                 leaving_soon_enabled=True,
-                leaving_soon_collection_title="Latest Soon",
+                leaving_soon_movie_collection_title="Latest Soon [Movies]",
+                leaving_soon_series_collection_title="Latest Soon [Series]",
                 leaving_soon_last_success_titles={Service.PLEX.value: "Old A"},
             )
             rule = _make_rule(
@@ -6300,7 +6511,10 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cleanup_tasks.service_manager._plex_clients = previous_plex_clients
 
         self.assertEqual(fake_plex.calls, [])
-        self.assertEqual(fake_plex.delete_calls, ["Old A"])
+        self.assertEqual(
+            fake_plex.delete_calls,
+            [("Old A [Movies]", "Old A [Series]")],
+        )
 
         async with self._sessionmaker() as db:
             settings = (await db.execute(select(GeneralSettings))).scalar_one()

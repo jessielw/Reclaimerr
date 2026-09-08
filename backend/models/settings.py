@@ -8,13 +8,26 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
-from backend.enums import MediaType, NotificationType, PageAccess, Service
+from backend.enums import (
+    LeavingSoonCollectionSort,
+    MediaType,
+    NotificationType,
+    PageAccess,
+    Service,
+)
 from backend.user_types import (
     DEFAULT_NEW_USER_ALLOWED_PAGES,
     MEDIA_SERVERS,
     MediaServerType,
 )
-from backend.utils.helpers import normalize_leaving_soon_collection_title
+from backend.utils.helpers import (
+    DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+    DEFAULT_LEAVING_SOON_SERIES_TITLE,
+    MAX_LEAVING_SOON_TITLE_LENGTH,
+    normalize_leaving_soon_collection_sort,
+    normalize_leaving_soon_movie_title,
+    normalize_leaving_soon_series_title,
+)
 
 
 def _validate_notification_url(url: str) -> None:
@@ -311,7 +324,22 @@ class GeneralSettingsResponse(BaseModel):
         ]
     )
     leaving_soon_enabled: bool = False
-    leaving_soon_collection_title: str = "Leaving Soon"
+    leaving_soon_movie_collection_title: str = Field(
+        default=DEFAULT_LEAVING_SOON_MOVIE_TITLE,
+        max_length=MAX_LEAVING_SOON_TITLE_LENGTH,
+    )
+    leaving_soon_series_collection_title: str = Field(
+        default=DEFAULT_LEAVING_SOON_SERIES_TITLE,
+        max_length=MAX_LEAVING_SOON_TITLE_LENGTH,
+    )
+    leaving_soon_collection_sort: LeavingSoonCollectionSort = (
+        LeavingSoonCollectionSort.DEFAULT
+    )
+    # read-only here: stored filenames served from /static/collection-posters.
+    # The poster upload and delete endpoints own these; the general settings PUT
+    # ignores whatever a client sends so a stale body cannot clear a poster.
+    leaving_soon_movie_poster_path: str | None = None
+    leaving_soon_series_poster_path: str | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None
@@ -362,12 +390,42 @@ class GeneralSettingsResponse(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def normalize_leaving_soon_title(self) -> GeneralSettingsResponse:
-        title = normalize_leaving_soon_collection_title(
-            self.leaving_soon_collection_title
+    def normalize_leaving_soon_titles(self) -> GeneralSettingsResponse:
+        """Normalize both managed collection titles and keep them distinct.
+
+        Jellyfin and Emby collections are global, so two managed collections
+        sharing a name would resolve to the same BoxSet and each sync half
+        would strip out the other half's items.
+        """
+        self.leaving_soon_movie_collection_title = normalize_leaving_soon_movie_title(
+            self.leaving_soon_movie_collection_title
         )
-        self.leaving_soon_collection_title = title
+        self.leaving_soon_series_collection_title = normalize_leaving_soon_series_title(
+            self.leaving_soon_series_collection_title
+        )
+        if (
+            self.leaving_soon_movie_collection_title.casefold()
+            == self.leaving_soon_series_collection_title.casefold()
+        ):
+            raise PydanticCustomError(
+                "leaving_soon_collection_titles",
+                "Leaving Soon movie and series collection titles must be different",
+            )
         return self
+
+    @field_validator("leaving_soon_collection_sort", mode="before")
+    @classmethod
+    def coerce_leaving_soon_collection_sort(
+        cls, value: object
+    ) -> LeavingSoonCollectionSort:
+        """Coerce an unknown or blank collection sort back to the default.
+
+        Runs before enum parsing so a value this build does not recognize -
+        a row written by a newer version, or hand-edited - degrades to leaving
+        the collection ordering untouched instead of failing the whole settings
+        read with a validation error.
+        """
+        return normalize_leaving_soon_collection_sort(value)
 
     @model_validator(mode="after")
     def normalize_requester_watch_user_mappings(self) -> GeneralSettingsResponse:

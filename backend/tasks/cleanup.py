@@ -61,6 +61,7 @@ from backend.core.rule_engine import (
 )
 from backend.core.seerr_identity import seerr_config_id_of, seerr_user_id_of
 from backend.core.service_manager import service_manager
+from backend.core.settings import settings
 from backend.core.task_tracking import track_task_execution
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import (
@@ -101,6 +102,7 @@ from backend.database.models import (
     SupplementalMediaMatch,
 )
 from backend.enums import (
+    LeavingSoonCollectionSort,
     MediaType,
     NotificationType,
     ProtectionRequestStatus,
@@ -157,7 +159,14 @@ from backend.services.watch_identity import (
     expand_watch_keys,
     load_watch_user_alias_index,
 )
-from backend.utils.helpers import normalize_leaving_soon_collection_title
+from backend.utils.helpers import (
+    LeavingSoonPosters,
+    LeavingSoonTitles,
+    normalize_leaving_soon_collection_sort,
+    normalize_leaving_soon_movie_title,
+    normalize_leaving_soon_series_title,
+    normalize_leaving_soon_titles,
+)
 
 __all__ = [
     "scan_cleanup_candidates",
@@ -288,41 +297,56 @@ def _has_media_path(path: str | None) -> bool:
     return bool(path and path.strip())
 
 
+async def _load_auto_delete_context(
+    db: AsyncSession,
+    matched_rule_ids: Iterable[Iterable[int] | None],
+) -> tuple[dict[int, dict[str, Any] | None], int, int]:
+    """Load everything `resolve_auto_delete_policy` needs, in bulk.
+
+    Returns the enabled-rule action map plus the two global delay defaults, so
+    callers can resolve a deadline per candidate without a query each.
+    """
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    movie_delay_days = settings_row.auto_delete_movie_delay_days if settings_row else 14
+    series_delay_days = (
+        settings_row.auto_delete_series_delay_days if settings_row else 7
+    )
+    rule_ids = {
+        rule_id for rule_ids_ in matched_rule_ids for rule_id in (rule_ids_ or [])
+    }
+    rule_actions_by_id = {
+        rule.id: rule.action
+        for rule in (
+            (
+                await db.execute(
+                    select(ReclaimRule).where(
+                        ReclaimRule.id.in_(rule_ids),
+                        ReclaimRule.enabled.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if rule_ids
+            else []
+        )
+    }
+    return rule_actions_by_id, movie_delay_days, series_delay_days
+
+
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
         candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
         if not candidates:
             return [], 0, 0
 
-        settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
-        movie_delay_days = (
-            settings_row.auto_delete_movie_delay_days if settings_row else 14
+        (
+            rule_actions_by_id,
+            movie_delay_days,
+            series_delay_days,
+        ) = await _load_auto_delete_context(
+            db, (candidate.matched_rule_ids for candidate in candidates)
         )
-        series_delay_days = (
-            settings_row.auto_delete_series_delay_days if settings_row else 7
-        )
-        rule_ids = {
-            rule_id
-            for candidate in candidates
-            for rule_id in (candidate.matched_rule_ids or [])
-        }
-        rule_actions_by_id = {
-            rule.id: rule.action
-            for rule in (
-                (
-                    await db.execute(
-                        select(ReclaimRule).where(
-                            ReclaimRule.id.in_(rule_ids),
-                            ReclaimRule.enabled.is_(True),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-                if rule_ids
-                else []
-            )
-        }
 
         now = datetime.now(UTC)
         blocked_movie_ids: set[int] = set()
@@ -2023,8 +2047,31 @@ async def _activate_rank_rule_data_for_rules(
 def _normalized_rule_collection_name(value: str | None) -> str | None:
     if not value:
         return None
-    normalized = normalize_leaving_soon_collection_title(value)
+    normalized = str(value).strip()
     return normalized.casefold() if normalized else None
+
+
+async def _managed_collection_names(db: AsyncSession) -> set[str]:
+    """Normalized names of the collections Reclaimerr manages itself.
+
+    Collection-sibling rule data must not treat Reclaimerr's own Leaving Soon
+    collections as a user-curated collection. The titles are configurable, so
+    they are read from settings rather than assumed.
+    """
+    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
+    titles = LeavingSoonTitles(
+        movies=normalize_leaving_soon_movie_title(
+            getattr(settings_row, "leaving_soon_movie_collection_title", None)
+        ),
+        series=normalize_leaving_soon_series_title(
+            getattr(settings_row, "leaving_soon_series_collection_title", None)
+        ),
+    )
+    return {
+        normalized
+        for title in (titles.movies, titles.series)
+        if (normalized := _normalized_rule_collection_name(title))
+    }
 
 
 async def _activate_collection_sibling_rule_data_for_rules(
@@ -2049,13 +2096,13 @@ async def _activate_collection_sibling_rule_data_for_rules(
 
     movie_collections: dict[int, set[str]] = {}
     collection_watch_dates: dict[str, list[tuple[int, datetime]]] = {}
-    leaving_soon_name = _normalized_rule_collection_name("Leaving Soon")
+    managed_names = await _managed_collection_names(db)
     for movie_id, last_viewed_at, collection_names in rows:
         normalized_names = {
             normalized
             for name in (collection_names or [])
             if (normalized := _normalized_rule_collection_name(str(name)))
-            and normalized != leaving_soon_name
+            and normalized not in managed_names
         }
         if not normalized_names:
             continue
@@ -4298,32 +4345,34 @@ async def _activate_watch_completion_for_rules(
     )
 
 
-_LEAVING_SOON_MEDIA_SERVICES = {
+LEAVING_SOON_MEDIA_SERVICES = {
     Service.PLEX,
     Service.JELLYFIN,
     Service.EMBY,
 }
 
 
-async def _normalize_leaving_soon_last_success_titles(
+async def normalize_leaving_soon_last_success_titles(
     db: AsyncSession,
     raw_titles: object,
-) -> dict[int, str]:
-    """Normalize the persisted last-success-title map to `{service_config_id: title}`.
+) -> dict[int, LeavingSoonTitles]:
+    """Normalize the persisted last-success map to `{service_config_id: titles}`.
 
-    Tolerates the pre-multi-instance shape (`{service_type: title}`) on read: a
-    key that isn't a valid config id is resolved to whichever ServiceConfig
-    currently has that service_type, so upgrading loses no in-flight state.
+    Tolerates two older shapes on read so an upgrade loses no in-flight state:
+    a key that isn't a valid config id is resolved to whichever ServiceConfig
+    currently has that service_type (pre-multi-instance), and a plain-string
+    value is expanded into the `<base> [Movies]` / `<base> [Series]` pair the
+    media server clients used to build themselves (pre-split-titles).
     Callers should always write the new shape back.
     """
     if not isinstance(raw_titles, Mapping):
         return {}
-    normalized_titles: dict[int, str] = {}
-    legacy_type_titles: dict[Service, str] = {}
-    for raw_key, raw_title in raw_titles.items():
-        title = normalize_leaving_soon_collection_title(str(raw_title))
+    normalized_titles: dict[int, LeavingSoonTitles] = {}
+    legacy_type_titles: dict[Service, LeavingSoonTitles] = {}
+    for raw_key, raw_value in raw_titles.items():
+        titles = normalize_leaving_soon_titles(raw_value)
         try:
-            normalized_titles[int(raw_key)] = title
+            normalized_titles[int(raw_key)] = titles
             continue
         except (TypeError, ValueError):
             pass
@@ -4331,8 +4380,8 @@ async def _normalize_leaving_soon_last_success_titles(
             service = Service(str(raw_key))
         except Exception:
             continue
-        if service in _LEAVING_SOON_MEDIA_SERVICES:
-            legacy_type_titles[service] = title
+        if service in LEAVING_SOON_MEDIA_SERVICES:
+            legacy_type_titles[service] = titles
 
     if legacy_type_titles:
         rows = (
@@ -4346,31 +4395,99 @@ async def _normalize_leaving_soon_last_success_titles(
         for config_id, service_type in rows:
             # first match wins - pre-multi-instance installs have at most one
             config_id_by_type.setdefault(service_type, config_id)
-        for service, title in legacy_type_titles.items():
+        for service, titles in legacy_type_titles.items():
             config_id = config_id_by_type.get(service)
             if config_id is not None and config_id not in normalized_titles:
-                normalized_titles[config_id] = title
+                normalized_titles[config_id] = titles
 
     return normalized_titles
 
 
+def serialize_leaving_soon_last_success_titles(
+    titles_by_config: Mapping[int, LeavingSoonTitles],
+) -> dict[str, dict[str, str]]:
+    return {
+        str(config_id): titles.as_dict()
+        for config_id, titles in titles_by_config.items()
+    }
+
+
+def read_leaving_soon_poster(filename: object) -> bytes | None:
+    """Read a stored collection poster off disk.
+
+    Returns None for an unset column and for a filename whose file has gone
+    missing, so artwork deleted out from under Reclaimerr degrades to "no custom
+    poster" instead of failing the sync that was about to push it.
+    """
+    if not (name := str(filename or "").strip()):
+        return None
+    # the column holds a bare filename; anything else is not ours to read
+    if Path(name).name != name:
+        LOG.warning(f"Ignoring unexpected Leaving Soon poster path {name!r}")
+        return None
+    poster_path = settings.collection_posters_dir / name
+    try:
+        return poster_path.read_bytes()
+    except FileNotFoundError:
+        LOG.warning(f"Leaving Soon poster {name!r} is missing from disk")
+        return None
+    except Exception as e:
+        LOG.warning(f"Failed reading Leaving Soon poster {name!r}: {e}")
+        return None
+
+
+def load_leaving_soon_posters(settings_row: GeneralSettings) -> LeavingSoonPosters:
+    """Read both configured posters once, for reuse across every server."""
+    return LeavingSoonPosters(
+        movies=read_leaving_soon_poster(settings_row.leaving_soon_movie_poster_path),
+        series=read_leaving_soon_poster(settings_row.leaving_soon_series_poster_path),
+    )
+
+
 async def _load_leaving_soon_collection_settings(
     db: AsyncSession,
-) -> tuple[GeneralSettings | None, bool, str, dict[int, str]]:
+) -> tuple[
+    GeneralSettings | None,
+    bool,
+    LeavingSoonTitles,
+    dict[int, LeavingSoonTitles],
+    LeavingSoonCollectionSort,
+    LeavingSoonPosters,
+]:
     settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
-    if settings_row is None:
-        return None, False, "Leaving Soon", {}
-    collection_base_title = normalize_leaving_soon_collection_title(
-        settings_row.leaving_soon_collection_title
+    default_titles = LeavingSoonTitles(
+        movies=normalize_leaving_soon_movie_title(None),
+        series=normalize_leaving_soon_series_title(None),
     )
-    last_success_titles = await _normalize_leaving_soon_last_success_titles(
+    if settings_row is None:
+        return (
+            None,
+            False,
+            default_titles,
+            {},
+            LeavingSoonCollectionSort.DEFAULT,
+            LeavingSoonPosters(),
+        )
+    collection_titles = LeavingSoonTitles(
+        movies=normalize_leaving_soon_movie_title(
+            settings_row.leaving_soon_movie_collection_title
+        ),
+        series=normalize_leaving_soon_series_title(
+            settings_row.leaving_soon_series_collection_title
+        ),
+    )
+    last_success_titles = await normalize_leaving_soon_last_success_titles(
         db, settings_row.leaving_soon_last_success_titles
     )
     return (
         settings_row,
         bool(settings_row.leaving_soon_enabled),
-        collection_base_title,
+        collection_titles,
         last_success_titles,
+        normalize_leaving_soon_collection_sort(
+            settings_row.leaving_soon_collection_sort
+        ),
+        load_leaving_soon_posters(settings_row),
     )
 
 
@@ -4379,7 +4496,7 @@ async def _get_enabled_leaving_soon_configs(db: AsyncSession) -> list[ServiceCon
     rows = (
         await db.execute(
             select(ServiceConfig).where(
-                ServiceConfig.service_type.in_(_LEAVING_SOON_MEDIA_SERVICES),
+                ServiceConfig.service_type.in_(LEAVING_SOON_MEDIA_SERVICES),
                 ServiceConfig.enabled.is_(True),
             )
         )
@@ -4429,20 +4546,50 @@ def _leaving_soon_config_id_resolver(
     return _resolve
 
 
+def _record_item_deadline(
+    deadlines_by_config: dict[int, dict[str, datetime]],
+    *,
+    config_id: int | None,
+    item_id: str | None,
+    deadline: datetime | None,
+) -> None:
+    """Track the soonest deletion deadline seen for a server item.
+
+    One server item can back several candidates - a series with both a
+    season-scoped and an episode-scoped candidate resolves to the same rating
+    key - so the earliest deadline wins.
+    """
+    if config_id is None or deadline is None:
+        return
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_item_id:
+        return
+    config_deadlines = deadlines_by_config.setdefault(config_id, {})
+    current = config_deadlines.get(normalized_item_id)
+    if current is None or deadline < current:
+        config_deadlines[normalized_item_id] = deadline
+
+
 async def _build_leaving_soon_expected_item_ids(
     db: AsyncSession,
     configs: list[ServiceConfig],
-) -> tuple[dict[int, set[str]], dict[int, set[str]]]:
+) -> tuple[dict[int, set[str]], dict[int, set[str]], dict[int, dict[str, datetime]]]:
     """Resolve expected Leaving Soon item IDs, keyed by service_config_id.
 
     MovieVersion/SeriesServiceRef have no config_id column of their own, so
     their rows are attributed via `_leaving_soon_config_id_resolver`.
     SupplementalMediaMatch rows (from linked servers) already carry their own
     source_service_config_id.
+
+    The third return value maps each item ID to its auto-delete deadline, which
+    is what the `leaving_soonest` collection sort orders by. It is populated
+    unconditionally - it costs one extra rule query and no per-candidate work -
+    so callers that don't sort simply ignore it.
     """
     resolve_config_id = _leaving_soon_config_id_resolver(configs)
     movie_expected_by_config: dict[int, set[str]] = {}
     series_expected_by_config: dict[int, set[str]] = {}
+    deadlines_by_config: dict[int, dict[str, datetime]] = {}
 
     candidate_rows = (
         await db.execute(
@@ -4451,24 +4598,67 @@ async def _build_leaving_soon_expected_item_ids(
                 ReclaimCandidate.movie_id,
                 ReclaimCandidate.movie_version_id,
                 ReclaimCandidate.series_id,
+                ReclaimCandidate.matched_rule_ids,
+                ReclaimCandidate.created_at,
+                ReclaimCandidate.auto_delete_timer_started_at,
+                ReclaimCandidate.auto_delete_postponed_until,
+                ReclaimCandidate.auto_delete_cancelled_at,
             )
         )
     ).all()
     if not candidate_rows:
-        return movie_expected_by_config, series_expected_by_config
+        return movie_expected_by_config, series_expected_by_config, deadlines_by_config
+
+    (
+        rule_actions_by_id,
+        movie_delay_days,
+        series_delay_days,
+    ) = await _load_auto_delete_context(
+        db, (row.matched_rule_ids for row in candidate_rows)
+    )
 
     movie_candidate_version_ids: set[int] = set()
     movie_candidate_ids: set[int] = set()
     series_candidate_ids: set[int] = set()
-    for media_type, movie_id, movie_version_id, series_id in candidate_rows:
+    # media db id -> soonest deadline across every candidate touching it
+    deadline_by_movie_id: dict[int, datetime] = {}
+    deadline_by_version_id: dict[int, datetime] = {}
+    deadline_by_series_id: dict[int, datetime] = {}
+
+    def _keep_soonest(target: dict[int, datetime], key: int, value: datetime) -> None:
+        current = target.get(key)
+        if current is None or value < current:
+            target[key] = value
+
+    for row in candidate_rows:
+        media_type = row.media_type
+        # `eligible_at` stays meaningful when auto-delete is not configured for
+        # the candidate: it degrades to created_at + the global delay, which
+        # still orders oldest-candidate-first rather than arbitrarily.
+        deadline = resolve_auto_delete_policy(
+            media_type=media_type,
+            matched_rule_ids=row.matched_rule_ids or [],
+            created_at=row.created_at,
+            timer_started_at=row.auto_delete_timer_started_at,
+            postponed_until=row.auto_delete_postponed_until,
+            cancelled_at=row.auto_delete_cancelled_at,
+            rule_actions_by_id=rule_actions_by_id,
+            movie_delay_days=movie_delay_days,
+            series_delay_days=series_delay_days,
+        ).eligible_at
         if media_type == MediaType.MOVIE:
-            if movie_id is not None:
-                movie_candidate_ids.add(int(movie_id))
-            if movie_version_id is not None:
-                movie_candidate_version_ids.add(int(movie_version_id))
+            if row.movie_id is not None:
+                movie_candidate_ids.add(int(row.movie_id))
+                _keep_soonest(deadline_by_movie_id, int(row.movie_id), deadline)
+            if row.movie_version_id is not None:
+                movie_candidate_version_ids.add(int(row.movie_version_id))
+                _keep_soonest(
+                    deadline_by_version_id, int(row.movie_version_id), deadline
+                )
             continue
-        if media_type == MediaType.SERIES and series_id is not None:
-            series_candidate_ids.add(int(series_id))
+        if media_type == MediaType.SERIES and row.series_id is not None:
+            series_candidate_ids.add(int(row.series_id))
+            _keep_soonest(deadline_by_series_id, int(row.series_id), deadline)
 
     if movie_candidate_version_ids:
         version_rows = (
@@ -4477,30 +4667,53 @@ async def _build_leaving_soon_expected_item_ids(
                     MovieVersion.service,
                     MovieVersion.service_item_id,
                     MovieVersion.movie_id,
+                    MovieVersion.id,
                 ).where(MovieVersion.id.in_(movie_candidate_version_ids))
             )
         ).all()
-        for service, service_item_id, movie_id in version_rows:
+        for service, service_item_id, movie_id, version_id in version_rows:
+            config_id = resolve_config_id(service)
             _append_config_item_id(
                 movie_expected_by_config,
-                config_id=resolve_config_id(service),
+                config_id=config_id,
                 item_id=service_item_id,
             )
+            _record_item_deadline(
+                deadlines_by_config,
+                config_id=config_id,
+                item_id=service_item_id,
+                deadline=deadline_by_version_id.get(int(version_id)),
+            )
             movie_candidate_ids.add(int(movie_id))
+            # a version-scoped candidate pulls in its whole movie below, so its
+            # deadline has to reach the movie too or those siblings sort last
+            if (
+                version_deadline := deadline_by_version_id.get(int(version_id))
+            ) is not None:
+                _keep_soonest(deadline_by_movie_id, int(movie_id), version_deadline)
 
     if movie_candidate_ids:
         movie_version_rows = (
             await db.execute(
-                select(MovieVersion.service, MovieVersion.service_item_id).where(
-                    MovieVersion.movie_id.in_(movie_candidate_ids)
-                )
+                select(
+                    MovieVersion.service,
+                    MovieVersion.service_item_id,
+                    MovieVersion.movie_id,
+                ).where(MovieVersion.movie_id.in_(movie_candidate_ids))
             )
         ).all()
-        for service, service_item_id in movie_version_rows:
+        for service, service_item_id, movie_id in movie_version_rows:
+            config_id = resolve_config_id(service)
             _append_config_item_id(
                 movie_expected_by_config,
-                config_id=resolve_config_id(service),
+                config_id=config_id,
                 item_id=service_item_id,
+            )
+            _record_item_deadline(
+                deadlines_by_config,
+                config_id=config_id,
+                item_id=service_item_id,
+                deadline=deadline_by_movie_id.get(int(movie_id)),
             )
 
         supplemental_movie_rows = (
@@ -4508,32 +4721,56 @@ async def _build_leaving_soon_expected_item_ids(
                 select(
                     SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
+                    SupplementalMediaMatch.movie_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.MOVIE,
                     SupplementalMediaMatch.movie_id.in_(movie_candidate_ids),
                 )
             )
         ).all()
-        for source_service_config_id, source_item_id in supplemental_movie_rows:
+        for (
+            source_service_config_id,
+            source_item_id,
+            movie_id,
+        ) in supplemental_movie_rows:
             _append_config_item_id(
                 movie_expected_by_config,
                 config_id=source_service_config_id,
                 item_id=source_item_id,
             )
+            _record_item_deadline(
+                deadlines_by_config,
+                config_id=source_service_config_id,
+                item_id=source_item_id,
+                deadline=(
+                    deadline_by_movie_id.get(int(movie_id))
+                    if movie_id is not None
+                    else None
+                ),
+            )
 
     if series_candidate_ids:
         series_ref_rows = (
             await db.execute(
-                select(SeriesServiceRef.service, SeriesServiceRef.service_id).where(
-                    SeriesServiceRef.series_id.in_(series_candidate_ids)
-                )
+                select(
+                    SeriesServiceRef.service,
+                    SeriesServiceRef.service_id,
+                    SeriesServiceRef.series_id,
+                ).where(SeriesServiceRef.series_id.in_(series_candidate_ids))
             )
         ).all()
-        for service, service_id in series_ref_rows:
+        for service, service_id, series_id in series_ref_rows:
+            config_id = resolve_config_id(service)
             _append_config_item_id(
                 series_expected_by_config,
-                config_id=resolve_config_id(service),
+                config_id=config_id,
                 item_id=service_id,
+            )
+            _record_item_deadline(
+                deadlines_by_config,
+                config_id=config_id,
+                item_id=service_id,
+                deadline=deadline_by_series_id.get(int(series_id)),
             )
 
         supplemental_series_rows = (
@@ -4541,27 +4778,42 @@ async def _build_leaving_soon_expected_item_ids(
                 select(
                     SupplementalMediaMatch.source_service_config_id,
                     SupplementalMediaMatch.source_item_id,
+                    SupplementalMediaMatch.series_id,
                 ).where(
                     SupplementalMediaMatch.media_type == MediaType.SERIES,
                     SupplementalMediaMatch.series_id.in_(series_candidate_ids),
                 )
             )
         ).all()
-        for source_service_config_id, source_item_id in supplemental_series_rows:
+        for (
+            source_service_config_id,
+            source_item_id,
+            series_id,
+        ) in supplemental_series_rows:
             _append_config_item_id(
                 series_expected_by_config,
                 config_id=source_service_config_id,
                 item_id=source_item_id,
             )
+            _record_item_deadline(
+                deadlines_by_config,
+                config_id=source_service_config_id,
+                item_id=source_item_id,
+                deadline=(
+                    deadline_by_series_id.get(int(series_id))
+                    if series_id is not None
+                    else None
+                ),
+            )
 
-    return movie_expected_by_config, series_expected_by_config
+    return movie_expected_by_config, series_expected_by_config, deadlines_by_config
 
 
 async def _cleanup_disabled_leaving_soon_collections(
     db: AsyncSession,
     *,
     settings_row: GeneralSettings | None,
-    last_success_titles_by_config: Mapping[int, str],
+    last_success_titles_by_config: Mapping[int, LeavingSoonTitles],
 ) -> None:
     if settings_row is None or not last_success_titles_by_config:
         return
@@ -4572,14 +4824,16 @@ async def _cleanup_disabled_leaving_soon_collections(
         config.id: config for config in await _get_enabled_leaving_soon_configs(db)
     }
 
-    for config_id, previous_success_title in list(updated_last_success_titles.items()):
+    for config_id, previous_titles in list(updated_last_success_titles.items()):
         if (config := configs_by_id.get(config_id)) is None:
-            # keep title for retry while the config is unavailable/removed
+            # keep titles for retry while the config is unavailable/removed
             continue
-        if (service_client := service_manager.get_media_server(
-            config.service_type, config.id
-        )) is None:
-            # keep title for retry while the config is unavailable/removed
+        if (
+            service_client := service_manager.get_media_server(
+                config.service_type, config.id
+            )
+        ) is None:
+            # keep titles for retry while the config is unavailable/removed
             continue
 
         delete_method = getattr(service_client, "delete_leaving_soon_collections", None)
@@ -4587,17 +4841,22 @@ async def _cleanup_disabled_leaving_soon_collections(
             LOG.warning(
                 "Leaving Soon cleanup method missing for "
                 f"{config.service_type.value} (config {config_id}); cannot remove "
-                f"title {previous_success_title!r} while Leaving Soon is disabled"
+                f"titles {previous_titles.movies!r} / {previous_titles.series!r} "
+                "while Leaving Soon is disabled"
             )
             continue
         delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
         try:
-            await delete_func(base_title=previous_success_title)
+            await delete_func(
+                movie_title=previous_titles.movies,
+                series_title=previous_titles.series,
+            )
         except Exception as e:
             LOG.warning(
                 "Failed cleaning Leaving Soon collections for "
                 f"{config.service_type.value} (config {config_id}) while disabled "
-                f"(title {previous_success_title!r}): {e}"
+                f"(titles {previous_titles.movies!r} / "
+                f"{previous_titles.series!r}): {e}"
             )
             continue
 
@@ -4607,10 +4866,9 @@ async def _cleanup_disabled_leaving_soon_collections(
     if not last_success_changed:
         return
 
-    settings_row.leaving_soon_last_success_titles = {
-        str(config_id): title
-        for config_id, title in updated_last_success_titles.items()
-    }
+    settings_row.leaving_soon_last_success_titles = (
+        serialize_leaving_soon_last_success_titles(updated_last_success_titles)
+    )
     db.add(settings_row)
     await db.commit()
 
@@ -4619,8 +4877,10 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
     (
         settings_row,
         enabled,
-        collection_base_title,
+        collection_titles,
         last_success_titles_by_config,
+        collection_sort,
+        collection_posters,
     ) = await _load_leaving_soon_collection_settings(db)
     if not enabled:
         await _cleanup_disabled_leaving_soon_collections(
@@ -4634,6 +4894,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
     (
         movie_expected_by_config,
         series_expected_by_config,
+        deadlines_by_config,
     ) = await _build_leaving_soon_expected_item_ids(db, configs)
     updated_last_success_titles = dict(last_success_titles_by_config)
     last_success_changed = False
@@ -4645,14 +4906,25 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         if service_client is None:
             continue
         service_label = f"{config.service_type.value} (config {config.id})"
-        previous_success_title = updated_last_success_titles.get(config.id)
+        previous_titles = updated_last_success_titles.get(config.id)
         service_success = True
 
-        # if this config last synced under a different title, clean it first.
-        if (
-            previous_success_title is not None
-            and previous_success_title != collection_base_title
-        ):
+        # if this config last synced under different titles, clean those first.
+        # only the halves that actually changed are removed, so renaming the
+        # movie collection leaves the series collection (and its artwork) alone.
+        stale_movie_title = (
+            previous_titles.movies
+            if previous_titles is not None
+            and previous_titles.movies != collection_titles.movies
+            else None
+        )
+        stale_series_title = (
+            previous_titles.series
+            if previous_titles is not None
+            and previous_titles.series != collection_titles.series
+            else None
+        )
+        if stale_movie_title or stale_series_title:
             delete_method = getattr(
                 service_client, "delete_leaving_soon_collections", None
             )
@@ -4660,17 +4932,22 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
                 service_success = False
                 LOG.warning(
                     f"Leaving Soon cleanup method missing for {service_label}; "
-                    f"cannot remove previous title {previous_success_title!r}"
+                    "cannot remove previous titles "
+                    f"{stale_movie_title!r} / {stale_series_title!r}"
                 )
             else:
                 delete_func = cast(Callable[..., Awaitable[Any]], delete_method)
                 try:
-                    await delete_func(base_title=previous_success_title)
+                    await delete_func(
+                        movie_title=stale_movie_title,
+                        series_title=stale_series_title,
+                    )
                 except Exception as e:
                     service_success = False
                     LOG.warning(
                         "Failed cleaning previous Leaving Soon collections for "
-                        f"{service_label} (title {previous_success_title!r}): {e}"
+                        f"{service_label} (titles {stale_movie_title!r} / "
+                        f"{stale_series_title!r}): {e}"
                     )
 
         sync_method = getattr(service_client, "sync_leaving_soon_collections", None)
@@ -4685,9 +4962,14 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         series_item_ids = series_expected_by_config.get(config.id, set())
         try:
             await sync_func(
-                base_title=collection_base_title,
+                movie_title=collection_titles.movies,
+                series_title=collection_titles.series,
                 movie_item_ids=movie_item_ids,
                 series_item_ids=series_item_ids,
+                collection_sort=collection_sort,
+                item_deadlines=deadlines_by_config.get(config.id, {}),
+                movie_poster=collection_posters.movies,
+                series_poster=collection_posters.series,
             )
         except Exception as e:
             service_success = False
@@ -4697,10 +4979,10 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
 
         if not service_success:
             continue
-        if previous_success_title == collection_base_title:
+        if previous_titles == collection_titles:
             continue
 
-        updated_last_success_titles[config.id] = collection_base_title
+        updated_last_success_titles[config.id] = collection_titles
         last_success_changed = True
 
     if not last_success_changed:
@@ -4708,12 +4990,59 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
     if settings_row is None:
         return
 
-    settings_row.leaving_soon_last_success_titles = {
-        str(config_id): title
-        for config_id, title in updated_last_success_titles.items()
-    }
+    settings_row.leaving_soon_last_success_titles = (
+        serialize_leaving_soon_last_success_titles(updated_last_success_titles)
+    )
     db.add(settings_row)
     await db.commit()
+
+
+async def push_leaving_soon_posters(db: AsyncSession) -> None:
+    """Push the configured posters onto every managed collection that exists.
+
+    The immediate write behind a poster upload, so artwork shows up without
+    waiting for the next scan. Membership is untouched - a collection that does
+    not exist yet simply gets its poster when the sync creates it.
+
+    Best-effort throughout: this runs inside an admin's settings request, and a
+    media server being unreachable is not a reason to reject the upload that
+    already succeeded.
+    """
+    (
+        settings_row,
+        enabled,
+        collection_titles,
+        _last_success_titles,
+        _collection_sort,
+        collection_posters,
+    ) = await _load_leaving_soon_collection_settings(db)
+    if settings_row is None or not enabled or not collection_posters:
+        return
+
+    for config in await _get_enabled_leaving_soon_configs(db):
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
+        if service_client is None:
+            continue
+        apply_method = getattr(
+            service_client, "apply_leaving_soon_collection_posters", None
+        )
+        if not callable(apply_method):
+            continue
+        apply_func = cast(Callable[..., Awaitable[Any]], apply_method)
+        try:
+            await apply_func(
+                movie_title=collection_titles.movies,
+                series_title=collection_titles.series,
+                movie_poster=collection_posters.movies,
+                series_poster=collection_posters.series,
+            )
+        except Exception as e:
+            LOG.warning(
+                "Failed pushing Leaving Soon collection posters to "
+                f"{config.service_type.value} (config {config.id}): {e}"
+            )
 
 
 async def _build_leaving_soon_prune_item_ids(
@@ -4859,8 +5188,10 @@ async def _prune_leaving_soon_before_candidate_actions(
         (
             _settings_row,
             enabled,
-            collection_base_title,
+            collection_titles,
             last_success_titles,
+            collection_sort,
+            collection_posters,
         ) = await _load_leaving_soon_collection_settings(db)
         if not enabled:
             return
@@ -4878,8 +5209,11 @@ async def _prune_leaving_soon_before_candidate_actions(
             continue
 
         service_label = f"{config.service_type.value} (config {config.id})"
-        titles = {
-            collection_base_title,
+        # prune under the configured titles and under whatever this config last
+        # synced as, so a rename that has not been re-synced yet still gets its
+        # doomed items pulled out before the media action runs.
+        title_pairs = {
+            collection_titles,
             *(
                 [last_success_titles[config.id]]
                 if config.id in last_success_titles
@@ -4903,17 +5237,24 @@ async def _prune_leaving_soon_before_candidate_actions(
                 f"{service_label} Leaving Soon prune method is unavailable"
             )
         prune_func = cast(Callable[..., Awaitable[Any]], prune_method)
-        for title in titles:
+        for titles in title_pairs:
             try:
+                # no deadline map here: pruning only needs to re-apply the sort
+                # preference to whatever it rebuilds. The reconcile that runs
+                # straight after the media action restores the exact order.
                 await prune_func(
-                    base_title=title,
+                    movie_title=titles.movies,
+                    series_title=titles.series,
                     movie_item_ids=service_movie_ids,
                     series_item_ids=service_series_ids,
+                    collection_sort=collection_sort,
+                    movie_poster=collection_posters.movies,
+                    series_poster=collection_posters.series,
                 )
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed pruning {service_label} Leaving Soon collection "
-                    f"{title!r}: {e}"
+                    f"Failed pruning {service_label} Leaving Soon collections "
+                    f"{titles.movies!r} / {titles.series!r}: {e}"
                 ) from e
 
 

@@ -81,3 +81,76 @@ def save_picture_from_bytes(
         # clean up the new file if it was created but something failed
         picture_path.unlink(missing_ok=True)
         raise
+
+
+def delete_collection_poster(image_path: PathLike[str]) -> None:
+    """Remove a custom collection poster from the filesystem.
+
+    Args:
+        image_path: Name of the image file with suffix.
+    """
+    try:
+        old = settings.collection_posters_dir / image_path
+        old.unlink(missing_ok=True)
+    except Exception as e:
+        LOG.error(f"Error deleting collection poster {image_path}: {e}")
+        raise
+
+
+def save_collection_poster_from_bytes(
+    image_bytes: bytes,
+    del_old_path: PathLike[str] | None = None,
+) -> str:
+    """Save a custom collection poster from bytes data.
+
+    Always re-encoded to JPEG: collection artwork is opaque, every media server
+    accepts JPEG, and it keeps one predictable suffix on disk. The bound is a
+    poster aspect rather than the avatar's square, so a 2:3 image is not
+    letterboxed into a thumbnail.
+
+    Args:
+        image_bytes: Raw image bytes
+        del_old_path: Optional path to the poster this one replaces
+
+    Returns:
+        The new poster filename
+    """
+    picture_fn = f"{uuid.uuid4().hex}.jpg"
+    picture_path = settings.collection_posters_dir_path / picture_fn
+
+    try:
+        # protect against decompression bombs
+        Image.MAX_IMAGE_PIXELS = 25_000_000  # ~5000x5000
+
+        # open image from bytes and verify it's a real image
+        verify_img = Image.open(BytesIO(image_bytes))
+        verify_img.verify()
+
+        # re-open after verify() (verify closes the file)
+        i = Image.open(BytesIO(image_bytes))
+
+        # flatten onto black so a transparent PNG or WebP does not turn into
+        # noise when the alpha channel is dropped for JPEG
+        if i.mode in {"RGBA", "LA", "P"}:
+            rgba = i.convert("RGBA")
+            img = Image.new("RGB", rgba.size, (0, 0, 0))
+            img.paste(rgba, mask=rgba.split()[-1])
+        else:
+            img = i.convert("RGB")
+
+        # cap at a poster-sized bound, preserving aspect ratio
+        if img.width > 1000 or img.height > 1500:
+            img.thumbnail((1000, 1500), resample=Image.Resampling.LANCZOS)
+
+        img.save(picture_path, format="JPEG", quality=90, optimize=True)
+
+        # delete the old poster if provided
+        if del_old_path:
+            delete_collection_poster(del_old_path)
+
+        return picture_fn
+    except Exception as e:
+        LOG.error(f"Error saving collection poster: {e}")
+        # clean up the new file if it was created but something failed
+        picture_path.unlink(missing_ok=True)
+        raise

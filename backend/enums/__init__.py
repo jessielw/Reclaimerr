@@ -1,6 +1,11 @@
 ﻿from .alerts import AlertLevel
 from .logging import LogLevel, LogSource
-from .media import MediaType, ProtectionRequestStatus, Service
+from .media import (
+    LeavingSoonCollectionSort,
+    MediaType,
+    ProtectionRequestStatus,
+    Service,
+)
 from .services import SeerrRequestStatus
 from .tasks import (
     BackgroundJobPriority,
@@ -25,6 +30,7 @@ __all__ = [
     "Service",
     "MediaType",
     "ProtectionRequestStatus",
+    "LeavingSoonCollectionSort",
     # tasks
     "TaskStatus",
     "BackgroundJobStatus",

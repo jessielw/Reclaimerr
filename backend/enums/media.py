@@ -23,3 +23,15 @@ class ProtectionRequestStatus(StrEnum):
     PENDING = auto()
     APPROVED = auto()
     DENIED = auto()
+
+
+class LeavingSoonCollectionSort(StrEnum):
+    """How items are ordered inside a managed Leaving Soon collection.
+
+    Only Plex can honor this. Emby and Jellyfin expose no custom BoxSet
+    ordering, so their clients accept the value and ignore it.
+    """
+
+    DEFAULT = auto()
+    ALPHA = auto()
+    LEAVING_SOONEST = auto()

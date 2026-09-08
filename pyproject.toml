@@ -33,6 +33,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.22",
     "uvicorn>=0.51.0",
+    "poethepoet>=0.48.0",
 ]
 
 [project.optional-dependencies]
@@ -80,3 +81,12 @@ pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.poe.tasks]
+typecheck = "basedpyright"
+lint = "ruff check ."
+lint-fix = "ruff check . --fix"
+format-check = "ruff format . --check"
+format-code = "ruff format ."
+format.sequence = ["lint-fix", "format-code"]
+sync-dev = "scripts/sync_dev.py"

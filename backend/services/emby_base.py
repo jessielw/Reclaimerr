@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from base64 import b64encode
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,7 +29,7 @@ from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.enums import MediaType, Service
+from backend.enums import LeavingSoonCollectionSort, MediaType, Service
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -46,7 +47,6 @@ from backend.models.services.emby_base import (
     EmbyUserDataBase,
 )
 from backend.models.services.health import HealthResult
-from backend.utils.helpers import normalize_leaving_soon_collection_title
 
 RawSQL: TypeAlias = str
 JsonDict: TypeAlias = dict[str, Any]
@@ -212,56 +212,94 @@ class EmbyServiceBase:
     async def sync_leaving_soon_collections(
         self,
         *,
-        base_title: str,
+        movie_title: str | None,
+        series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        item_deadlines: Mapping[str, datetime] | None = None,
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
-        """Sync managed Leaving Soon collections for movies and series."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._sync_leaving_soon_collection(
-            collection_title=f"{collection_base} [Movies]",
-            expected_item_ids=movie_item_ids,
-            include_item_types="Movie",
-        )
-        await self._sync_leaving_soon_collection(
-            collection_title=f"{collection_base} [Series]",
-            expected_item_ids=series_item_ids,
-            include_item_types="Series",
-        )
+        """Sync managed Leaving Soon collections for movies and series.
 
-    async def delete_leaving_soon_collections(self, *, base_title: str) -> None:
-        """Delete managed Leaving Soon collections for a specific base title."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._sync_leaving_soon_collection(
-            collection_title=f"{collection_base} [Movies]",
-            expected_item_ids=set(),
-            include_item_types="Movie",
-        )
-        await self._sync_leaving_soon_collection(
-            collection_title=f"{collection_base} [Series]",
-            expected_item_ids=set(),
-            include_item_types="Series",
+        Titles are supplied by the caller; a blank title skips that half. The
+        posters, when given, are re-applied on every sync. A BoxSet keeps its
+        artwork - unlike Plex, nothing here rebuilds the collection - but the
+        re-push keeps all three servers behaving the same way, so the settings
+        page can make one promise about what wins.
+
+        `collection_sort` and `item_deadlines` are accepted and ignored. A
+        BoxSet only exposes DisplayOrder (PremiereDate or SortName) and has no
+        item-move endpoint, so an explicit order cannot be expressed; the only
+        way to force one would be rewriting each item's ForcedSortName, which
+        would reorder the user's whole library, not just this collection.
+        """
+        del collection_sort, item_deadlines
+        if movie_title := str(movie_title or "").strip():
+            await self._sync_leaving_soon_collection(
+                collection_title=movie_title,
+                expected_item_ids=movie_item_ids,
+                include_item_types="Movie",
+                poster=movie_poster,
+            )
+        if series_title := str(series_title or "").strip():
+            await self._sync_leaving_soon_collection(
+                collection_title=series_title,
+                expected_item_ids=series_item_ids,
+                include_item_types="Series",
+                poster=series_poster,
+            )
+
+    async def delete_leaving_soon_collections(
+        self,
+        *,
+        movie_title: str | None = None,
+        series_title: str | None = None,
+    ) -> None:
+        """Delete managed Leaving Soon collections by title."""
+        await self.sync_leaving_soon_collections(
+            movie_title=movie_title,
+            series_title=series_title,
+            movie_item_ids=set(),
+            series_item_ids=set(),
         )
 
     async def prune_leaving_soon_items(
         self,
         *,
-        base_title: str,
+        movie_title: str | None,
+        series_title: str | None,
         movie_item_ids: set[str],
         series_item_ids: set[str],
+        collection_sort: LeavingSoonCollectionSort = (
+            LeavingSoonCollectionSort.DEFAULT
+        ),
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
-        """Remove items from managed collections before destructive media actions."""
-        collection_base = normalize_leaving_soon_collection_title(base_title)
-        await self._prune_leaving_soon_collection(
-            collection_title=f"{collection_base} [Movies]",
-            item_ids=movie_item_ids,
-            include_item_types="Movie",
-        )
-        await self._prune_leaving_soon_collection(
-            collection_title=f"{collection_base} [Series]",
-            item_ids=series_item_ids,
-            include_item_types="Series",
-        )
+        """Remove items from managed collections before destructive media actions.
+
+        `collection_sort` is accepted and ignored; see
+        `sync_leaving_soon_collections`. The posters are ignored too: a prune
+        removes items from the existing BoxSet rather than rebuilding it, so its
+        artwork is never lost and there is nothing to restore.
+        """
+        del collection_sort, movie_poster, series_poster
+        if movie_title := str(movie_title or "").strip():
+            await self._prune_leaving_soon_collection(
+                collection_title=movie_title,
+                item_ids=movie_item_ids,
+                include_item_types="Movie",
+            )
+        if series_title := str(series_title or "").strip():
+            await self._prune_leaving_soon_collection(
+                collection_title=series_title,
+                item_ids=series_item_ids,
+                include_item_types="Series",
+            )
 
     async def _prune_leaving_soon_collection(
         self,
@@ -295,6 +333,7 @@ class EmbyServiceBase:
         collection_title: str,
         expected_item_ids: set[str],
         include_item_types: str,
+        poster: bytes | None = None,
     ) -> None:
         normalized_expected_ids = {
             str(item_id).strip()
@@ -318,12 +357,21 @@ class EmbyServiceBase:
             )
             if not normalized_expected_ids:
                 return
-            await self._create_collection(
+            new_collection_id = await self._create_collection(
                 collection_title=collection_title,
                 item_ids=normalized_expected_ids,
+                resolve_id=poster is not None,
             )
+            if poster is not None and new_collection_id is not None:
+                await self._upload_collection_poster(
+                    collection_id=new_collection_id, poster=poster
+                )
             return
         collection_id = existing_collection_ids[0]
+        if poster is not None:
+            await self._upload_collection_poster(
+                collection_id=collection_id, poster=poster
+            )
 
         current_item_ids = await self._get_collection_item_ids(
             collection_id=collection_id,
@@ -517,8 +565,16 @@ class EmbyServiceBase:
         }
 
     async def _create_collection(
-        self, *, collection_title: str, item_ids: set[str]
-    ) -> None:
+        self, *, collection_title: str, item_ids: set[str], resolve_id: bool = False
+    ) -> str | None:
+        """Create a BoxSet from the given item ids.
+
+        Returns the new collection's id so the caller can apply artwork to it,
+        or None when the server answered without one. `resolve_id` opts into the
+        by-title lookup that recovers a missing id - a paginated scan of every
+        BoxSet on the server, so it is only worth paying when the caller has
+        something to do with the id. A multi-batch create needs it regardless.
+        """
         sorted_item_ids = sorted(item_ids)
         chunks = [
             sorted_item_ids[start : start + _COLLECTION_MUTATION_BATCH_SIZE]
@@ -529,7 +585,7 @@ class EmbyServiceBase:
             )
         ]
         if not chunks:
-            return
+            return None
 
         endpoint = f"{self.service_url}/Collections"
         response: Any | None = None
@@ -558,9 +614,6 @@ class EmbyServiceBase:
                 )
             ) from e
 
-        if len(chunks) == 1:
-            return
-
         collection_id: str | None = None
         try:
             payload = response.json()
@@ -569,9 +622,15 @@ class EmbyServiceBase:
         except Exception:
             collection_id = None
 
-        if collection_id is None:
+        if collection_id is None and (resolve_id or len(chunks) > 1):
             collection_ids = await self._find_collection_ids_by_title(collection_title)
             collection_id = collection_ids[0] if collection_ids else None
+
+        if len(chunks) == 1:
+            # every item landed in the create itself; an unresolved id only
+            # costs the caller its artwork, so it is not worth failing over
+            return collection_id
+
         if collection_id is None:
             raise RuntimeError(
                 f"Created {self.service_type.value} collection {collection_title!r} "
@@ -582,6 +641,59 @@ class EmbyServiceBase:
             collection_id=collection_id,
             item_ids={item_id for chunk in chunks[1:] for item_id in chunk},
         )
+        return collection_id
+
+    async def _upload_collection_poster(
+        self, *, collection_id: str, poster: bytes
+    ) -> None:
+        """Set a collection's primary image.
+
+        Emby and Jellyfin both take the image base64 encoded in the request
+        body, not as multipart, with the content type naming the real format.
+
+        Best-effort: a server that rejects the upload must not fail the sync, or
+        the caller would stop recording the titles it just synced and rename
+        cleanup would stall.
+        """
+        try:
+            response = await self.session.post(
+                f"{self.service_url}/Items/{collection_id}/Images/Primary",
+                data=b64encode(poster),
+                headers={"Content-Type": "image/jpeg"},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except Exception as e:
+            LOG.warning(
+                f"Failed uploading {self.service_type.value} collection poster "
+                f"to {collection_id}: {e}"
+            )
+
+    async def apply_leaving_soon_collection_posters(
+        self,
+        *,
+        movie_title: str | None,
+        series_title: str | None,
+        movie_poster: bytes | None,
+        series_poster: bytes | None,
+    ) -> None:
+        """Push posters onto the managed collections without touching membership.
+
+        Used for the immediate write when an admin uploads a poster, so it shows
+        up without waiting for the next scan.
+        """
+        for collection_title, poster in (
+            (movie_title, movie_poster),
+            (series_title, series_poster),
+        ):
+            if poster is None:
+                continue
+            if not (title := str(collection_title or "").strip()):
+                continue
+            for collection_id in await self._find_collection_ids_by_title(title):
+                await self._upload_collection_poster(
+                    collection_id=collection_id, poster=poster
+                )
 
     async def _add_items_to_collection(
         self, *, collection_id: str, item_ids: set[str]

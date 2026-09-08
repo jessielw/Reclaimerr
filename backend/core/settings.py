@@ -45,6 +45,12 @@ class Settings(BaseSettings):
         default=Path("./data/static/avatars"), description="Directory for user avatars."
     )
 
+    # managed collection posters directory
+    collection_posters_dir: Path = Field(
+        default=Path("./data/static/collection-posters"),
+        description="Directory for custom media server collection posters.",
+    )
+
     # logging
     log_level: str = Field(
         default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL."
@@ -311,6 +317,12 @@ class Settings(BaseSettings):
         """Get avatars directory as Path object (ensures directory exists)."""
         self.avatars_dir.mkdir(parents=True, exist_ok=True)
         return self.avatars_dir
+
+    @property
+    def collection_posters_dir_path(self) -> Path:
+        """Get collection posters directory as Path object (ensures it exists)."""
+        self.collection_posters_dir.mkdir(parents=True, exist_ok=True)
+        return self.collection_posters_dir
 
     @property
     def db_path(self) -> Path:
