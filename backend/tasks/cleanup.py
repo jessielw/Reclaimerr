@@ -61,6 +61,7 @@ from backend.core.rule_engine import (
 )
 from backend.core.seerr_identity import seerr_config_id_of, seerr_user_id_of
 from backend.core.service_manager import service_manager
+from backend.core.settings import settings
 from backend.core.task_tracking import track_task_execution
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import (
@@ -159,6 +160,7 @@ from backend.services.watch_identity import (
     load_watch_user_alias_index,
 )
 from backend.utils.helpers import (
+    LeavingSoonPosters,
     LeavingSoonTitles,
     normalize_leaving_soon_collection_sort,
     normalize_leaving_soon_movie_title,
@@ -4410,6 +4412,38 @@ def serialize_leaving_soon_last_success_titles(
     }
 
 
+def read_leaving_soon_poster(filename: object) -> bytes | None:
+    """Read a stored collection poster off disk.
+
+    Returns None for an unset column and for a filename whose file has gone
+    missing, so artwork deleted out from under Reclaimerr degrades to "no custom
+    poster" instead of failing the sync that was about to push it.
+    """
+    if not (name := str(filename or "").strip()):
+        return None
+    # the column holds a bare filename; anything else is not ours to read
+    if Path(name).name != name:
+        LOG.warning(f"Ignoring unexpected Leaving Soon poster path {name!r}")
+        return None
+    poster_path = settings.collection_posters_dir / name
+    try:
+        return poster_path.read_bytes()
+    except FileNotFoundError:
+        LOG.warning(f"Leaving Soon poster {name!r} is missing from disk")
+        return None
+    except Exception as e:
+        LOG.warning(f"Failed reading Leaving Soon poster {name!r}: {e}")
+        return None
+
+
+def load_leaving_soon_posters(settings_row: GeneralSettings) -> LeavingSoonPosters:
+    """Read both configured posters once, for reuse across every server."""
+    return LeavingSoonPosters(
+        movies=read_leaving_soon_poster(settings_row.leaving_soon_movie_poster_path),
+        series=read_leaving_soon_poster(settings_row.leaving_soon_series_poster_path),
+    )
+
+
 async def _load_leaving_soon_collection_settings(
     db: AsyncSession,
 ) -> tuple[
@@ -4418,6 +4452,7 @@ async def _load_leaving_soon_collection_settings(
     LeavingSoonTitles,
     dict[int, LeavingSoonTitles],
     LeavingSoonCollectionSort,
+    LeavingSoonPosters,
 ]:
     settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
     default_titles = LeavingSoonTitles(
@@ -4431,6 +4466,7 @@ async def _load_leaving_soon_collection_settings(
             default_titles,
             {},
             LeavingSoonCollectionSort.DEFAULT,
+            LeavingSoonPosters(),
         )
     collection_titles = LeavingSoonTitles(
         movies=normalize_leaving_soon_movie_title(
@@ -4451,6 +4487,7 @@ async def _load_leaving_soon_collection_settings(
         normalize_leaving_soon_collection_sort(
             settings_row.leaving_soon_collection_sort
         ),
+        load_leaving_soon_posters(settings_row),
     )
 
 
@@ -4843,6 +4880,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         collection_titles,
         last_success_titles_by_config,
         collection_sort,
+        collection_posters,
     ) = await _load_leaving_soon_collection_settings(db)
     if not enabled:
         await _cleanup_disabled_leaving_soon_collections(
@@ -4930,6 +4968,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
                 series_item_ids=series_item_ids,
                 collection_sort=collection_sort,
                 item_deadlines=deadlines_by_config.get(config.id, {}),
+                movie_poster=collection_posters.movies,
+                series_poster=collection_posters.series,
             )
         except Exception as e:
             service_success = False
@@ -4955,6 +4995,54 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
     )
     db.add(settings_row)
     await db.commit()
+
+
+async def push_leaving_soon_posters(db: AsyncSession) -> None:
+    """Push the configured posters onto every managed collection that exists.
+
+    The immediate write behind a poster upload, so artwork shows up without
+    waiting for the next scan. Membership is untouched - a collection that does
+    not exist yet simply gets its poster when the sync creates it.
+
+    Best-effort throughout: this runs inside an admin's settings request, and a
+    media server being unreachable is not a reason to reject the upload that
+    already succeeded.
+    """
+    (
+        settings_row,
+        enabled,
+        collection_titles,
+        _last_success_titles,
+        _collection_sort,
+        collection_posters,
+    ) = await _load_leaving_soon_collection_settings(db)
+    if settings_row is None or not enabled or not collection_posters:
+        return
+
+    for config in await _get_enabled_leaving_soon_configs(db):
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
+        if service_client is None:
+            continue
+        apply_method = getattr(
+            service_client, "apply_leaving_soon_collection_posters", None
+        )
+        if not callable(apply_method):
+            continue
+        apply_func = cast(Callable[..., Awaitable[Any]], apply_method)
+        try:
+            await apply_func(
+                movie_title=collection_titles.movies,
+                series_title=collection_titles.series,
+                movie_poster=collection_posters.movies,
+                series_poster=collection_posters.series,
+            )
+        except Exception as e:
+            LOG.warning(
+                "Failed pushing Leaving Soon collection posters to "
+                f"{config.service_type.value} (config {config.id}): {e}"
+            )
 
 
 async def _build_leaving_soon_prune_item_ids(
@@ -5103,6 +5191,7 @@ async def _prune_leaving_soon_before_candidate_actions(
             collection_titles,
             last_success_titles,
             collection_sort,
+            collection_posters,
         ) = await _load_leaving_soon_collection_settings(db)
         if not enabled:
             return
@@ -5159,6 +5248,8 @@ async def _prune_leaving_soon_before_candidate_actions(
                     movie_item_ids=service_movie_ids,
                     series_item_ids=service_series_ids,
                     collection_sort=collection_sort,
+                    movie_poster=collection_posters.movies,
+                    series_poster=collection_posters.series,
                 )
             except Exception as e:
                 raise RuntimeError(

@@ -266,12 +266,17 @@ class PlexService:
             LeavingSoonCollectionSort.DEFAULT
         ),
         item_deadlines: Mapping[str, datetime] | None = None,
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
         """Sync managed Leaving Soon collections for movies and series.
 
         Titles are supplied by the caller; a blank title skips that half.
         `item_deadlines` maps a rating key to its auto-delete deadline and is
-        only read for the `leaving_soonest` sort.
+        only read for the `leaving_soonest` sort. The posters, when given, are
+        re-applied to every collection this sync creates - Plex rebuilds these
+        collections from scratch each run, so artwork does not survive on its
+        own.
         """
         if movie_title := str(movie_title or "").strip():
             await self._sync_leaving_soon_collection_for_type(
@@ -280,6 +285,7 @@ class PlexService:
                 expected_item_ids=movie_item_ids,
                 collection_sort=collection_sort,
                 item_deadlines=item_deadlines,
+                poster=movie_poster,
             )
         if series_title := str(series_title or "").strip():
             await self._sync_leaving_soon_collection_for_type(
@@ -288,6 +294,7 @@ class PlexService:
                 expected_item_ids=series_item_ids,
                 collection_sort=collection_sort,
                 item_deadlines=item_deadlines,
+                poster=series_poster,
             )
 
     async def delete_leaving_soon_collections(
@@ -314,6 +321,8 @@ class PlexService:
         collection_sort: LeavingSoonCollectionSort = (
             LeavingSoonCollectionSort.DEFAULT
         ),
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
         """Remove items from managed collections before destructive media actions."""
         if movie_title := str(movie_title or "").strip():
@@ -322,6 +331,7 @@ class PlexService:
                 collection_title=movie_title,
                 item_ids=movie_item_ids,
                 collection_sort=collection_sort,
+                poster=movie_poster,
             )
         if series_title := str(series_title or "").strip():
             await self._prune_leaving_soon_collection_for_type(
@@ -329,6 +339,7 @@ class PlexService:
                 collection_title=series_title,
                 item_ids=series_item_ids,
                 collection_sort=collection_sort,
+                poster=series_poster,
             )
 
     async def _prune_leaving_soon_collection_for_type(
@@ -340,6 +351,7 @@ class PlexService:
         collection_sort: LeavingSoonCollectionSort = (
             LeavingSoonCollectionSort.DEFAULT
         ),
+        poster: bytes | None = None,
     ) -> None:
         normalized_item_ids = {
             str(item_id).strip() for item_id in item_ids if str(item_id).strip()
@@ -378,6 +390,12 @@ class PlexService:
                         collection_title=collection_title,
                         item_ids=remaining_item_ids,
                     )
+                    new_collection_id = await self._apply_collection_poster(
+                        collection_id=new_collection_id,
+                        section_id=section_id,
+                        collection_title=collection_title,
+                        poster=poster,
+                    )
                     await self._apply_collection_sort(
                         collection_id=new_collection_id,
                         section_id=section_id,
@@ -396,6 +414,7 @@ class PlexService:
             LeavingSoonCollectionSort.DEFAULT
         ),
         item_deadlines: Mapping[str, datetime] | None = None,
+        poster: bytes | None = None,
     ) -> None:
         section_ids = await self._get_section_ids_by_type(section_type)
         if not section_ids:
@@ -437,6 +456,12 @@ class PlexService:
                 section_type=section_type,
                 collection_title=collection_title,
                 item_ids=ordered_item_ids,
+            )
+            new_collection_id = await self._apply_collection_poster(
+                collection_id=new_collection_id,
+                section_id=section_id,
+                collection_title=collection_title,
+                poster=poster,
             )
             await self._apply_collection_sort(
                 collection_id=new_collection_id,
@@ -562,6 +587,103 @@ class PlexService:
             )
         return None
 
+    async def _resolve_collection_id(
+        self, *, collection_id: str | None, section_id: str, collection_title: str
+    ) -> str | None:
+        """Recover a collection's rating key when the create did not return one.
+
+        Passes an id straight back through, so a caller that already has one
+        pays nothing for asking.
+        """
+        if collection_id is not None:
+            return collection_id
+        collection_ids = await self._find_collection_ids_by_title(
+            section_id=section_id,
+            collection_title=collection_title,
+        )
+        return collection_ids[0] if collection_ids else None
+
+    async def _upload_collection_poster(
+        self, *, collection_id: str, poster: bytes
+    ) -> None:
+        """Push custom artwork onto a collection, selecting it as the poster.
+
+        Best-effort: a server that rejects the upload must not fail the sync, or
+        the caller would stop recording the titles it just synced and rename
+        cleanup would stall.
+        """
+        try:
+            response = await self.session.post(
+                f"{self.plex_url}/library/metadata/{collection_id}/posters",
+                data=poster,
+                headers={"Content-Type": "image/jpeg"},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except Exception as e:
+            LOG.warning(
+                f"Failed uploading Plex collection poster to {collection_id}: {e}"
+            )
+
+    async def _apply_collection_poster(
+        self,
+        *,
+        collection_id: str | None,
+        section_id: str,
+        collection_title: str,
+        poster: bytes | None,
+    ) -> str | None:
+        """Upload the configured poster, returning the resolved collection id.
+
+        The id is handed back so the sort pass that follows does not repeat the
+        lookup that recovers it.
+        """
+        if poster is None:
+            return collection_id
+        collection_id = await self._resolve_collection_id(
+            collection_id=collection_id,
+            section_id=section_id,
+            collection_title=collection_title,
+        )
+        if collection_id is None:
+            LOG.warning(
+                "Could not resolve the new Plex collection "
+                f"{collection_title!r}; leaving its poster unset"
+            )
+            return None
+        await self._upload_collection_poster(collection_id=collection_id, poster=poster)
+        return collection_id
+
+    async def apply_leaving_soon_collection_posters(
+        self,
+        *,
+        movie_title: str | None,
+        series_title: str | None,
+        movie_poster: bytes | None,
+        series_poster: bytes | None,
+    ) -> None:
+        """Push posters onto the managed collections without touching membership.
+
+        Used for the immediate write when an admin uploads a poster, so it shows
+        up before the next scan rebuilds the collections.
+        """
+        for section_type, collection_title, poster in (
+            ("movie", movie_title, movie_poster),
+            ("show", series_title, series_poster),
+        ):
+            if poster is None:
+                continue
+            if not (title := str(collection_title or "").strip()):
+                continue
+            for section_id in await self._get_section_ids_by_type(section_type):
+                for collection_id in await self._find_collection_ids_by_title(
+                    section_id=section_id,
+                    collection_title=title,
+                ):
+                    await self._upload_collection_poster(
+                        collection_id=collection_id, poster=poster
+                    )
+
     async def _apply_collection_sort(
         self,
         *,
@@ -584,18 +706,17 @@ class PlexService:
         pref_value = _PLEX_COLLECTION_SORT_PREFS.get(collection_sort)
         if pref_value is None:
             return
+        collection_id = await self._resolve_collection_id(
+            collection_id=collection_id,
+            section_id=section_id,
+            collection_title=collection_title,
+        )
         if collection_id is None:
-            collection_ids = await self._find_collection_ids_by_title(
-                section_id=section_id,
-                collection_title=collection_title,
+            LOG.warning(
+                "Could not resolve the new Plex collection "
+                f"{collection_title!r}; leaving its sort order unset"
             )
-            if not collection_ids:
-                LOG.warning(
-                    "Could not resolve the new Plex collection "
-                    f"{collection_title!r}; leaving its sort order unset"
-                )
-                return
-            collection_id = collection_ids[0]
+            return
         try:
             response = await self.session.put(
                 f"{self.plex_url}/library/metadata/{collection_id}/prefs",

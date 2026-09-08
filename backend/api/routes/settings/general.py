@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -13,6 +22,10 @@ from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.image_handling import (
+    delete_collection_poster,
+    save_collection_poster_from_bytes,
+)
 from backend.database import get_db
 from backend.database.models import (
     GeneralSettings,
@@ -40,6 +53,7 @@ from backend.services.watch_identity import merge_directory_accounts
 from backend.tasks.cleanup import (
     LEAVING_SOON_MEDIA_SERVICES,
     normalize_leaving_soon_last_success_titles,
+    push_leaving_soon_posters,
     serialize_leaving_soon_last_success_titles,
 )
 from backend.utils.helpers import (
@@ -196,6 +210,10 @@ async def update_general_settings(
     settings.leaving_soon_movie_collection_title = current_leaving_soon_movie_title
     settings.leaving_soon_series_collection_title = current_leaving_soon_series_title
     settings.leaving_soon_collection_sort = request.leaving_soon_collection_sort.value
+    # leaving_soon_*_poster_path is deliberately not copied from the request:
+    # the poster upload and delete endpoints own those columns. A client that
+    # loaded this settings body before an upload would otherwise save its way
+    # over a poster it never knew about.
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
         await _cleanup_leaving_soon_collections_on_disable(db, settings)
 
@@ -207,6 +225,111 @@ async def update_general_settings(
     await db.commit()
     await db.refresh(settings)
     return GeneralSettingsResponse.model_validate(settings)
+
+
+_POSTER_COLUMNS: dict[str, str] = {
+    "movies": "leaving_soon_movie_poster_path",
+    "series": "leaving_soon_series_poster_path",
+}
+# JPEG, PNG, and WebP only - an animated poster is not a thing on any of the
+# three servers, and everything is re-encoded to JPEG anyway.
+_POSTER_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_POSTER_MAX_SIZE = 5 * 1024 * 1024
+
+
+async def _get_general_settings_row(db: AsyncSession) -> GeneralSettings:
+    settings = (await db.execute(select(GeneralSettings))).scalars().first()
+    if not settings:
+        raise HTTPException(status_code=404, detail="General settings not found")
+    return settings
+
+
+@router.post("/general/leaving-soon-poster/{kind}")
+async def upload_leaving_soon_poster(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    poster: UploadFile = File(...),
+) -> dict[str, str | None]:
+    """Upload the custom poster for one managed Leaving Soon collection."""
+    if not poster.content_type or poster.content_type not in _POSTER_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a JPEG, PNG, or WebP image",
+        )
+
+    contents = await poster.read()
+    if len(contents) > _POSTER_MAX_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image file must be smaller than 5 MB",
+        )
+
+    settings = await _get_general_settings_row(db)
+    column = _POSTER_COLUMNS[kind]
+    old_filename = getattr(settings, column)
+
+    # run CPU-bound image processing in thread pool to avoid blocking event loop
+    try:
+        filename = await asyncio.to_thread(
+            save_collection_poster_from_bytes,
+            contents,
+            old_filename,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not read that image: {e}",
+        ) from e
+
+    setattr(settings, column, filename)
+    settings.updated_at = datetime.now(UTC)
+    settings.updated_by_user_id = admin.id
+    db.add(settings)
+    await db.commit()
+
+    LOG.info(f"User {admin.username} uploaded the {kind} Leaving Soon poster")
+
+    # push it now so the collection does not wear stale artwork until the next
+    # scan; failures are logged per server rather than failing a saved upload
+    await push_leaving_soon_posters(db)
+
+    return {"message": "Poster uploaded successfully", "path": filename}
+
+
+@router.delete("/general/leaving-soon-poster/{kind}")
+async def delete_leaving_soon_poster(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str | None]:
+    """Clear the custom poster for one managed Leaving Soon collection.
+
+    The image on the media server is left as it is. On Plex it disappears on the
+    next sync, which rebuilds the collection from scratch; on Jellyfin and Emby
+    the last poster Reclaimerr pushed stays until it is changed there.
+    """
+    settings = await _get_general_settings_row(db)
+    column = _POSTER_COLUMNS[kind]
+    if (old_filename := getattr(settings, column)) is None:
+        return {"message": "No poster to remove", "path": None}
+
+    try:
+        delete_collection_poster(old_filename)
+    except Exception:
+        # the file is already unreachable or unremovable; dropping the reference
+        # is still the right outcome, so do not strand the setting on it
+        LOG.warning(f"Could not remove the {kind} Leaving Soon poster from disk")
+
+    setattr(settings, column, None)
+    settings.updated_at = datetime.now(UTC)
+    settings.updated_by_user_id = admin.id
+    db.add(settings)
+    await db.commit()
+
+    LOG.info(f"User {admin.username} removed the {kind} Leaving Soon poster")
+
+    return {"message": "Poster removed successfully", "path": None}
 
 
 @router.get(

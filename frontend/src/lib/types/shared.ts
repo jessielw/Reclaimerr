@@ -314,6 +314,10 @@ export interface GeneralSettings {
   leaving_soon_movie_collection_title: string;
   leaving_soon_series_collection_title: string;
   leaving_soon_collection_sort: LeavingSoonCollectionSort;
+  // filenames served from /static/collection-posters; managed by the poster
+  // upload and delete endpoints, never sent back on the settings PUT.
+  leaving_soon_movie_poster_path: string | null;
+  leaving_soon_series_poster_path: string | null;
 }
 
 // Plex only - Emby and Jellyfin expose no server-side collection ordering.

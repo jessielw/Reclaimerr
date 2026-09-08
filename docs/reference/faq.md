@@ -19,11 +19,15 @@ The most common reasons are:
 
 ## What does Leaving Soon do?
 
-Leaving Soon exposes a managed collection of items that are approaching their reclaim deadline. It is a collection view, not poster editing.
+Leaving Soon exposes a managed collection of items that are approaching their reclaim deadline.
 
 Reclaimerr manages exactly two collections per media server, one for movies and one for series. Both names are configurable under **Settings > General > Leaving Soon Collections** and default to `Leaving Soon [Movies]` and `Leaving Soon [Series]`. The two names must differ, because Jellyfin and Emby collections are global and a shared name would resolve to a single collection.
 
 Renaming a collection in Reclaimerr moves it: on the next scan the collection under the old name is deleted and rebuilt under the new one, so any artwork you set on it is lost. Renaming a collection **on the media server** instead is not supported - Reclaimerr finds its collections by name and will simply create a new one.
+
+**Custom collection posters** let you replace the cover art a media server generates from the collection's contents. Upload a JPEG, PNG, or WebP up to 5 MB per collection under **Settings > General > Leaving Soon Collections**; the image is re-encoded to JPEG, stored under `data/static/collection-posters`, and pushed to every enabled Plex, Jellyfin, and Emby server straight away. A poster is saved the moment you pick it - there is no Save step for it.
+
+Reclaimerr re-applies the poster on **every sync**, because Plex deletes and rebuilds these collections on each run and artwork would otherwise vanish. That means Reclaimerr wins against any other tool that manages the same collection's artwork, such as Kometa or Posterizarr. Removing a poster only stops Reclaimerr pushing it: on Plex it disappears at the next sync, while on Jellyfin and Emby the last poster pushed stays until you change it on the server.
 
 **Collection Sort** decides the order of items inside the collection. `Server default` leaves whatever ordering the collection already has alone, `Alphabetical` sorts by title, and `Leaving soonest first` puts whatever disappears next at the front. This is **Plex only**: Plex stores a collection's order on the server, while Jellyfin and Emby have no equivalent - a collection there is ordered by whatever each client decides - so the setting is ignored on those servers.
 

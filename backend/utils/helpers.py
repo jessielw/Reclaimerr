@@ -11,6 +11,7 @@ __all__ = [
     "DEFAULT_LEAVING_SOON_MOVIE_TITLE",
     "DEFAULT_LEAVING_SOON_SERIES_TITLE",
     "MAX_LEAVING_SOON_TITLE_LENGTH",
+    "LeavingSoonPosters",
     "LeavingSoonTitles",
     "leaving_soon_titles_from_base_title",
     "normalize_leaving_soon_collection_sort",
@@ -35,6 +36,22 @@ class LeavingSoonTitles:
 
     def as_dict(self) -> dict[str, str]:
         return {"movies": self.movies, "series": self.series}
+
+
+@dataclass(frozen=True, slots=True)
+class LeavingSoonPosters:
+    """Custom artwork for the managed collections, already read off disk.
+
+    Bytes rather than paths so the media server clients stay free of filesystem
+    concerns, and so one task run reads each file once no matter how many
+    servers it pushes to.
+    """
+
+    movies: bytes | None = None
+    series: bytes | None = None
+
+    def __bool__(self) -> bool:
+        return self.movies is not None or self.series is not None
 
 
 def _normalize_title(value: object, default: str) -> str:

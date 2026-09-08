@@ -103,7 +103,12 @@ class LeavingSoonAdapterPruneTests(unittest.IsolatedAsyncioTestCase):
             async def _apply_collection_sort(self, **kwargs: Any) -> None:
                 self.sorted_calls.append(kwargs)
 
+            async def _apply_collection_poster(self, **kwargs: Any) -> str | None:
+                self.poster_calls.append(kwargs)
+                return kwargs["collection_id"]
+
         fake = FakePlex()
+        fake.poster_calls = []  # type: ignore[attr-defined]
         fake.sorted_calls = []  # type: ignore[attr-defined]
         await PlexService.prune_leaving_soon_items(
             fake,  # type: ignore[arg-type]
@@ -135,6 +140,19 @@ class LeavingSoonAdapterPruneTests(unittest.IsolatedAsyncioTestCase):
                     "collection_title": "Leaving Soon [Movies]",
                     "collection_sort": LeavingSoonCollectionSort.DEFAULT,
                     "ordered_item_ids": ["keep-b", "keep-a"],
+                }
+            ],
+        )
+        # the rebuild is offered the poster too - a prune deletes and recreates
+        # the collection, so artwork is lost here exactly as it is on a sync
+        self.assertEqual(
+            fake.poster_calls,  # type: ignore[attr-defined]
+            [
+                {
+                    "collection_id": "collection-2",
+                    "section_id": "movies",
+                    "collection_title": "Leaving Soon [Movies]",
+                    "poster": None,
                 }
             ],
         )
@@ -730,6 +748,24 @@ class LeavingSoonPlexCollectionSortTests(unittest.IsolatedAsyncioTestCase):
                     **kwargs,
                 )
 
+            async def _resolve_collection_id(self, **kwargs: Any) -> str | None:
+                return await PlexService._resolve_collection_id(
+                    self,  # type: ignore[arg-type]
+                    **kwargs,
+                )
+
+            async def _apply_collection_poster(self, **kwargs: Any) -> str | None:
+                return await PlexService._apply_collection_poster(
+                    self,  # type: ignore[arg-type]
+                    **kwargs,
+                )
+
+            async def _upload_collection_poster(self, **kwargs: Any) -> None:
+                await PlexService._upload_collection_poster(
+                    self,  # type: ignore[arg-type]
+                    **kwargs,
+                )
+
             async def _reorder_collection_items(self, **kwargs: Any) -> None:
                 await PlexService._reorder_collection_items(
                     self,  # type: ignore[arg-type]
@@ -866,6 +902,7 @@ class LeavingSoonEmbySortIsIgnoredTests(unittest.IsolatedAsyncioTestCase):
                     "collection_title": "Leaving Soon [Movies]",
                     "expected_item_ids": {"b", "a"},
                     "include_item_types": "Movie",
+                    "poster": None,
                 }
             ],
         )

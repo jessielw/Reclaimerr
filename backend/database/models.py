@@ -407,6 +407,15 @@ class GeneralSettings(Base):
     leaving_soon_collection_sort: Mapped[str] = mapped_column(
         String(32), default=LeavingSoonCollectionSort.DEFAULT.value
     )
+    # custom collection artwork; filenames under settings.collection_posters_dir,
+    # not paths. Written only by the poster upload/delete endpoints - the general
+    # settings PUT deliberately leaves them alone.
+    leaving_soon_movie_poster_path: Mapped[str | None] = mapped_column(
+        String(255), default=None
+    )
+    leaving_soon_series_poster_path: Mapped[str | None] = mapped_column(
+        String(255), default=None
+    )
     # {service_config_id: {"movies": <title>, "series": <title>}}
     leaving_soon_last_success_titles: Mapped[dict[str, dict[str, str]]] = mapped_column(
         JSON, default_factory=dict

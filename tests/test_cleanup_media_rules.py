@@ -4,6 +4,7 @@ import unittest
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -366,6 +367,8 @@ class _LeavingSoonSyncServiceFake:
             LeavingSoonCollectionSort.DEFAULT
         ),
         item_deadlines: Mapping[str, datetime] | None = None,
+        movie_poster: bytes | None = None,
+        series_poster: bytes | None = None,
     ) -> None:
         if self._fail_sync:
             raise RuntimeError("sync failure")
@@ -377,6 +380,8 @@ class _LeavingSoonSyncServiceFake:
                 "series_item_ids": set(series_item_ids),
                 "collection_sort": collection_sort,
                 "item_deadlines": dict(item_deadlines or {}),
+                "movie_poster": movie_poster,
+                "series_poster": series_poster,
             }
         )
 
@@ -5885,6 +5890,78 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     }
                 },
             )
+
+    async def test_scan_hands_configured_posters_to_the_sync(self) -> None:
+        # Plex rebuilds these collections on every run, so the poster has to
+        # travel with the sync or the artwork dies with the old collection
+        async with self._sessionmaker() as db:
+            settings = GeneralSettings(
+                leaving_soon_enabled=True,
+                leaving_soon_movie_collection_title="Leaving Soon [Movies]",
+                leaving_soon_series_collection_title="Leaving Soon [Series]",
+            )
+            settings.leaving_soon_movie_poster_path = "movies.jpg"
+            settings.leaving_soon_series_poster_path = "missing.jpg"
+            rule = _make_rule(
+                MediaType.MOVIE,
+                min_size=1,
+                include_never_watched=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=5011, size=3 * 1024**3)
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                name="Plex",
+                enabled=True,
+                is_main=True,
+            )
+            db.add_all([settings, rule, movie, plex_config])
+            await db.flush()
+            plex_config_id = plex_config.id
+
+            version = _make_movie_version(
+                service_media_id="mv-5011",
+                service_item_id="plex-item-5011",
+            )
+            version.movie_id = movie.id
+            version.service = Service.PLEX
+            db.add(version)
+            await db.commit()
+
+        poster_root = TemporaryDirectory()
+        self.addCleanup(poster_root.cleanup)
+        poster_dir = Path(poster_root.name)
+        (poster_dir / "movies.jpg").write_bytes(b"movie-poster-bytes")
+
+        fake_plex = _LeavingSoonSyncServiceFake()
+        previous_plex = cleanup_tasks.service_manager._plex
+        previous_jellyfin = cleanup_tasks.service_manager._jellyfin
+        previous_emby = cleanup_tasks.service_manager._emby
+        previous_plex_clients = cleanup_tasks.service_manager._plex_clients
+        cleanup_tasks.service_manager._plex = fake_plex  # type: ignore[assignment]
+        cleanup_tasks.service_manager._jellyfin = None
+        cleanup_tasks.service_manager._emby = None
+        cleanup_tasks.service_manager._plex_clients = {plex_config_id: fake_plex}  # type: ignore[dict-item]
+        try:
+            with patch.object(
+                cleanup_tasks.settings, "collection_posters_dir", poster_dir
+            ):
+                async with self._sessionmaker() as db:
+                    result = await _scan_with_db(db)
+                    self.assertEqual(result, (1, 0, 0))
+        finally:
+            cleanup_tasks.service_manager._plex = previous_plex
+            cleanup_tasks.service_manager._jellyfin = previous_jellyfin
+            cleanup_tasks.service_manager._emby = previous_emby
+            cleanup_tasks.service_manager._plex_clients = previous_plex_clients
+
+        self.assertEqual(len(fake_plex.calls), 1)
+        call = fake_plex.calls[0]
+        self.assertEqual(call["movie_poster"], b"movie-poster-bytes")
+        # a poster whose file has gone missing degrades to no artwork rather
+        # than failing the sync it was about to travel with
+        self.assertIsNone(call["series_poster"])
 
     async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
         async with self._sessionmaker() as db:

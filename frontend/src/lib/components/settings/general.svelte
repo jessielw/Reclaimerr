@@ -3,13 +3,14 @@
   import type { Component } from "svelte";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
-  import { get_api, post_api, put_api } from "$lib/api";
+  import { delete_api, get_api, post_api, put_api } from "$lib/api";
   import { toast } from "svelte-sonner";
   import { Button } from "$lib/components/ui/button/index.js";
   import Save from "@lucide/svelte/icons/save";
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import PowerOff from "@lucide/svelte/icons/power-off";
+  import ImageUp from "@lucide/svelte/icons/image-up";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { Checkbox } from "$lib/components/ui/checkbox/index.js";
@@ -88,6 +89,21 @@
     DEFAULT_LEAVING_SOON_SERIES_TITLE,
   );
   let leavingSoonCollectionSort = $state<LeavingSoonCollectionSort>("default");
+  // posters are saved the moment they are picked, unlike everything else on
+  // this page, so they are keyed by kind rather than folded into the payload
+  type PosterKind = "movies" | "series";
+  let leavingSoonPosters = $state<Record<PosterKind, string | null>>({
+    movies: null,
+    series: null,
+  });
+  let posterBusy = $state<Record<PosterKind, boolean>>({
+    movies: false,
+    series: false,
+  });
+  let posterInputs: Record<PosterKind, HTMLInputElement | null> = {
+    movies: null,
+    series: null,
+  };
   const leavingSoonMovieTitle = $derived(
     leavingSoonMovieCollectionTitle.trim() || DEFAULT_LEAVING_SOON_MOVIE_TITLE,
   );
@@ -308,6 +324,53 @@
   };
 
   // shutdown app (desktop mode ONLY and requires admin)
+  const POSTER_LABELS: Record<PosterKind, string> = {
+    movies: "Movie",
+    series: "Series",
+  };
+
+  const posterUrl = (kind: PosterKind): string | null => {
+    const filename = leavingSoonPosters[kind];
+    return filename ? `/static/collection-posters/${filename}` : null;
+  };
+
+  const uploadPoster = async (kind: PosterKind, event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // clear the input so re-picking the same file still fires a change event
+    input.value = "";
+    if (!file) return;
+
+    posterBusy = { ...posterBusy, [kind]: true };
+    try {
+      const formData = new FormData();
+      formData.append("poster", file);
+      const response: { message: string; path: string } = await post_api(
+        `/api/settings/general/leaving-soon-poster/${kind}`,
+        formData,
+      );
+      leavingSoonPosters = { ...leavingSoonPosters, [kind]: response.path };
+      toast.success(`${POSTER_LABELS[kind]} collection poster uploaded`);
+    } catch (error: any) {
+      toast.error(`Failed to upload poster: ${error.message}`);
+    } finally {
+      posterBusy = { ...posterBusy, [kind]: false };
+    }
+  };
+
+  const removePoster = async (kind: PosterKind) => {
+    posterBusy = { ...posterBusy, [kind]: true };
+    try {
+      await delete_api(`/api/settings/general/leaving-soon-poster/${kind}`);
+      leavingSoonPosters = { ...leavingSoonPosters, [kind]: null };
+      toast.success(`${POSTER_LABELS[kind]} collection poster removed`);
+    } catch (error: any) {
+      toast.error(`Failed to remove poster: ${error.message}`);
+    } finally {
+      posterBusy = { ...posterBusy, [kind]: false };
+    }
+  };
+
   const shutdownApp = async () => {
     if (shuttingDown || shutdownDone) return;
     shuttingDown = true;
@@ -377,6 +440,10 @@
           DEFAULT_LEAVING_SOON_SERIES_TITLE;
         leavingSoonCollectionSort =
           settings.leaving_soon_collection_sort ?? "default";
+        leavingSoonPosters = {
+          movies: settings.leaving_soon_movie_poster_path ?? null,
+          series: settings.leaving_soon_series_poster_path ?? null,
+        };
       }
     } catch (error) {
       console.error("Error fetching general settings:", error);
@@ -743,6 +810,95 @@
             <strong>Server default</strong> leaves the collection's own ordering untouched.
           </p>
         </div>
+
+        <!-- custom collection posters -->
+        <div class="mt-4">
+          <span class="text-sm text-foreground font-medium"
+            >Custom collection posters</span
+          >
+          <p class="text-xs text-muted-foreground mt-1">
+            Upload your own cover art for the managed collections. Unlike the
+            rest of this page, a poster is saved as soon as you pick it - there
+            is nothing to Save.
+          </p>
+          <div class="grid gap-4 sm:grid-cols-2 max-w-2xl mt-3">
+            {#each ["movies", "series"] as const as kind (kind)}
+              <div class="flex gap-3">
+                <div
+                  class="w-24 shrink-0 aspect-2/3 rounded-md border bg-muted/50 overflow-hidden flex items-center justify-center"
+                >
+                  {#if posterUrl(kind)}
+                    <img
+                      src={posterUrl(kind)}
+                      alt="{POSTER_LABELS[kind]} collection poster"
+                      class="w-full h-full object-cover"
+                    />
+                  {:else}
+                    <span
+                      class="text-[0.65rem] text-muted-foreground text-center px-2"
+                    >
+                      No custom poster
+                    </span>
+                  {/if}
+                </div>
+                <div class="flex flex-col gap-2 justify-center">
+                  <span class="text-sm text-foreground"
+                    >{POSTER_LABELS[kind]} collection</span
+                  >
+                  <input
+                    type="file"
+                    class="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    bind:this={posterInputs[kind]}
+                    onchange={(event) => uploadPoster(kind, event)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    class="cursor-pointer"
+                    disabled={posterBusy[kind]}
+                    onclick={() => posterInputs[kind]?.click()}
+                  >
+                    {#if posterBusy[kind]}
+                      <Spinner class="size-4" />
+                    {:else}
+                      <ImageUp class="size-4" />
+                    {/if}
+                    {leavingSoonPosters[kind]
+                      ? "Replace poster"
+                      : "Upload poster"}
+                  </Button>
+                  {#if leavingSoonPosters[kind]}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="cursor-pointer text-destructive"
+                      disabled={posterBusy[kind]}
+                      onclick={() => removePoster(kind)}
+                    >
+                      <Trash2 class="size-4" />
+                      Remove
+                    </Button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+          <p class="text-xs text-muted-foreground mt-3">
+            JPEG, PNG, or WebP up to 5 MB. The image is re-encoded to JPEG and
+            stored locally, then pushed to your enabled Plex, Jellyfin, and Emby
+            servers. Reclaimerr re-applies it on <strong>every sync</strong>, so
+            other tools that manage collection artwork (e.g. Kometa,
+            Posterizarr) will be overwritten.
+          </p>
+          <p class="text-xs text-muted-foreground mt-2">
+            Removing a poster only stops Reclaimerr pushing it. On Plex it
+            disappears at the next sync, which rebuilds the collection; on
+            Jellyfin and Emby the last poster pushed stays until you change it
+            there.
+          </p>
+        </div>
+
         <Notice class="mt-2" type="info" title="Note">
           Plex stores collections <strong>per library</strong>, while Jellyfin
           and Emby use
