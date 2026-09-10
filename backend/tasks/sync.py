@@ -72,6 +72,19 @@ SONARR_DATE_FETCH_CONCURRENCY = 5
 MAX_SOFT_DELETE_RATIO = 0.5
 MIN_LIBRARY_FOR_RATIO_CHECK = 20
 
+# a movie's TMDB metadata mostly settles once it has been out for a while, so
+# only recent releases keep getting re-polled
+MOVIE_RECENT_RELEASE_WINDOW_DAYS = 180
+MOVIE_METADATA_REFRESH_DAYS = 30
+# a series keeps changing for its entire life - new episodes move last_air_date,
+# season_count and status long after the first air date - so series are polled on
+# a plain interval instead of being anchored to any air date
+ACTIVE_SERIES_METADATA_REFRESH_DAYS = 7
+FINISHED_SERIES_METADATA_REFRESH_DAYS = 30
+# TMDB statuses meaning the show is done airing - anything else, including an
+# unknown status, is treated as still active so it can never get stuck stale
+FINISHED_SERIES_STATUSES = frozenset({"ended", "canceled", "cancelled"})
+
 _RowT = TypeVar("_RowT", Movie, Series)
 
 
@@ -627,13 +640,26 @@ async def _build_series_supplemental_matches(
     return list(matches_by_item.values())
 
 
+def _series_metadata_refresh_days(series: Series) -> int:
+    """Days to wait between TMDB refreshes for a series.
+
+    A show that can still gain episodes is polled more often because its last air
+    date, status and season count keep moving.
+    """
+    status = (series.status or "").strip().lower()
+    if status in FINISHED_SERIES_STATUSES:
+        return FINISHED_SERIES_METADATA_REFRESH_DAYS
+    return ACTIVE_SERIES_METADATA_REFRESH_DAYS
+
+
 def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     """Determine if TMDB metadata needs refreshing.
 
     Refresh if:
     - Never refreshed before
     - Missing critical display fields (rating, popularity, backdrop, poster)
-    - Been >30 days AND release date is within last 6 months (recent releases get updates)
+    - Movies: been >30 days AND release date is within last 6 months (recent releases get updates)
+    - Series: the show's refresh interval has elapsed, for the life of the show
     """
     # never refreshed - always refresh
     if not obj.last_metadata_refresh_at:
@@ -647,9 +673,12 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
 
     # cache time now
     time_now = datetime.now(UTC)
+    days_since_refresh = (
+        time_now - obj.last_metadata_refresh_at.replace(tzinfo=UTC)
+    ).days
 
     # check for missing critical fields if not recently checked
-    if (time_now - obj.last_metadata_refresh_at.replace(tzinfo=UTC)).days > 7 and (
+    if days_since_refresh > 7 and (
         not obj.vote_average
         or not obj.popularity
         or not obj.backdrop_url
@@ -657,20 +686,21 @@ def _needs_metadata_refresh(obj: Movie | Series, media_type: MediaType) -> bool:
     ):
         return True
 
-    # check if it's a recent release that might need updates
-    if isinstance(obj, Movie):
-        release_date = obj.tmdb_release_date
-    else:
-        release_date = obj.tmdb_first_air_date
+    # a series' first air date says nothing about whether its metadata has
+    # settled - a show that first aired years ago can still be airing new
+    # episodes - so poll on an interval rather than off any air date
+    if isinstance(obj, Series):
+        return days_since_refresh >= _series_metadata_refresh_days(obj)
 
-    if release_date:
-        days_since_release = (time_now - release_date.replace(tzinfo=UTC)).days
-        days_since_refresh = (
-            time_now - obj.last_metadata_refresh_at.replace(tzinfo=UTC)
-        ).days
+    # check if it's a recent release that might need updates
+    if obj.tmdb_release_date:
+        days_since_release = (time_now - obj.tmdb_release_date.replace(tzinfo=UTC)).days
 
         # if released within last 6 months and not refreshed in 30 days
-        if days_since_release <= 180 and days_since_refresh > 30:
+        if (
+            days_since_release <= MOVIE_RECENT_RELEASE_WINDOW_DAYS
+            and days_since_refresh > MOVIE_METADATA_REFRESH_DAYS
+        ):
             return True
 
     return False
@@ -1275,9 +1305,7 @@ async def _upsert_movie_versions(
         # rescues renames), so everything scoped to the departing version has to go
         # with it - otherwise the old protection lingers, protects nothing, and
         # shows up beside the replacement as a duplicate.
-        await detach_movie_version_references(
-            session, [ev.id for ev in stale_versions]
-        )
+        await detach_movie_version_references(session, [ev.id for ev in stale_versions])
         for ev in stale_versions:
             await session.delete(ev)
 
@@ -1534,7 +1562,11 @@ async def sync_movies(
     # if a specific non-main config was requested, only sync watch data from it -
     # compared by config identity, not type, so a same-type non-main config is
     # always treated as linked even when its type matches the main server's
-    if config_id is not None and main_config is not None and config_id != main_config.id:
+    if (
+        config_id is not None
+        and main_config is not None
+        and config_id != main_config.id
+    ):
         if target_config is None:
             LOG.warning(
                 f"sync_movies: config {config_id} not found or no longer configured - skipping"
@@ -2001,7 +2033,11 @@ async def sync_series(
         )
 
     # a linked server never contributes series rows
-    if config_id is not None and main_config is not None and config_id != main_config.id:
+    if (
+        config_id is not None
+        and main_config is not None
+        and config_id != main_config.id
+    ):
         LOG.info(f"config {config_id} is a linked server - skipping series sync")
         return set()
 
@@ -2583,9 +2619,7 @@ async def sync_media() -> dict[str, Any] | None:
             for svr in all_servers
             if svr.id != get_main_server.id and _is_media_server_type(svr.service_type)
         ]
-        active_linked_service_config_ids: set[int] = {
-            svr.id for svr in linked_servers
-        }
+        active_linked_service_config_ids: set[int] = {svr.id for svr in linked_servers}
         await _prune_supplemental_matches(active_linked_service_config_ids)
         for svr in linked_servers:
             LOG.debug(f"Linked watch sync from {svr.service_type} (config {svr.id})")

@@ -86,7 +86,7 @@ def normalize_leaving_soon_collection_sort(value: object) -> LeavingSoonCollecti
 def leaving_soon_titles_from_base_title(value: object) -> LeavingSoonTitles:
     """Expand a legacy single base title into the movie/series pair.
 
-    Pre-0.4.3 installs stored one base title and derived `<base> [Movies]` /
+    Pre-0.4.4 installs stored one base title and derived `<base> [Movies]` /
     `<base> [Series]` inside each media server client. Reading that shape back
     through here keeps a rename made before the upgrade cleanable afterwards.
     """
