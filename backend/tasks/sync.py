@@ -1305,9 +1305,7 @@ async def _upsert_movie_versions(
         # rescues renames), so everything scoped to the departing version has to go
         # with it - otherwise the old protection lingers, protects nothing, and
         # shows up beside the replacement as a duplicate.
-        await detach_movie_version_references(
-            session, [ev.id for ev in stale_versions]
-        )
+        await detach_movie_version_references(session, [ev.id for ev in stale_versions])
         for ev in stale_versions:
             await session.delete(ev)
 
@@ -1564,7 +1562,11 @@ async def sync_movies(
     # if a specific non-main config was requested, only sync watch data from it -
     # compared by config identity, not type, so a same-type non-main config is
     # always treated as linked even when its type matches the main server's
-    if config_id is not None and main_config is not None and config_id != main_config.id:
+    if (
+        config_id is not None
+        and main_config is not None
+        and config_id != main_config.id
+    ):
         if target_config is None:
             LOG.warning(
                 f"sync_movies: config {config_id} not found or no longer configured - skipping"
@@ -2031,7 +2033,11 @@ async def sync_series(
         )
 
     # a linked server never contributes series rows
-    if config_id is not None and main_config is not None and config_id != main_config.id:
+    if (
+        config_id is not None
+        and main_config is not None
+        and config_id != main_config.id
+    ):
         LOG.info(f"config {config_id} is a linked server - skipping series sync")
         return set()
 
@@ -2613,9 +2619,7 @@ async def sync_media() -> dict[str, Any] | None:
             for svr in all_servers
             if svr.id != get_main_server.id and _is_media_server_type(svr.service_type)
         ]
-        active_linked_service_config_ids: set[int] = {
-            svr.id for svr in linked_servers
-        }
+        active_linked_service_config_ids: set[int] = {svr.id for svr in linked_servers}
         await _prune_supplemental_matches(active_linked_service_config_ids)
         for svr in linked_servers:
             LOG.debug(f"Linked watch sync from {svr.service_type} (config {svr.id})")

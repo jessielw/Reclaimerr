@@ -4163,7 +4163,9 @@ async def _activate_watch_completion_for_rules(
                 continue
             episode_watchers.setdefault(int(tmdb_id), {}).setdefault(
                 source_service, {}
-            ).setdefault(watch_key, set()).add((int(season_number), int(episode_number)))
+            ).setdefault(watch_key, set()).add(
+                (int(season_number), int(episode_number))
+            )
 
     # Durable history carries completed plays the current native snapshot no
     # longer describes, including ones that predate the copy on disk. Same

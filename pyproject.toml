@@ -65,6 +65,7 @@ include = [
     "backend/core/**/*.py",
     "backend/api/**/*.py",
     "backend/services/**/*.py",
+    "backend/tasks/**/*.py",
     "desktop/**/*.py",
     "scripts/**/*.py",
 ]
