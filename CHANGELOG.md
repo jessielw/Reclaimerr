@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Cleanup candidates now show failed deletion attempts directly in the UI, including the attempt count, last attempt time, and recorded reason. Grouped candidates show the worst affected member. These fields are also exposed by `GET /api/v1/candidates`.
 - Episode deletions now respect **Allow Media Server Fallback Deletion**, matching season, series, and movie deletions. When fallback deletion is disabled, Reclaimerr uses a path re-scan instead of deleting the episode through the media server.
 - Improved logging for movie-version deletion routing and repeated candidate flagging. Logs now explain why a Radarr delete could not be used and warn when a recently actioned title is re-flagged with a restarted review period.
+- Updated granian and platform dirs.
 
 ## [0.4.4] - 2026-09-10
 
