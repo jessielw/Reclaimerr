@@ -21,6 +21,7 @@
     earliestAutoDeleteEntry,
     movieSummaryChips,
     newestCandidateCreatedAt,
+    worstDeleteFailureEntry,
   } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
@@ -116,6 +117,7 @@
       {@const groupDateAdded = newestCandidateCreatedAt(row.versions)}
       {@const groupAutoDelete =
         earliestAutoDeleteEntry(row.versions) ?? row.versions[0]}
+      {@const groupWorstFailure = worstDeleteFailureEntry(row.versions)}
       {@const groupOrigin = candidateOriginMetadata(row.versions)}
       {@const groupMetaFields = candidateMediaMetaFields(
         {
@@ -124,6 +126,10 @@
           auto_delete_delay_days: groupAutoDelete.auto_delete_delay_days,
           auto_delete_eligible_at: groupAutoDelete.auto_delete_eligible_at,
           auto_delete_is_eligible: groupAutoDelete.auto_delete_is_eligible,
+          delete_attempts: groupWorstFailure?.delete_attempts ?? 0,
+          last_delete_attempt_at:
+            groupWorstFailure?.last_delete_attempt_at ?? null,
+          last_delete_error: groupWorstFailure?.last_delete_error ?? null,
         },
         formatDate,
         true,

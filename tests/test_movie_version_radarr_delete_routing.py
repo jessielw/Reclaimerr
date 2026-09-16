@@ -58,18 +58,32 @@ class FailingRadarr(FakeRadarr):
         raise RuntimeError("radarr unavailable")
 
 
+class FakeMediaServer:
+    def __init__(self) -> None:
+        self.deleted_items: list[str] = []
+        self.scanned_paths: list[str] = []
+
+    async def delete_item(self, item_id: str) -> None:
+        self.deleted_items.append(item_id)
+
+    async def scan_item_path(self, item_path: str) -> bool:
+        self.scanned_paths.append(item_path)
+        return True
+
+
 def _patch_services(
     monkeypatch,
     radarr: FakeRadarr | dict[int, FakeRadarr],
     config_id: int | None = None,
+    media_server: FakeMediaServer | None = None,
 ) -> None:
     clients = radarr if isinstance(radarr, dict) else {config_id: radarr}
     monkeypatch.setattr(cleanup.service_manager, "_radarr", None)
     monkeypatch.setattr(cleanup.service_manager, "_radarr_clients", clients)
-    monkeypatch.setattr(cleanup.service_manager, "_main_media_server", None)
+    monkeypatch.setattr(cleanup.service_manager, "_main_media_server", media_server)
     monkeypatch.setattr(cleanup.service_manager, "_jellyfin", None)
     monkeypatch.setattr(cleanup.service_manager, "_emby", None)
-    monkeypatch.setattr(cleanup.service_manager, "_plex", None)
+    monkeypatch.setattr(cleanup.service_manager, "_plex", media_server)
     monkeypatch.setattr(cleanup.service_manager, "_seerr", None)
 
 
@@ -777,6 +791,102 @@ def test_move_delete_action_removes_radarr_entry_without_deleting_archive(
             assert (destination_dir / media_file.name).read_bytes() == b"movie"
             assert (destination_dir / subtitle_file.name).read_bytes() == b"subtitle"
             assert (destination_dir / extra_file.name).read_bytes() == b""
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_stale_arr_ref_does_not_block_single_version_promotion(monkeypatch) -> None:
+    """A ref for a Radarr that is not loaded must not count as a second route.
+
+    Disabling a Radarr instance leaves its `MovieArrRef` rows behind (sync only
+    rewrites rows for configs it can reach) and the UI hides them, so the movie
+    still looks like it lives in one Radarr. Deletion routing used to count the
+    stale row anyway, which defeated the single-ref promotion check and demoted
+    a perfectly promotable whole-movie delete to a media-server version delete.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/plex/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                )
+                stale_config = ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url="http://radarr-old",
+                    api_key="secret",
+                    name="Radarr (retired)",
+                    enabled=False,
+                )
+                db.add(stale_config)
+                await db.flush()
+                db.add(
+                    MovieArrRef(
+                        movie_id=movie_id,
+                        service_config_id=stale_config.id,
+                        arr_movie_id=66,
+                        arr_movie_path="/old-radarr/Movie1",
+                        tmdb_id=101,
+                    )
+                )
+                await db.commit()
+
+            radarr = FakeRadarr()
+            # only the live instance is loaded, exactly as at runtime
+            _patch_services(monkeypatch, radarr, config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert radarr.deleted == [
+                {
+                    "movie_ids": [55],
+                    "delete_files": True,
+                    "add_import_exclusion": True,
+                }
+            ]
+            async with session_maker() as db:
+                assert await db.get(ReclaimCandidate, candidate_ids[0]) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_radarr_delete_scans_media_server_path(monkeypatch) -> None:
+    """Radarr removed the files; the media server still has to be told."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                _movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/plex/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                )
+
+            radarr = FakeRadarr()
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, radarr, config_id, media_server=media)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            # never a destructive media-server call - Radarr already did the work
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/plex/movies/Movie1/Movie1.mkv"]
         finally:
             await engine.dispose()
 

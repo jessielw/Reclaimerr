@@ -40,6 +40,9 @@ class CandidateStatusResponse(BaseModel):
     auto_delete_timer_started_at: datetime | None = None
     lifecycle_reason: str | None = None
     lifecycle_updated_at: datetime | None = None
+    delete_attempts: int = 0
+    last_delete_attempt_at: datetime | None = None
+    last_delete_error: str | None = None
     blockers: list[str] = Field(default_factory=list)
 
 

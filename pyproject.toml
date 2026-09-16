@@ -13,7 +13,7 @@ dependencies = [
     "authlib>=1.8.0",
     "cryptography>=50.0.1",
     "fastapi[standard]>=0.141.1",
-    "granian>=2.8.2",
+    "granian>=2.8.3",
     "itsdangerous>=2.2.0",
     "niquests[speedups]>=3.21.1",
     "pillow>=12.3.0",
@@ -40,7 +40,7 @@ dev = [
 desktop = [
     "pyinstaller>=6.22.2",
     "pystray>=0.19.5",
-    "platformdirs>=4.11.8",
+    "platformdirs>=4.11.9",
     "filelock>=3.32.6",
     "uvicorn>=0.52.4",
 ]

@@ -717,6 +717,9 @@ class CandidateEntry(CandidateEntryBase):
     auto_delete_timer_started_at: str | None = None
     lifecycle_reason: str | None = None
     delete_operation: Literal["delete", "move"] = "delete"
+    delete_attempts: int = 0
+    last_delete_attempt_at: str | None = None
+    last_delete_error: str | None = None
 
 
 class RulePreviewEntry(CandidateEntryBase):

@@ -10,7 +10,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
 
@@ -5750,6 +5750,78 @@ async def _collect_series_candidate_records(
     return records
 
 
+REFLAG_LOOKBACK_DAYS = 14
+
+
+async def _warn_on_reflagged_media(
+    db: AsyncSession,
+    media_type: MediaType,
+    media_ids: Collection[int],
+) -> None:
+    """Log targets that came straight back after Reclaimerr acted on them.
+
+    A target re-flagged days after a reclaim action is normally a delete the
+    media server never learned about: it keeps serving the item, the next sync
+    re-imports it, and the scan flags it again - as a *new* candidate row, so
+    its review period restarts from zero and automatic deletion never fires.
+    Nothing here changes behavior; it just makes that loop visible in the log.
+    """
+    if not media_ids:
+        return
+    model = Movie if media_type is MediaType.MOVIE else Series
+    media_rows = (
+        await db.execute(
+            select(model.id, model.title, model.tmdb_id).where(
+                model.id.in_(list(media_ids))
+            )
+        )
+    ).all()
+    tmdb_ids = {tmdb_id for _id, _title, tmdb_id in media_rows if tmdb_id is not None}
+    if not tmdb_ids:
+        return
+
+    now = datetime.now(UTC)
+    # ReclaimHistory.created_at is stored naive UTC
+    cutoff = now.replace(tzinfo=None) - timedelta(days=REFLAG_LOOKBACK_DAYS)
+    history_rows = (
+        await db.execute(
+            select(
+                ReclaimHistory.tmdb_id,
+                ReclaimHistory.name,
+                ReclaimHistory.action,
+                ReclaimHistory.created_at,
+            )
+            .where(
+                ReclaimHistory.media_type == media_type,
+                ReclaimHistory.tmdb_id.in_(list(tmdb_ids)),
+                ReclaimHistory.created_at.is_not(None),
+                ReclaimHistory.created_at >= cutoff,
+            )
+            .order_by(ReclaimHistory.created_at.desc())
+        )
+    ).all()
+    if not history_rows:
+        return
+
+    latest: dict[int, tuple[str | None, str, datetime]] = {}
+    for tmdb_id, name, action, acted_at in history_rows:
+        if tmdb_id is not None and tmdb_id not in latest:
+            latest[tmdb_id] = (name, action, acted_at)
+
+    for _id, title, tmdb_id in media_rows:
+        entry = latest.get(tmdb_id) if tmdb_id is not None else None
+        if entry is None:
+            continue
+        name, action, acted_at = entry
+        hours = max(0, int((now - ensure_utc(acted_at)).total_seconds() // 3600))
+        LOG.warning(
+            f"Re-flagged '{title}' {hours}h after Reclaimerr "
+            f"{action or 'deleted'} '{name or title}' - this is a new candidate, "
+            "so its review period restarts from now. The media server most "
+            "likely still lists media Reclaimerr already removed."
+        )
+
+
 async def _sync_series_candidates(
     db: AsyncSession,
     records: list[MatchedCandidateRecord],
@@ -5775,6 +5847,7 @@ async def _sync_series_candidates(
 
     candidates_created = 0
     candidates_updated = 0
+    created_media_ids: set[int] = set()
     for record in records:
         if record.series_id is None:
             continue
@@ -5800,6 +5873,8 @@ async def _sync_series_candidates(
                 )
             )
             candidates_created += 1
+            if record.series_id is not None:
+                created_media_ids.add(record.series_id)
 
     stale_candidates = [
         candidate
@@ -5815,6 +5890,8 @@ async def _sync_series_candidates(
             await db.commit()
         else:
             await db.flush()
+
+    await _warn_on_reflagged_media(db, MediaType.SERIES, created_media_ids)
 
     return candidates_created, candidates_updated, candidates_removed
 
@@ -5987,6 +6064,7 @@ async def _sync_movie_version_candidates(
 
     candidates_created = 0
     candidates_updated = 0
+    created_media_ids: set[int] = set()
     for record in records:
         if record.movie_version_id is None or record.movie_id is None:
             continue
@@ -6014,6 +6092,8 @@ async def _sync_movie_version_candidates(
                 )
             )
             candidates_created += 1
+            if record.movie_id is not None:
+                created_media_ids.add(record.movie_id)
 
     stale_version_candidates = [
         candidate
@@ -6031,6 +6111,8 @@ async def _sync_movie_version_candidates(
             await db.commit()
         else:
             await db.flush()
+
+    await _warn_on_reflagged_media(db, MediaType.MOVIE, created_media_ids)
 
     return candidates_created, candidates_updated, candidates_removed
 
@@ -6243,6 +6325,7 @@ async def _sync_season_candidates(
 
     candidates_created = 0
     candidates_updated = 0
+    created_media_ids: set[int] = set()
     for record in records:
         if record.season_id is None or record.series_id is None:
             continue
@@ -6270,6 +6353,8 @@ async def _sync_season_candidates(
                 )
             )
             candidates_created += 1
+            if record.series_id is not None:
+                created_media_ids.add(record.series_id)
 
     stale_candidates = [
         candidate
@@ -6285,6 +6370,8 @@ async def _sync_season_candidates(
             await db.commit()
         else:
             await db.flush()
+
+    await _warn_on_reflagged_media(db, MediaType.SERIES, created_media_ids)
 
     return candidates_created, candidates_updated, candidates_removed
 
@@ -6493,6 +6580,7 @@ async def _sync_episode_candidates(
 
     candidates_created = 0
     candidates_updated = 0
+    created_media_ids: set[int] = set()
     for record in records:
         if record.episode_id is None or record.series_id is None:
             continue
@@ -6521,6 +6609,8 @@ async def _sync_episode_candidates(
                 )
             )
             candidates_created += 1
+            if record.series_id is not None:
+                created_media_ids.add(record.series_id)
 
     stale_candidates = [
         candidate
@@ -6536,6 +6626,8 @@ async def _sync_episode_candidates(
             await db.commit()
         else:
             await db.flush()
+
+    await _warn_on_reflagged_media(db, MediaType.SERIES, created_media_ids)
 
     return candidates_created, candidates_updated, candidates_removed
 
@@ -7775,7 +7867,20 @@ def _order_series_arr_refs(
             return (1, ref.id or 0)
         return (2, ref.id or 0)
 
-    return sorted(refs, key=ref_score)
+    ordered = sorted(refs, key=ref_score)
+    if len(ordered) > 1 and ref_score(ordered[0])[0] != 0:
+        # Nothing proved which instance owns these files, so the winner is just
+        # the lowest ref id.  Callers act on the first ref only, so an HD/UHD
+        # pair can have the wrong copy removed - worth saying out loud.
+        LOG.warning(
+            "No Sonarr instance could be matched to "
+            f"{[p for p in candidate_paths if p]} by path; falling back to the "
+            f"oldest of {len(ordered)} refs "
+            f"(config {ordered[0].service_config_id}, "
+            f"path {ordered[0].arr_series_path!r}). Add a path mapping to make "
+            "this unambiguous."
+        )
+    return ordered
 
 
 async def _load_arr_disk_space() -> list[dict[str, Any]]:
@@ -7872,6 +7977,44 @@ async def _best_effort_sonarr_refresh(
             )
         except Exception as e:
             LOG.warning(f"{context}: Sonarr refresh failed for config {config_id}: {e}")
+
+
+async def _reconcile_media_server_after_delete(
+    *,
+    item_id: str | None,
+    paths: Iterable[str | None],
+    allow_delete_item: bool,
+    context: str,
+) -> None:
+    """Keep the media server's library in step with files we already removed.
+
+    ``delete_item`` removes the media itself, so it stays behind the "Allow
+    Media Server Fallback Deletion" setting.  ``scan_item_path`` only asks the
+    server to re-check a path it already indexed, so it runs either way -
+    without it the server keeps serving an entry whose files are gone, the next
+    sync re-imports the item, and the scan re-flags it with a fresh review
+    period.  Always best effort; never raises.
+    """
+    main_service = service_manager.main_media_server
+    if main_service is None:
+        return
+
+    if allow_delete_item and item_id:
+        try:
+            await main_service.delete_item(item_id)
+        except Exception as e:
+            LOG.warning(f"{context}: media server delete_item failed: {e}")
+        return
+
+    seen: set[str] = set()
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        try:
+            await main_service.scan_item_path(path)
+        except Exception as e:
+            LOG.warning(f"{context}: media server path scan failed for '{path}': {e}")
 
 
 def _cleanup_moved_source_directories(
@@ -7973,6 +8116,7 @@ async def _delete_movie_version_candidates(
     add_arr_import_exclusions_on_delete: bool = True,
     rules: dict[int, ReclaimRule] | None = None,
     default_arr_delete_behavior: ArrDeleteFallback = "unmonitor",
+    demotion_reasons: Mapping[int, str] | None = None,
 ) -> int:
     """Deletes movie version candidates using service aware targeted deletion.
 
@@ -7995,16 +8139,19 @@ async def _delete_movie_version_candidates(
                 )
                 version = result.scalars().first()
                 title = version.movie.title if version and version.movie else "unknown"
+            demotion_reason = (demotion_reasons or {}).get(candidate.id)
             await _mark_candidate_delete_failure(
                 candidate.id,
                 "Partial movie-version delete requires media server fallback, "
-                "or a Radarr delete that covers the full Radarr movie entry",
+                "or a Radarr delete that covers the full Radarr movie entry"
+                + (f" ({demotion_reason})" if demotion_reason else ""),
             )
             LOG.warning(
                 f"Media server fallback disabled - skipping movie-version deletion "
                 f"for '{title}'. Enable 'Allow Media Server Fallback Deletion' in "
                 f"General Settings to delete individual quality versions or "
                 f"non-promotable version candidates."
+                + (f" Reason: {demotion_reason}" if demotion_reason else "")
             )
         return 0
 
@@ -8504,6 +8651,8 @@ async def _delete_movie_candidates(
     all_cand_ids_by_movie: dict[int, list[int]] = {}
     # version candidates that could not be routed to any arr instance
     unmatched_version_candidates: list[ReclaimCandidate] = []
+    # candidate id -> why a Radarr movie delete could not be used for it
+    demotion_reasons: dict[int, str] = {}
 
     if radarr_clients:
         for cand in version_candidates:
@@ -8517,10 +8666,14 @@ async def _delete_movie_candidates(
             ver_path = version_path_by_id.get(cand.movie_version_id)
             ver_service = version_service_by_id.get(cand.movie_version_id)
             allowed_config_ids = _candidate_arr_config_ids(cand, rules_by_id, "radarr")
+            # Same filter _match_version_to_arr applies internally: a ref whose
+            # Radarr is disabled or failed to load is not a route, and counting
+            # it here used to defeat the single-ref promotion checks below.
             eligible_refs = [
                 ref
                 for ref in movie_info["refs"]
-                if allowed_config_ids is None or ref[0] in allowed_config_ids
+                if ref[0] in radarr_clients
+                and (allowed_config_ids is None or ref[0] in allowed_config_ids)
             ]
             matched = _match_version_to_arr(
                 ver_path,
@@ -8554,6 +8707,19 @@ async def _delete_movie_candidates(
                 else:
                     # Radarr would remove unselected versions; use media-server
                     # version delete if fallback is enabled.
+                    all_version_ids = set(version_info_by_movie.get(cand.movie_id, {}))
+                    reason = (
+                        "Radarr delete could not be proven to cover only the "
+                        f"selected version(s): selected={sorted(selected_version_ids)}, "
+                        f"all known versions={sorted(all_version_ids)}, "
+                        f"eligible Radarr refs={[(r[0], r[2]) for r in eligible_refs]}, "
+                        f"version path={ver_path!r}"
+                    )
+                    demotion_reasons[cand.id] = reason
+                    LOG.warning(
+                        f"Not promoting version delete to a Radarr movie delete for "
+                        f"'{movie_info['title']}' - {reason}"
+                    )
                     unmatched_version_candidates.append(cand)
             else:
                 LOG.warning(
@@ -8590,6 +8756,7 @@ async def _delete_movie_candidates(
             add_arr_import_exclusions_on_delete,
             rules_by_id,
             default_arr_delete_behavior,
+            demotion_reasons,
         )
 
     if not movie_arr_routing:
@@ -8812,6 +8979,15 @@ async def _delete_movie_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing movie deletion state: {e}", exc_info=True)
+        # Radarr already removed the files, so the media server only needs to be
+        # told to re-check the paths.  Without this it keeps serving an entry
+        # whose files are gone and the next sync re-imports the movie.
+        await _reconcile_media_server_after_delete(
+            item_id=None,
+            paths=[event.get("path") for event in movie_events],
+            allow_delete_item=False,
+            context="movie delete cleanup",
+        )
         await _best_effort_radarr_rescan(
             radarr_refresh_after_delete,
             context="movie delete cleanup",
@@ -8850,7 +9026,6 @@ async def _delete_movie_candidates(
     if movies_to_unmonitor:
         unmonitor_events: list[dict[str, Any]] = []
         path_mappings = await _load_path_mappings()
-        main_service = service_manager.main_media_server
         unmonitor_service_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
@@ -8911,12 +9086,9 @@ async def _delete_movie_candidates(
                                                 f"sibling_cleanup failed for '{ver.path}': {fs_err}"
                                             )
 
-                                # remove from media server
-                                if (
-                                    media_server_fallback_enabled
-                                    and main_service is not None
-                                    and unmonitor_service_type is not None
-                                ):
+                                # keep the media server library in sync with the
+                                # files we just removed
+                                if unmonitor_service_type is not None:
                                     if is_whole_movie:
                                         service_versions: list[MovieVersion] = [
                                             v
@@ -8931,31 +9103,34 @@ async def _delete_movie_candidates(
                                             if v.service == unmonitor_service_type
                                             and v.id in unmonitor_target_version_ids
                                         ]
-                                    deleted_item_ids: set[str] = set()
+                                    handled_item_ids: set[str] = set()
                                     for ver in service_versions:
-                                        if ver.service_item_id in deleted_item_ids:
+                                        if ver.service_item_id in handled_item_ids:
                                             continue
-                                        if not is_whole_movie:
-                                            # skip if a non candidate version still uses this item id
-                                            # (e.g. multi version Plex entry sharing one ratingKey)
-                                            if any(
+                                        handled_item_ids.add(ver.service_item_id)
+                                        # a kept version sharing this media server
+                                        # item (e.g. a multi version Plex entry on
+                                        # one ratingKey) must never be deleted with
+                                        # it - a path scan still refreshes it safely
+                                        shares_item_with_kept_version = (
+                                            not is_whole_movie
+                                            and any(
                                                 v.service_item_id == ver.service_item_id
                                                 for v in movie.versions
                                                 if v.service == unmonitor_service_type
                                                 and v.id
                                                 not in unmonitor_target_version_ids
-                                            ):
-                                                continue
-                                        try:
-                                            await main_service.delete_item(
-                                                ver.service_item_id
                                             )
-                                            deleted_item_ids.add(ver.service_item_id)
-                                        except Exception as ms_err:
-                                            LOG.warning(
-                                                f"Media server delete_item failed for "
-                                                f"'{movie.title}': {ms_err}"
-                                            )
+                                        )
+                                        await _reconcile_media_server_after_delete(
+                                            item_id=ver.service_item_id,
+                                            paths=[ver.path],
+                                            allow_delete_item=(
+                                                media_server_fallback_enabled
+                                                and not shares_item_with_kept_version
+                                            ),
+                                            context=f"movie cleanup '{movie.title}'",
+                                        )
 
                                 # only soft delete the movie record when all versions are removed
                                 if is_whole_movie:
@@ -9415,6 +9590,14 @@ async def _delete_series_candidates(
                 )
         except Exception as e:
             LOG.error(f"Error finalizing series deletion state: {e}", exc_info=True)
+        # Sonarr already removed the files, so the media server only needs to be
+        # told to re-check the paths.
+        await _reconcile_media_server_after_delete(
+            item_id=None,
+            paths=[event.get("path") for event in series_events],
+            allow_delete_item=False,
+            context="series delete cleanup",
+        )
         await _best_effort_sonarr_refresh(
             sonarr_refresh_after_delete,
             context="series delete cleanup",
@@ -9448,7 +9631,6 @@ async def _delete_series_candidates(
     if series_to_unmonitor:
         unmonitor_series_events: list[dict[str, Any]] = []
         path_mappings_series = await _load_path_mappings()
-        main_service_s = service_manager.main_media_server
         unmonitor_svc_type: Service | None = service_manager.main_media_server_type
         try:
             async with async_db() as db:
@@ -9493,28 +9675,23 @@ async def _delete_series_candidates(
                                         )
                                     break  # only delete the matched folder once
 
-                            # remove from media server
-                            if (
-                                media_server_fallback_enabled
-                                and main_service_s is not None
-                                and unmonitor_svc_type is not None
-                            ):
-                                ref = next(
-                                    (
-                                        r
-                                        for r in series.service_refs
-                                        if r.service == unmonitor_svc_type
-                                    ),
-                                    None,
+                            # keep the media server library in sync with the
+                            # folder we just removed
+                            media_ref = next(
+                                (
+                                    r
+                                    for r in series.service_refs
+                                    if r.service == unmonitor_svc_type
+                                ),
+                                None,
+                            )
+                            if media_ref is not None:
+                                await _reconcile_media_server_after_delete(
+                                    item_id=media_ref.service_id,
+                                    paths=[media_ref.path],
+                                    allow_delete_item=media_server_fallback_enabled,
+                                    context=f"series cleanup '{series.title}'",
                                 )
-                                if ref:
-                                    try:
-                                        await main_service_s.delete_item(ref.service_id)
-                                    except Exception as ms_err:
-                                        LOG.warning(
-                                            f"Media server delete_item failed for series "
-                                            f"'{series.title}': {ms_err}"
-                                        )
 
                             series.removed_at = datetime.now(UTC)
                             series.added_at = None
@@ -9913,22 +10090,16 @@ async def _delete_season_candidates(
             if deleted_via_sonarr:
                 break
 
-        if (
-            deleted_via_sonarr
-            and media_server_fallback_enabled
-            and cand_arr_action != "unmonitor_only"
-        ):
-            media_svc = service_manager.main_media_server
-            media_svc_type = _main_media_server_type()
-            season_service_id = _season_media_server_id(season, media_svc_type)
-            if media_svc is not None and season_service_id:
-                try:
-                    await media_svc.delete_item(season_service_id)
-                except Exception as ms_err:
-                    LOG.warning(
-                        f"Media server delete_item failed for "
-                        f"'{series_obj.title}' S{season_number:02d}: {ms_err}"
-                    )
+        if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
+            season_paths = (
+                [season.path] if season.path else list(season.episode_paths or [])
+            )
+            await _reconcile_media_server_after_delete(
+                item_id=_season_media_server_id(season, _main_media_server_type()),
+                paths=season_paths,
+                allow_delete_item=media_server_fallback_enabled,
+                context=f"season cleanup '{series_obj.title}' S{season_number:02d}",
+            )
 
         # if no files remain across all seasons (delete path only), remove series
         if (
@@ -10383,17 +10554,13 @@ async def _delete_episode_candidates(
                 )
 
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
-            # remove from media server to keep library in sync
-            media_svc = service_manager.main_media_server
-            ep_svc_id = _episode_media_server_id(episode, _main_media_server_type())
-            if media_svc is not None and ep_svc_id:
-                try:
-                    await media_svc.delete_item(ep_svc_id)
-                except Exception as ms_err:
-                    LOG.warning(
-                        f"Media server delete_item failed for "
-                        f"'{series_obj.title}' {ep_label}: {ms_err}"
-                    )
+            # keep the media server library in sync with the file we removed
+            await _reconcile_media_server_after_delete(
+                item_id=_episode_media_server_id(episode, _main_media_server_type()),
+                paths=[episode.path],
+                allow_delete_item=media_server_fallback_enabled,
+                context=f"episode cleanup '{series_obj.title}' {ep_label}",
+            )
             if (
                 cand_arr_action == "remove_if_empty"
                 and sonarr_client is not None

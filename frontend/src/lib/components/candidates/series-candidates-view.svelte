@@ -21,6 +21,7 @@
     newestCandidateCreatedAt,
     seriesGroupCountLabel,
     seriesGroupSeasonLabel,
+    worstDeleteFailureEntry,
   } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
@@ -137,6 +138,7 @@
         : row.seasons}
       {@const groupAutoDelete =
         earliestAutoDeleteEntry(groupEntries) ?? groupMetaSource}
+      {@const groupWorstFailure = worstDeleteFailureEntry(groupEntries)}
       {@const groupOrigin = candidateOriginMetadata(groupEntries)}
       {@const groupMetaFields = candidateMediaMetaFields(
         {
@@ -145,6 +147,10 @@
           auto_delete_delay_days: groupAutoDelete.auto_delete_delay_days,
           auto_delete_eligible_at: groupAutoDelete.auto_delete_eligible_at,
           auto_delete_is_eligible: groupAutoDelete.auto_delete_is_eligible,
+          delete_attempts: groupWorstFailure?.delete_attempts ?? 0,
+          last_delete_attempt_at:
+            groupWorstFailure?.last_delete_attempt_at ?? null,
+          last_delete_error: groupWorstFailure?.last_delete_error ?? null,
         },
         formatDate,
         true,

@@ -26,9 +26,14 @@ from backend.tasks import cleanup
 class FakeMediaServer:
     def __init__(self) -> None:
         self.deleted_items: list[str] = []
+        self.scanned_paths: list[str] = []
 
     async def delete_item(self, item_id: str) -> None:
         self.deleted_items.append(item_id)
+
+    async def scan_item_path(self, item_path: str) -> bool:
+        self.scanned_paths.append(item_path)
+        return True
 
 
 class FakeSonarr:
@@ -624,6 +629,139 @@ def test_season_multi_sonarr_uses_path_matched_ref(monkeypatch) -> None:
             async with session_maker() as db:
                 assert await db.get(ReclaimCandidate, candidate_id) is None
                 assert (await db.execute(select(Season))).scalars().all() == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_season_delete_scans_media_server_path_when_fallback_disabled(
+    monkeypatch,
+) -> None:
+    """The media server has to learn the files are gone even with fallback off.
+
+    `delete_item` removes media, so it stays behind the fallback setting - but
+    skipping the whole reconciliation leaves the server serving an entry whose
+    files Sonarr already deleted. The next sync re-imports it and the scan
+    re-flags it with a brand new review period, so it never actually goes away.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    media_server_fallback_enabled=False,
+                )
+
+            sonarr = FakeSonarr(
+                {
+                    arr_ids[0]: [
+                        {
+                            "id": 700,
+                            "seasonNumber": 1,
+                            "episodeNumber": 1,
+                            "episodeFileId": 900,
+                        }
+                    ]
+                }
+            )
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, {config_ids[0]: sonarr}, media)
+
+            deleted = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert sonarr.deleted_seasons == [(arr_ids[0], 1)]
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data/Show/Season 01"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_episode_delete_scans_media_server_path_when_fallback_disabled(
+    monkeypatch,
+) -> None:
+    """Episodes used to call `delete_item` regardless of the fallback setting.
+
+    They now honor it like seasons and series do, and fall back to the
+    non-destructive path scan so the library still stays in step.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="episode",
+                    media_server_fallback_enabled=False,
+                )
+
+            sonarr = FakeSonarr(
+                {
+                    arr_ids[0]: [
+                        {
+                            "id": 700,
+                            "seasonNumber": 1,
+                            "episodeNumber": 1,
+                            "episodeFileId": 900,
+                        }
+                    ]
+                }
+            )
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, {config_ids[0]: sonarr}, media)
+
+            deleted = await cleanup._delete_episode_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert sonarr.deleted_episode_files == [900]
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data/Show/Season 01/Show - S01E01.mkv"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_whole_series_delete_scans_media_server_paths(monkeypatch) -> None:
+    """Sonarr removed the files, so the media server only needs a path scan."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="series",
+                    media_server_fallback_enabled=False,
+                    series_service_path="/data/Show",
+                )
+
+            sonarr = FakeSonarr({arr_ids[0]: []})
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, {config_ids[0]: sonarr}, media)
+
+            deleted = await cleanup._delete_series_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert sonarr.deleted_series == [arr_ids[0]]
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data/Show"]
         finally:
             await engine.dispose()
 

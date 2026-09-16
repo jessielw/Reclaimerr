@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - rolling
+
+### Fixed
+
+- Fixed automatic deletion getting stuck in a review-period loop when **Allow Media Server Fallback Deletion** was disabled. Reclaimerr now always reconciles the media server after removing files, using a media-server delete when allowed or a path re-scan otherwise. Plex users still need **Empty trash automatically after every scan** enabled for missing items to disappear after a re-scan.
+- Fixed movies becoming undeletable when stale references from disabled or removed Radarr instances remained attached. Deletion routing now ignores inactive Radarr instances, and syncs clean up references belonging to disabled or deleted configurations.
+- Fixes related to anilist 403 errors when their service is down.
+
+### Changed
+
+- Cleanup candidates now show failed deletion attempts directly in the UI, including the attempt count, last attempt time, and recorded reason. Grouped candidates show the worst affected member. These fields are also exposed by `GET /api/v1/candidates`.
+- Episode deletions now respect **Allow Media Server Fallback Deletion**, matching season, series, and movie deletions. When fallback deletion is disabled, Reclaimerr uses a path re-scan instead of deleting the episode through the media server.
+- Improved logging for movie-version deletion routing and repeated candidate flagging. Logs now explain why a Radarr delete could not be used and warn when a recently actioned title is re-flagged with a restarted review period.
+- Updated granian and platform dirs.
+
 ## [0.4.4] - 2026-09-10
 
 ### Changed

@@ -146,7 +146,7 @@ The Settings page reports when dependent rules or path mappings were changed. Re
 
 ## Safety Settings Worth Reviewing
 
-- `Allow Media Server Fallback Deletion`
+- `Allow Media Server Fallback Deletion` - controls whether Reclaimerr may delete _through_ the media server. It does not stop Reclaimerr keeping the library in step: after Radarr, Sonarr, or Reclaimerr itself removes files, the media server is always told to re-check the affected path, which is a read-only scan and deletes nothing. See [Deletion Flow](../usage/deletion-flow.md).
 - `Default ARR Delete Behavior`
 - `Add Arr Import List Exclusions on Delete`
 - `Default Auto-Delete Review Periods`

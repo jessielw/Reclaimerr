@@ -2,11 +2,12 @@ import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, TypeGuard, TypeVar
+from typing import Any, TypeGuard, TypeVar, cast
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
@@ -209,6 +210,43 @@ async def _apply_soft_deletes(
         f"soft-deleted {media_type.value} rows"
     )
     return deleted_ids
+
+
+async def _purge_orphaned_arr_refs(
+    session: AsyncSession,
+    ref_model: type[MovieArrRef] | type[SeriesArrRef],
+    service_type: Service,
+) -> None:
+    """Drop arr refs whose service config no longer exists or is disabled.
+
+    The per-config refresh only rewrites rows for configs that are currently
+    loaded, so a disabled or deleted instance leaves its rows behind forever.
+    They are invisible in the UI, which filters on enabled configs, but
+    deletion routing still counts them - enough to make a single-instance movie
+    look like it is tracked by two Radarrs and block a whole-movie delete.
+    """
+    enabled_ids = list(
+        (
+            await session.execute(
+                select(ServiceConfig.id).where(
+                    ServiceConfig.service_type == service_type,
+                    ServiceConfig.enabled.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stmt = sql_delete(ref_model)
+    if enabled_ids:
+        stmt = stmt.where(ref_model.service_config_id.notin_(enabled_ids))
+    result = cast(CursorResult[Any], await session.execute(stmt))
+    removed = result.rowcount or 0
+    if removed:
+        LOG.info(
+            f"Purged {removed} orphaned {service_type.value} ref(s) belonging to "
+            "disabled or removed service configs"
+        )
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -1787,6 +1825,7 @@ async def sync_movies(
             )
 
             # refresh per instance Radarr refs for active movies
+            await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
             radarr_clients = service_manager.radarr_clients()
             if not radarr_clients and service_manager.radarr:
                 radarr_clients = {0: service_manager.radarr}
@@ -2278,6 +2317,7 @@ async def sync_series(
                 LOG.debug("Supplemental episode ID upsert committed")
 
             # refresh per instance Sonarr refs for active series
+            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
             sonarr_clients = service_manager.sonarr_clients()
             if not sonarr_clients and service_manager.sonarr:
                 sonarr_clients = {0: service_manager.sonarr}

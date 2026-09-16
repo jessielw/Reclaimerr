@@ -192,6 +192,69 @@ async def test_anilist_denormalization_skips_unchanged_media_rows() -> None:
     await engine.dispose()
 
 
+class _FakeAniListResponse:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        json_data: dict | None = None,
+        headers: dict | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self._json_data = json_data or {}
+        self.headers = headers or {}
+
+    def json(self) -> dict:
+        return self._json_data
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"{self.status_code} Client Error")
+
+
+class _FakeAniListSession:
+    def __init__(self, responses: list[_FakeAniListResponse]) -> None:
+        self._responses = list(responses)
+
+    async def post(self, *args, **kwargs) -> _FakeAniListResponse:
+        return self._responses.pop(0)
+
+
+@pytest.mark.anyio
+async def test_post_anilist_batch_retries_on_403_then_succeeds() -> None:
+    responses = [
+        _FakeAniListResponse(403),
+        _FakeAniListResponse(200, json_data={"data": {"m0": {"id": 123}}}),
+    ]
+    session = _FakeAniListSession(responses)
+
+    with patch.object(anilist_tasks.asyncio, "sleep", new=AsyncMock()) as sleep_mock:
+        data = await anilist_tasks._post_anilist_batch(
+            session=session,  # type: ignore[arg-type]
+            anilist_ids=[123],
+        )
+
+    assert data == {"m0": {"id": 123}}
+    sleep_mock.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_post_anilist_batch_raises_clear_error_after_exhausting_403_retries() -> (
+    None
+):
+    responses = [
+        _FakeAniListResponse(403) for _ in range(anilist_tasks.ANILIST_MAX_RETRIES)
+    ]
+    session = _FakeAniListSession(responses)
+
+    with patch.object(anilist_tasks.asyncio, "sleep", new=AsyncMock()):
+        with pytest.raises(RuntimeError, match="403 Forbidden"):
+            await anilist_tasks._post_anilist_batch(
+                session=session,  # type: ignore[arg-type]
+                anilist_ids=[123],
+            )
+
+
 @pytest.mark.anyio
 async def test_provider_failure_does_not_erase_cached_values() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
