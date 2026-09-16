@@ -28,6 +28,8 @@ ERROR_MSG_MAX_LENGTH = 2000
 ANILIST_BATCH_SIZE = 20
 ANILIST_MIN_INTERVAL_SECONDS = 2.1
 ANILIST_MAX_RETRIES = 5
+ANILIST_FORBIDDEN_BASE_DELAY_SECONDS = 5.0
+ANILIST_FORBIDDEN_MAX_DELAY_SECONDS = 60.0
 DENORMALIZE_COMMIT_BATCH_SIZE = 500
 
 __all__ = ["refresh_anilist_ratings"]
@@ -265,6 +267,7 @@ async def _post_anilist_batch(
     query = "query {" + " ".join(query_parts) + "}"
     body = {"query": query}
 
+    last_status_code: int | None = None
     for attempt in range(ANILIST_MAX_RETRIES):
         response = await session.post(
             ANILIST_GRAPHQL_URL,
@@ -274,7 +277,17 @@ async def _post_anilist_batch(
         )
         status_code = _safe_status_code(response.status_code)
         if status_code == 429:
+            last_status_code = status_code
             await asyncio.sleep(_retry_after_seconds(response.headers))
+            continue
+        if status_code == 403:
+            # AniList's public GraphQL API intermittently returns a bare 403
+            # when it's temporarily down/fronted by Cloudflare, not because
+            # this request is actually unauthorized. Back off and retry
+            # rather than failing the whole task on what is usually a
+            # transient outage on their end.
+            last_status_code = status_code
+            await asyncio.sleep(_forbidden_retry_delay(attempt))
             continue
 
         response.raise_for_status()
@@ -283,6 +296,7 @@ async def _post_anilist_batch(
             raise RuntimeError("Unexpected AniList GraphQL payload shape")
         errors = payload.get("errors")
         if isinstance(errors, list) and _has_429_error(errors):
+            last_status_code = 429
             await asyncio.sleep(_retry_after_seconds(response.headers))
             continue
 
@@ -291,7 +305,18 @@ async def _post_anilist_batch(
             return {}
         return data
 
+    if last_status_code == 403:
+        raise RuntimeError(
+            "AniList GraphQL API returned 403 Forbidden after "
+            f"{ANILIST_MAX_RETRIES} attempts; AniList's public API is "
+            "likely experiencing a temporary outage, try again later"
+        )
     raise RuntimeError("AniList GraphQL rate limited after maximum retries")
+
+
+def _forbidden_retry_delay(attempt: int) -> float:
+    delay = ANILIST_FORBIDDEN_BASE_DELAY_SECONDS * (2**attempt)
+    return min(delay, ANILIST_FORBIDDEN_MAX_DELAY_SECONDS)
 
 
 def _has_429_error(errors: list[Any]) -> bool:
