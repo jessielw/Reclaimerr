@@ -1194,6 +1194,11 @@ export interface ReclaimCandidateEntry {
   auto_delete_timer_started_at: string | null;
   lifecycle_reason: string | null;
   delete_operation: "delete" | "move";
+  // set when an auto/manual delete attempt failed; last_delete_error is reset at
+  // the start of each attempt, delete_attempts keeps counting up
+  delete_attempts: number;
+  last_delete_attempt_at: string | null;
+  last_delete_error: string | null;
   // populated for season level candidates
   season_id: number | null;
   season_number: number | null;

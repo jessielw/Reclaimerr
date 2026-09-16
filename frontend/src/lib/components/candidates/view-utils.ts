@@ -94,6 +94,24 @@ export const earliestAutoDeleteEntry = (
   );
 };
 
+/** The group member whose delete has failed the most, or null if none have.
+ *
+ * A grouped card spreads `entries[0]`, so without this a failure on any other
+ * member of the group would never be shown.
+ */
+export const worstDeleteFailureEntry = (
+  entries: ReclaimCandidateEntry[],
+): ReclaimCandidateEntry | null => {
+  let worst: ReclaimCandidateEntry | null = null;
+  for (const entry of entries) {
+    if ((entry.delete_attempts ?? 0) < 1) continue;
+    if (!worst || (entry.delete_attempts ?? 0) > (worst.delete_attempts ?? 0)) {
+      worst = entry;
+    }
+  }
+  return worst;
+};
+
 const autoDeleteReviewPeriodLabel = (delayDays: number): string =>
   delayDays === 0 ? "no review period" : `${delayDays}-day review period`;
 
@@ -190,6 +208,35 @@ export const candidateWatchCountLabel = (
   return `${count} view${count === 1 ? "" : "s"}`;
 };
 
+const DELETE_ERROR_MAX_CHARS = 220;
+
+/** "3 attempts, last 12 Sep 2026 - <reason>", or null when nothing has failed.
+ *
+ * `last_delete_error` is cleared at the start of every attempt while
+ * `delete_attempts` keeps counting, so the pair reads as "latest reason, total
+ * attempts". A candidate that keeps failing silently is exactly the case this
+ * line exists for.
+ */
+export const candidateDeleteFailureLabel = (
+  entry: ReclaimCandidateEntry,
+  formatDate: (value: string) => string,
+): string | null => {
+  const attempts = entry.delete_attempts ?? 0;
+  if (attempts < 1) return null;
+  const parts = [`${attempts} attempt${attempts === 1 ? "" : "s"}`];
+  if (entry.last_delete_attempt_at) {
+    parts.push(`last ${formatDate(entry.last_delete_attempt_at)}`);
+  }
+  const summary = parts.join(", ");
+  const error = entry.last_delete_error?.trim();
+  if (!error) return summary;
+  const trimmed =
+    error.length > DELETE_ERROR_MAX_CHARS
+      ? `${error.slice(0, DELETE_ERROR_MAX_CHARS)}...`
+      : error;
+  return `${summary} - ${trimmed}`;
+};
+
 export const candidateMediaMetaFields = (
   entry: ReclaimCandidateEntry,
   formatDate: (value: string) => string,
@@ -236,6 +283,16 @@ export const candidateMediaMetaFields = (
       : "",
     // : "font-medium text-muted-foreground",
   });
+  const deleteFailure = candidateDeleteFailureLabel(entry, formatDate);
+  if (deleteFailure) {
+    fields.push({
+      label: "Delete failed",
+      value: deleteFailure,
+      containerClass: "rounded-sm bg-destructive/10 px-1.5",
+      labelClass: "font-medium text-destructive/75",
+      valueClass: "font-semibold text-destructive",
+    });
+  }
   return fields;
 };
 

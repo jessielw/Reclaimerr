@@ -215,6 +215,9 @@ async def candidate_status_payload(
         "auto_delete_timer_started_at": candidate.auto_delete_timer_started_at,
         "lifecycle_reason": candidate.lifecycle_reason,
         "lifecycle_updated_at": candidate.lifecycle_updated_at,
+        "delete_attempts": candidate.delete_attempts or 0,
+        "last_delete_attempt_at": candidate.last_delete_attempt_at,
+        "last_delete_error": candidate.last_delete_error,
         "blockers": await candidate_deletion_blockers(db, candidate),
     }
 

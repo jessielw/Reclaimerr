@@ -31,6 +31,17 @@ When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 - series candidates that Sonarr cannot remove directly
 - scoped deletions that need the media server to remove files or folders
 
+## Keeping The Media Server In Step
+
+Removing a file does not tell your media server anything. Whenever Radarr, Sonarr, or Reclaimerr itself removes media, Reclaimerr therefore reconciles the main media server afterwards:
+
+- with `Allow Media Server Fallback Deletion` **on**, it removes the item from the media server, exactly as before;
+- with it **off**, it asks the media server to re-scan the affected path instead. That is a read-only request - it never deletes anything - so the setting still means what it says.
+
+This matters more than it sounds. Skipping the reconciliation leaves the media server serving an entry whose files are already gone. The next **Sync Media** run re-imports that entry, the next **Scan Cleanup Candidates** run flags it again as a _new_ candidate, and because the review period is measured from when a candidate was created, the countdown restarts from zero. The item then never reaches automatic deletion, however long you wait.
+
+One Plex caveat: a path scan only drops missing items when Plex's _Empty trash automatically after every scan_ library setting is enabled, which is Plex's default. With it turned off, Plex keeps the entry until you empty the trash yourself.
+
 ## Important Settings
 
 - `Default ARR Delete Behavior`

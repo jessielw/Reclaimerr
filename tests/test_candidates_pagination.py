@@ -842,3 +842,70 @@ def test_get_candidates_includes_origin_metadata() -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_get_candidates_surfaces_repeated_delete_failures() -> None:
+    """A candidate that keeps failing has to say so somewhere the user looks.
+
+    The backend records every failed attempt on the row, but until these fields
+    were serialized the card just kept reading "Eligible now" while the delete
+    failed on every run.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+            failed_at = datetime(2026, 9, 16, 2, 0, 47, tzinfo=UTC)
+            candidate = await db_session.get(
+                ReclaimCandidate, ids["alpha_candidate_id"]
+            )
+            assert candidate is not None
+            candidate.delete_attempts = 11
+            candidate.last_delete_attempt_at = failed_at.replace(tzinfo=None)
+            candidate.last_delete_error = "Radarr delete failed for config 1: boom"
+            await db_session.commit()
+
+            response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search="Alpha",
+                media_type=MediaType.MOVIE,
+            )
+
+            entry = response.items[0]
+            assert entry.id == ids["alpha_candidate_id"]
+            assert entry.delete_attempts == 11
+            assert entry.last_delete_attempt_at is not None
+            assert entry.last_delete_attempt_at.startswith("2026-09-16T02:00:47")
+            assert entry.last_delete_error == (
+                "Radarr delete failed for config 1: boom"
+            )
+
+            clean_response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search="Delta",
+                media_type=MediaType.SERIES,
+            )
+            clean_entry = clean_response.items[0]
+            assert clean_entry.delete_attempts == 0
+            assert clean_entry.last_delete_attempt_at is None
+            assert clean_entry.last_delete_error is None
+
+        await engine.dispose()
+
+    asyncio.run(run())
