@@ -32,6 +32,9 @@
   // so early "expired" answers mean "not yet", not "gone".
   const AUTH_FLOW_GRACE_MS = 35 * 1000;
   const AUTH_WINDOW_PATH = "/api/auth/signin-window";
+  // If the window never says it is ready, send it on anyway rather than leaving
+  // it sitting on the spinner.
+  const AUTH_HANDOFF_FALLBACK_MS = 2000;
   const MEDIA_SERVER_ICONS: Record<string, any> = {
     jellyfin: JellyfinSVG,
     emby: EmbySVG,
@@ -107,6 +110,10 @@
   let authFlowSeen = false;
   let authFlowGraceUntil = 0;
   let authPopupUrl = "";
+  let authStartUrl = "";
+  let authRedirectUrl = "";
+  let authHandedOff = false;
+  let authHandoffTimer: number | null = null;
   let authWaiting = $state(false);
   let overlay: HTMLElement | null;
   let backDropUrls: string[] = [];
@@ -121,6 +128,7 @@
   const authCompleteUrl = () => `${window.location.origin}/#/auth/complete`;
 
   const stopAuthPolling = () => {
+    clearAuthHandoffTimer();
     if (authPollInterval) {
       clearInterval(authPollInterval);
       authPollInterval = null;
@@ -151,8 +159,45 @@
 
   const handleAuthMessage = (event: MessageEvent) => {
     if (event.origin !== window.location.origin) return;
+    if (event.data?.type === "reclaimerr-auth-window-ready") {
+      handoffAuthPopup();
+      return;
+    }
     if (event.data?.type !== "reclaimerr-auth-complete") return;
     handleAuthNudge(event.data.error ?? null);
+  };
+
+  // The sign-in window opens on a local spinner and asks us to send it onward, so
+  // the destination never has to be handed to a page as a parameter. Both windows
+  // are still same-origin at this point, which is the one moment in this flow
+  // where driving the popup is dependable.
+  const handoffAuthPopup = () => {
+    if (authHandedOff || !authPopup || !authStartUrl) return;
+    authHandedOff = true;
+    clearAuthHandoffTimer();
+    try {
+      authPopup.location.href = authStartUrl;
+    } catch {
+      // Cannot drive the window - finish in this tab instead of stranding them.
+      closeAuthPopup();
+      window.location.href = authRedirectUrl;
+    }
+  };
+
+  const clearAuthHandoffTimer = () => {
+    if (authHandoffTimer) {
+      clearTimeout(authHandoffTimer);
+      authHandoffTimer = null;
+    }
+  };
+
+  const armAuthHandoff = () => {
+    authHandedOff = false;
+    clearAuthHandoffTimer();
+    authHandoffTimer = window.setTimeout(
+      handoffAuthPopup,
+      AUTH_HANDOFF_FALLBACK_MS,
+    );
   };
 
   const pollRedirectAuth = async () => {
@@ -325,6 +370,7 @@
     authFlowSeen = false;
     authFlowGraceUntil = Date.now() + AUTH_FLOW_GRACE_MS;
     authPopup = openAuthPopup(authPopupUrl);
+    if (authPopup) armAuthHandoff();
   };
 
   const startRedirectAuth = (
@@ -338,23 +384,24 @@
 
     // The mode is stated outright rather than inferred later from browser state:
     // window.name and window.opener are both wiped by the cross-origin round trip.
-    const redirectUrl = `${baseUrl}&mode=redirect`;
+    authRedirectUrl = `${baseUrl}&mode=redirect`;
     if (prefersFullPageAuth()) {
-      window.location.href = redirectUrl;
+      window.location.href = authRedirectUrl;
       return;
     }
 
     // Opening straight at the start route left the window blank while the server
     // talked to the provider. This paints a spinner first, and the browser keeps
     // showing it until the provider's page is ready to take over.
-    const startUrl = `${baseUrl}&mode=popup`;
-    authPopupUrl = `${AUTH_WINDOW_PATH}?next=${encodeURIComponent(startUrl)}`;
+    authStartUrl = `${baseUrl}&mode=popup`;
+    authPopupUrl = AUTH_WINDOW_PATH;
     authPopup = openAuthPopup(authPopupUrl);
     if (!authPopup) {
-      window.location.href = redirectUrl;
+      window.location.href = authRedirectUrl;
       return;
     }
 
+    armAuthHandoff();
     authWaiting = true;
     startAuthPolling(provider);
   };

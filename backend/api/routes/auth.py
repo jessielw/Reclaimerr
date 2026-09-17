@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
@@ -358,7 +357,7 @@ _AUTH_PAGE_TEMPLATE = """<!doctype html>
 <body>
   <div class="box">
     <div class="spinner" id="spinner"{spinner_style}></div>
-    <p id="msg"{msg_class}>{message}</p>
+    <p id="msg"{msg_class} data-error="{error_attr}">{message}</p>
   </div>
 {script}
 </body>
@@ -366,81 +365,91 @@ _AUTH_PAGE_TEMPLATE = """<!doctype html>
 """
 
 
+# Nothing is ever interpolated into these scripts. Whatever the page has to say is
+# escaped into the markup and read back out of the DOM, so text we do not control
+# (an identity provider's error message, say) never reaches a script block.
 _TERMINAL_SCRIPT = """  <script>
-  (function () {{
-    var error = {error_js};
-    var payload = {{ type: "reclaimerr-auth-complete", error: error }};
-    // Nudge the opener so it polls immediately instead of waiting out its interval.
-    // Both channels are best-effort: COOP on the identity provider can sever
-    // window.opener, and BroadcastChannel may be unavailable. The opener's poll
-    // is what actually completes the sign in.
-    try {{
+  (function () {
+    var node = document.getElementById("msg");
+    var error = node.getAttribute("data-error") || null;
+    var payload = { type: "reclaimerr-auth-complete", error: error };
+    // Nudge the opener so it polls immediately instead of waiting out its
+    // interval. Both channels are best-effort: COOP on the identity provider can
+    // sever window.opener, and BroadcastChannel may be unavailable. The opener's
+    // poll is what actually completes the sign in.
+    try {
       var channel = new BroadcastChannel("reclaimerr-auth");
       channel.postMessage(payload);
       channel.close();
-    }} catch (err) {{}}
-    try {{
-      if (window.opener && !window.opener.closed) {{
+    } catch (err) {}
+    try {
+      if (window.opener && !window.opener.closed) {
         window.opener.postMessage(payload, window.location.origin);
-      }}
-    }} catch (err) {{}}
+      }
+    } catch (err) {}
 
     if (error) return;
 
-    setTimeout(function () {{
-      try {{ window.close(); }} catch (err) {{}}
-    }}, 150);
-    setTimeout(function () {{
+    setTimeout(function () {
+      try { window.close(); } catch (err) {}
+    }, 150);
+    setTimeout(function () {
       if (window.closed) return;
       var spinner = document.getElementById("spinner");
       if (spinner) spinner.style.display = "none";
-      document.getElementById("msg").textContent =
-        "Sign in complete. You can close this window.";
-    }}, 1000);
-  }})();
+      node.textContent = "Sign in complete. You can close this window.";
+    }, 1000);
+  })();
   </script>
 """
 
 
 _LOADING_SCRIPT = """  <script>
-  (function () {{
-    var next = {next_js};
-    // Two frames guarantees the spinner has painted before we navigate away.
-    requestAnimationFrame(function () {{
-      requestAnimationFrame(function () {{
-        window.location.replace(next);
-      }});
-    }});
-  }})();
+  (function () {
+    var handedOff = false;
+    function tellOpener() {
+      if (handedOff) return;
+      handedOff = true;
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(
+            { type: "reclaimerr-auth-window-ready" },
+            window.location.origin
+          );
+          return;
+        }
+      } catch (err) {}
+      giveUp();
+    }
+    function giveUp() {
+      var spinner = document.getElementById("spinner");
+      if (spinner) spinner.style.display = "none";
+      document.getElementById("msg").textContent =
+        "Could not reach the page that opened this window. Close it and try again.";
+    }
+    // Two frames guarantees the spinner has painted before we hand off. The opener
+    // is still same-origin here and no COOP boundary has been crossed, so
+    // window.opener is dependable - which it stops being once we reach the
+    // provider.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(tellOpener);
+    });
+    // Dies with the document as soon as the opener navigates us onward.
+    setTimeout(giveUp, 8000);
+  })();
   </script>
 """
 
 
-def _js_string(value: str | None) -> str:
-    """A safe JS string literal, including inside a <script> block."""
-    # json.dumps handles quoting; escaping "<" as well stops a hostile value from
-    # closing the script element.
-    return json.dumps(value).replace("<", "\\u003c")
-
-
-def _auth_page(message: str, *, script: str, is_error: bool = False) -> HTMLResponse:
+def _auth_page(message: str, *, script: str, error: str | None = None) -> HTMLResponse:
     body = _AUTH_PAGE_TEMPLATE.format(
         message=html.escape(message),
-        msg_class=' class="error"' if is_error else "",
-        spinner_style=' style="display:none"' if is_error else "",
+        msg_class=' class="error"' if error else "",
+        spinner_style=' style="display:none"' if error else "",
+        error_attr=html.escape(error or "", quote=True),
         script=script,
     )
     return HTMLResponse(content=body, headers={"Cache-Control": "no-store"})
-
-
-def _is_internal_auth_path(value: str) -> bool:
-    """Only our own auth routes may be handed to the loading page."""
-    if not value.startswith("/api/auth/") or value.startswith("//"):
-        return False
-    if "\\" in value:
-        return False
-    parsed = urlsplit(value)
-    return not parsed.scheme and not parsed.netloc
 
 
 def _terminal_auth_page(error: str | None = None) -> HTMLResponse:
@@ -452,8 +461,8 @@ def _terminal_auth_page(error: str | None = None) -> HTMLResponse:
     """
     return _auth_page(
         error or "Completing sign in...",
-        script=_TERMINAL_SCRIPT.format(error_js=_js_string(error)),
-        is_error=bool(error),
+        script=_TERMINAL_SCRIPT,
+        error=error,
     )
 
 
@@ -529,26 +538,21 @@ def _request_session(request: Request) -> dict[str, Any] | None:
 
 
 @router.get("/signin-window")
-async def auth_signin_window(
-    next_url: str = Query(alias="next"),
-) -> HTMLResponse:
-    """Serve the first page a sign-in popup shows, then send it on its way.
+async def auth_signin_window() -> HTMLResponse:
+    """Serve the first page a sign-in popup shows.
 
     ``window.open`` has to run synchronously inside the click handler or the browser
     drops the user gesture and blocks the popup, which leaves no room to do any work
-    first. So the popup opens here, paints a spinner, and only then walks itself to
-    the start route - which can spend a second or two talking to the provider
-    without the user watching an empty window.
+    first. So the popup opens here and paints a spinner, then tells the opener it is
+    ready; the opener sends it on to the provider. The browser keeps showing this
+    page until that next document commits, so nobody watches an empty window while
+    the server talks to Plex.
+
+    The destination deliberately is not a parameter on this route - handing a URL to
+    a page that renders HTML is how reflected XSS starts, and the opener already
+    knows where the window should go.
     """
-    if not _is_internal_auth_path(next_url):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported sign-in target",
-        )
-    return _auth_page(
-        "Connecting...",
-        script=_LOADING_SCRIPT.format(next_js=_js_string(next_url)),
-    )
+    return _auth_page("Connecting...", script=_LOADING_SCRIPT)
 
 
 @router.get("/oidc/status", response_model=OIDCAuthStatusResponse)

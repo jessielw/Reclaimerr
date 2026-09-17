@@ -1123,7 +1123,7 @@ def test_media_plex_callback_popup_mode_returns_self_closing_page(
             request=_make_plex_callback_request(),
             state="expected-state",
             mode="popup",
-            db=None,  # never touched: the hop returns before any db access
+            db=None,  # never touched: the hop returns before any db access  # type: ignore[reportAttributeAccessIssue]
         )
 
         assert response.status_code == 200
@@ -1131,7 +1131,7 @@ def test_media_plex_callback_popup_mode_returns_self_closing_page(
         # The popup must dead-end here. Sending it back into the SPA is what left
         # users staring at a second, separate copy of Reclaimerr.
         assert "location" not in response.headers
-        body = response.body.decode()
+        body = response.body.decode()  # type: ignore[reportAttributeAccessIssue]
         assert "window.close()" in body
         assert "location.href" not in body
 
@@ -1358,9 +1358,7 @@ def _install_plex_poll_fakes(
     async def fake_issue_login_session(**kwargs: object) -> None:
         seen["issued"] = kwargs.get("response")
 
-    monkeypatch.setattr(
-        auth_routes, "peek_pending_plex_auth", lambda state: pending
-    )
+    monkeypatch.setattr(auth_routes, "peek_pending_plex_auth", lambda state: pending)
     monkeypatch.setattr(
         auth_routes,
         "pop_pending_plex_auth",
@@ -1420,14 +1418,14 @@ def test_media_plex_poll_waits_then_completes_the_sign_in(monkeypatch) -> None:
             request = _make_plex_poll_request(flow_cookie="flow-state")
 
             first = await auth_routes.media_plex_poll(request=request, db=db_session)
-            assert json.loads(first.body) == {"status": "pending"}
+            assert json.loads(first.body) == {"status": "pending"}  # type: ignore[reportAttributeAccessIssue]
             # A pending poll must leave the flow cookie alone, or the next poll
             # would have nothing to look the PIN up with.
             assert not first.headers.get("set-cookie")
             assert seen["popped"] == []
 
             second = await auth_routes.media_plex_poll(request=request, db=db_session)
-            assert json.loads(second.body) == {"status": "authenticated"}
+            assert json.loads(second.body) == {"status": "authenticated"}  # type: ignore[reportAttributeAccessIssue]
             assert seen["popped"] == ["flow-state"]
             # The session must land on the opener's own response, not the popup's.
             assert seen["issued"] is second
@@ -1451,39 +1449,43 @@ def test_media_plex_poll_without_a_flow_cookie_reports_expired(monkeypatch) -> N
 
         response = await auth_routes.media_plex_poll(
             request=_make_plex_poll_request(),
-            db=None,  # never touched
+            db=None,  # never touched  # type: ignore[reportAttributeAccessIssue]
         )
-        assert json.loads(response.body) == {"status": "expired"}
+        assert json.loads(response.body) == {"status": "expired"}  # type: ignore[reportAttributeAccessIssue]
 
     asyncio.run(run())
 
 
-def test_signin_window_paints_then_forwards_to_the_start_route() -> None:
+def test_signin_window_paints_before_handing_off_to_the_opener() -> None:
     async def run() -> None:
-        target = "/api/auth/media/plex/start?service_config_id=1&mode=popup"
-        response = await auth_routes.auth_signin_window(next_url=target)
+        response = await auth_routes.auth_signin_window()
 
         assert response.status_code == 200
         assert response.media_type == "text/html"
-        body = response.body.decode()
-        # The spinner has to paint before the window walks itself onward, which is
-        # the entire reason this page exists.
+        body = response.body.decode()  # type: ignore[reportAttributeAccessIssue]
+        # The spinner has to paint before the window hands off, which is the whole
+        # reason this page exists.
         assert "requestAnimationFrame" in body
-        assert f'var next = "{target}";' in body
+        assert "reclaimerr-auth-window-ready" in body
+        # No destination is reflected into the page - the opener knows where to
+        # send it, so nothing user-supplied is rendered here at all.
+        assert "location.replace" not in body
+        assert "/api/auth/media/plex/start" not in body
 
     asyncio.run(run())
 
 
-def test_signin_window_refuses_targets_that_are_not_ours() -> None:
-    async def run() -> None:
-        for target in (
-            "//evil.example.com/",
-            "https://evil.example.com/api/auth/media/plex/start",
-            "/api/settings/general",
-            "javascript:alert(1)",
-        ):
-            with pytest.raises(HTTPException) as excinfo:
-                await auth_routes.auth_signin_window(next_url=target)
-            assert excinfo.value.status_code == 400
+def test_auth_pages_keep_untrusted_text_out_of_the_script_block() -> None:
+    body = auth_routes._terminal_auth_page(
+        '<img src=x onerror=alert(1)>"</script><script>alert(2)</script>'
+    ).body.decode()  # type: ignore[reportAttributeAccessIssue]
 
-    asyncio.run(run())
+    lowered = body.lower()
+    assert lowered.count("<script") == 1
+    assert lowered.count("</script") == 1
+    assert "<img" not in lowered
+    # The message is carried in an escaped attribute and read back from the DOM,
+    # so it never becomes part of a script.
+    attribute = body.split('data-error="')[1].split('"')[0]
+    assert '"' not in attribute
+    assert "&lt;img" in attribute
