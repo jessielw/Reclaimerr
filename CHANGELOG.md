@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-09-17
+
+### Fixed
+
+- Plex and SSO sign-in now finishes in the tab you started from, instead of loading a second copy of Reclaimerr in the sign-in window that you had to close and refresh around.
+- Fixed Plex sign-in failing with "Sign-in window was closed before authentication completed" while the window was still open.
+- Fixed Plex and SSO sign-in not completing behind a reverse proxy unless **Application URL** was set.
+- The Plex sign-in window is no longer too small to use, and no longer opens on the wrong monitor.
+
+### Changed
+
+- Sign-in windows now close themselves once you are done.
+- Sign-in windows now show a spinner while connecting instead of opening blank.
+- The login page now shows that it is waiting for a sign-in window, with a **Cancel** button and a link to reopen the window if you cannot find it.
+- Phones and tablets now sign in in the same tab rather than opening a separate window.
+- Sign-in no longer depends on the sign-in window being able to report back, so it still completes if your browser or reverse proxy blocks that.
+
 ## [0.4.5] - 2026-09-16
 
 ### Fixed

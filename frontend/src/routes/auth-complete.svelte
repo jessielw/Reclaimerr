@@ -1,11 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { auth } from "$lib/stores/auth";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
-
-  type AuthCompleteMessage = {
-    type: "reclaimerr-auth-complete";
-    error: string | null;
-  };
 
   let message = $state("Completing sign in...");
 
@@ -23,58 +19,22 @@
     return new URLSearchParams(hash.slice(queryStart + 1)).get("auth_error");
   };
 
-  onMount(() => {
+  // Only same-tab sign-ins land here now. A popup flow ends on a dead-end page
+  // served by the backend that closes itself, because sending the popup back into
+  // the app is what left users looking at a second copy of Reclaimerr (#353).
+  onMount(async () => {
     const error = readAuthError();
-    const payload: AuthCompleteMessage = {
-      type: "reclaimerr-auth-complete",
-      error,
-    };
-
-    // window.open(url, "reclaimerr-auth", …) names the popup's browsing context.
-    // Unlike window.opener, that name survives cross-origin navigation (through
-    // Plex's auth pages), so it reliably tells us whether we're really running
-    // inside that popup vs. having driven the whole flow in the original tab
-    // (e.g. because the popup was blocked and login.svelte fell back to a
-    // same-tab redirect).
-    const isPopupWindow = window.name === "reclaimerr-auth";
-
-    try {
-      const channel = new BroadcastChannel("reclaimerr-auth");
-      channel.postMessage(payload);
-      channel.close();
-    } catch {
-      // BroadcastChannel is a convenience; postMessage covers popup openers
+    if (error) {
+      message = "Sign in failed. Returning to the login page...";
+      window.setTimeout(() => {
+        window.location.replace(`/?auth_error=${encodeURIComponent(error)}`);
+      }, 250);
+      return;
     }
 
-    if (window.opener && !window.opener.closed) {
-      window.opener.postMessage(payload, window.location.origin);
-    }
-
-    message = error
-      ? "Sign in failed. You can close this window."
-      : "Sign in complete.";
-
-    if (!error) {
-      if (isPopupWindow) {
-        // The opener has already been notified above. Try to close this popup,
-        // but some browsers (especially after navigating through a third-party
-        // auth page) silently refuse script-initiated close. In that case, don't
-        // hijack this leftover window into loading the app inline - just let the
-        // user close it manually.
-        window.setTimeout(() => window.close(), 250);
-        window.setTimeout(() => {
-          if (!window.closed) {
-            message = "Sign in complete. You can close this tab.";
-          }
-        }, 1000);
-      } else {
-        // No popup was involved (it was blocked, so this tab drove the whole
-        // flow itself) - there's nothing else to return to, so go home.
-        window.setTimeout(() => {
-          window.location.href = "/";
-        }, 250);
-      }
-    }
+    await auth.init();
+    message = "Sign in complete.";
+    window.location.replace("/#/");
   });
 </script>
 

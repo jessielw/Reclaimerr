@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -63,6 +64,25 @@ def _make_plex_callback_request(state: str = "expected-state") -> Request:
     return Request(scope)
 
 
+def _make_plex_poll_request(*, flow_cookie: str | None = None) -> Request:
+    headers = [
+        (b"host", b"testserver"),
+    ]
+    if flow_cookie is not None:
+        headers.append((b"cookie", f"plex_auth_flow={flow_cookie}".encode()))
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/auth/media/plex/poll",
+        "headers": headers,
+        "query_string": b"",
+        "client": ("127.0.0.1", 4242),
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
 def _make_oidc_start_request(*, scheme: str = "http") -> Request:
     headers = [
         (b"host", b"testserver"),
@@ -81,10 +101,16 @@ def _make_oidc_start_request(*, scheme: str = "http") -> Request:
     return Request(scope)
 
 
-def _make_plex_start_request(*, scheme: str = "http") -> Request:
+def _make_plex_start_request(
+    *,
+    scheme: str = "http",
+    referer: str | None = None,
+) -> Request:
     headers = [
         (b"host", b"testserver"),
     ]
+    if referer is not None:
+        headers.append((b"referer", referer.encode()))
     scope = {
         "type": "http",
         "method": "GET",
@@ -912,6 +938,8 @@ def test_media_plex_start_uses_application_url(monkeypatch) -> None:
                 provider: object,
                 callback_url: str,
                 return_to: str | None = None,
+                mode: str = "redirect",
+                state: str | None = None,
             ) -> str:
                 captured["callback_url"] = callback_url
                 captured["return_to"] = return_to or ""
@@ -986,6 +1014,8 @@ def test_media_plex_start_uses_absolute_return_to_origin_without_application_url
                 provider: object,
                 callback_url: str,
                 return_to: str | None = None,
+                mode: str = "redirect",
+                state: str | None = None,
             ) -> str:
                 captured["callback_url"] = callback_url
                 captured["return_to"] = return_to or ""
@@ -1021,3 +1051,441 @@ def test_media_plex_start_uses_absolute_return_to_origin_without_application_url
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_return_to_accepts_the_origin_the_browser_is_already_on() -> None:
+    # Default self-hosted config: no Application URL, CORS_ORIGINS left at "*".
+    # Without this the proxy origin is rejected and the flow silently falls back
+    # to "/", which is what dropped popups into a second copy of the app (#353).
+    assert auth_routes._is_allowed_return_to_url(
+        "https://reclaimerr.example.com/#/auth/complete",
+        application_url=None,
+        request_origin="https://reclaimerr.example.com",
+    )
+    assert not auth_routes._is_allowed_return_to_url(
+        "https://evil.example.com/#/auth/complete",
+        application_url=None,
+        request_origin="https://reclaimerr.example.com",
+    )
+    assert not auth_routes._is_allowed_return_to_url(
+        "https://reclaimerr.example.com/#/auth/complete",
+        application_url=None,
+        request_origin=None,
+    )
+
+
+def test_request_origin_prefers_origin_then_referer() -> None:
+    def _request(headers: list[tuple[bytes, bytes]]) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/auth/media/plex/start",
+                "headers": headers,
+                "query_string": b"",
+                "client": ("127.0.0.1", 4242),
+                "scheme": "http",
+                "server": ("testserver", 80),
+            }
+        )
+
+    assert (
+        auth_routes._request_origin(
+            _request(
+                [
+                    (b"origin", b"https://from-origin.example.com"),
+                    (b"referer", b"https://from-referer.example.com/login"),
+                ]
+            )
+        )
+        == "https://from-origin.example.com"
+    )
+    assert (
+        auth_routes._request_origin(
+            _request([(b"referer", b"https://from-referer.example.com/#/login")])
+        )
+        == "https://from-referer.example.com"
+    )
+    assert auth_routes._request_origin(_request([(b"origin", b"null")])) is None
+    assert auth_routes._request_origin(_request([])) is None
+
+
+def test_media_plex_callback_popup_mode_returns_self_closing_page(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        def fail_pop(state: str) -> None:
+            raise AssertionError("popup mode must not consume the pending flow")
+
+        monkeypatch.setattr(auth_routes, "pop_pending_plex_auth", fail_pop)
+
+        response = await auth_routes.media_plex_callback(
+            request=_make_plex_callback_request(),
+            state="expected-state",
+            mode="popup",
+            db=None,  # never touched: the hop returns before any db access  # type: ignore[reportAttributeAccessIssue]
+        )
+
+        assert response.status_code == 200
+        assert response.media_type == "text/html"
+        # The popup must dead-end here. Sending it back into the SPA is what left
+        # users staring at a second, separate copy of Reclaimerr.
+        assert "location" not in response.headers
+        body = response.body.decode()  # type: ignore[reportAttributeAccessIssue]
+        assert "window.close()" in body
+        assert "location.href" not in body
+
+    asyncio.run(run())
+
+
+def test_media_plex_start_popup_mode_binds_flow_and_tags_callback(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            provider = auth_routes.MediaAuthProviderConfig(
+                service_config_id=1,
+                service_type=Service.PLEX,
+                name="plex-main",
+                base_url="http://plex.local",
+                auth_mode="redirect",
+            )
+            captured: dict[str, str] = {}
+
+            async def fake_get_media_auth_provider(
+                _db: AsyncSession,
+                *,
+                service_config_id: int,
+            ) -> object | None:
+                return provider
+
+            async def fake_start_plex_pin_flow(
+                *,
+                provider: object,
+                callback_url: str,
+                return_to: str | None = None,
+                mode: str = "redirect",
+                state: str | None = None,
+            ) -> str:
+                captured["callback_url"] = callback_url
+                captured["return_to"] = return_to or ""
+                captured["mode"] = mode
+                captured["state"] = state or ""
+                return "http://plex.local/auth"
+
+            monkeypatch.setattr(
+                auth_routes,
+                "get_media_auth_provider",
+                fake_get_media_auth_provider,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "start_plex_pin_flow",
+                fake_start_plex_pin_flow,
+            )
+
+            response = await auth_routes.media_plex_start(
+                request=_make_plex_start_request(
+                    referer="https://reclaimerr.example.com/#/login"
+                ),
+                service_config_id=1,
+                return_to="https://reclaimerr.example.com/#/auth/complete",
+                mode="popup",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            # No Application URL and CORS_ORIGINS="*": the origin the browser is
+            # already on is what keeps this off the internal testserver URL.
+            assert captured["callback_url"] == (
+                "https://reclaimerr.example.com/api/auth/media/plex/callback?mode=popup"
+            )
+            assert captured["return_to"] == (
+                "https://reclaimerr.example.com/#/auth/complete"
+            )
+            assert captured["mode"] == "popup"
+
+            cookie = response.headers.get("set-cookie") or ""
+            assert f"{auth_routes.PLEX_FLOW_COOKIE}={captured['state']}" in cookie
+            assert "httponly" in cookie.lower()
+            assert f"Path={auth_routes.PLEX_FLOW_COOKIE_PATH}" in cookie
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_start_redirect_mode_sets_no_flow_cookie(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            provider = auth_routes.MediaAuthProviderConfig(
+                service_config_id=1,
+                service_type=Service.PLEX,
+                name="plex-main",
+                base_url="http://plex.local",
+                auth_mode="redirect",
+            )
+            captured: dict[str, str] = {}
+
+            async def fake_get_media_auth_provider(
+                _db: AsyncSession,
+                *,
+                service_config_id: int,
+            ) -> object | None:
+                return provider
+
+            async def fake_start_plex_pin_flow(
+                *,
+                provider: object,
+                callback_url: str,
+                return_to: str | None = None,
+                mode: str = "redirect",
+                state: str | None = None,
+            ) -> str:
+                captured["callback_url"] = callback_url
+                return "http://plex.local/auth"
+
+            monkeypatch.setattr(
+                auth_routes,
+                "get_media_auth_provider",
+                fake_get_media_auth_provider,
+            )
+            monkeypatch.setattr(
+                auth_routes,
+                "start_plex_pin_flow",
+                fake_start_plex_pin_flow,
+            )
+
+            response = await auth_routes.media_plex_start(
+                request=_make_plex_start_request(),
+                service_config_id=1,
+                return_to="http://localhost:3000/#/auth/complete",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert "mode=" not in captured["callback_url"]
+            assert not response.headers.get("set-cookie")
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def _install_plex_poll_fakes(
+    monkeypatch,
+    *,
+    db_session: AsyncSession,
+    service_config_id: int,
+    user: User,
+    tokens: list[str | None],
+) -> dict[str, object]:
+    """Wire up a Plex poll so it hands back ``tokens`` one call at a time."""
+    seen: dict[str, object] = {"popped": [], "issued": None}
+
+    pending = PlexPendingAuth(
+        state="flow-state",
+        service_config_id=service_config_id,
+        client_identifier="plex-client-id",
+        pin_id=123,
+        pin_code="abcd",
+        return_to=None,
+        created_at=datetime.now(UTC),
+        mode="popup",
+    )
+    provider = auth_routes.MediaAuthProviderConfig(
+        service_config_id=service_config_id,
+        service_type=Service.PLEX,
+        name="plex-main",
+        base_url="http://plex.local",
+        auth_mode="redirect",
+    )
+
+    async def fake_get_media_auth_provider(
+        _db: AsyncSession,
+        *,
+        service_config_id: int,
+    ) -> object | None:
+        return provider
+
+    async def fake_poll_plex_pin_for_token(_pending: PlexPendingAuth) -> str | None:
+        return tokens.pop(0)
+
+    async def fake_authenticate_plex_token(
+        _db: AsyncSession,
+        *,
+        provider: object,
+        plex_user_token: str,
+    ) -> DiscoveredMediaUser:
+        return DiscoveredMediaUser(
+            source_service=Service.PLEX,
+            source_service_config_id=service_config_id,
+            source_service_name="plex-main",
+            source_user_id="plex-user-42",
+            username="plexmember",
+            username_normalized="plexmember",
+            email="plexmember@example.com",
+            display_name="Plex Member",
+            raw={"source": "plex"},
+        )
+
+    async def fake_resolve_or_create_user_for_identity(
+        _db: AsyncSession,
+        *,
+        identity: DiscoveredMediaUser,
+    ) -> User:
+        return user
+
+    async def fake_persist_plex_identity_token(*_: object, **__: object) -> None:
+        return None
+
+    async def fake_issue_login_session(**kwargs: object) -> None:
+        seen["issued"] = kwargs.get("response")
+
+    monkeypatch.setattr(auth_routes, "peek_pending_plex_auth", lambda state: pending)
+    monkeypatch.setattr(
+        auth_routes,
+        "pop_pending_plex_auth",
+        lambda state: seen["popped"].append(state),  # type: ignore[union-attr]
+    )
+    monkeypatch.setattr(
+        auth_routes, "get_media_auth_provider", fake_get_media_auth_provider
+    )
+    monkeypatch.setattr(
+        auth_routes, "poll_plex_pin_for_token", fake_poll_plex_pin_for_token
+    )
+    monkeypatch.setattr(
+        auth_routes, "authenticate_plex_token", fake_authenticate_plex_token
+    )
+    monkeypatch.setattr(
+        auth_routes,
+        "resolve_or_create_user_for_identity",
+        fake_resolve_or_create_user_for_identity,
+    )
+    monkeypatch.setattr(
+        auth_routes, "persist_plex_identity_token", fake_persist_plex_identity_token
+    )
+    monkeypatch.setattr(auth_routes, "_issue_login_session", fake_issue_login_session)
+    monkeypatch.setattr(auth_routes.limiter, "enabled", False)
+    return seen
+
+
+def test_media_plex_poll_waits_then_completes_the_sign_in(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
+        async with session_maker() as db_session:
+            user = _new_user(
+                username="plexmember",
+                email="plexmember@example.com",
+                role=UserRole.USER,
+            )
+            db_session.add(user)
+            await db_session.commit()
+            await db_session.refresh(user)
+
+            seen = _install_plex_poll_fakes(
+                monkeypatch,
+                db_session=db_session,
+                service_config_id=1,
+                user=user,
+                tokens=[None, "plex-user-token"],
+            )
+
+            request = _make_plex_poll_request(flow_cookie="flow-state")
+
+            first = await auth_routes.media_plex_poll(request=request, db=db_session)
+            assert json.loads(first.body) == {"status": "pending"}  # type: ignore[reportAttributeAccessIssue]
+            # A pending poll must leave the flow cookie alone, or the next poll
+            # would have nothing to look the PIN up with.
+            assert not first.headers.get("set-cookie")
+            assert seen["popped"] == []
+
+            second = await auth_routes.media_plex_poll(request=request, db=db_session)
+            assert json.loads(second.body) == {"status": "authenticated"}  # type: ignore[reportAttributeAccessIssue]
+            assert seen["popped"] == ["flow-state"]
+            # The session must land on the opener's own response, not the popup's.
+            assert seen["issued"] is second
+            assert auth_routes.PLEX_FLOW_COOKIE in (
+                second.headers.get("set-cookie") or ""
+            )
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_media_plex_poll_without_a_flow_cookie_reports_expired(monkeypatch) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(auth_routes.limiter, "enabled", False)
+
+        def fail_peek(state: str) -> None:
+            raise AssertionError("no cookie means there is nothing to look up")
+
+        monkeypatch.setattr(auth_routes, "peek_pending_plex_auth", fail_peek)
+
+        response = await auth_routes.media_plex_poll(
+            request=_make_plex_poll_request(),
+            db=None,  # never touched  # type: ignore[reportAttributeAccessIssue]
+        )
+        assert json.loads(response.body) == {"status": "expired"}  # type: ignore[reportAttributeAccessIssue]
+
+    asyncio.run(run())
+
+
+def test_signin_window_paints_before_handing_off_to_the_opener() -> None:
+    async def run() -> None:
+        response = await auth_routes.auth_signin_window()
+
+        assert response.status_code == 200
+        assert response.media_type == "text/html"
+        body = response.body.decode()  # type: ignore[reportAttributeAccessIssue]
+        # The spinner has to paint before the window hands off, which is the whole
+        # reason this page exists.
+        assert "requestAnimationFrame" in body
+        assert "reclaimerr-auth-window-ready" in body
+        # No destination is reflected into the page - the opener knows where to
+        # send it, so nothing user-supplied is rendered here at all.
+        assert "location.replace" not in body
+        assert "/api/auth/media/plex/start" not in body
+
+    asyncio.run(run())
+
+
+def test_auth_pages_keep_untrusted_text_out_of_the_script_block() -> None:
+    body = auth_routes._terminal_auth_page(
+        '<img src=x onerror=alert(1)>"</script><script>alert(2)</script>'
+    ).body.decode()  # type: ignore[reportAttributeAccessIssue]
+
+    lowered = body.lower()
+    assert lowered.count("<script") == 1
+    assert lowered.count("</script") == 1
+    assert "<img" not in lowered
+    # The message is carried in an escaped attribute and read back from the DOM,
+    # so it never becomes part of a script.
+    attribute = body.split('data-error="')[1].split('"')[0]
+    assert '"' not in attribute
+    assert "&lt;img" in attribute

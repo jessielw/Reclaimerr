@@ -29,6 +29,10 @@ from backend.services.admin_notices import (
 from backend.user_types import DEFAULT_NEW_USER_ALLOWED_PAGES, MEDIA_SERVERS
 
 MediaAuthMode = Literal["credentials", "redirect"]
+# How the browser is driving a Plex PIN flow. "popup" means an opener window is
+# polling for the result and the callback must not redirect anywhere; "redirect"
+# means the flow owns the whole tab and the callback completes it server-side.
+PlexAuthFlowMode = Literal["popup", "redirect"]
 
 MEDIA_AUTH_DEVICE_ID = "reclaimerr-media-auth"
 MEDIA_AUTH_CLIENT = "Reclaimerr"
@@ -116,8 +120,12 @@ class PlexPendingAuth:
     pin_code: str
     return_to: str | None
     created_at: datetime
+    mode: PlexAuthFlowMode = "redirect"
 
 
+# Process-local on purpose: the container pins ``granian --workers 1`` (Dockerfile)
+# so the /start, /poll and /callback hops always land on the same process. If that
+# ever changes, this needs to move to the database.
 _PLEX_PENDING_AUTHS: dict[str, PlexPendingAuth] = {}
 
 
@@ -464,13 +472,17 @@ async def start_plex_pin_flow(
     provider: MediaAuthProvider,
     callback_url: str,
     return_to: str | None = None,
+    mode: PlexAuthFlowMode = "redirect",
+    state: str | None = None,
 ) -> str:
     """Start a Plex PIN authentication flow and return the URL to direct the user to."""
     if provider.service_type is not Service.PLEX:
         raise MediaAuthProviderError("Plex PIN flow is only available for Plex")
 
     _cleanup_pending_plex_auths()
-    state = uuid4().hex
+    # Callers that need to bind the flow to a browser (popup mode) generate the
+    # state themselves so they can stash it in a cookie.
+    state = state or uuid4().hex
     client_identifier = f"{PLEX_CLIENT_ID_PREFIX}-{state}"
     pin_headers = {
         "accept": "application/json",
@@ -506,6 +518,7 @@ async def start_plex_pin_flow(
         pin_code=pin_code,
         return_to=return_to,
         created_at=datetime.now(UTC),
+        mode=mode,
     )
 
     parsed_callback = urlsplit(callback_url)
@@ -538,8 +551,19 @@ def pop_pending_plex_auth(state: str) -> PlexPendingAuth | None:
     return _PLEX_PENDING_AUTHS.pop(state, None)
 
 
-async def exchange_plex_pin_for_token(pending: PlexPendingAuth) -> str:
-    """Exchange the approved Plex PIN for a user token."""
+def peek_pending_plex_auth(state: str) -> PlexPendingAuth | None:
+    """Look up a pending Plex PIN flow without consuming it."""
+    _cleanup_pending_plex_auths()
+    return _PLEX_PENDING_AUTHS.get(state)
+
+
+async def poll_plex_pin_for_token(pending: PlexPendingAuth) -> str | None:
+    """Check whether a Plex PIN has been approved yet.
+
+    Returns the user token once the PIN is claimed, or ``None`` while it is still
+    waiting. Unlike :func:`exchange_plex_pin_for_token` an unapproved PIN is not an
+    error here - that is the normal answer when polling.
+    """
     async with niquests.AsyncSession() as session:
         try:
             response = await session.get(
@@ -558,10 +582,15 @@ async def exchange_plex_pin_for_token(pending: PlexPendingAuth) -> str:
         payload = response.json() if response.content else {}
         if not isinstance(payload, dict):
             raise MediaAuthProviderError("Invalid Plex login response")
-        token = str(payload.get("authToken") or "").strip()
-        if not token:
-            raise MediaAuthCredentialsError("Plex sign-in was not approved")
-        return token
+        return str(payload.get("authToken") or "").strip() or None
+
+
+async def exchange_plex_pin_for_token(pending: PlexPendingAuth) -> str:
+    """Exchange the approved Plex PIN for a user token."""
+    token = await poll_plex_pin_for_token(pending)
+    if not token:
+        raise MediaAuthCredentialsError("Plex sign-in was not approved")
+    return token
 
 
 async def authenticate_plex_token(
