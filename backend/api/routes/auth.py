@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import html
+import json
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 from authlib.integrations.base_client import OAuthError
 from fastapi import (
@@ -14,7 +17,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import func, or_, select, text
@@ -64,16 +67,20 @@ from backend.models.auth import (
     MediaAuthProvider as MediaAuthProviderResponse,
 )
 from backend.services.media_auth import (
+    PLEX_PENDING_AUTH_TTL,
     MediaAuthAccessDeniedError,
     MediaAuthConflictError,
     MediaAuthCredentialsError,
     MediaAuthProviderError,
+    PlexAuthFlowMode,
     authenticate_emby_family_credentials,
     authenticate_plex_token,
     exchange_plex_pin_for_token,
     get_media_auth_provider,
     list_media_auth_providers,
+    peek_pending_plex_auth,
     persist_plex_identity_token,
+    poll_plex_pin_for_token,
     pop_pending_plex_auth,
     resolve_or_create_user_for_identity,
     start_plex_pin_flow,
@@ -84,6 +91,13 @@ from backend.services.media_auth import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
+
+# Binds a Plex PIN flow to the browser that started it, so the opener window can
+# poll for the result without the pollable identifier ever travelling through
+# Plex (unlike ``state``, which rides along in forwardUrl).
+PLEX_FLOW_COOKIE = "plex_auth_flow"
+PLEX_FLOW_COOKIE_PATH = "/api/auth/media/plex"
+PLEX_FLOW_COOKIE_MAX_AGE = int(PLEX_PENDING_AUTH_TTL.total_seconds())
 
 
 async def _issue_login_session(
@@ -175,6 +189,27 @@ def _is_loopback_host(host: str) -> bool:
     return host.lower() in {"localhost", "127.0.0.1", "::1"}
 
 
+def _request_origin(request: Request | None) -> str | None:
+    """The origin the browser itself says it is currently on.
+
+    Reclaimerr sends ``Referrer-Policy: strict-origin-when-cross-origin``, so a
+    same-origin navigation from the login page to one of the ``/start`` routes
+    carries a full ``Referer``. That gives us the public origin a user actually
+    reached us on even when Application URL is unset and the proxy headers are
+    not trusted, which is the common self-hosted default.
+    """
+    if request is None:
+        return None
+    for header_name in ("origin", "referer"):
+        raw = request.headers.get(header_name)
+        if not raw or raw.strip().lower() == "null":
+            continue
+        origin = _origin_tuple(raw)
+        if origin is not None:
+            return f"{origin[0]}://{origin[1]}"
+    return None
+
+
 def _is_loopback_url(value: str) -> bool:
     try:
         parsed = urlsplit(value.strip())
@@ -203,6 +238,7 @@ def _is_allowed_return_to_url(
     value: str | None,
     *,
     application_url: str | None = None,
+    request_origin: str | None = None,
 ) -> bool:
     if not value:
         return False
@@ -229,6 +265,14 @@ def _is_allowed_return_to_url(
         if _is_loopback_url(value) and not _is_loopback_url(application_url):
             return False
 
+    # The origin the browser is already on is not an open redirect - the user can
+    # reach it without our help. Accepting it keeps reverse-proxy installs working
+    # before anyone has configured Application URL or PROXY_TRUSTED_HOSTS.
+    if request_origin:
+        origin = _origin_tuple(request_origin)
+        if origin is not None and candidate == origin:
+            return True
+
     host = str(parsed.hostname or "").lower()
     if _is_loopback_host(host):
         return True
@@ -248,8 +292,13 @@ def _resolve_post_auth_redirect(
     value: str | None,
     *,
     application_url: str | None = None,
+    request_origin: str | None = None,
 ) -> str:
-    if _is_allowed_return_to_url(value, application_url=application_url):
+    if _is_allowed_return_to_url(
+        value,
+        application_url=application_url,
+        request_origin=request_origin,
+    ):
         return str(value).strip()
     return _default_frontend_redirect(application_url=application_url)
 
@@ -279,6 +328,151 @@ def _with_auth_error(url: str, message: str) -> str:
             parsed.fragment,
         )
     )
+
+
+_AUTH_PAGE_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reclaimerr</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{
+    margin: 0; min-height: 100vh; display: flex;
+    align-items: center; justify-content: center;
+    background: #0a0a0a; color: #fafafa;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }}
+  .box {{ max-width: 32rem; padding: 24px; text-align: center; }}
+  .spinner {{
+    width: 32px; height: 32px; margin: 0 auto 16px; border-radius: 50%;
+    border: 3px solid #27272a; border-top-color: #e5a00d;
+    animation: spin 0.8s linear infinite;
+  }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  p {{ margin: 0; font-size: 0.875rem; color: #a1a1aa; }}
+  p.error {{ color: #f87171; }}
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="spinner" id="spinner"{spinner_style}></div>
+    <p id="msg"{msg_class}>{message}</p>
+  </div>
+{script}
+</body>
+</html>
+"""
+
+
+_TERMINAL_SCRIPT = """  <script>
+  (function () {{
+    var error = {error_js};
+    var payload = {{ type: "reclaimerr-auth-complete", error: error }};
+    // Nudge the opener so it polls immediately instead of waiting out its interval.
+    // Both channels are best-effort: COOP on the identity provider can sever
+    // window.opener, and BroadcastChannel may be unavailable. The opener's poll
+    // is what actually completes the sign in.
+    try {{
+      var channel = new BroadcastChannel("reclaimerr-auth");
+      channel.postMessage(payload);
+      channel.close();
+    }} catch (err) {{}}
+    try {{
+      if (window.opener && !window.opener.closed) {{
+        window.opener.postMessage(payload, window.location.origin);
+      }}
+    }} catch (err) {{}}
+
+    if (error) return;
+
+    setTimeout(function () {{
+      try {{ window.close(); }} catch (err) {{}}
+    }}, 150);
+    setTimeout(function () {{
+      if (window.closed) return;
+      var spinner = document.getElementById("spinner");
+      if (spinner) spinner.style.display = "none";
+      document.getElementById("msg").textContent =
+        "Sign in complete. You can close this window.";
+    }}, 1000);
+  }})();
+  </script>
+"""
+
+
+_LOADING_SCRIPT = """  <script>
+  (function () {{
+    var next = {next_js};
+    // Two frames guarantees the spinner has painted before we navigate away.
+    requestAnimationFrame(function () {{
+      requestAnimationFrame(function () {{
+        window.location.replace(next);
+      }});
+    }});
+  }})();
+  </script>
+"""
+
+
+def _js_string(value: str | None) -> str:
+    """A safe JS string literal, including inside a <script> block."""
+    # json.dumps handles quoting; escaping "<" as well stops a hostile value from
+    # closing the script element.
+    return json.dumps(value).replace("<", "\\u003c")
+
+
+def _auth_page(message: str, *, script: str, is_error: bool = False) -> HTMLResponse:
+    body = _AUTH_PAGE_TEMPLATE.format(
+        message=html.escape(message),
+        msg_class=' class="error"' if is_error else "",
+        spinner_style=' style="display:none"' if is_error else "",
+        script=script,
+    )
+    return HTMLResponse(content=body, headers={"Cache-Control": "no-store"})
+
+
+def _is_internal_auth_path(value: str) -> bool:
+    """Only our own auth routes may be handed to the loading page."""
+    if not value.startswith("/api/auth/") or value.startswith("//"):
+        return False
+    if "\\" in value:
+        return False
+    parsed = urlsplit(value)
+    return not parsed.scheme and not parsed.netloc
+
+
+def _terminal_auth_page(error: str | None = None) -> HTMLResponse:
+    """Render the dead-end page a sign-in popup lands on.
+
+    This page never navigates anywhere. Sending the popup back into the SPA is what
+    produced #353 - the popup ended up showing a second, separate copy of the app
+    that the user had to close by hand.
+    """
+    return _auth_page(
+        error or "Completing sign in...",
+        script=_TERMINAL_SCRIPT.format(error_js=_js_string(error)),
+        is_error=bool(error),
+    )
+
+
+def _auth_flow_response(
+    mode: PlexAuthFlowMode,
+    message: str | None = None,
+    *,
+    redirect_to: str,
+) -> Response:
+    """Finish a browser auth hop the way the flow that started it expects.
+
+    ``popup`` flows terminate in place and let the opener window pick the result
+    up by polling; ``redirect`` flows own the whole tab and bounce back to the app.
+    """
+    if mode == "popup":
+        return _terminal_auth_page(message)
+    if message:
+        return _auth_error_redirect(message, redirect_to=redirect_to)
+    return RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
 
 
 def _auth_error_redirect(
@@ -334,6 +528,29 @@ def _request_session(request: Request) -> dict[str, Any] | None:
     return session if isinstance(session, dict) else None
 
 
+@router.get("/signin-window")
+async def auth_signin_window(
+    next_url: str = Query(alias="next"),
+) -> HTMLResponse:
+    """Serve the first page a sign-in popup shows, then send it on its way.
+
+    ``window.open`` has to run synchronously inside the click handler or the browser
+    drops the user gesture and blocks the popup, which leaves no room to do any work
+    first. So the popup opens here, paints a spinner, and only then walks itself to
+    the start route - which can spend a second or two talking to the provider
+    without the user watching an empty window.
+    """
+    if not _is_internal_auth_path(next_url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported sign-in target",
+        )
+    return _auth_page(
+        "Connecting...",
+        script=_LOADING_SCRIPT.format(next_js=_js_string(next_url)),
+    )
+
+
 @router.get("/oidc/status", response_model=OIDCAuthStatusResponse)
 async def oidc_auth_status(
     db: AsyncSession = Depends(get_db),
@@ -347,6 +564,7 @@ async def oidc_auth_status(
 async def oidc_start(
     request: Request,
     return_to: str | None = Query(default=None),
+    mode: PlexAuthFlowMode = Query(default="redirect"),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     result = await db.execute(select(OIDCSettings))
@@ -357,17 +575,22 @@ async def oidc_start(
         raise HTTPException(status_code=404, detail="OIDC login is not enabled")
 
     application_url = await _get_application_url(db)
+    request_origin = _request_origin(request)
     redirect_target = _resolve_post_auth_redirect(
         return_to,
         application_url=application_url,
+        request_origin=request_origin,
     )
     session = _request_session(request)
     if session is not None:
         session["oidc_return_to"] = redirect_target
+        session["oidc_mode"] = mode
     callback_uri = _oidc_callback_redirect_uri(
         request,
         settings_row,
-        application_url=application_url or _absolute_base_url(redirect_target),
+        application_url=application_url
+        or _absolute_base_url(redirect_target)
+        or request_origin,
     )
     try:
         client = _create_configured_oidc_client(settings_row)
@@ -393,15 +616,24 @@ async def oidc_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     application_url = await _get_application_url(db)
     session = _request_session(request)
+    stored_return_to = (
+        session.pop("oidc_return_to", None) if session is not None else None
+    )
+    stored_mode = session.pop("oidc_mode", None) if session is not None else None
+    mode: PlexAuthFlowMode = "popup" if stored_mode == "popup" else "redirect"
     redirect_target = _resolve_post_auth_redirect(
-        session.pop("oidc_return_to", None) if session is not None else None,
+        stored_return_to,
         application_url=application_url,
+        # Already vetted on the /start hop; keep accepting that origin so a proxy
+        # origin allowed there is not silently downgraded to "/" now.
+        request_origin=_absolute_base_url(stored_return_to),
     )
     if error:
-        return _auth_error_redirect(
+        return _auth_flow_response(
+            mode,
             "OIDC authentication was denied or failed",
             redirect_to=redirect_target,
         )
@@ -409,16 +641,17 @@ async def oidc_callback(
     result = await db.execute(select(OIDCSettings))
     settings_row = result.scalars().first()
     if settings_row is None:
-        return _auth_error_redirect(
-            "OIDC login is not configured", redirect_to=redirect_target
+        return _auth_flow_response(
+            mode, "OIDC login is not configured", redirect_to=redirect_target
         )
     if not _oidc_enabled(settings_row):
-        return _auth_error_redirect(
-            "OIDC login is not enabled", redirect_to=redirect_target
+        return _auth_flow_response(
+            mode, "OIDC login is not enabled", redirect_to=redirect_target
         )
 
     if not code or not state:
-        return _auth_error_redirect(
+        return _auth_flow_response(
+            mode,
             "OIDC callback is missing required parameters",
             redirect_to=redirect_target,
         )
@@ -488,15 +721,15 @@ async def oidc_callback(
             raise OIDCValidationError("User account is disabled")
 
     except (OIDCConfigError, OIDCExchangeError, OIDCValidationError) as exc:
-        return _auth_error_redirect(str(exc), redirect_to=redirect_target)
+        return _auth_flow_response(mode, str(exc), redirect_to=redirect_target)
     except OAuthError as exc:
-        return _auth_error_redirect(str(exc), redirect_to=redirect_target)
+        return _auth_flow_response(mode, str(exc), redirect_to=redirect_target)
     except OIDCError:
-        return _auth_error_redirect(
-            "OIDC authentication failed", redirect_to=redirect_target
+        return _auth_flow_response(
+            mode, "OIDC authentication failed", redirect_to=redirect_target
         )
 
-    response = RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
+    response = _auth_flow_response(mode, redirect_to=redirect_target)
     await _issue_login_session(request=request, response=response, user=user, db=db)
     return response
 
@@ -626,6 +859,7 @@ async def media_plex_start(
     request: Request,
     service_config_id: int = Query(..., ge=1),
     return_to: str | None = Query(default=None),
+    mode: PlexAuthFlowMode = Query(default="redirect"),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Start Plex login flow by requesting a PIN and redirecting user to Plex auth page."""
@@ -645,21 +879,33 @@ async def media_plex_start(
         )
 
     application_url = await _get_application_url(db)
+    request_origin = _request_origin(request)
     redirect_target = _resolve_post_auth_redirect(
         return_to,
         application_url=application_url,
+        request_origin=request_origin,
     )
-    callback_base_url = application_url or _absolute_base_url(redirect_target)
+    callback_base_url = (
+        application_url or _absolute_base_url(redirect_target) or request_origin
+    )
     callback_url = (
         f"{callback_base_url.rstrip('/')}/api/auth/media/plex/callback"
         if callback_base_url
         else str(request.url_for("media_plex_callback"))
     )
+    if mode == "popup":
+        # Carry the mode through Plex so the callback never has to infer it from
+        # browser state - window.name is wiped by cross-origin navigation.
+        callback_url = f"{callback_url}?mode=popup"
+
+    state = uuid4().hex
     try:
         redirect_url = await start_plex_pin_flow(
             provider=provider,
             callback_url=callback_url,
             return_to=redirect_target,
+            mode=mode,
+            state=state,
         )
     except MediaAuthProviderError as exc:
         raise HTTPException(
@@ -667,17 +913,40 @@ async def media_plex_start(
             detail=str(exc),
         ) from exc
 
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
+    if mode == "popup":
+        # First-party cookie, so the opener window's poll carries it automatically.
+        # Plex only ever sees ``state`` (via forwardUrl), never this.
+        response.set_cookie(
+            key=PLEX_FLOW_COOKIE,
+            value=state,
+            httponly=True,
+            secure=settings.cookie_secure,
+            samesite="lax",
+            max_age=PLEX_FLOW_COOKIE_MAX_AGE,
+            path=PLEX_FLOW_COOKIE_PATH,
+        )
+    return response
 
 
 @router.get("/media/plex/callback", name="media_plex_callback")
 async def media_plex_callback(
     request: Request,
     state: str | None = Query(default=None),
+    mode: PlexAuthFlowMode = Query(default="redirect"),
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
-    """Handle callback from Plex after user authorizes PIN login. Exchange PIN for token, authenticate,
-    and issue session cookie."""
+) -> Response:
+    """Handle callback from Plex after user authorizes PIN login.
+
+    In ``redirect`` mode this hop exchanges the PIN, issues the session cookie and
+    sends the tab back to the app. In ``popup`` mode it does none of that: the
+    opener window is polling ``/media/plex/poll`` and receives the session on its
+    own request, so all this page has to do is close itself. Sending the popup back
+    into the SPA is what left users with a second copy of the app to dismiss (#353).
+    """
+    if mode == "popup":
+        return _terminal_auth_page()
+
     application_url = await _get_application_url(db)
     default_redirect = _resolve_post_auth_redirect(
         None,
@@ -697,6 +966,9 @@ async def media_plex_callback(
     redirect_target = _resolve_post_auth_redirect(
         pending.return_to,
         application_url=application_url,
+        # Already vetted on the /start hop; keep accepting that origin so a proxy
+        # origin allowed there is not silently downgraded to "/" now.
+        request_origin=_absolute_base_url(pending.return_to),
     )
 
     provider = await get_media_auth_provider(
@@ -749,6 +1021,86 @@ async def media_plex_callback(
         )
 
     response = RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
+    await _issue_login_session(request=request, response=response, user=user, db=db)
+    return response
+
+
+def _plex_poll_response(state: str, message: str | None = None) -> JSONResponse:
+    payload: dict[str, str] = {"status": state}
+    if message:
+        payload["message"] = message
+    response = JSONResponse(content=payload)
+    if state != "pending":
+        response.delete_cookie(PLEX_FLOW_COOKIE, path=PLEX_FLOW_COOKIE_PATH)
+    return response
+
+
+@router.get("/media/plex/poll")
+@limiter.limit("240/minute")
+async def media_plex_poll(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Report whether a popup Plex sign-in has completed, completing it if so.
+
+    The window that opened the popup drives this, never the popup itself. Once the
+    popup has been through app.plex.tv, `popup.closed`, `window.opener` and
+    `window.name` are all unreliable (Cross-Origin-Opener-Policy swaps the browsing
+    context group), so the PIN is the only trustworthy signal. Issuing the session
+    here also puts the cookie on the opener's own response instead of the popup's.
+    """
+    state = request.cookies.get(PLEX_FLOW_COOKIE)
+    pending = peek_pending_plex_auth(state) if state else None
+    if state is None or pending is None:
+        return _plex_poll_response("expired")
+
+    provider = await get_media_auth_provider(
+        db,
+        service_config_id=pending.service_config_id,
+    )
+    if provider is None:
+        pop_pending_plex_auth(state)
+        return _plex_poll_response("error", "Plex login provider is unavailable")
+
+    try:
+        plex_user_token = await poll_plex_pin_for_token(pending)
+        if not plex_user_token:
+            return _plex_poll_response("pending")
+
+        identity = await authenticate_plex_token(
+            db,
+            provider=provider,
+            plex_user_token=plex_user_token,
+        )
+        user = await resolve_or_create_user_for_identity(db, identity=identity)
+        await persist_plex_identity_token(
+            db,
+            identity=identity,
+            plex_user_token=plex_user_token,
+        )
+        if not user.is_active:
+            pop_pending_plex_auth(state)
+            return _plex_poll_response("error", "Account is disabled")
+    except MediaAuthCredentialsError:
+        pop_pending_plex_auth(state)
+        return _plex_poll_response("error", "Plex sign-in was not approved")
+    except MediaAuthAccessDeniedError:
+        pop_pending_plex_auth(state)
+        return _plex_poll_response(
+            "error", "Your Plex account does not have access to this server"
+        )
+    except MediaAuthConflictError:
+        await db.commit()
+        pop_pending_plex_auth(state)
+        return _plex_poll_response(
+            "error", "Your media account needs an admin link before sign-in"
+        )
+    except MediaAuthProviderError:
+        pop_pending_plex_auth(state)
+        return _plex_poll_response("error", "Plex sign-in failed. Please try again.")
+
+    pop_pending_plex_auth(state)
+    response = _plex_poll_response("authenticated")
     await _issue_login_session(request=request, response=response, user=user, db=db)
     return response
 

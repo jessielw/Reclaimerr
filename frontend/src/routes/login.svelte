@@ -23,6 +23,15 @@
   import { TOP_RATED_BACKDROPS } from "$lib/misc/tmdb-images";
 
   type LoginMethod = "local" | "media" | "sso";
+  type RedirectAuthProvider = "plex" | "oidc";
+
+  const AUTH_POLL_INTERVAL_MS = 2000;
+  // Matches PLEX_PENDING_AUTH_TTL on the backend.
+  const AUTH_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
+  // The popup's /start hop has to reach plex.tv before a flow exists to poll for,
+  // so early "expired" answers mean "not yet", not "gone".
+  const AUTH_FLOW_GRACE_MS = 35 * 1000;
+  const AUTH_WINDOW_PATH = "/api/auth/signin-window";
   const MEDIA_SERVER_ICONS: Record<string, any> = {
     jellyfin: JellyfinSVG,
     emby: EmbySVG,
@@ -89,10 +98,16 @@
   const RANDOM_BACKGROUND_IMG_INTERVAL = 5000;
   let imageBaseUrl = TMDB_BASE_URL_ORIGINAL;
   let refreshInterval: number | null = null;
-  let popupCheckInterval: number | null = null;
   let authPopup: Window | null = null;
   let authPopupCompleted = false;
   let authChannel: BroadcastChannel | null = null;
+  let authPollInterval: number | null = null;
+  let authPollDeadline = 0;
+  let authProvider: RedirectAuthProvider | null = null;
+  let authFlowSeen = false;
+  let authFlowGraceUntil = 0;
+  let authPopupUrl = "";
+  let authWaiting = $state(false);
   let overlay: HTMLElement | null;
   let backDropUrls: string[] = [];
 
@@ -105,24 +120,113 @@
 
   const authCompleteUrl = () => `${window.location.origin}/#/auth/complete`;
 
-  const stopPopupTracking = () => {
-    if (popupCheckInterval) {
-      clearInterval(popupCheckInterval);
-      popupCheckInterval = null;
+  const stopAuthPolling = () => {
+    if (authPollInterval) {
+      clearInterval(authPollInterval);
+      authPollInterval = null;
+    }
+  };
+
+  const closeAuthPopup = () => {
+    try {
+      authPopup?.close();
+    } catch {
+      // Cross-Origin-Opener-Policy on the identity provider can sever this handle.
+      // The callback page closes itself too, so this is only a nicety.
     }
     authPopup = null;
+  };
+
+  // The popup tells us it is done, but it is never what proves it - it may not be
+  // able to reach us at all. Treat a message as a reason to poll now rather than
+  // waiting out the interval.
+  const handleAuthNudge = (authError: string | null) => {
+    if (authPopupCompleted) return;
+    if (authError) {
+      void finishRedirectAuth(authError);
+      return;
+    }
+    void pollRedirectAuth();
   };
 
   const handleAuthMessage = (event: MessageEvent) => {
     if (event.origin !== window.location.origin) return;
     if (event.data?.type !== "reclaimerr-auth-complete") return;
-    void finishRedirectAuth(event.data.error ?? null);
+    handleAuthNudge(event.data.error ?? null);
+  };
+
+  const pollRedirectAuth = async () => {
+    if (authPopupCompleted) return;
+
+    if (authProvider !== "plex") {
+      // OIDC completes server-side at its callback and the session cookie is
+      // shared with this window, so asking who we are is the reliable signal.
+      await auth.init();
+      if (get(auth).isAuthenticated) await finishRedirectAuth(null);
+      return;
+    }
+
+    let payload: { status?: string; message?: string } | null = null;
+    try {
+      const response = await fetch("/api/auth/media/plex/poll", {
+        credentials: "include",
+      });
+      if (!response.ok) return;
+      payload = await response.json();
+    } catch {
+      // Transient - keep polling until the deadline.
+      return;
+    }
+
+    if (payload?.status === "pending") {
+      authFlowSeen = true;
+      return;
+    }
+    if (payload?.status === "authenticated") {
+      await finishRedirectAuth(null);
+      return;
+    }
+    if (payload?.status === "error") {
+      await finishRedirectAuth(payload.message || "Plex sign-in failed.");
+      return;
+    }
+    if (payload?.status === "expired") {
+      if (!authFlowSeen && Date.now() < authFlowGraceUntil) return;
+      // It may still have completed some other way - check before erroring out.
+      await auth.init();
+      await finishRedirectAuth(
+        get(auth).isAuthenticated
+          ? null
+          : "Plex sign-in expired. Please try again.",
+      );
+    }
+  };
+
+  const startAuthPolling = (provider: RedirectAuthProvider) => {
+    stopAuthPolling();
+    authProvider = provider;
+    authFlowSeen = false;
+    authFlowGraceUntil = Date.now() + AUTH_FLOW_GRACE_MS;
+    authPollDeadline = Date.now() + AUTH_FLOW_TIMEOUT_MS;
+    authPollInterval = window.setInterval(() => {
+      if (authPopupCompleted) {
+        stopAuthPolling();
+        return;
+      }
+      if (Date.now() >= authPollDeadline) {
+        void finishRedirectAuth("Sign-in timed out. Please try again.");
+        return;
+      }
+      void pollRedirectAuth();
+    }, AUTH_POLL_INTERVAL_MS);
   };
 
   const finishRedirectAuth = async (authError: string | null) => {
     if (authPopupCompleted) return;
     authPopupCompleted = true;
-    stopPopupTracking();
+    stopAuthPolling();
+    closeAuthPopup();
+    authWaiting = false;
     mediaLoading = false;
     oidcLoading = false;
 
@@ -137,39 +241,122 @@
     }
   };
 
-  const startRedirectAuth = (url: string, fallbackUrl: string) => {
-    authPopupCompleted = false;
-    error = "";
-    stopPopupTracking();
+  const cancelRedirectAuth = () => {
+    authPopupCompleted = true;
+    stopAuthPolling();
+    closeAuthPopup();
+    authWaiting = false;
+    mediaLoading = false;
+    oidcLoading = false;
+  };
 
-    const width = 520;
-    const height = 720;
-    const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2);
-    const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2);
+  // Popups on phones become extra tabs at best and are dropped at worst.
+  const prefersFullPageAuth = () =>
+    window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 640;
+
+  const openAuthPopup = (url: string): Window | null => {
+    const screen = window.screen as Screen & {
+      availLeft?: number;
+      availTop?: number;
+    };
+    const availWidth = screen?.availWidth ?? 1280;
+    const availHeight = screen?.availHeight ?? 900;
+    const availLeft = screen?.availLeft ?? 0;
+    const availTop = screen?.availTop ?? 0;
+
+    // Plex's sign-in page drops to a cramped narrow layout well below ~800px,
+    // which is what forced people to resize the window by hand.
+    const width = Math.round(Math.min(860, Math.max(520, availWidth - 80)));
+    const height = Math.round(Math.min(940, Math.max(560, availHeight - 80)));
+
+    // Deliberately not clamped to 0: screenLeft is negative when the browser sits
+    // on a display left of the primary one, and clamping threw the popup onto the
+    // other monitor, where it looked like it had opened in the background.
+    const originLeft = window.screenLeft ?? window.screenX ?? 0;
+    const originTop = window.screenTop ?? window.screenY ?? 0;
+    const centeredLeft = originLeft + (window.outerWidth - width) / 2;
+    const centeredTop = originTop + (window.outerHeight - height) / 2;
+    const left = Math.round(
+      Math.min(
+        Math.max(centeredLeft, availLeft),
+        availLeft + availWidth - width,
+      ),
+    );
+    const top = Math.round(
+      Math.min(
+        Math.max(centeredTop, availTop),
+        availTop + availHeight - height,
+      ),
+    );
+
     const features = [
       "popup=yes",
       `width=${width}`,
       `height=${height}`,
-      `left=${Math.round(left)}`,
-      `top=${Math.round(top)}`,
+      `left=${left}`,
+      `top=${top}`,
       "resizable=yes",
       "scrollbars=yes",
     ].join(",");
 
-    authPopup = window.open(url, "reclaimerr-auth", features);
-    if (!authPopup) {
-      window.location.href = fallbackUrl;
+    const popup = window.open(url, "reclaimerr-auth", features);
+    if (!popup) return null;
+
+    // Some window managers hand focus straight back to the opener, so ask more
+    // than once. Nothing can force it, which is why the UI also offers a reopen.
+    const focusPopup = () => {
+      try {
+        popup.focus();
+      } catch {
+        // handle may already be severed
+      }
+    };
+    focusPopup();
+    requestAnimationFrame(focusPopup);
+    window.setTimeout(focusPopup, 250);
+    return popup;
+  };
+
+  const reopenAuthPopup = () => {
+    if (!authPopupUrl) return;
+    closeAuthPopup();
+    // Reopening starts a fresh flow on the backend, so give it the same grace
+    // period a first attempt gets before an "expired" answer counts.
+    authFlowSeen = false;
+    authFlowGraceUntil = Date.now() + AUTH_FLOW_GRACE_MS;
+    authPopup = openAuthPopup(authPopupUrl);
+  };
+
+  const startRedirectAuth = (
+    provider: RedirectAuthProvider,
+    baseUrl: string,
+  ) => {
+    authPopupCompleted = false;
+    error = "";
+    stopAuthPolling();
+    closeAuthPopup();
+
+    // The mode is stated outright rather than inferred later from browser state:
+    // window.name and window.opener are both wiped by the cross-origin round trip.
+    const redirectUrl = `${baseUrl}&mode=redirect`;
+    if (prefersFullPageAuth()) {
+      window.location.href = redirectUrl;
       return;
     }
 
-    authPopup.focus();
-    popupCheckInterval = window.setInterval(() => {
-      if (!authPopup || !authPopup.closed || authPopupCompleted) return;
-      stopPopupTracking();
-      mediaLoading = false;
-      oidcLoading = false;
-      error = "Sign-in window was closed before authentication completed.";
-    }, 500);
+    // Opening straight at the start route left the window blank while the server
+    // talked to the provider. This paints a spinner first, and the browser keeps
+    // showing it until the provider's page is ready to take over.
+    const startUrl = `${baseUrl}&mode=popup`;
+    authPopupUrl = `${AUTH_WINDOW_PATH}?next=${encodeURIComponent(startUrl)}`;
+    authPopup = openAuthPopup(authPopupUrl);
+    if (!authPopup) {
+      window.location.href = redirectUrl;
+      return;
+    }
+
+    authWaiting = true;
+    startAuthPolling(provider);
   };
 
   const handleLocalLogin = async () => {
@@ -194,8 +381,10 @@
         service_config_id: String(selectedMediaProvider.service_config_id),
         return_to: authCompleteUrl(),
       });
-      const url = `/api/auth/media/plex/start?${params.toString()}`;
-      startRedirectAuth(url, url);
+      startRedirectAuth(
+        "plex",
+        `/api/auth/media/plex/start?${params.toString()}`,
+      );
       return;
     }
 
@@ -230,8 +419,7 @@
     const params = new URLSearchParams({
       return_to: authCompleteUrl(),
     });
-    const url = `/api/auth/oidc/start?${params.toString()}`;
-    startRedirectAuth(url, url);
+    startRedirectAuth("oidc", `/api/auth/oidc/start?${params.toString()}`);
   };
 
   const setLoginMethod = (method: LoginMethod) => {
@@ -325,7 +513,7 @@
       authChannel = new BroadcastChannel("reclaimerr-auth");
       authChannel.onmessage = (event) => {
         if (event.data?.type !== "reclaimerr-auth-complete") return;
-        void finishRedirectAuth(event.data.error ?? null);
+        handleAuthNudge(event.data.error ?? null);
       };
     } catch {
       authChannel = null;
@@ -367,7 +555,8 @@
 
   onDestroy(() => {
     if (refreshInterval) clearInterval(refreshInterval);
-    stopPopupTracking();
+    stopAuthPolling();
+    closeAuthPopup();
     window.removeEventListener("message", handleAuthMessage);
     authChannel?.close();
     if (observer && container) observer.unobserve(container);
@@ -390,6 +579,32 @@
             class="mb-4 rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
           >
             {error}
+          </div>
+        {/if}
+
+        {#if authWaiting}
+          <div
+            class="mb-4 space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-sm"
+          >
+            <p class="text-muted-foreground">
+              Waiting for you to finish signing in...
+            </p>
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <button
+                type="button"
+                class="cursor-pointer text-primary underline underline-offset-2"
+                onclick={reopenAuthPopup}
+              >
+                Don't see the sign-in window? Open it again
+              </button>
+              <button
+                type="button"
+                class="cursor-pointer text-muted-foreground underline underline-offset-2"
+                onclick={cancelRedirectAuth}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         {/if}
 
