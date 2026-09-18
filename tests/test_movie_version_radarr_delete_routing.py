@@ -13,6 +13,7 @@ from backend.database.models import (
     Movie,
     MovieArrRef,
     MovieVersion,
+    ProtectedMedia,
     ReclaimCandidate,
     ReclaimRule,
     ServiceConfig,
@@ -22,10 +23,26 @@ from backend.tasks import cleanup
 
 
 class FakeRadarr:
-    def __init__(self) -> None:
+    def __init__(self, movie_files: list[dict[str, Any]] | None = None) -> None:
         self.deleted: list[dict[str, Any]] = []
         self.unmonitored: list[list[int]] = []
         self.refreshed: list[list[int]] = []
+        # Radarr's own moviefile records, keyed by nothing in particular - the
+        # routing only cares about `id` and `path`
+        self.movie_files: list[dict[str, Any]] = movie_files or []
+        self.deleted_file_ids: list[list[int]] = []
+
+    async def get_movie_files(self, movie_id: int) -> list[dict[str, Any]]:
+        return [dict(entry) for entry in self.movie_files]
+
+    async def delete_movie_files(self, movie_file_ids: list[int]) -> None:
+        self.deleted_file_ids.append(movie_file_ids)
+        remaining = [
+            entry
+            for entry in self.movie_files
+            if entry.get("id") not in set(movie_file_ids)
+        ]
+        self.movie_files = remaining
 
     async def delete_movies(
         self,
@@ -109,6 +126,8 @@ async def _seed_movie_version_case(
     arr_movie_path: str | None = "/data/movies/Movie1",
     arr_movie_id: int = 55,
     move_destination_movies: str | None = None,
+    version_library_ids: list[str] | None = None,
+    protected_version_indexes: list[int] | None = None,
 ) -> tuple[int, list[int], int]:
     db.add(
         GeneralSettings(
@@ -141,19 +160,23 @@ async def _seed_movie_version_case(
 
     versions: list[MovieVersion] = []
     for index, path in enumerate(version_paths, start=1):
+        library_id = (
+            version_library_ids[index - 1] if version_library_ids else "lib-1"
+        )
         version = MovieVersion(
             movie_id=movie.id,
             service=Service.PLEX,
             service_item_id=f"item-{index}",
             service_media_id=f"media-{index}",
-            library_id="lib-1",
-            library_name="Movies",
+            library_id=library_id,
+            library_name=f"Movies ({library_id})",
             path=path,
             size=100,
         )
         versions.append(version)
         db.add(version)
-    movie.size = len(versions) * 100
+    # one row per library, so twins of one file must not inflate the total
+    movie.size = len({path for path in version_paths}) * 100
     db.add(
         MovieArrRef(
             movie_id=movie.id,
@@ -163,6 +186,19 @@ async def _seed_movie_version_case(
             tmdb_id=movie.tmdb_id,
         )
     )
+    await db.flush()
+
+    for index in protected_version_indexes or []:
+        db.add(
+            ProtectedMedia(
+                media_type=MediaType.MOVIE,
+                movie_id=movie.id,
+                movie_version_id=versions[index].id,
+                source="manual",
+                reason="kept",
+                permanent=True,
+            )
+        )
     await db.flush()
 
     candidate_ids: list[int] = []
@@ -384,9 +420,16 @@ def test_single_version_candidate_promotes_without_path_proof_for_one_radarr(
     asyncio.run(run())
 
 
-def test_partial_version_candidate_does_not_delete_unselected_versions(
+def test_partial_version_candidate_deletes_only_its_file_via_radarr(
     monkeypatch,
 ) -> None:
+    """A partial selection removes just that file and keeps the Radarr entry.
+
+    A whole-movie delete would take the 4k copy too, so this used to demote to
+    the media server and fail outright when fallback was off. Radarr can delete
+    the one file instead.
+    """
+
     async def run() -> None:
         engine, session_maker = await _make_session(monkeypatch)
         try:
@@ -398,6 +441,165 @@ def test_partial_version_candidate_does_not_delete_unselected_versions(
                         "/data/movies/Movie1/Movie1-4k.mkv",
                     ],
                     candidate_version_indexes=[0],
+                )
+
+            radarr = FakeRadarr(
+                movie_files=[
+                    {"id": 901, "path": "/data/movies/Movie1/Movie1-1080p.mkv"},
+                    {"id": 902, "path": "/data/movies/Movie1/Movie1-4k.mkv"},
+                ]
+            )
+            _patch_services(monkeypatch, radarr, config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            # the movie entry itself is untouched
+            assert radarr.deleted == []
+            assert radarr.deleted_file_ids == [[901]]
+            async with session_maker() as db:
+                assert await db.get(ReclaimCandidate, candidate_ids[0]) is None
+                movie = await db.get(Movie, movie_id)
+                assert movie is not None
+                # the 4k copy is still there, so the movie stays
+                assert movie.removed_at is None
+                assert movie.size == 100
+                versions = (await db.execute(select(MovieVersion))).scalars().all()
+                assert [v.path for v in versions] == [
+                    "/data/movies/Movie1/Movie1-4k.mkv"
+                ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_partial_version_candidate_fails_closed_on_unmatched_radarr_file(
+    monkeypatch,
+) -> None:
+    """A selected version Radarr has no file for must not delete anything."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[
+                        "/data/movies/Movie1/Movie1-1080p.mkv",
+                        "/data/movies/Movie1/Movie1-4k.mkv",
+                    ],
+                    candidate_version_indexes=[0],
+                )
+
+            # Radarr only knows the 4k file, so the 1080p selection is unprovable
+            radarr = FakeRadarr(
+                movie_files=[
+                    {"id": 902, "path": "/data/movies/Movie1/Movie1-4k.mkv"},
+                ]
+            )
+            _patch_services(monkeypatch, radarr, config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 0
+            assert radarr.deleted == []
+            assert radarr.deleted_file_ids == []
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_ids[0])
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
+                assert candidate.last_delete_error is not None
+                assert "Partial movie-version delete requires" in (
+                    candidate.last_delete_error
+                )
+                movie = await db.get(Movie, movie_id)
+                assert movie is not None
+                assert movie.removed_at is None
+                versions = (await db.execute(select(MovieVersion))).scalars().all()
+                assert len(versions) == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_same_file_in_two_libraries_promotes_to_radarr_delete(monkeypatch) -> None:
+    """One file indexed twice is not a partial delete.
+
+    Plex hands out a separate ratingKey and Media.id per library section, so a
+    single file becomes two MovieVersion rows with one path, and a rule scoped
+    to one library can only select one of them. Radarr still has a single file
+    to remove, so the delete covers everything and must be promoted rather than
+    demoted to a media-server fallback that is switched off.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[
+                        "/data/movies/Movie1/Movie1-4k.mkv",
+                        "/data/movies/Movie1/Movie1-4k.mkv",
+                    ],
+                    version_library_ids=["lib-hd", "lib-uhd"],
+                    candidate_version_indexes=[1],
+                )
+
+            radarr = FakeRadarr()
+            _patch_services(monkeypatch, radarr, config_id)
+
+            deleted = await cleanup._delete_movie_candidates(
+                restrict_to_ids=frozenset(candidate_ids),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            assert radarr.deleted == [
+                {
+                    "movie_ids": [55],
+                    "delete_files": True,
+                    "add_import_exclusion": True,
+                }
+            ]
+            async with session_maker() as db:
+                assert await db.get(ReclaimCandidate, candidate_ids[0]) is None
+                movie = await db.get(Movie, movie_id)
+                assert movie is not None
+                # both rows named the one file Radarr removed
+                assert movie.removed_at is not None
+                versions = (await db.execute(select(MovieVersion))).scalars().all()
+                assert versions == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_protected_twin_blocks_deleting_the_same_file(monkeypatch) -> None:
+    """Protecting one library's row protects the bytes, not just that row."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[
+                        "/data/movies/Movie1/Movie1-4k.mkv",
+                        "/data/movies/Movie1/Movie1-4k.mkv",
+                    ],
+                    version_library_ids=["lib-hd", "lib-uhd"],
+                    candidate_version_indexes=[1],
+                    protected_version_indexes=[0],
                 )
 
             radarr = FakeRadarr()
@@ -414,9 +616,8 @@ def test_partial_version_candidate_does_not_delete_unselected_versions(
                 candidate = await db.get(ReclaimCandidate, candidate_ids[0])
                 assert candidate is not None
                 assert candidate.delete_attempts == 1
-                assert candidate.last_delete_error is not None
-                assert "Partial movie-version delete requires" in (
-                    candidate.last_delete_error
+                assert "protects the same physical file" in (
+                    candidate.last_delete_error or ""
                 )
                 movie = await db.get(Movie, movie_id)
                 assert movie is not None

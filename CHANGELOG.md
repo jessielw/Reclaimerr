@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Reclaimerr can now delete a single quality version of a movie through Radarr. When a rule matches only some of the files under one Radarr entry, just those files are removed and the entry is kept, instead of the delete being skipped because a whole-movie delete would have taken the rest. This no longer depends on **Allow Media Server Fallback Deletion**, and needs no setting. If a version cannot be matched to exactly one file in Radarr, nothing is deleted and the candidate records why.
+
+### Fixed
+
+- Fixed the rule editor rejecting a cleared auto-delete delay as invalid. Leaving the field blank now restores the server's default review period after a custom delay has been set.
+- Fixed a movie indexed by two libraries being undeletable. The same file reported twice looked like two versions, so a rule scoped to one library appeared to select only half of them and the delete was refused as unsafe. Reclaimerr now recognizes the records as one file: deleting it removes every record naming it, its size is counted once instead of twice, and protecting either record protects the file, so the other copy can no longer be deleted out from under it.
+- Fixed episodes lingering in Reclaimerr after a season was emptied. A season folder outlives its last episode, so the media server kept reporting the season while reporting nothing inside it, and the episode records - along with the candidates and protections attached to them - were never cleaned up.
+- An emptied season folder is no longer flagged as a cleanup candidate. There is no space to reclaim, so the deletion could only ever fail.
+- Fixed a series kept in two copies being flagged again right after one copy was deleted. Both copies share one set of season records, and the record was being discarded on the strength of a single delete, taking the surviving copy's protections with it and making the next scan flag it as new. Reclaimerr now keeps the record while another copy still has files.
+- Reclaimerr no longer guesses which Sonarr instance holds a season or episode when a series exists in more than one and no path matches. It refuses and explains what to fix, instead of risking the wrong copy being removed. Set the rule's Sonarr instance, or add a path mapping, to make it unambiguous.
+- When one copy of a series is deleted and another remains, the media server is now re-scanned rather than told to delete the item, since the stored item may belong to the copy being kept.
+- Fixed the review period restarting for every movie after **Resync Media**. Rebuilding version records gave them new IDs, which orphaned existing candidates and caused them to be recreated from scratch. Candidates are now reattached by file path and keep their original flagged date. This also closes a window in which deleting such a candidate could have removed every version of the movie rather than the one selected.
+- Two copies of a series in different libraries no longer swap which one Reclaimerr treats as the source of record between syncs.
+
 ## [0.4.6] - 2026-09-17
 
 ### Fixed

@@ -357,6 +357,12 @@ Unavailable, empty, or malformed Sonarr data is treated as unknown. Unknown valu
 
 When a series is mapped to multiple Sonarr instances, `true` wins if any instance proves it. `false` is returned only when every mapped instance successfully reports false. Otherwise the value remains unknown.
 
+### Targeting One Copy Of A Series
+
+If you keep the same series twice - an HD copy and a UHD copy - both share one set of season records, so season fields such as size, path, resolution, and HDR describe whichever copy your main media server reported, not the copy you had in mind. A condition like `video.height is 2160` therefore cannot reliably single out the UHD copy.
+
+Set the rule's **Sonarr instance** to say which copy you mean. Reclaimerr then deletes only from that instance. Without it, the copy is chosen by matching paths, and if the series exists in more than one Sonarr with no path match, the deletion is refused rather than sent to a guess. Movies do not have this limitation: they keep a record per file, so version conditions and `Library Scope` address them individually.
+
 Typical protection rules are:
 
 ```text

@@ -506,3 +506,47 @@ def test_whole_movie_protection_reports_no_version_details() -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_one_file_in_two_libraries_is_counted_once() -> None:
+    """A movie's size is what it occupies on disk, not per library listing.
+
+    Plex gives the same file a separate ratingKey and Media.id in each library
+    that indexes it, so a single file arrives as two versions with one path.
+    Adding both reported twice the disk the movie actually uses.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session()
+        try:
+            async with session_maker() as db:
+                movie = Movie(title="Twinned", tmdb_id=7777, year=2024, size=0)
+                db.add(movie)
+                await db.flush()
+
+                await _upsert_movie_versions(
+                    db,
+                    movie,
+                    [
+                        _version_data(
+                            "media-hd-lib",
+                            path="/movies/Twinned.mkv",
+                            library_id="L1",
+                        ),
+                        _version_data(
+                            "media-uhd-lib",
+                            path="/movies/Twinned.mkv",
+                            library_id="L2",
+                        ),
+                    ],
+                )
+                await db.commit()
+
+                versions = (await db.execute(select(MovieVersion))).scalars().all()
+                # both rows are kept - each library's ids stay addressable
+                assert len(versions) == 2
+                assert movie.size == 10_000
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

@@ -48,9 +48,16 @@ class FakeSonarr:
         self.deleted_series_requests: list[tuple[int, bool, bool]] = []
         self.refreshed: list[list[int]] = []
 
-    async def get_episodes(self, series_id: int) -> list[dict[str, Any]]:
+    async def get_episodes(
+        self, series_id: int, season_number: int | None = None
+    ) -> list[dict[str, Any]]:
         self.get_episode_calls.append(series_id)
-        return [dict(ep) for ep in self.episodes_by_series.get(series_id, [])]
+        episodes = [dict(ep) for ep in self.episodes_by_series.get(series_id, [])]
+        if season_number is not None:
+            episodes = [
+                ep for ep in episodes if ep.get("seasonNumber") == season_number
+            ]
+        return episodes
 
     async def delete_episode_file(self, episode_file_id: int) -> None:
         self.deleted_episode_files.append(episode_file_id)
@@ -621,7 +628,12 @@ def test_season_multi_sonarr_uses_path_matched_ref(monkeypatch) -> None:
             )
 
             assert deleted == 1
-            assert wrong_sonarr.get_episode_calls == []
+            # the unmatched instance is read to see whether it still holds a
+            # copy, but is never asked to change anything
+            assert wrong_sonarr.get_episode_calls == [11]
+            assert wrong_sonarr.deleted_seasons == []
+            assert wrong_sonarr.season_monitoring_updates == []
+            assert wrong_sonarr.deleted_series == []
             assert matched_sonarr.get_episode_calls == [22]
             assert matched_sonarr.season_monitoring_updates == [(22, 1, False)]
             assert matched_sonarr.deleted_seasons == [(22, 1)]
@@ -629,6 +641,85 @@ def test_season_multi_sonarr_uses_path_matched_ref(monkeypatch) -> None:
             async with session_maker() as db:
                 assert await db.get(ReclaimCandidate, candidate_id) is None
                 assert (await db.execute(select(Season))).scalars().all() == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_season_survives_when_another_sonarr_still_holds_a_copy(monkeypatch) -> None:
+    """A show held twice keeps its season record when only one copy is deleted.
+
+    HD and UHD copies share a single Season row, because seasons are keyed by
+    series and number with nothing to tell the copies apart. Dropping the row
+    after deleting one copy threw away the survivor's data and its protections,
+    and the next sync rebuilt it as a new row with a fresh added date - which
+    restarted the review period and flagged the surviving copy all over again.
+    """
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_series_paths=["/data1/Show", "/data2/Show"],
+                    arr_series_ids=[11, 22],
+                    season_path="/data2/Show/Season 01",
+                    episode_path="/data2/Show/Season 01/Show - S01E01.mkv",
+                )
+
+            # the HD copy still has its files on disk
+            surviving_sonarr = FakeSonarr(
+                {
+                    arr_ids[0]: [
+                        {
+                            "id": 500,
+                            "seasonNumber": 1,
+                            "episodeNumber": 1,
+                            "episodeFileId": 800,
+                            "hasFile": True,
+                        }
+                    ]
+                }
+            )
+            matched_sonarr = FakeSonarr(
+                {
+                    arr_ids[1]: [
+                        {
+                            "id": 700,
+                            "seasonNumber": 1,
+                            "episodeNumber": 1,
+                            "episodeFileId": 900,
+                        }
+                    ]
+                }
+            )
+            media = FakeMediaServer()
+            _patch_services(
+                monkeypatch,
+                {config_ids[0]: surviving_sonarr, config_ids[1]: matched_sonarr},
+                media,
+            )
+
+            deleted = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+
+            assert deleted == 1
+            # only the targeted copy's files go
+            assert matched_sonarr.deleted_seasons == [(22, 1)]
+            assert surviving_sonarr.deleted_seasons == []
+            # the shared media-server item is not removed, because the stored id
+            # may belong to the copy that is staying
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data2/Show/Season 01"]
+            async with session_maker() as db:
+                assert await db.get(ReclaimCandidate, candidate_id) is None
+                seasons = (await db.execute(select(Season))).scalars().all()
+                assert len(seasons) == 1
         finally:
             await engine.dispose()
 

@@ -417,6 +417,47 @@ class RadarrClient:
                 f"Failed to delete movies {movie_ids} (status: {status_code})"
             )
 
+    async def get_movie_files(self, movie_id: int) -> list[dict[str, object]]:
+        """Get the movie file records Radarr holds for a movie.
+
+        Mirrors Sonarr's `get_episodes`: raw dicts, deliberately untyped, because
+        the caller only needs `id` and `path` to line a file up against the
+        version it wants removed.
+        """
+        status_code, data = await self._make_request(
+            "GET",
+            "moviefile",
+            params={"movieId": movie_id},
+            timeout=60,
+        )
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response getting movie files for movie {movie_id} "
+                f"(status: {status_code})"
+            )
+        return [dict(entry) for entry in data if isinstance(entry, Mapping)]
+
+    async def delete_movie_files(self, movie_file_ids: list[int]) -> None:
+        """Delete individual movie files without touching the Radarr movie entry.
+
+        This is what makes a partial version delete possible: a movie with two
+        qualities under one Radarr entry can give up one of them while Radarr
+        keeps the entry and its remaining file.
+        """
+        if not movie_file_ids:
+            return
+        status_code, _ = await self._make_request(
+            "DELETE",
+            "moviefile/bulk",
+            json={"movieFileIds": movie_file_ids},
+            timeout=120,
+            error_context=(f"Failed to delete movie files {movie_file_ids} via Radarr"),
+        )
+        if status_code not in {200, 204}:
+            raise ValueError(
+                f"Failed to delete movie files {movie_file_ids} (status: {status_code})"
+            )
+
     async def unmonitor_movies(self, movie_ids: list[int]) -> None:
         """Set multiple movies to unmonitored so Radarr won't queue re-downloads."""
         if not movie_ids:
