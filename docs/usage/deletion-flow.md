@@ -25,6 +25,21 @@ When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 3. Fall back to the main media server when the ARR service cannot handle the deletion or no ARR route exists.
 4. Use local deletion only when that fallback is enabled and the candidate can be removed locally.
 
+## Movies With More Than One Version
+
+A movie can hold several files under one Radarr entry, and a rule may match only some of them. Deleting the Radarr movie would take the rest with it, so Reclaimerr picks the narrower route instead:
+
+- when the candidate covers **every** file in the Radarr entry, the movie is deleted through Radarr as before, which also removes the entry and can add an import list exclusion;
+- when it covers **some** of them, Radarr is asked to delete just those files. The Radarr entry stays, no import exclusion is added, and the versions you kept are untouched.
+
+Per-file deletion happens automatically and needs no setting. It also means a partial version delete no longer depends on `Allow Media Server Fallback Deletion`.
+
+Reclaimerr only deletes a file it can identify with certainty. If a selected version cannot be matched to exactly one file in Radarr, nothing is deleted for that movie and the candidate records why.
+
+### The Same File In Two Libraries
+
+If one file is indexed by two libraries, your media server reports it twice, with different internal IDs and the same path. Reclaimerr keeps a record per library, so library-scoped rules keep working, but treats them as the single file they are: deleting it removes every record naming it, counts its size once, and protecting either record protects the file. A candidate whose file is protected through another library's copy is held back rather than deleted.
+
 ## What The Fallback Covers
 
 - movie candidates that Radarr cannot remove directly
@@ -41,6 +56,14 @@ Removing a file does not tell your media server anything. Whenever Radarr, Sonar
 This matters more than it sounds. Skipping the reconciliation leaves the media server serving an entry whose files are already gone. The next **Sync Media** run re-imports that entry, the next **Scan Cleanup Candidates** run flags it again as a _new_ candidate, and because the review period is measured from when a candidate was created, the countdown restarts from zero. The item then never reaches automatic deletion, however long you wait.
 
 One Plex caveat: a path scan only drops missing items when Plex's _Empty trash automatically after every scan_ library setting is enabled, which is Plex's default. With it turned off, Plex keeps the entry until you empty the trash yourself.
+
+## Series Held In Two Copies
+
+A series you keep twice - an HD copy and a UHD copy, each with its own Sonarr - is stored as one set of season records, because seasons are identified by series and season number with nothing to tell the copies apart. Those season fields (size, path, resolution) describe whichever copy your main media server reported, so they cannot be used to aim a rule at one copy.
+
+**To act on a specific copy, set the rule's Sonarr instance.** That is the only reliable way to say which one you mean.
+
+Without it, Reclaimerr works out which Sonarr owns the files by matching paths. If the series exists in more than one Sonarr and no path matches, it refuses rather than guess, and the candidate says so - add a path mapping or set the rule's Sonarr instance. Deleting one copy also leaves the season record in place while the other copy still has files, and skips the media-server delete in favour of a path re-scan, since the stored media-server item may belong to the copy you are keeping.
 
 ## Important Settings
 

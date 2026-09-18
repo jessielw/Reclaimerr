@@ -16,6 +16,7 @@ from backend.database.models import (
     Series,
 )
 from backend.enums import MediaType, Service
+from backend.models.media import AggregatedSeasonData
 from backend.tasks.cleanup import (
     _collect_episode_candidate_records,
     _collect_season_candidate_records,
@@ -234,3 +235,112 @@ class PhysicalTvInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(remaining_candidates, [])
         self.assertEqual(len(remaining_protections), 1)
         self.assertEqual(remaining_protections[0].series_id, series.id)
+
+    async def test_season_reported_with_no_episodes_prunes_its_episode_rows(
+        self,
+    ) -> None:
+        """A season that outlives its episodes must not keep them in the DB.
+
+        The season folder survives its last episode, so the media server still
+        reports the season while reporting nothing inside it. That used to skip
+        the prune entirely, leaving episode rows - and the candidates and
+        protections scoped to them - alive forever.
+        """
+        async with self.sessionmaker() as session:
+            series = Series(title="Emptied", tmdb_id=82002, size=0)
+            session.add(series)
+            await session.flush()
+            season = Season(
+                series_id=series.id,
+                season_number=1,
+                size=100,
+                episode_count=1,
+                path="/media/Emptied/Season 01",
+            )
+            session.add(season)
+            await session.flush()
+            episode = Episode(
+                season_id=season.id,
+                episode_number=1,
+                size=100,
+                path="/media/Emptied/Season 01/S01E01.mkv",
+            )
+            session.add(episode)
+            await session.flush()
+            session.add(
+                ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    season_id=season.id,
+                    episode_id=episode.id,
+                    matched_rule_ids=[1],
+                    matched_criteria={},
+                    reason="episode",
+                )
+            )
+            await session.commit()
+
+            # the season is still there, but now holds nothing
+            await _sync_seasons(
+                session,
+                series.id,
+                [
+                    AggregatedSeasonData(
+                        service_series_id="series-1",
+                        season_number=1,
+                        size=0,
+                        episode_count=0,
+                        view_count=0,
+                        last_viewed_at=None,
+                        path="/media/Emptied/Season 01",
+                        episode_data=[],
+                    )
+                ],
+                Service.JELLYFIN,
+            )
+            await session.commit()
+
+            remaining_seasons = (await session.execute(select(Season))).scalars().all()
+            remaining_episodes = (
+                (await session.execute(select(Episode))).scalars().all()
+            )
+            remaining_candidates = (
+                (await session.execute(select(ReclaimCandidate))).scalars().all()
+            )
+
+        # the season record stays; only what it no longer holds is retired
+        self.assertEqual(len(remaining_seasons), 1)
+        self.assertEqual(remaining_seasons[0].episode_count, 0)
+        self.assertEqual(remaining_episodes, [])
+        self.assertEqual(remaining_candidates, [])
+
+    async def test_empty_season_folder_is_not_a_deletion_candidate(self) -> None:
+        """An emptied season folder has no space to reclaim, so it is not flagged."""
+        async with self.sessionmaker() as session:
+            season_rule = _size_rule(TARGET_SEASON)
+            series_rule = _size_rule(TARGET_SERIES)
+            session.add_all([season_rule, series_rule])
+            series = Series(title="Empty Folder", tmdb_id=82003, size=0)
+            session.add(series)
+            await session.flush()
+            # path still present, nothing inside it
+            session.add(
+                Season(
+                    series_id=series.id,
+                    season_number=1,
+                    size=0,
+                    episode_count=0,
+                    path="/media/Empty Folder/Season 01",
+                )
+            )
+            await session.commit()
+
+            season_records = await _collect_season_candidate_records(
+                session, [season_rule]
+            )
+            series_records = await _collect_series_candidate_records(
+                session, [series_rule]
+            )
+
+        self.assertEqual(season_records, [])
+        self.assertEqual(series_records, [])

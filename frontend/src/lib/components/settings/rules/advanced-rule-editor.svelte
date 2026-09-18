@@ -24,6 +24,7 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import { parseAutoDeleteDelay } from "$lib/components/settings/rules/rule-action-values.js";
   import { isConditionValueSet } from "$lib/components/settings/rules/rule-condition-value.js";
   import { movieRequesterWatchSummary } from "$lib/components/settings/rules/requester-watch-summary.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
@@ -111,7 +112,7 @@
     initial.action?.move_instead_of_delete ?? false,
   );
   let arrTag = $state(initial.action?.arr_tag ?? "");
-  let autoDeleteDelayDays = $state<string | number>(
+  let autoDeleteDelayDays = $state<string | number | undefined>(
     initial.action?.auto_delete_delay_days?.toString() ?? "",
   );
 
@@ -656,10 +657,7 @@
   const save = async () => {
     saving = true;
     try {
-      const rawAutoDeleteDelay = String(autoDeleteDelayDays).trim();
-      const autoDeleteDelay = rawAutoDeleteDelay
-        ? Number(rawAutoDeleteDelay)
-        : null;
+      const autoDeleteDelay = parseAutoDeleteDelay(autoDeleteDelayDays);
       if (
         autoDeleteEnabled &&
         autoDeleteDelay !== null &&
