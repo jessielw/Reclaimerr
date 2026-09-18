@@ -148,6 +148,20 @@ def _soft_delete_blocked(
     return True
 
 
+def _series_copy_sort_key(series: AggregatedSeriesData) -> tuple[str, str]:
+    """Stable ordering key for two copies of one series on the same server.
+
+    Only used to settle a tie that the watch and added dates cannot, so the
+    values need to be stable across syncs rather than meaningful.
+    """
+    return (
+        series.library_id or "",
+        normalize_fpath(series.path, strip_ending_slash=True, lower=True)
+        if series.path
+        else "",
+    )
+
+
 def _tvdb_sorts_first(a: str, b: str) -> bool:
     """True when tvdb id `a` orders before `b`.
 
@@ -955,12 +969,16 @@ async def _sync_seasons(
             )
         )
 
-    # upsert episode rows for seasons that have episode_data
+    # upsert episode rows for every incoming season, including the ones that came
+    # back with no episodes at all.  `season_data` is the main server's
+    # authoritative view, so an empty list means those episodes are gone and the
+    # prune inside _upsert_episodes has to run - skipping it here left the rows
+    # behind forever, along with the candidates and protections scoped to them.
+    # Supplemental and linked-server callers pass remove_stale=False and keep
+    # their own empty-list guards, so a partial response still cannot prune.
     # flush first so new Season rows get their IDs
     await session.flush()
     for sd in season_data:
-        if not sd.episode_data:
-            continue
         # resolve the season id (may be newly created)
         season_id: int | None = None
         if sd.season_number in existing:
@@ -1347,8 +1365,21 @@ async def _upsert_movie_versions(
         for ev in stale_versions:
             await session.delete(ev)
 
-    # size = sum of incoming versions (all stale versions are being deleted)
-    db_movie.size = sum(ver.size for ver in versions)
+    # size = sum of incoming versions (all stale versions are being deleted),
+    # counted once per physical file. The same file indexed in two libraries
+    # arrives as two versions with different service ids and one path, and
+    # adding both would report twice the disk it actually occupies. Versions
+    # with no path cannot be matched to a sibling, so each one still counts.
+    counted_paths: set[str] = set()
+    total_size = 0
+    for ver in versions:
+        if ver.path:
+            path_key = normalize_fpath(ver.path, strip_ending_slash=True, lower=True)
+            if path_key in counted_paths:
+                continue
+            counted_paths.add(path_key)
+        total_size += ver.size
+    db_movie.size = total_size
 
 
 async def gather_movies(
@@ -1535,6 +1566,20 @@ def _dedupe_aggregated_series(
                     not existing.added_at or series.added_at > existing.added_at
                 ):
                     # new series wins on added_at - existing loses
+                    supplemental.setdefault(tmdb_id, []).append(
+                        (existing.service, existing.season_data)
+                    )
+                    unique_series[tmdb_id] = series
+                    continue
+                if series.added_at == existing.added_at and _series_copy_sort_key(
+                    series
+                ) < _series_copy_sort_key(existing):
+                    # Both dates are identical, which is the ordinary case for a
+                    # show held in an HD and a UHD library and never watched.
+                    # The winner decides what every season field describes, so
+                    # leaving it to whichever copy the server happened to list
+                    # first lets the season's size, path and resolution swing
+                    # between syncs. Library then path is arbitrary but stable.
                     supplemental.setdefault(tmdb_id, []).append(
                         (existing.service, existing.season_data)
                     )
@@ -2880,6 +2925,72 @@ async def sync_linked_data(
         await _mark_service_config_synced(config.id)
 
 
+async def _restore_version_scoped_candidates(
+    candidate_paths: dict[int, tuple[int, str]],
+) -> None:
+    """Reattach version-scoped candidates to the rebuilt MovieVersion rows.
+
+    A resync drops and recreates every version row, so each one comes back with
+    a new id. A candidate left pointing at nothing is dropped by the next scan
+    as a legacy row and created again from scratch, and since the review period
+    runs from the candidate's `created_at`, that silently restarts the countdown
+    for every movie - a title a day away from automatic deletion goes back to
+    the full waiting period, every resync. Matching on the file path keeps the
+    original candidate, and its clock, alive instead.
+
+    A candidate whose file did not come back is removed rather than left
+    movie-scoped, because a movie-scoped candidate deletes every version of the
+    movie - far more than the rule selected.
+    """
+    if not candidate_paths:
+        return
+
+    movie_ids = {movie_id for movie_id, _path in candidate_paths.values()}
+    async with async_db() as session:
+        rows = (
+            await session.execute(
+                select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path).where(
+                    MovieVersion.movie_id.in_(movie_ids)
+                )
+            )
+        ).all()
+        version_by_key: dict[tuple[int, str], int] = {}
+        for version_id, movie_id, path in rows:
+            if movie_id is None or not path:
+                continue
+            key = (
+                movie_id,
+                normalize_fpath(path, strip_ending_slash=True, lower=True),
+            )
+            # a file indexed in two libraries has a row each; either will do
+            version_by_key.setdefault(key, version_id)
+
+        restored = 0
+        dropped: list[int] = []
+        for candidate_id, key in candidate_paths.items():
+            version_id = version_by_key.get(key)
+            if version_id is None:
+                dropped.append(candidate_id)
+                continue
+            await session.execute(
+                sql_update(ReclaimCandidate)
+                .where(ReclaimCandidate.id == candidate_id)
+                .values(movie_version_id=version_id)
+            )
+            restored += 1
+        if dropped:
+            await session.execute(
+                sql_delete(ReclaimCandidate).where(ReclaimCandidate.id.in_(dropped))
+            )
+        await session.commit()
+
+    LOG.info(
+        f"Reattached {restored} movie version candidate(s) after resync, "
+        f"keeping their review periods; dropped {len(dropped)} whose file is "
+        "no longer present"
+    )
+
+
 async def resync_media() -> None:
     """
     Full re-sync triggered when the main media server is switched.
@@ -2895,6 +3006,31 @@ async def resync_media() -> None:
     async with track_task_execution(Task.RESYNC_MEDIA):
         try:
             async with async_db() as session:
+                # Remember which file each version-scoped candidate stood for
+                # before the rows are dropped, so they can be reattached once
+                # the sync below rebuilds them. See
+                # _restore_version_scoped_candidates for why this matters.
+                candidate_version_rows = (
+                    await session.execute(
+                        select(
+                            ReclaimCandidate.id,
+                            ReclaimCandidate.movie_id,
+                            MovieVersion.path,
+                        ).join(
+                            MovieVersion,
+                            ReclaimCandidate.movie_version_id == MovieVersion.id,
+                        )
+                    )
+                ).all()
+                resync_candidate_paths = {
+                    candidate_id: (
+                        movie_id,
+                        normalize_fpath(path, strip_ending_slash=True, lower=True),
+                    )
+                    for candidate_id, movie_id, path in candidate_version_rows
+                    if movie_id is not None and path
+                }
+
                 # movie_version scoped rows must be detached before deleting versions
                 # when switching main media server, old version IDs are invalid anyway
                 await session.execute(
@@ -2926,6 +3062,7 @@ async def resync_media() -> None:
             # before the movie/series sync restores version data
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
+            await _restore_version_scoped_candidates(resync_candidate_paths)
             await sync_series(allow_soft_delete=False)
             async with async_db() as session:
                 resynced_main = await _get_main_media_server(session)

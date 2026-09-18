@@ -8,6 +8,7 @@ Tasks are scheduled jobs that keep Reclaimerr running on its own.
 - **Tag cleanup candidates** - marks candidates in the media server
 - **Delete cleanup candidates** - deletes eligible candidates from rules that opt in to automatic deletion
 - **Sync media** - refreshes connected services and libraries
+- **Resync media** - rebuilds media records from scratch against the main media server; runs automatically when you change which server is the main one
 - **Refresh IMDb Ratings** - refreshes the IMDb dataset cache
 - **Refresh AniList Ratings** - refreshes AniBridge mappings and AniList metadata
 - **Refresh MDBList Ratings** - refreshes Rotten Tomatoes, Metacritic, Trakt, and Letterboxd values supplied by MDBList
@@ -16,6 +17,8 @@ Tasks are scheduled jobs that keep Reclaimerr running on its own.
 The Tasks page groups these four jobs under **External Ratings**. MDBList and OMDb have independent schedules and refresh state; their default schedules are 6 AM and 7 AM respectively.
 
 IMDb title ratings are stored in a separate cache database under `DATA_DIR/cache/imdb_ratings.sqlite3`. Reclaimerr copies only the relevant denormalized rating values onto movie and series rows in the main app database. This keeps the large IMDb dataset import from blocking normal app writes such as user, settings, and rule changes.
+
+**Resync media** discards and rebuilds the per-file records behind your movies, so every version gets a new internal ID. Existing movie candidates are reattached to the rebuilt records by file path and keep their original flagged date, so review periods are not restarted. A candidate whose file is no longer present is dropped, and the next **Scan cleanup candidates** run re-evaluates it from current data.
 
 ## Automatic Cleanup Deletion
 

@@ -70,6 +70,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    paths_equivalent,
     remove_empty_directory,
     resolve_path,
     sibling_cleanup,
@@ -295,6 +296,20 @@ def _is_episode_scope(model: Any) -> Any:
 def _has_media_path(path: str | None) -> bool:
     """Return whether a synchronized item points to physical media."""
     return bool(path and path.strip())
+
+
+def _season_holds_media(season: Season) -> bool:
+    """Return whether a season still has something worth reclaiming.
+
+    A folder that survives its last episode keeps a usable `path`, so the path
+    check alone is not enough to tell a real season from an empty shell. An
+    empty one has no space to give back and its delete can only fail, so it must
+    not become a candidate. `episode_count` and `size` are both written straight
+    from the media server by `_sync_seasons`, and either one being positive is
+    enough - a server that reports a size but no count, or the reverse, is still
+    describing media that exists.
+    """
+    return bool((season.episode_count or 0) > 0 or (season.size or 0) > 0)
 
 
 async def _load_auto_delete_context(
@@ -795,6 +810,99 @@ async def _filter_movie_candidates_by_favorites(
         or movie_tmdb_map.get(candidate.movie_id) not in favorite_tmdb_ids
     ]
     return filtered, len(candidates) - len(filtered)
+
+
+async def _filter_movie_candidates_by_sibling_protection(
+    db: AsyncSession,
+    candidates: Sequence[ReclaimCandidate],
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+) -> tuple[Sequence[ReclaimCandidate], list[int]]:
+    """Drop version candidates whose physical file is protected through a twin.
+
+    Protection is recorded against a MovieVersion row, but a file indexed in two
+    libraries has a row per library. Protecting one twin therefore leaves the
+    other deletable even though both name the same bytes, and deleting it would
+    destroy media the user explicitly kept. Scope resolution matches on the
+    exact id (`movie_scope_overlap_clause`), so this has to be caught here.
+
+    Returns the surviving candidates and the ids of the ones held back.
+    """
+    version_candidates = [
+        candidate for candidate in candidates if candidate.movie_version_id is not None
+    ]
+    if not version_candidates:
+        return candidates, []
+
+    movie_ids = {
+        candidate.movie_id for candidate in version_candidates if candidate.movie_id
+    }
+    if not movie_ids:
+        return candidates, []
+
+    now = datetime.now(UTC)
+    protected_version_ids = {
+        row
+        for row in (
+            await db.execute(
+                select(ProtectedMedia.movie_version_id).where(
+                    ProtectedMedia.media_type == MediaType.MOVIE,
+                    ProtectedMedia.movie_version_id.isnot(None),
+                    ProtectedMedia.movie_id.in_(movie_ids),
+                    or_(
+                        ProtectedMedia.permanent.is_(True),
+                        ProtectedMedia.expires_at.is_(None),
+                        ProtectedMedia.expires_at > now,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if row is not None
+    }
+    if not protected_version_ids:
+        return candidates, []
+
+    version_rows = (
+        await db.execute(
+            select(
+                MovieVersion.movie_id,
+                MovieVersion.id,
+                MovieVersion.path,
+                MovieVersion.service,
+            ).where(MovieVersion.movie_id.in_(movie_ids))
+        )
+    ).all()
+    info_by_movie: dict[int, dict[int, tuple[str | None, Service | None]]] = {}
+    for movie_id, version_id, version_path, version_service in version_rows:
+        if movie_id is not None:
+            info_by_movie.setdefault(movie_id, {})[version_id] = (
+                version_path,
+                version_service,
+            )
+
+    # a protected row shields every row naming the same file
+    shielded_by_movie: dict[int, set[int]] = {}
+    for movie_id, version_info in info_by_movie.items():
+        movie_protected = protected_version_ids & set(version_info)
+        if movie_protected:
+            shielded_by_movie[movie_id] = _expand_to_physical_siblings(
+                movie_protected, version_info, path_mappings
+            )
+
+    held_back: list[int] = []
+    filtered: list[ReclaimCandidate] = []
+    for candidate in candidates:
+        shielded = shielded_by_movie.get(candidate.movie_id or 0, set())
+        if (
+            candidate.movie_version_id is not None
+            and candidate.movie_version_id in shielded
+            and candidate.movie_version_id not in protected_version_ids
+        ):
+            held_back.append(candidate.id)
+            continue
+        filtered.append(candidate)
+    return filtered, held_back
 
 
 async def _filter_series_candidates_by_favorites(
@@ -5658,8 +5766,19 @@ async def _collect_series_candidate_records(
         select(Series)
         .where(
             Series.removed_at.is_(None),
+            # A series only qualifies on the strength of a season that still
+            # holds media. A folder outlives its last episode, so requiring a
+            # path alone would keep flagging an emptied show that has no space
+            # left to reclaim. Mirrors _season_holds_media.
             Series.seasons.any(
-                and_(Season.path.is_not(None), func.trim(Season.path) != "")
+                and_(
+                    Season.path.is_not(None),
+                    func.trim(Season.path) != "",
+                    or_(
+                        Season.episode_count > 0,
+                        Season.size > 0,
+                    ),
+                )
             ),
         )
         .options(*query_options)
@@ -6252,6 +6371,8 @@ async def _collect_season_candidate_records(
             if target_ids is not None and season.id not in target_ids:
                 continue
             if not _has_media_path(season.path):
+                continue
+            if not _season_holds_media(season):
                 continue
             if season.id in protected_season_ids:
                 continue
@@ -7840,13 +7961,70 @@ def _path_matches_arr_folder(
     )
 
 
+def _expand_to_physical_siblings(
+    version_ids: Iterable[int],
+    version_info: Mapping[int, tuple[str | None, Service | None]],
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+) -> set[int]:
+    """Add every version row that describes the same physical file as a selected one.
+
+    One file indexed in two media-server libraries becomes two MovieVersion rows:
+    Plex hands out a separate ratingKey and Media.id per section, so only the
+    service ids differ and the path is identical. A rule scoped to one library
+    can therefore only ever select one of the twins, even though deleting the
+    file removes both.
+
+    Anything reasoning about *files* rather than rows has to account for that -
+    the "does this delete only what was selected" proof, which would otherwise
+    read the twin as collateral and refuse, and the set of rows a completed
+    delete has to retire, which would otherwise leave a phantom behind. Versions
+    with no path cannot be proven to be anyone's twin, so they are left alone.
+
+    Only originally-selected versions are used as seeds. Path mapping makes
+    equivalence non-transitive at the edges, and not chaining through a
+    newly-added row keeps the result conservative: under-expanding makes the
+    proof refuse and leaves a stale row for the next sync, while over-expanding
+    would delete a file nobody selected.
+    """
+    selected = set(version_ids)
+    seeds = [
+        version_info[version_id]
+        for version_id in selected
+        if version_info.get(version_id) and version_info[version_id][0]
+    ]
+    if not seeds:
+        return selected
+
+    for other_id, (other_path, other_service) in version_info.items():
+        if other_id in selected or not other_path:
+            continue
+        for seed_path, seed_service in seeds:
+            if paths_equivalent(
+                seed_path,
+                other_path,
+                path_mappings,
+                left_service_type=seed_service.value if seed_service else None,
+                right_service_type=other_service.value if other_service else None,
+            ):
+                selected.add(other_id)
+                break
+    return selected
+
+
 def _order_series_arr_refs(
     refs: Sequence[SeriesArrRef],
     candidate_paths: Sequence[str | None],
     path_mappings: Sequence[Mapping[str, Any]] | None,
     *,
     media_service_type: Service | None,
-) -> list[SeriesArrRef]:
+) -> tuple[list[SeriesArrRef], set[int]]:
+    """Order the Sonarr refs best-match first, and say which were proven by path.
+
+    The proven set is what lets a caller tell "this instance owns these files"
+    from "this instance was simply listed first". Acting on an unproven guess
+    is how an HD/UHD pair loses the wrong copy, so callers refuse instead.
+    """
+
     def ref_score(ref: SeriesArrRef) -> tuple[int, int]:
         if any(
             _path_matches_arr_folder(
@@ -7868,19 +8046,77 @@ def _order_series_arr_refs(
         return (2, ref.id or 0)
 
     ordered = sorted(refs, key=ref_score)
-    if len(ordered) > 1 and ref_score(ordered[0])[0] != 0:
-        # Nothing proved which instance owns these files, so the winner is just
-        # the lowest ref id.  Callers act on the first ref only, so an HD/UHD
-        # pair can have the wrong copy removed - worth saying out loud.
+    proven_ref_ids = {
+        ref.id for ref in ordered if ref.id is not None and ref_score(ref)[0] == 0
+    }
+    if len(ordered) > 1 and not proven_ref_ids:
+        # Nothing proved which instance owns these files. A single-instance
+        # setup can still act on the only ref there is, but with more than one
+        # the caller has to refuse rather than guess.
         LOG.warning(
             "No Sonarr instance could be matched to "
-            f"{[p for p in candidate_paths if p]} by path; falling back to the "
-            f"oldest of {len(ordered)} refs "
-            f"(config {ordered[0].service_config_id}, "
-            f"path {ordered[0].arr_series_path!r}). Add a path mapping to make "
-            "this unambiguous."
+            f"{[p for p in candidate_paths if p]} by path across "
+            f"{len(ordered)} refs. Add a path mapping, or target a Sonarr "
+            "instance on the rule, to make this unambiguous."
         )
-    return ordered
+    return ordered, proven_ref_ids
+
+
+async def _season_held_by_another_sonarr(
+    refs: Sequence[SeriesArrRef],
+    acted_config_id: int | None,
+    season_number: int,
+) -> bool:
+    """True when a Sonarr instance other than the one just acted on still has files.
+
+    Two physical copies of a series - an HD and a UHD library, each with its own
+    Sonarr - share a single Season row, because seasons are keyed by series and
+    number with nothing to tell the copies apart. Dropping that row once one
+    instance's files are gone would throw away the surviving copy's data along
+    with the season's protections, and the next sync would rebuild it as a brand
+    new row with a fresh added date - restarting the review period and flagging
+    the survivor all over again.
+
+    Best effort, and deliberately biased towards keeping the row: an instance
+    that cannot be reached is treated as still holding files, because the cost
+    of a stale row is one sync, while the cost of a wrong delete is the
+    protections that went with it.
+    """
+    for ref in refs:
+        if ref.service_config_id == acted_config_id or ref.arr_series_id is None:
+            continue
+        client = service_manager.get_sonarr(ref.service_config_id)
+        if client is None:
+            continue
+        try:
+            episodes = await client.get_episodes(ref.arr_series_id, season_number)
+        except Exception as e:
+            LOG.warning(
+                f"Could not check Sonarr config {ref.service_config_id} for "
+                f"remaining season {season_number} files: {e} - keeping the "
+                "season record"
+            )
+            return True
+        if any(
+            isinstance(episode, Mapping) and bool(episode.get("hasFile"))
+            for episode in episodes
+        ):
+            return True
+    return False
+
+
+def _unprovable_series_arr_route(
+    ordered_refs: Sequence[SeriesArrRef],
+    proven_ref_ids: set[int],
+) -> bool:
+    """True when more than one Sonarr instance could own these files.
+
+    Called after the rule's own instance targeting has been applied, so a rule
+    that names its instance has already narrowed this to one ref and passes.
+    """
+    if len(ordered_refs) <= 1:
+        return False
+    return not any(ref.id in proven_ref_ids for ref in ordered_refs)
 
 
 async def _load_arr_disk_space() -> list[dict[str, Any]]:
@@ -8214,14 +8450,26 @@ async def _delete_movie_version_candidates(
             )
             continue
 
+        # the file may be indexed in more than one library, which gives it a row
+        # and a media-server item per library. All of them describe the one file
+        # being removed, so all of them have to go with it.
+        path_mappings = await _load_path_mappings()
+        sibling_ids = _expand_to_physical_siblings(
+            {version.id},
+            {v.id: (v.path, v.service) for v in movie.versions},
+            path_mappings,
+        )
+        sibling_versions = [v for v in movie.versions if v.id in sibling_ids]
+
         same_item_versions = [
             v
             for v in movie.versions
             if v.service == main_service_type
             and v.service_item_id == version.service_item_id
+            and v.id not in sibling_ids
         ]
         if main_service_type in {Service.JELLYFIN, Service.EMBY}:
-            if len(same_item_versions) != 1:
+            if same_item_versions:
                 await _mark_candidate_delete_failure(
                     candidate.id,
                     "Exact version delete unsupported: multiple versions share one Emby/Jellyfin item id",
@@ -8229,12 +8477,17 @@ async def _delete_movie_version_candidates(
                 continue
 
         try:
-            await main_service.delete_movie_version(
-                version.service_item_id, version.service_media_id
-            )
+            handled_items: set[tuple[str, str]] = set()
+            for sibling in sibling_versions:
+                if sibling.service != main_service_type:
+                    continue
+                item_key = (sibling.service_item_id, sibling.service_media_id)
+                if item_key in handled_items:
+                    continue
+                handled_items.add(item_key)
+                await main_service.delete_movie_version(*item_key)
 
             # attempt filesystem sibling cleanup (subtitle/nfo files + empty dirs)
-            path_mappings = await _load_path_mappings()
             local_path = resolve_path(
                 version.path, path_mappings, service_type=main_service_type.value
             )
@@ -8255,11 +8508,19 @@ async def _delete_movie_version_candidates(
                 if cand:
                     await db.delete(cand)
 
-                ver_result = await db.execute(
-                    select(MovieVersion).where(MovieVersion.id == version.id)
+                ver_rows = (
+                    (
+                        await db.execute(
+                            select(MovieVersion).where(MovieVersion.id.in_(sibling_ids))
+                        )
+                    )
+                    .scalars()
+                    .all()
                 )
-                ver_db = ver_result.scalar_one_or_none()
+                ver_db = next((row for row in ver_rows if row.id == version.id), None)
                 if ver_db:
+                    # one file was removed however many libraries indexed it, so
+                    # its size comes off the movie once
                     deleted_size = ver_db.size or 0
                     movie_result = await db.execute(
                         select(Movie).where(Movie.id == ver_db.movie_id)
@@ -8267,8 +8528,11 @@ async def _delete_movie_version_candidates(
                     movie_db = movie_result.scalar_one_or_none()
                     if movie_db and movie_db.size:
                         movie_db.size = max(0, movie_db.size - deleted_size)
-                    await detach_movie_version_references(db, [ver_db.id])
-                    await db.delete(ver_db)
+                    await detach_movie_version_references(
+                        db, [row.id for row in ver_rows]
+                    )
+                    for row in ver_rows:
+                        await db.delete(row)
                     await db.flush()
                     movie_db = await _soft_remove_movie_if_empty(db, ver_db.movie_id)
                     if (
@@ -8360,6 +8624,147 @@ async def _delete_movie_version_candidates(
     return deleted_count
 
 
+async def _delete_movie_version_files_via_radarr(
+    movie_id: int,
+    candidate_ids: list[int],
+    version_ids: set[int],
+    file_ids_by_ref: dict[tuple[int, int], list[int]],
+    *,
+    approved_by: str,
+    radarr_clients: dict[int, RadarrClient],
+) -> int:
+    """Delete individual files from a Radarr entry, leaving the entry in place.
+
+    This is the route for a candidate that selects only some of the files under
+    one Radarr movie. A whole-movie delete would take the rest with it, so
+    before this existed the only option was the media server - and with media
+    server fallback switched off the candidate simply failed forever. The Radarr
+    entry is deliberately kept and no import exclusion is added, because the
+    movie still has files.
+
+    Returns 1 when the files were removed, 0 otherwise.
+    """
+    async with async_db() as db:
+        movie = (
+            await db.execute(select(Movie).where(Movie.id == movie_id))
+        ).scalar_one_or_none()
+        if movie is None:
+            await _mark_candidate_delete_failures(
+                candidate_ids, "Movie missing for candidate version"
+            )
+            return 0
+        version_rows = (
+            (
+                await db.execute(
+                    select(MovieVersion).where(MovieVersion.id.in_(version_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        title = movie.title
+        tmdb_id = movie.tmdb_id
+        version_details = [
+            (
+                row.id,
+                row.path,
+                row.size or 0,
+                _build_reclaim_history_attributes(movie_version=row),
+            )
+            for row in version_rows
+        ]
+
+    for (config_id, arr_movie_id), file_ids in file_ids_by_ref.items():
+        client = radarr_clients.get(config_id)
+        if client is None:
+            await _mark_candidate_delete_failures(
+                candidate_ids,
+                f"Radarr instance {config_id} is no longer available",
+            )
+            return 0
+        try:
+            await client.delete_movie_files(file_ids)
+            LOG.info(
+                f"Deleted {len(file_ids)} file(s) for '{title}' via Radarr "
+                f"(config_id={config_id}, arr_id={arr_movie_id}, "
+                f"file_ids={file_ids}) - Radarr entry kept, other versions "
+                "left in place"
+            )
+        except Exception as e:
+            await _mark_candidate_delete_failures(
+                candidate_ids,
+                f"Radarr movie-file delete failed for config {config_id}: {e}",
+            )
+            return 0
+
+    # size comes off once per physical file, not once per row naming it
+    counted_paths: set[str] = set()
+    removed_size = 0
+    for _version_id, version_path, version_size, _attrs in version_details:
+        if version_path:
+            if version_path in counted_paths:
+                continue
+            counted_paths.add(version_path)
+        removed_size += version_size
+
+    async with async_db() as db:
+        await db.execute(
+            delete(ReclaimCandidate).where(ReclaimCandidate.id.in_(candidate_ids))
+        )
+        movie_db = (
+            await db.execute(select(Movie).where(Movie.id == movie_id))
+        ).scalar_one_or_none()
+        if movie_db and movie_db.size:
+            movie_db.size = max(0, movie_db.size - removed_size)
+        await detach_movie_version_references(db, version_ids)
+        await db.execute(delete(MovieVersion).where(MovieVersion.id.in_(version_ids)))
+        await db.flush()
+        await _soft_remove_movie_if_empty(db, movie_id)
+        for _version_id, version_path, version_size, attrs in version_details:
+            db.add(
+                ReclaimHistory(
+                    approved_by=approved_by,
+                    media_type=MediaType.MOVIE,
+                    tmdb_id=tmdb_id,
+                    name=title,
+                    path=version_path,
+                    size=version_size,
+                    attributes=attrs,
+                )
+            )
+        await db.commit()
+
+    # Radarr removed the files, so the media server only has to re-check the
+    # paths. Never a media-server delete: the movie still exists there.
+    await _reconcile_media_server_after_delete(
+        item_id=None,
+        paths=[version_path for _v, version_path, _s, _a in version_details],
+        allow_delete_item=False,
+        context=f"movie version delete '{title}'",
+    )
+    rescan_by_config: dict[int, set[int]] = {}
+    for config_id, arr_movie_id in file_ids_by_ref:
+        rescan_by_config.setdefault(config_id, set()).add(arr_movie_id)
+    await _best_effort_radarr_rescan(
+        rescan_by_config,
+        context="movie version delete",
+    )
+
+    primary_candidate_id = candidate_ids[0] if candidate_ids else None
+    for version_id, version_path, _size, _attrs in version_details:
+        await _dispatch_reclaim_event(
+            action="deleted",
+            media_type=MediaType.MOVIE,
+            title=title,
+            tmdb_id=tmdb_id,
+            candidate_id=primary_candidate_id,
+            path=version_path,
+            service_type=Service.RADARR,
+            movie_version_id=version_id,
+        )
+    return 1
+
+
 async def _delete_movie_candidates(
     restrict_to_ids: frozenset[int] | None = None,
     approved_by: str = "system",
@@ -8430,7 +8835,29 @@ async def _delete_movie_candidates(
                 LOG.info("All movie candidates skipped due to favorites protection")
                 return 0
 
+        (
+            candidates,
+            protected_by_sibling,
+        ) = await _filter_movie_candidates_by_sibling_protection(
+            db, candidates, move_path_mappings
+        )
+
         LOG.info(f"Found {len(candidates)} movie candidates to evaluate for deletion")
+
+    # marked outside the read session above - each failure opens its own
+    if protected_by_sibling:
+        await _mark_candidate_delete_failures(
+            protected_by_sibling,
+            "Another version of this movie protects the same physical file - "
+            "the file is indexed in more than one library, so deleting this "
+            "copy would remove the protected one too",
+        )
+        LOG.warning(
+            f"Skipped {len(protected_by_sibling)} movie version candidate(s) "
+            "whose file is protected through another library's copy"
+        )
+    if not candidates:
+        return 0
 
     # load rules for arr_action resolution
     all_rule_ids = {rid for c in candidates for rid in (c.matched_rule_ids or [])}
@@ -8595,13 +9022,26 @@ async def _delete_movie_candidates(
         matched_refs: set[tuple[int, int]],
         refs: list[tuple[int, int, str | None]],
     ) -> bool:
-        """Return True only when Radarr delete cannot remove unselected versions."""
+        """Return True only when Radarr delete cannot remove unselected versions.
+
+        The question is about files, not rows. A movie indexed in two libraries
+        has two rows per file, and a library-scoped rule can only select one of
+        them, so the selection is widened to its physical siblings first -
+        otherwise the twin reads as an unselected version that the delete would
+        destroy, and a delete that is in fact safe gets refused.
+        """
         if not selected_version_ids or not matched_refs:
             return False
 
         version_info = version_info_by_movie.get(movie_id, {})
         if not version_info:
             return False
+
+        covered_version_ids = _expand_to_physical_siblings(
+            selected_version_ids,
+            version_info,
+            move_path_mappings,
+        )
 
         refs_by_pair = {
             (config_id, arr_movie_id): arr_movie_path
@@ -8630,19 +9070,96 @@ async def _delete_movie_candidates(
                     )
                 }
                 if not ref_version_ids:
-                    if len(refs) == 1 and selected_version_ids == all_version_ids:
+                    if len(refs) == 1 and covered_version_ids == all_version_ids:
                         continue
                     return False
-                if not ref_version_ids.issubset(selected_version_ids):
+                if not ref_version_ids.issubset(covered_version_ids):
                     return False
                 continue
 
             # without an arr path, only a single ref movie with all known versions
             # selected is provably safe to delete through Radarr.
-            if len(refs) != 1 or selected_version_ids != all_version_ids:
+            if len(refs) != 1 or covered_version_ids != all_version_ids:
                 return False
 
         return True
+
+    async def _resolve_radarr_file_ids(
+        movie_id: int,
+        selected_version_ids: set[int],
+        matched_refs: set[tuple[int, int]],
+    ) -> tuple[dict[tuple[int, int], list[int]], set[int]] | None:
+        """Line the selected versions up against Radarr's own movie-file records.
+
+        Returns the file ids to delete per ref and the version rows they
+        account for, or None when the mapping cannot be proven.
+
+        Fails closed on every ambiguity. A Radarr file is only deletable when
+        every version describing it is selected, and every selected version has
+        to be accounted for by some Radarr file - otherwise the delete would
+        either take a file nobody chose or silently do less than the candidate
+        asked for. A Radarr file that no version describes is left alone rather
+        than treated as an error: Radarr simply knows about something the media
+        server has not indexed.
+        """
+        version_info = version_info_by_movie.get(movie_id, {})
+        if not version_info:
+            return None
+        covered = _expand_to_physical_siblings(
+            selected_version_ids, version_info, move_path_mappings
+        )
+        if not covered:
+            return None
+
+        file_ids_by_ref: dict[tuple[int, int], list[int]] = {}
+        accounted_versions: set[int] = set()
+        for config_id, arr_movie_id in matched_refs:
+            client = radarr_clients.get(config_id)
+            if client is None:
+                return None
+            try:
+                arr_files = await client.get_movie_files(arr_movie_id)
+            except Exception as e:
+                LOG.warning(
+                    f"Could not read Radarr movie files for arr_id={arr_movie_id} "
+                    f"(config {config_id}): {e}"
+                )
+                return None
+
+            ref_file_ids: list[int] = []
+            for entry in arr_files:
+                entry_id = _coerce_int(entry.get("id"))
+                entry_path = entry.get("path")
+                if entry_id is None or not isinstance(entry_path, str):
+                    return None
+                owners = {
+                    version_id
+                    for version_id, (version_path, version_service) in (
+                        version_info.items()
+                    )
+                    if version_path
+                    and paths_equivalent(
+                        version_path,
+                        entry_path,
+                        move_path_mappings,
+                        left_service_type=version_service.value
+                        if version_service
+                        else None,
+                        right_service_type=Service.RADARR.value,
+                        right_service_config_id=config_id,
+                    )
+                }
+                if not owners:
+                    continue
+                if owners <= covered:
+                    ref_file_ids.append(entry_id)
+                    accounted_versions |= owners
+            if ref_file_ids:
+                file_ids_by_ref[(config_id, arr_movie_id)] = sorted(set(ref_file_ids))
+
+        if not file_ids_by_ref or accounted_versions != covered:
+            return None
+        return file_ids_by_ref, covered
 
     # Route each candidate to the correct arr instance(s).
     # movie_id -> set of (config_id, arr_movie_id)
@@ -8653,6 +9170,13 @@ async def _delete_movie_candidates(
     unmatched_version_candidates: list[ReclaimCandidate] = []
     # candidate id -> why a Radarr movie delete could not be used for it
     demotion_reasons: dict[int, str] = {}
+    # movie_id -> per-file Radarr delete plan for a partial version selection
+    movie_file_routing: dict[
+        int, tuple[dict[tuple[int, int], list[int]], set[int]]
+    ] = {}
+    file_cand_ids_by_movie: dict[int, list[int]] = {}
+    # movies already checked for a per-file route, so Radarr is asked once
+    file_route_checked: set[int] = set()
 
     if radarr_clients:
         for cand in version_candidates:
@@ -8705,7 +9229,24 @@ async def _delete_movie_candidates(
                     movie_arr_routing.setdefault(cand.movie_id, set()).update(matched)
                     all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
                 else:
-                    # Radarr would remove unselected versions; use media-server
+                    # A whole-movie delete would take unselected versions with
+                    # it, but Radarr can delete the selected files on their own.
+                    if cand.movie_id not in file_route_checked:
+                        file_route_checked.add(cand.movie_id)
+                        resolved = await _resolve_radarr_file_ids(
+                            cand.movie_id,
+                            selected_version_ids,
+                            matched,
+                        )
+                        if resolved is not None:
+                            movie_file_routing[cand.movie_id] = resolved
+                    if cand.movie_id in movie_file_routing:
+                        file_cand_ids_by_movie.setdefault(cand.movie_id, []).append(
+                            cand.id
+                        )
+                        continue
+
+                    # nothing provable through Radarr; use the media-server
                     # version delete if fallback is enabled.
                     all_version_ids = set(version_info_by_movie.get(cand.movie_id, {}))
                     reason = (
@@ -8746,6 +9287,24 @@ async def _delete_movie_candidates(
             all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
     else:
         unmatched_version_candidates = list(version_candidates)
+
+    # Partial version selections Radarr can satisfy file by file, without
+    # touching the movie entry or needing the media server.
+    for file_movie_id, (
+        file_ids_by_ref,
+        file_version_ids,
+    ) in movie_file_routing.items():
+        file_candidate_ids = file_cand_ids_by_movie.get(file_movie_id, [])
+        if not file_candidate_ids:
+            continue
+        deleted_count += await _delete_movie_version_files_via_radarr(
+            file_movie_id,
+            file_candidate_ids,
+            file_version_ids,
+            file_ids_by_ref,
+            approved_by=approved_by,
+            radarr_clients=radarr_clients,
+        )
 
     # Handle version candidates not routable to any arr instance via media server
     if unmatched_version_candidates:
@@ -8877,6 +9436,19 @@ async def _delete_movie_candidates(
                                 for version_id in delete_target_version_ids
                                 if version_id is not None
                             }
+                            # Radarr removed files, not rows. A file indexed in
+                            # two libraries has a row per library, and leaving
+                            # the twin behind would strand a row pointing at
+                            # nothing and stop the movie from being soft-removed
+                            # once its last file is gone.
+                            if concrete_delete_target_version_ids:
+                                concrete_delete_target_version_ids = (
+                                    _expand_to_physical_siblings(
+                                        concrete_delete_target_version_ids,
+                                        version_info_by_movie.get(movie.id, {}),
+                                        move_path_mappings,
+                                    )
+                                )
                             if is_whole_movie:
                                 event_versions: list[MovieVersion | None] = [
                                     v for v in movie.versions if v.path
@@ -9953,7 +10525,7 @@ async def _delete_season_candidates(
                 .scalars()
                 .all()
             )
-        ordered_refs = _order_series_arr_refs(
+        ordered_refs, proven_ref_ids = _order_series_arr_refs(
             refs,
             [season.path, *(season.episode_paths or [])],
             path_mappings,
@@ -9968,6 +10540,15 @@ async def _delete_season_candidates(
                 for ref in ordered_refs
                 if ref.service_config_id in allowed_config_ids
             ]
+        if _unprovable_series_arr_route(ordered_refs, proven_ref_ids):
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                "Could not tell which Sonarr instance holds this season - the "
+                "series exists in more than one and no path matched. Add a path "
+                "mapping, or set the rule's Sonarr instance, so the right copy "
+                "is removed",
+            )
+            continue
         last_sonarr_error: str | None = None
 
         for ref in ordered_refs:
@@ -10090,6 +10671,21 @@ async def _delete_season_candidates(
             if deleted_via_sonarr:
                 break
 
+        # A surviving copy in another Sonarr changes what is safe to do next:
+        # the media-server item and the season record are both shared between
+        # the copies, so neither may be removed on the strength of one delete.
+        season_kept_by_other_copy = False
+        if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
+            season_kept_by_other_copy = await _season_held_by_another_sonarr(
+                refs, sonarr_ref_config_id, season_number
+            )
+            if season_kept_by_other_copy:
+                LOG.info(
+                    f"Kept the season record for '{series_obj.title}' "
+                    f"S{season_number:02d} - another Sonarr instance still has "
+                    "files for it. The next sync will refresh its size and paths."
+                )
+
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
             season_paths = (
                 [season.path] if season.path else list(season.episode_paths or [])
@@ -10097,7 +10693,13 @@ async def _delete_season_candidates(
             await _reconcile_media_server_after_delete(
                 item_id=_season_media_server_id(season, _main_media_server_type()),
                 paths=season_paths,
-                allow_delete_item=media_server_fallback_enabled,
+                # The stored item id belongs to whichever copy won the sync, so
+                # with another copy still on disk a media-server delete could
+                # take the wrong one - and on Plex that removes its files too.
+                # A path re-scan is read-only and corrects the library either way.
+                allow_delete_item=(
+                    media_server_fallback_enabled and not season_kept_by_other_copy
+                ),
                 context=f"season cleanup '{series_obj.title}' S{season_number:02d}",
             )
 
@@ -10224,11 +10826,16 @@ async def _delete_season_candidates(
                     if series_db and series_db.size:
                         series_db.size = max(0, series_db.size - season.size)
 
-                # delete the season row so it doesn't show stale data
+                # delete the season row so it doesn't show stale data, unless a
+                # second copy of this series still has files - the row is shared
+                # between them, so dropping it would discard the survivor's data
+                # and its protections.
                 result = await db.execute(
                     select(Season).where(Season.id == candidate.season_id)
                 )
                 season_db = result.scalar_one_or_none()
+                if season_db and season_kept_by_other_copy:
+                    season_db = None
                 if season_db:
                     await db.execute(
                         delete(ReclaimCandidate).where(
@@ -10466,7 +11073,7 @@ async def _delete_episode_candidates(
                 .scalars()
                 .all()
             )
-        ordered_refs = _order_series_arr_refs(
+        ordered_refs, proven_ref_ids = _order_series_arr_refs(
             refs,
             [episode.path, season.path, *(season.episode_paths or [])],
             path_mappings,
@@ -10481,6 +11088,15 @@ async def _delete_episode_candidates(
                 for ref in ordered_refs
                 if ref.service_config_id in allowed_config_ids
             ]
+        if _unprovable_series_arr_route(ordered_refs, proven_ref_ids):
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                "Could not tell which Sonarr instance holds this episode - the "
+                "series exists in more than one and no path matched. Add a path "
+                "mapping, or set the rule's Sonarr instance, so the right copy "
+                "is removed",
+            )
+            continue
 
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
