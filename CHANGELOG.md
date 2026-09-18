@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed the rule editor rejecting a cleared auto-delete delay as invalid. Leaving the field blank now restores the server's default review period after a custom delay has been set.
 - Fixed a movie indexed by two libraries being undeletable. The same file reported twice looked like two versions, so a rule scoped to one library appeared to select only half of them and the delete was refused as unsafe. Reclaimerr now recognizes the records as one file: deleting it removes every record naming it, its size is counted once instead of twice, and protecting either record protects the file, so the other copy can no longer be deleted out from under it.
 - Fixed episodes lingering in Reclaimerr after a season was emptied. A season folder outlives its last episode, so the media server kept reporting the season while reporting nothing inside it, and the episode records - along with the candidates and protections attached to them - were never cleaned up.
 - An emptied season folder is no longer flagged as a cleanup candidate. There is no space to reclaim, so the deletion could only ever fail.
