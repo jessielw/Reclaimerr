@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Task logs are written once, not twice. The helper no longer opens `reclaimerr.log` itself; its lines are tagged `[task-child]` and keep the level they were logged at.
 - The helper honors your configured log level. It was always logging at Debug, so heavy tasks filled the log with Debug lines even on Info.
+- Updated numerous dependencies.
 
 ## [0.4.7] - 2026-09-18
 
