@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Reclaimerr can now send notifications by email through a mail server you configure once for the whole instance. Set it up under **Settings - Notifications - Email server (SMTP)**, and users can then add an **Email** destination that goes to their account email address, with no Apprise URL to write. A user can still send to a different address if they want to, and the per-notification-type switches and formatting options work exactly as they do for any other destination. After saving the server settings, **Enable for remaining** creates a destination for every user who has an email address and does not already have one; each of them can edit or delete it afterwards, and running it again never changes a destination someone has already set up.
 
+### Fixed
+
+- Heavy tasks no longer fail when the helper process they run in cannot start. Reclaimerr now recognizes that the task never began, logs the reason once, and runs it directly instead until you restart. Affects **Sync Media**, **Scan Cleanup Candidates**, and the IMDb and AniList rating refreshes.
+- A failed task now says why. The error carries the helper's exit code and its last output, instead of only "completed without a result payload".
+
+### Changed
+
+- Task logs are written once, not twice. The helper no longer opens `reclaimerr.log` itself; its lines are tagged `[task-child]` and keep the level they were logged at.
+- The helper honors your configured log level. It was always logging at Debug, so heavy tasks filled the log with Debug lines even on Info.
+
 ## [0.4.7] - 2026-09-18
 
 ### Added
