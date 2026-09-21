@@ -46,6 +46,27 @@ class RulePreviewRequest(BaseModel):
     per_page: int = Field(default=25, ge=1, le=100)
 
 
+class QualityProfileLookupResponse(BaseModel):
+    """One Arr quality profile, as offered in the rule action editor."""
+
+    service_config_id: int
+    service_name: str | None = None
+    id: int
+    name: str
+
+
+class QualityProfileLookupError(BaseModel):
+    service_config_id: int
+    service_name: str | None = None
+    message: str
+
+
+class QualityProfileLookup(BaseModel):
+    profiles: list[QualityProfileLookupResponse]
+    # instances that did not answer; the profiles above are still usable
+    errors: list[QualityProfileLookupError]
+
+
 class SeerrUserLookupResponse(BaseModel):
     # The instance-qualified identity a rule stores. `id` beside it is what that
     # Seerr calls the user, which is what its own UI shows.

@@ -28,6 +28,7 @@ LifecycleEventType = Literal[
     "candidate.moved",
     "candidate.unmonitored",
     "candidate.unmonitored_only",
+    "candidate.profile_changed",
     "protection.created",
     "protection.removed",
 ]

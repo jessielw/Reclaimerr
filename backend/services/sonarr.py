@@ -17,7 +17,7 @@ from tenacity import (
 
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
-from backend.models.media import ArrTag
+from backend.models.media import ArrQualityProfile, ArrTag
 from backend.models.services.health import HealthResult
 from backend.models.services.sonarr import SonarrSeason, SonarrSeries
 
@@ -255,7 +255,10 @@ class SonarrClient:
                 {
                     "path": path,
                     "free_space": as_int(entry.get("freeSpace")) or 0,
+                    # 0 when the mount does not report a total, which some
+                    # network and remote volumes do
                     "total_space": as_int(entry.get("totalSpace")) or 0,
+                    "label": _as_optional_str(entry.get("label")) or "",
                 }
             )
         return disk_space
@@ -470,6 +473,58 @@ class SonarrClient:
             timeout=60,
             error_context=f"Failed to unmonitor series {series_ids} via Sonarr",
         )
+
+    async def get_quality_profiles(self) -> list[ArrQualityProfile]:
+        """Get all quality profiles from Sonarr."""
+        _, data = await self._make_request("GET", "qualityprofile")
+        if not isinstance(data, list):
+            return []
+        profiles: list[ArrQualityProfile] = []
+        for entry in data:
+            if not isinstance(entry, Mapping):
+                continue
+            profile_id = as_int(entry.get("id"))
+            name = _as_optional_str(entry.get("name"))
+            if profile_id is None or not name:
+                continue
+            profiles.append(ArrQualityProfile(id=profile_id, name=name))
+        return profiles
+
+    async def set_series_quality_profile(
+        self, series_ids: list[int], quality_profile_id: int
+    ) -> None:
+        """Move series onto a different quality profile, leaving files in place.
+
+        A Sonarr quality profile is set on the series, not the season, so this
+        affects every season the series holds.
+        """
+        if not series_ids:
+            return
+        await self._make_request(
+            "PUT",
+            "series/editor",
+            json={
+                "seriesIds": series_ids,
+                "qualityProfileId": quality_profile_id,
+            },
+            timeout=60,
+            error_context=(
+                f"Failed to set quality profile on series {series_ids} via Sonarr"
+            ),
+        )
+
+    async def search_series(self, series_ids: list[int]) -> None:
+        """Queue a search so Sonarr can grab releases matching the new profile.
+
+        Sonarr accepts one seriesId per command, so this issues one per series.
+        """
+        for series_id in series_ids:
+            await self._make_request(
+                "POST",
+                "command",
+                json={"name": "SeriesSearch", "seriesId": series_id},
+                error_context=f"Failed to queue a search for series {series_id}",
+            )
 
     async def refresh_series(self, series_ids: list[int]) -> None:
         """Queue a RefreshSeries command so Sonarr re-checks metadata and file status.
