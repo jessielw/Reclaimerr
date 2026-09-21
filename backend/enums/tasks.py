@@ -36,6 +36,15 @@ class CandidateFileOpOperation(StrEnum):
     MOVE = auto()
 
 
+class NotificationChannel(StrEnum):
+    """How a notification destination is delivered."""
+
+    # the stored url is handed to Apprise as-is
+    APPRISE = auto()
+    # the url is built at send time from the instance SMTP settings
+    SYSTEM_EMAIL = auto()
+
+
 class NotificationType(StrEnum):
     NEW_CLEANUP_CANDIDATES = auto()
     REQUEST_APPROVED = auto()
@@ -50,6 +59,7 @@ class NotificationType(StrEnum):
     ADMIN_NEW_PROTECTION_REQUEST = auto()
     ADMIN_REQUEST_CANCELLED = auto()
     ADMIN_DELETE_EXECUTION_FAILED = auto()
+    UPDATE_AVAILABLE = auto()
 
     def is_admin_only(self) -> bool:
         """Check if this notification type is restricted to admins."""
@@ -60,6 +70,7 @@ class NotificationType(StrEnum):
             NotificationType.ADMIN_NEW_PROTECTION_REQUEST,
             NotificationType.ADMIN_REQUEST_CANCELLED,
             NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
+            NotificationType.UPDATE_AVAILABLE,
         }
 
 

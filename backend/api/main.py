@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from backend.api.routes.account import router as account_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.background_jobs import router as background_jobs_router
+from backend.api.routes.calendar import router as calendar_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.delete_requests import router as delete_requests_router
 from backend.api.routes.info import router as info_router
@@ -27,6 +28,7 @@ from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
 from backend.api.routes.settings import router as settings_router
 from backend.api.routes.setup import router as setup_router
+from backend.api.routes.storage import router as storage_router
 from backend.api.routes.system import router as system_router
 from backend.api.routes.tasks import router as tasks_router
 from backend.api.routes.v1 import router as external_api_router
@@ -187,7 +189,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.4.7",
+    version="0.4.8",
     lifespan=lifespan,
 )
 
@@ -209,6 +211,8 @@ fastapi_app.include_router(setup_router)
 fastapi_app.include_router(info_router)
 fastapi_app.include_router(settings_router)
 fastapi_app.include_router(dashboard_router)
+fastapi_app.include_router(calendar_router)
+fastapi_app.include_router(storage_router)
 fastapi_app.include_router(auth_router)
 fastapi_app.include_router(rules_router)
 fastapi_app.include_router(account_router)

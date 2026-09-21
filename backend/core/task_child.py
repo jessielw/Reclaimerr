@@ -9,6 +9,7 @@ from typing import Any
 from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
 from backend.core.service_manager import service_manager
+from backend.core.settings import settings
 from backend.core.task_process import run_task_with_memory_cleanup
 from backend.database import close_db
 from backend.enums import Task
@@ -26,6 +27,10 @@ SERVICE_BOOTSTRAP_TASKS: frozenset[Task] = frozenset(
 
 
 async def run_task_child() -> int:
+    # Nothing here starts the API, which is where the parent applies this, so
+    # without it a child would log everything at the DEBUG default.
+    LOG.set_log_level(settings.log_level_enum)
+
     try:
         raw_request = sys.stdin.readline()
         request = json.loads(raw_request)

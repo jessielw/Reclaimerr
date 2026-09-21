@@ -230,6 +230,14 @@ class ArrTag:
     label: str
 
 
+@dataclass(slots=True, frozen=True)
+class ArrQualityProfile:
+    """A Radarr or Sonarr quality profile, as offered in the rule editor."""
+
+    id: int
+    name: str
+
+
 class MovieVersionResponse(BaseModel):
     """API representation of a single physical file version."""
 

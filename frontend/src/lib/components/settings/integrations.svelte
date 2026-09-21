@@ -38,6 +38,7 @@
     { value: "candidate.moved", label: "Moved" },
     { value: "candidate.unmonitored", label: "Unmonitored" },
     { value: "candidate.unmonitored_only", label: "Unmonitored (file kept)" },
+    { value: "candidate.profile_changed", label: "Quality profile changed" },
     { value: "protection.created", label: "Protection created" },
     { value: "protection.removed", label: "Protection removed" },
   ];

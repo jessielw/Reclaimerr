@@ -16,7 +16,7 @@ from tenacity import (
 
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
-from backend.models.media import ArrTag
+from backend.models.media import ArrQualityProfile, ArrTag
 from backend.models.services.health import HealthResult
 from backend.models.services.radarr import RadarrMovie
 
@@ -222,7 +222,10 @@ class RadarrClient:
                 {
                     "path": path,
                     "free_space": as_int(entry.get("freeSpace")) or 0,
+                    # 0 when the mount does not report a total, which some
+                    # network and remote volumes do
                     "total_space": as_int(entry.get("totalSpace")) or 0,
+                    "label": _as_optional_str(entry.get("label")) or "",
                 }
             )
         return disk_space
@@ -394,6 +397,70 @@ class RadarrClient:
             for updated_movie in data
             if isinstance(updated_movie, Mapping)
         ]
+
+    async def get_quality_profiles(self) -> list[ArrQualityProfile]:
+        """Get all quality profiles from Radarr."""
+        _, data = await self._make_request("GET", "qualityprofile")
+        if not isinstance(data, list):
+            return []
+        profiles: list[ArrQualityProfile] = []
+        for entry in data:
+            if not isinstance(entry, Mapping):
+                continue
+            profile_id = as_int(entry.get("id"))
+            name = _as_optional_str(entry.get("name"))
+            if profile_id is None or not name:
+                continue
+            profiles.append(ArrQualityProfile(id=profile_id, name=name))
+        return profiles
+
+    async def set_movies_quality_profile(
+        self, movie_ids: list[int], quality_profile_id: int
+    ) -> list[RadarrMovie]:
+        """Move movies onto a different quality profile, leaving files in place.
+
+        Args:
+            movie_ids: List of Movie IDs
+            quality_profile_id: Quality profile to apply
+
+        Returns:
+            List of updated movies
+        """
+        if not movie_ids:
+            return []
+
+        status_code, data = await self._make_request(
+            "PUT",
+            "movie/editor",
+            json={
+                "movieIds": movie_ids,
+                "qualityProfileId": quality_profile_id,
+            },
+        )
+
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response setting quality profile on movies {movie_ids} "
+                f"(status: {status_code})"
+            )
+
+        return [
+            build_radarr_movie_from_dict(updated_movie)
+            for updated_movie in data
+            if isinstance(updated_movie, Mapping)
+        ]
+
+    async def search_movies(self, movie_ids: list[int]) -> None:
+        """Queue a search for movies so Radarr can grab a new release."""
+        if not movie_ids:
+            return
+
+        await self._make_request(
+            "POST",
+            "command",
+            json={"name": "MoviesSearch", "movieIds": movie_ids},
+            error_context=f"Failed to queue a search for movies {movie_ids}",
+        )
 
     async def delete_movies(
         self,

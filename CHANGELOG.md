@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] - 2026-09-21
+
+### Added
+
+- Rules can now switch matching media onto a different quality profile instead of removing it. Pick **Change Quality Profile** as the rule's Arr action, choose the profile, and Reclaimerr points the Radarr or Sonarr entry at it when the review period is up, queueing a search so a replacement release can be grabbed. Nothing is deleted, moved or unmonitored. It is available on movie and whole-series rules with exactly one Arr instance selected, since a Sonarr quality profile covers every season and profile IDs are per instance. An item already on the target profile is cleared without another search, and because a profile change frees no space, those candidates no longer inflate the reclaimable totals on the Dashboard and Storage pages.
+- New **Storage** page. It shows every mount your Radarr and Sonarr instances report, with a used/free bar per volume, a per-instance breakdown, your library size by media type, the space cleanup candidates are holding, and everything reclaimed so far split by outcome. A volume reported by more than one instance is counted once, a mount that reports no total is marked rather than guessed at, and an Arr that does not answer is named in a warning instead of failing the page.
+- New **Settings - Logs** tab for admins. Read the application log in the browser, filter it by minimum level or by text, switch to a rotated file, follow it with a 10-second auto refresh, and download any of the files. A traceback stays attached to the line that raised it, and lines from an isolated task helper are marked as such.
+- New **Calendar** page showing when Reclaimerr is due to act on the media it has flagged. Each day carries a count and the space it would reclaim; click one to see the individual items, whether each is a delete or a move, and which have been postponed. Month and week views are available, and deadlines are shown in your own time zone. Existing users with a restricted page list need an admin to grant them the page under **Settings - Users**.
+- Reclaimerr can now tell you when a new release is out. Turn on **Update Available** on any admin destination under **Settings - Notifications**, and you get one message naming the installed and latest versions with a link to the release notes. It is sent once per release, not on every hourly check, and the in-app banner still appears whether or not you enable the notification.
+- Reclaimerr can now send notifications by email through a mail server you configure once for the whole instance. Set it up under **Settings - Notifications - Email server (SMTP)**, and users can then add an **Email** destination that goes to their account email address, with no Apprise URL to write. A user can still send to a different address if they want to, and the per-notification-type switches and formatting options work exactly as they do for any other destination. After saving the server settings, **Enable for remaining** creates a destination for every user who has an email address and does not already have one; each of them can edit or delete it afterwards, and running it again never changes a destination someone has already set up.
+
+### Fixed
+
+- Heavy tasks no longer fail when the helper process they run in cannot start. Reclaimerr now recognizes that the task never began, logs the reason once, and runs it directly instead until you restart. Affects **Sync Media**, **Scan Cleanup Candidates**, and the IMDb and AniList rating refreshes.
+- A failed task now says why. The error carries the helper's exit code and its last output, instead of only "completed without a result payload".
+
+### Changed
+
+- Task logs are written once, not twice. The helper no longer opens `reclaimerr.log` itself; its lines are tagged `[task-child]` and keep the level they were logged at.
+- The helper honors your configured log level. It was always logging at Debug, so heavy tasks filled the log with Debug lines even on Info.
+- Updated numerous dependencies.
+
 ## [0.4.7] - 2026-09-18
 
 ### Added

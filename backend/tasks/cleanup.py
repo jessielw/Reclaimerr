@@ -129,6 +129,7 @@ from backend.services.admin_notices import (
     set_seerr_rule_skip_notice,
     set_sonarr_rule_data_notice,
 )
+from backend.services.arr_disk import load_arr_disk_space
 from backend.services.candidate_lifecycle import reconcile_candidate_schedule_events
 from backend.services.lifecycle_webhooks import (
     dispatch_candidate_file_event,
@@ -183,11 +184,18 @@ __all__ = [
 
 ArrDeleteFallback: TypeAlias = Literal["unmonitor", "unmonitor_only", "remove_if_empty"]
 ArrDeleteAction: TypeAlias = Literal[
-    "delete", "unmonitor", "unmonitor_only", "remove_if_empty"
+    "delete",
+    "unmonitor",
+    "unmonitor_only",
+    "remove_if_empty",
+    "change_quality_profile",
 ]
 # actions that unmonitor the arr entry rather than deleting it outright.
 # "unmonitor_only" additionally skips touching the underlying files.
 UNMONITOR_LIKE_ARR_ACTIONS: frozenset[str] = frozenset({"unmonitor", "unmonitor_only"})
+# Not a removal at all: the entry keeps its files and moves to another quality
+# profile, so it is routed away from the delete pipeline entirely.
+ARR_ACTION_CHANGE_QUALITY_PROFILE = "change_quality_profile"
 SonarrProtectionPreserveKey: TypeAlias = tuple[int, int]
 
 SONARR_UNAIRED_FIELD = "sonarr.latest_season_has_unaired_episodes"
@@ -7239,8 +7247,10 @@ def _get_arr_action(
     matched_arr_actions = {
         _rule_action(rule).get("arr_action") for _rule_id, rule in matched_rules
     }
-    if "unmonitor_only" in matched_arr_actions:
-        resolved_action: ArrDeleteAction = "unmonitor_only"
+    if ARR_ACTION_CHANGE_QUALITY_PROFILE in matched_arr_actions:
+        resolved_action: ArrDeleteAction = ARR_ACTION_CHANGE_QUALITY_PROFILE
+    elif "unmonitor_only" in matched_arr_actions:
+        resolved_action = "unmonitor_only"
     elif "unmonitor" in matched_arr_actions:
         resolved_action = "unmonitor"
     else:
@@ -7253,6 +7263,31 @@ def _get_arr_action(
         f"configured_fallback={default_behavior})"
     )
     return resolved_action
+
+
+def _quality_profile_target(
+    matched_rule_ids: Sequence[int],
+    rules: dict[int, ReclaimRule],
+) -> tuple[int, bool] | None:
+    """Return (profile id, trigger search) when a matched rule asks for a swap.
+
+    When several matched rules ask for a profile change, the lowest rule id
+    wins, so the outcome does not depend on dictionary ordering.
+    """
+    for rule_id in sorted(matched_rule_ids):
+        rule = rules.get(rule_id)
+        if rule is None:
+            continue
+        action = _rule_action(rule)
+        if action.get("arr_action") != ARR_ACTION_CHANGE_QUALITY_PROFILE:
+            continue
+        profile_id = action.get("quality_profile_id")
+        if not isinstance(profile_id, int) or isinstance(profile_id, bool):
+            continue
+        if profile_id <= 0:
+            continue
+        return profile_id, action.get("trigger_search") is not False
+    return None
 
 
 def _matched_rule_ids_should_move_instead_of_delete(
@@ -7288,11 +7323,17 @@ def _merge_arr_action(
     """Merge multiple candidate actions for the same parent media.
 
     Precedence is strict, most conservative (files kept) to least:
-    1. ``unmonitor_only`` wins - files are never touched
-    2. ``unmonitor`` wins over delete
-    3. explicit rule ``delete`` beats fallback ``remove_if_empty``
-    4. ``remove_if_empty`` applies only if nothing stronger exists
+    1. ``change_quality_profile`` wins - nothing is removed or unmonitored
+    2. ``unmonitor_only`` wins - files are never touched
+    3. ``unmonitor`` wins over delete
+    4. explicit rule ``delete`` beats fallback ``remove_if_empty``
+    5. ``remove_if_empty`` applies only if nothing stronger exists
     """
+    if (
+        current == ARR_ACTION_CHANGE_QUALITY_PROFILE
+        or candidate_action == ARR_ACTION_CHANGE_QUALITY_PROFILE
+    ):
+        return ARR_ACTION_CHANGE_QUALITY_PROFILE
     if current == "unmonitor_only" or candidate_action == "unmonitor_only":
         return "unmonitor_only"
     if current == "unmonitor" or candidate_action == "unmonitor":
@@ -8120,47 +8161,8 @@ def _unprovable_series_arr_route(
 
 
 async def _load_arr_disk_space() -> list[dict[str, Any]]:
-    """Fetch disk space from all configured Radarr/Sonarr instances.
-
-    Each entry retains its service type and config ID so scoped path mappings
-    and provider-specific rule targets can be resolved without conflating two
-    Arr instances that happen to expose the same container path.
-    """
-    radarr_clients = service_manager.radarr_clients()
-    if not radarr_clients and service_manager.radarr:
-        radarr_clients = {0: service_manager.radarr}
-    sonarr_clients = service_manager.sonarr_clients()
-    if not sonarr_clients and service_manager.sonarr:
-        sonarr_clients = {0: service_manager.sonarr}
-
-    result: list[dict[str, Any]] = []
-
-    client_groups = (
-        (Service.RADARR, radarr_clients),
-        (Service.SONARR, sonarr_clients),
-    )
-    for service_type, clients in client_groups:
-        for config_id, client in clients.items():
-            try:
-                for entry in await client.get_disk_space():
-                    path = str(entry.get("path", "") or "")
-                    if not path:
-                        continue
-                    result.append(
-                        {
-                            **entry,
-                            "path": path,
-                            "service_type": service_type.value,
-                            "service_config_id": config_id,
-                        }
-                    )
-            except Exception as exc:
-                LOG.debug(
-                    f"Could not load {service_type.value} disk-space data "
-                    f"for config {config_id}: {exc}"
-                )
-
-    return sorted(result, key=lambda e: -len(str(e.get("path") or "")))
+    """Mount entries from every reachable Arr, for the rule engine's disk fields."""
+    return (await load_arr_disk_space()).entries
 
 
 async def _best_effort_radarr_rescan(
@@ -11833,12 +11835,20 @@ async def _delete_specific_candidates_impl(
                 .all()
             }
 
+    # A profile change removes nothing, so it is routed out before the
+    # move/delete split rather than being treated as a gentler delete.
+    profile_ids = {
+        candidate_id
+        for candidate_id, _media_type, rule_ids in rows
+        if _quality_profile_target(rule_ids or [], rules_by_id) is not None
+    }
     move_ids = {
         candidate_id
         for candidate_id, _media_type, rule_ids in rows
-        if _matched_rule_ids_should_move_instead_of_delete(rule_ids or [], rules_by_id)
+        if candidate_id not in profile_ids
+        and _matched_rule_ids_should_move_instead_of_delete(rule_ids or [], rules_by_id)
     }
-    delete_ids = found_ids - move_ids
+    delete_ids = found_ids - move_ids - profile_ids
     delete_restrict = frozenset(delete_ids)
     delete_ids_by_type: dict[MediaType, set[int]] = {}
     for candidate_id, media_type, _rule_ids in rows:
@@ -11848,13 +11858,21 @@ async def _delete_specific_candidates_impl(
 
     LOG.info(
         f"Manual deletion of {len(found_ids)} candidate(s) requested "
-        f"({len(move_ids)} move-routed, {len(delete_ids)} delete-routed, "
+        f"({len(move_ids)} move-routed, {len(profile_ids)} profile-routed, "
+        f"{len(delete_ids)} delete-routed, "
         f"movies={MediaType.MOVIE in types}, series={MediaType.SERIES in types})"
     )
 
     # a leftover error from an earlier attempt would suppress this attempt's
     # diagnosis, so every candidate starts this run with a blank error
-    await _reset_candidate_delete_errors(delete_ids)
+    await _reset_candidate_delete_errors(delete_ids | profile_ids)
+
+    profile_changed = 0
+    profile_failed = 0
+    if profile_ids:
+        profile_changed, profile_failed = await _change_quality_profile_candidates(
+            list(profile_ids), rules_by_id, approved_by=approved_by
+        )
 
     moved = 0
     move_failed = 0
@@ -11891,12 +11909,260 @@ async def _delete_specific_candidates_impl(
             )
 
     delete_failed = max(0, len(delete_ids) - delete_deleted)
-    failed = move_failed + delete_failed
+    failed = move_failed + delete_failed + profile_failed
     if delete_failed:
         await _diagnose_unhandled_delete_failures(delete_ids)
-    processed = moved + delete_deleted
+    processed = moved + delete_deleted + profile_changed
     LOG.info(f"Manual deletion complete: {processed} processed, {failed} failed")
     return processed, failed
+
+
+def _current_quality_profile_id(raw: Mapping[str, Any] | None) -> int | None:
+    """Read qualityProfileId off an Arr record, if it carried one."""
+    if not raw:
+        return None
+    value = raw.get("qualityProfileId")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+async def _change_quality_profile_candidates(
+    candidate_ids: list[int],
+    rules_by_id: dict[int, ReclaimRule],
+    *,
+    approved_by: str = "system",
+) -> tuple[int, int]:
+    """Move matching media onto another quality profile instead of removing it.
+
+    Nothing is deleted, unmonitored or relocated: the Arr entry keeps its files
+    and is pointed at a different profile, optionally with a search queued so a
+    replacement release can be grabbed.
+
+    An entry already sitting on the target profile is resolved without another
+    write or search. Without that the item would keep matching its rule, be
+    re-flagged on the next scan, and be searched again on every pass.
+
+    Returns (changed_count, failed_count).
+    """
+    if not candidate_ids:
+        return 0, 0
+
+    async with async_db() as db:
+        rows = (
+            await db.execute(
+                select(
+                    ReclaimCandidate,
+                    Movie.title.label("movie_title"),
+                    Movie.tmdb_id.label("movie_tmdb_id"),
+                    Movie.size.label("movie_size"),
+                    Series.title.label("series_title"),
+                    Series.tmdb_id.label("series_tmdb_id"),
+                    Series.size.label("series_size"),
+                )
+                .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
+                .outerjoin(Series, ReclaimCandidate.series_id == Series.id)
+                .where(ReclaimCandidate.id.in_(candidate_ids))
+            )
+        ).all()
+
+        movie_ids = [
+            row.ReclaimCandidate.movie_id
+            for row in rows
+            if row.ReclaimCandidate.movie_id is not None
+        ]
+        series_ids = [
+            row.ReclaimCandidate.series_id
+            for row in rows
+            if row.ReclaimCandidate.series_id is not None
+        ]
+        movie_refs: dict[int, list[tuple[int, int]]] = {}
+        if movie_ids:
+            for media_id, config_id, arr_id in (
+                await db.execute(
+                    select(
+                        MovieArrRef.movie_id,
+                        MovieArrRef.service_config_id,
+                        MovieArrRef.arr_movie_id,
+                    ).where(MovieArrRef.movie_id.in_(movie_ids))
+                )
+            ).all():
+                movie_refs.setdefault(media_id, []).append((config_id, arr_id))
+        series_refs: dict[int, list[tuple[int, int]]] = {}
+        if series_ids:
+            for media_id, config_id, arr_id in (
+                await db.execute(
+                    select(
+                        SeriesArrRef.series_id,
+                        SeriesArrRef.service_config_id,
+                        SeriesArrRef.arr_series_id,
+                    ).where(SeriesArrRef.series_id.in_(series_ids))
+                )
+            ).all():
+                series_refs.setdefault(media_id, []).append((config_id, arr_id))
+
+    radarr_clients = service_manager.radarr_clients()
+    if not radarr_clients and service_manager.radarr:
+        radarr_clients = {0: service_manager.radarr}
+    sonarr_clients = service_manager.sonarr_clients()
+    if not sonarr_clients and service_manager.sonarr:
+        sonarr_clients = {0: service_manager.sonarr}
+
+    # one listing per instance, reused by every candidate it covers
+    radarr_profiles_by_config: dict[int, dict[int, int | None]] = {}
+    sonarr_profiles_by_config: dict[int, dict[int, int | None]] = {}
+
+    async def _radarr_current(config_id: int) -> dict[int, int | None]:
+        cached = radarr_profiles_by_config.get(config_id)
+        if cached is None:
+            cached = {
+                movie.id: _current_quality_profile_id(movie.raw)
+                for movie in await radarr_clients[config_id].get_all_movies()
+            }
+            radarr_profiles_by_config[config_id] = cached
+        return cached
+
+    async def _sonarr_current(config_id: int) -> dict[int, int | None]:
+        cached = sonarr_profiles_by_config.get(config_id)
+        if cached is None:
+            cached = {
+                series.id: _current_quality_profile_id(series.raw)
+                for series in await sonarr_clients[config_id].get_all_series()
+            }
+            sonarr_profiles_by_config[config_id] = cached
+        return cached
+
+    changed = 0
+    failed = 0
+    resolved_ids: list[int] = []
+    history_rows: list[ReclaimHistory] = []
+    events: list[dict[str, Any]] = []
+
+    for row in rows:
+        candidate = row.ReclaimCandidate
+        target = _quality_profile_target(candidate.matched_rule_ids or [], rules_by_id)
+        if target is None:
+            failed += 1
+            await _mark_candidate_delete_failure(
+                candidate.id, "No matched rule names a quality profile to switch to"
+            )
+            continue
+        profile_id, trigger_search = target
+
+        is_movie = candidate.media_type is MediaType.MOVIE
+        arr_label = "Radarr" if is_movie else "Sonarr"
+        title = row.movie_title if is_movie else row.series_title
+        tmdb_id = row.movie_tmdb_id if is_movie else row.series_tmdb_id
+        size = row.movie_size if is_movie else row.series_size
+        media_id = candidate.movie_id if is_movie else candidate.series_id
+        clients = radarr_clients if is_movie else sonarr_clients
+
+        refs = (movie_refs if is_movie else series_refs).get(media_id or 0, [])
+        # None means automatic routing: any instance holding the item is fine
+        allowed = _candidate_arr_config_ids(
+            candidate, rules_by_id, "radarr" if is_movie else "sonarr"
+        )
+        if allowed:
+            refs = [ref for ref in refs if ref[0] in allowed]
+        refs = [ref for ref in refs if ref[0] in clients]
+
+        if not refs:
+            failed += 1
+            await _mark_candidate_delete_failure(
+                candidate.id,
+                f"No reachable {arr_label} instance holds this item, so its "
+                "quality profile cannot be changed",
+            )
+            continue
+
+        applied = False
+        try:
+            for config_id, arr_id in refs:
+                current = await (
+                    _radarr_current(config_id)
+                    if is_movie
+                    else _sonarr_current(config_id)
+                )
+                if current.get(arr_id) == profile_id:
+                    continue
+                if is_movie:
+                    await radarr_clients[config_id].set_movies_quality_profile(
+                        [arr_id], profile_id
+                    )
+                    if trigger_search:
+                        await radarr_clients[config_id].search_movies([arr_id])
+                else:
+                    await sonarr_clients[config_id].set_series_quality_profile(
+                        [arr_id], profile_id
+                    )
+                    if trigger_search:
+                        await sonarr_clients[config_id].search_series([arr_id])
+                # keep the cache truthful for any sibling candidate in this run
+                current[arr_id] = profile_id
+                applied = True
+        except Exception as exc:
+            failed += 1
+            await _mark_candidate_delete_failure(
+                candidate.id, f"Quality profile change failed: {exc}"
+            )
+            continue
+
+        changed += 1
+        resolved_ids.append(candidate.id)
+        if applied:
+            search_note = "search queued" if trigger_search else "no search"
+            LOG.info(
+                f"Moved '{title}' onto {arr_label} quality profile "
+                f"{profile_id} ({search_note})"
+            )
+        else:
+            LOG.info(
+                f"'{title}' already sits on {arr_label} quality profile "
+                f"{profile_id}; resolving the candidate without another search"
+            )
+        history_rows.append(
+            ReclaimHistory(
+                approved_by=approved_by,
+                media_type=candidate.media_type,
+                tmdb_id=tmdb_id,
+                name=title,
+                size=size,
+                action="profile_changed",
+            )
+        )
+        events.append(
+            {
+                "action": "profile_changed",
+                "media_type": candidate.media_type,
+                "title": title,
+                "tmdb_id": tmdb_id,
+                "candidate_id": candidate.id,
+                "service_type": Service.RADARR if is_movie else Service.SONARR,
+            }
+        )
+
+    if resolved_ids:
+        async with async_db() as db:
+            for resolved in (
+                (
+                    await db.execute(
+                        select(ReclaimCandidate).where(
+                            ReclaimCandidate.id.in_(resolved_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            ):
+                await db.delete(resolved)
+            for history_row in history_rows:
+                db.add(history_row)
+            await db.commit()
+
+    for event in events:
+        await _dispatch_reclaim_event(**event)
+
+    return changed, failed
 
 
 async def move_specific_candidates(

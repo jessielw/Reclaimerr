@@ -35,6 +35,7 @@ from backend.models.dashboard import (
     DashboardServiceSummary,
     DashboardViewer,
 )
+from backend.services.reclaimable import non_reclaiming_candidate_totals
 from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -160,6 +161,15 @@ async def get_dashboard(
     series_count = summary_row.series_count or 0
     movie_size_total = summary_row.movie_size_total or 0
     series_size_total = summary_row.series_size_total or 0
+    # a profile-change candidate leaves its files in place, so its bytes are
+    # not space anyone is going to get back
+    non_reclaiming = await non_reclaiming_candidate_totals(db)
+    movie_size_total = max(
+        0, movie_size_total - non_reclaiming.get(MediaType.MOVIE, (0, 0))[1]
+    )
+    series_size_total = max(
+        0, series_size_total - non_reclaiming.get(MediaType.SERIES, (0, 0))[1]
+    )
     all_movies_size = summary_row.all_movies_size or 0
     all_series_size = summary_row.all_series_size or 0
     pending_requests = summary_row.pending_requests or 0

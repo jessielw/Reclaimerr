@@ -11,6 +11,7 @@ from backend.database.models import User
 from backend.enums import (
     LeavingSoonCollectionSort,
     MediaType,
+    NotificationChannel,
     NotificationType,
     PageAccess,
     Service,
@@ -37,6 +38,48 @@ def _validate_notification_url(url: str) -> None:
             "notification_url",
             "Notification URL must include a scheme (e.g. discord://, https://, ntfy://)",
         )
+
+
+def _validate_email_address(value: str) -> None:
+    """Cheap structural check for an email address.
+
+    Deliberately not a deliverability check: this only rejects the shapes that
+    could never be a recipient, and the SMTP server has the final say.
+    """
+    local, _, domain = value.partition("@")
+    if not local or not domain or "." not in domain or any(c.isspace() for c in value):
+        raise PydanticCustomError(
+            "notification_email",
+            "Enter a valid email address",
+        )
+
+
+def _validate_notification_destination(
+    channel: NotificationChannel,
+    url: str | None,
+    target_email: str | None,
+) -> tuple[str | None, str | None]:
+    """Normalize a destination pair and enforce what the channel requires.
+
+    A system email row has no URL of its own - it is built at send time from the
+    instance SMTP settings - so the URL is dropped rather than validated, and
+    the optional recipient override is checked instead.
+    """
+    cleaned_url = (url or "").strip() or None
+    cleaned_email = (target_email or "").strip() or None
+
+    if channel == NotificationChannel.SYSTEM_EMAIL:
+        if cleaned_email is not None:
+            _validate_email_address(cleaned_email)
+        return None, cleaned_email
+
+    if cleaned_url is None:
+        raise PydanticCustomError(
+            "notification_url",
+            "An Apprise URL is required for this destination",
+        )
+    _validate_notification_url(cleaned_url)
+    return cleaned_url, None
 
 
 class ServiceConfigUpdate(BaseModel):
@@ -110,6 +153,7 @@ def default_notification_preferences() -> dict[str, dict[str, Any]]:
             "detail": "standard"
         },
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED.value: {"detail": "standard"},
+        NotificationType.UPDATE_AVAILABLE.value: {"detail": "standard"},
     }
 
 
@@ -149,6 +193,7 @@ def normalize_notification_preferences(
         NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
         NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED,
+        NotificationType.UPDATE_AVAILABLE,
     ):
         key = notif_type.value
         raw = preferences.get(key)
@@ -167,7 +212,11 @@ class NotificationSettingItem(BaseModel):
     id: int | None = None  # None for new, populated for updates
     enabled: bool = True
     name: str | None = None
-    url: str
+    channel: NotificationChannel = NotificationChannel.APPRISE
+    # required for an apprise destination, always null for a system email one
+    url: str | None = None
+    # system email only: recipient override, else the account email is used
+    target_email: str | None = None
     new_cleanup_candidates: bool = False
     request_approved: bool = False
     request_declined: bool = False
@@ -177,6 +226,7 @@ class NotificationSettingItem(BaseModel):
     admin_new_protection_request: bool = False
     admin_request_cancelled: bool = False
     admin_delete_execution_failed: bool = False
+    update_available: bool = False
     delete_request_execution_succeeded: bool = False
     delete_request_execution_failed: bool = False
     preferences: dict[str, dict[str, Any]] = Field(
@@ -185,21 +235,25 @@ class NotificationSettingItem(BaseModel):
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationSettingItem:
-        """Sanitize and validate notification URL."""
-        self.url = self.url.strip()
-        _validate_notification_url(self.url)
+        """Sanitize and validate the destination for this channel."""
+        self.url, self.target_email = _validate_notification_destination(
+            self.channel, self.url, self.target_email
+        )
         self.preferences = normalize_notification_preferences(self.preferences)
         return self
 
 
 class NotificationTestRequest(BaseModel):
-    url: str
+    channel: NotificationChannel = NotificationChannel.APPRISE
+    url: str | None = None
+    target_email: str | None = None
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationTestRequest:
-        """Sanitize and validate notification URL."""
-        self.url = self.url.strip()
-        _validate_notification_url(self.url)
+        """Sanitize and validate the destination for this channel."""
+        self.url, self.target_email = _validate_notification_destination(
+            self.channel, self.url, self.target_email
+        )
         return self
 
 
@@ -547,3 +601,88 @@ class OIDCTestResponse(BaseModel):
     token_endpoint: str | None = None
     jwks_uri: str | None = None
     userinfo_endpoint: str | None = None
+
+
+class SMTPSettingsResponse(BaseModel):
+    """Instance SMTP configuration, never carrying the password itself."""
+
+    enabled: bool = False
+    host: str = ""
+    port: int = Field(default=587, ge=1, le=65535)
+    security: Literal["starttls", "ssl", "insecure"] = "starttls"
+    username: str = ""
+    from_address: str = ""
+    from_name: str = "Reclaimerr"
+    reply_to: str | None = None
+    password_configured: bool = False
+    updated_at: datetime | None = None
+
+
+class SMTPSettingsUpdate(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = Field(default=587, ge=1, le=65535)
+    security: Literal["starttls", "ssl", "insecure"] = "starttls"
+    username: str = ""
+    password: str | None = None  # None = keep existing password
+    from_address: str = ""
+    from_name: str = "Reclaimerr"
+    reply_to: str | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> SMTPSettingsUpdate:
+        self.host = self.host.strip()
+        self.username = self.username.strip()
+        self.password = (
+            self.password.strip() if self.password is not None else None
+        ) or None
+        self.from_address = self.from_address.strip()
+        self.from_name = self.from_name.strip() or "Reclaimerr"
+        self.reply_to = (
+            self.reply_to.strip() if self.reply_to is not None else None
+        ) or None
+
+        # Only validate addresses that were actually supplied; a disabled,
+        # half-filled row is a legitimate saved draft.
+        if self.from_address:
+            _validate_email_address(self.from_address)
+        if self.reply_to:
+            _validate_email_address(self.reply_to)
+        return self
+
+
+class SMTPTestRequest(BaseModel):
+    """Test the supplied settings without saving them."""
+
+    settings: SMTPSettingsUpdate
+    # defaults to the requesting admin's own account email
+    to: str | None = None
+
+    @model_validator(mode="after")
+    def sanitize_fields(self) -> SMTPTestRequest:
+        self.to = (self.to.strip() if self.to is not None else None) or None
+        if self.to:
+            _validate_email_address(self.to)
+        return self
+
+
+class SMTPCoverageResponse(BaseModel):
+    """How many users the instance could email, for the bulk enable control."""
+
+    total_users: int = 0
+    with_email: int = 0
+    already_enabled: int = 0
+    eligible: int = 0
+
+
+class SMTPEnableAllResponse(BaseModel):
+    created: int = 0
+    skipped_no_email: int = 0
+
+
+class NotificationEmailStatus(BaseModel):
+    """Whether the signed-in user can add a system email destination."""
+
+    available: bool = False
+    account_email: str | None = None
+    already_configured: bool = False

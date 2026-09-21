@@ -4,8 +4,16 @@ import asyncio
 import json
 from io import StringIO
 
+import pytest
+
 from backend.core import task_child, task_process
 from backend.enums import Task
+
+
+@pytest.fixture(autouse=True)
+def reset_isolation_state(monkeypatch):
+    """Keep the sticky "isolation is broken" flag from leaking between tests."""
+    monkeypatch.setattr(task_process, "_isolation_unavailable", False)
 
 
 def test_should_isolate_heavy_task_by_default(monkeypatch) -> None:
@@ -58,7 +66,9 @@ def test_delete_task_child_bootstraps_services_before_execution(monkeypatch) -> 
     async def load_services() -> None:
         events.append("bootstrap")
 
-    async def run_task(task: Task, service_config_id: int | None = None) -> dict[str, int]:
+    async def run_task(
+        task: Task, service_config_id: int | None = None
+    ) -> dict[str, int]:
         assert task is Task.DELETE_CLEANUP_CANDIDATES
         assert service_config_id is None
         events.append("execute")
@@ -270,9 +280,7 @@ def test_task_child_forwards_the_scoped_service_config(monkeypatch) -> None:
         seen.append(service_config_id)
         return None
 
-    request = json.dumps(
-        {"task": Task.SYNC_LINKED_DATA.value, "service_config_id": 4}
-    )
+    request = json.dumps({"task": Task.SYNC_LINKED_DATA.value, "service_config_id": 4})
     monkeypatch.setattr(task_child.sys, "stdin", StringIO(request + "\n"))
     monkeypatch.setattr(task_child, "load_enabled_services", _noop)
     monkeypatch.setattr(task_child, "run_task_with_memory_cleanup", run_task)
@@ -283,3 +291,94 @@ def test_task_child_forwards_the_scoped_service_config(monkeypatch) -> None:
 
     assert asyncio.run(task_child.run_task_child()) == 0
     assert seen == [4]
+
+
+def _silent_child(_task, _request, _env, _command):
+    raise task_process.TaskIsolationUnavailable(
+        "reclaimerr.exe --task-child exited with code 0 "
+        "without writing anything to stdout or stderr"
+    )
+
+
+def test_silent_child_falls_back_to_inline_and_stops_isolating(monkeypatch) -> None:
+    """A child that never ran the task must not fail a job that never started."""
+    monkeypatch.delenv(task_process.TASK_CHILD_ENV, raising=False)
+    monkeypatch.delenv(task_process.TASK_ISOLATION_ENV, raising=False)
+
+    async def inline_fallback(task: Task, _service_config_id: int | None = None):
+        return {"task": task.value, "inline": True}
+
+    monkeypatch.setattr(task_process.os, "name", "nt")
+    monkeypatch.setattr(task_process, "_run_task_in_blocking_subprocess", _silent_child)
+    monkeypatch.setattr(task_process, "run_task_with_memory_cleanup", inline_fallback)
+
+    result = asyncio.run(task_process.run_task_in_subprocess(Task.IMDB_RATINGS_REFRESH))
+
+    assert result == {"task": Task.IMDB_RATINGS_REFRESH.value, "inline": True}
+    # every later task skips the doomed spawn instead of repeating it
+    assert task_process.should_isolate_task(Task.IMDB_RATINGS_REFRESH) is False
+
+
+def test_silent_child_is_reported_as_isolation_being_unavailable() -> None:
+    with pytest.raises(task_process.TaskIsolationUnavailable) as excinfo:
+        task_process._evaluate_child_outcome(
+            Task.SYNC_MEDIA,
+            ["reclaimerr.exe", task_process.TASK_CHILD_ARG],
+            0,
+            [],
+            [],
+        )
+
+    message = str(excinfo.value)
+    assert "reclaimerr.exe --task-child" in message
+    assert "exited with code 0" in message
+
+
+def test_failed_child_error_carries_exit_code_and_stderr() -> None:
+    with pytest.raises(RuntimeError) as excinfo:
+        task_process._evaluate_child_outcome(
+            Task.SYNC_MEDIA,
+            ["python", "-m", "backend.core.task_child"],
+            3,
+            [],
+            ["MemoryError: out of memory"],
+        )
+
+    message = str(excinfo.value)
+    assert not isinstance(excinfo.value, task_process.TaskIsolationUnavailable)
+    assert "exit code 3" in message
+    assert "MemoryError: out of memory" in message
+
+
+def test_child_that_logged_but_returned_nothing_is_not_retried_inline() -> None:
+    """It may already have done the work, so re-running it inline could double up."""
+    with pytest.raises(RuntimeError) as excinfo:
+        task_process._evaluate_child_outcome(
+            Task.SYNC_MEDIA,
+            ["python", "-m", "backend.core.task_child"],
+            0,
+            [],
+            ["child log line"],
+        )
+
+    message = str(excinfo.value)
+    assert not isinstance(excinfo.value, task_process.TaskIsolationUnavailable)
+    assert "0 stdout line(s)" in message
+    assert "last child output: child log line" in message
+
+
+def test_refused_spawn_is_reported_as_isolation_being_unavailable(monkeypatch) -> None:
+    def refuse_to_spawn(*_args, **_kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(task_process.subprocess, "Popen", refuse_to_spawn)
+
+    with pytest.raises(task_process.TaskIsolationUnavailable) as excinfo:
+        task_process._run_task_in_blocking_subprocess(
+            Task.IMDB_RATINGS_REFRESH,
+            b'{"task":"imdb_ratings_refresh"}',
+            {},
+            ["python", "-m", "backend.core.task_child"],
+        )
+
+    assert "could not be started" in str(excinfo.value)

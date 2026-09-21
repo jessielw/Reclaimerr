@@ -15,6 +15,9 @@ Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect
 | Feature | What It Gives You |
 | --- | --- |
 | Leaving Soon | Named, auto-synced collections for items that are approaching removal, with optional custom poster art, optionally ordered by deadline on Plex |
+| Calendar | Month and week views of when flagged media is due to be deleted or moved, with per-day counts and reclaimable space |
+| Storage | Disk capacity per mount and per Arr instance, library size, reclaimable space, and reclaimed totals by outcome |
+| Logs | Read, filter, follow, and download the application log from Settings |
 | Scheduled tasks | Automated sync, scanning, and optional deletion workflows |
 | Protection flow | Keep items out of deletion while a request is pending or approved |
 | Reclaim history | Audit what happened, when it happened, and who approved it |

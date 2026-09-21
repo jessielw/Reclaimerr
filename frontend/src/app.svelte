@@ -16,6 +16,8 @@
   import Series from "./routes/series.svelte";
   import Protected from "./routes/protected.svelte";
   import Candidates from "./routes/candidates.svelte";
+  import Calendar from "./routes/calendar.svelte";
+  import Storage from "./routes/storage.svelte";
   import History from "./routes/history.svelte";
   import Rules from "./routes/rules.svelte";
   import Settings from "./routes/settings.svelte";
@@ -46,6 +48,8 @@
     "/protected": route(Protected),
     "/requests": route(Requests),
     "/candidates": route(Candidates),
+    "/calendar": route(Calendar),
+    "/storage": route(Storage),
     "/history": route(History),
     "/rules": route(Rules),
     "/settings": route(Settings),

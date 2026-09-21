@@ -12,6 +12,7 @@ from .tasks import (
     BackgroundJobStatus,
     BackgroundJobType,
     CandidateFileOpOperation,
+    NotificationChannel,
     NotificationType,
     ScheduleType,
     Task,
@@ -39,6 +40,7 @@ __all__ = [
     "CandidateFileOpOperation",
     "ScheduleType",
     "Task",
+    "NotificationChannel",
     "NotificationType",
     # services
     "SeerrRequestStatus",

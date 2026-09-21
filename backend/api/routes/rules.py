@@ -32,6 +32,7 @@ from backend.core.rule_engine import (
     normalize_rule_target,
     validate_rule_definition,
 )
+from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.language import language_name, normalize_language
 from backend.core.utils.misc import normalize_genre_names, normalize_name_list
@@ -72,6 +73,9 @@ from backend.models.rules import (
     PaginatedMetadataValuesResponse,
     PaginatedMovieCollectionsResponse,
     PlaybackUserLookupResponse,
+    QualityProfileLookup,
+    QualityProfileLookupError,
+    QualityProfileLookupResponse,
     RulePreviewRequest,
     SeerrUserLookupResponse,
     ValidatePathCondition,
@@ -119,6 +123,16 @@ def _media_type_for_target(target_scope: str | None, fallback: MediaType) -> Med
     return fallback
 
 
+# What a rule may ask the Arr to do once a candidate's review period is up.
+ARR_ACTION_CHANGE_QUALITY_PROFILE = "change_quality_profile"
+VALID_ARR_ACTIONS = frozenset(
+    {"delete", "unmonitor", "unmonitor_only", ARR_ACTION_CHANGE_QUALITY_PROFILE}
+)
+# A Sonarr quality profile belongs to the series, so a season or episode rule
+# asking for one would silently re-profile the whole show.
+QUALITY_PROFILE_SCOPES = frozenset({TARGET_MOVIE_VERSION, TARGET_SERIES})
+
+
 def _action_or_default(action: dict[str, Any] | None) -> dict[str, Any]:
     """Return the action dictionary with default values applied."""
     return {
@@ -131,6 +145,8 @@ def _action_or_default(action: dict[str, Any] | None) -> dict[str, Any]:
         "auto_delete_enabled": False,
         "auto_delete_delay_days": None,
         "move_instead_of_delete": False,
+        "quality_profile_id": None,
+        "trigger_search": True,
         "radarr_service_config_id": None,
         "sonarr_service_config_id": None,
         **(action or {}),
@@ -184,6 +200,36 @@ def _normalize_rule_action(
     normalized["arr_tag"] = _slugify_rule_tag(
         str(normalized.get("arr_tag") or rule_name)
     )
+    arr_action = str(normalized.get("arr_action") or "delete")
+    if arr_action not in VALID_ARR_ACTIONS:
+        raise ValueError(
+            f"arr_action must be one of {', '.join(sorted(VALID_ARR_ACTIONS))}"
+        )
+    normalized["arr_action"] = arr_action
+    if arr_action == ARR_ACTION_CHANGE_QUALITY_PROFILE:
+        if target_scope not in QUALITY_PROFILE_SCOPES:
+            raise ValueError(
+                "Changing the quality profile is only available on movie and "
+                "whole-series rules, because a Sonarr quality profile applies "
+                "to every season of a series"
+            )
+        profile_id = normalized.get("quality_profile_id")
+        if (
+            not isinstance(profile_id, int)
+            or isinstance(profile_id, bool)
+            or profile_id <= 0
+        ):
+            raise ValueError(
+                "Changing the quality profile requires the profile to switch to"
+            )
+        normalized["quality_profile_id"] = profile_id
+        normalized["trigger_search"] = normalized.get("trigger_search") is not False
+        # nothing is removed or relocated, so the delete-side settings do not apply
+        normalized["media_server_action"] = None
+        normalized["move_instead_of_delete"] = False
+    else:
+        normalized["quality_profile_id"] = None
+        normalized["trigger_search"] = False
     normalize_arr_service_config_ids(normalized, "radarr")
     normalize_arr_service_config_ids(normalized, "sonarr")
     if target_scope == TARGET_MOVIE_VERSION:
@@ -200,6 +246,8 @@ def _normalize_rule_action(
         normalized["auto_delete_enabled"] = False
         normalized["auto_delete_delay_days"] = None
         normalized["move_instead_of_delete"] = False
+        normalized["quality_profile_id"] = None
+        normalized["trigger_search"] = False
         normalized["radarr_service_config_id"] = None
         normalized["sonarr_service_config_id"] = None
         normalized["radarr_service_config_ids"] = []
@@ -639,6 +687,70 @@ async def explain_requester_watch_state(
         season_number=season_number,
         episode_number=episode_number,
     )
+
+
+@router.get("/rules/quality-profiles", response_model=QualityProfileLookup)
+async def get_quality_profiles(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    service: Annotated[Literal["radarr", "sonarr"], Query()],
+    service_config_id: Annotated[int | None, Query(ge=1)] = None,
+) -> QualityProfileLookup:
+    """List the quality profiles a rule can switch matching media onto.
+
+    Profile IDs are per instance, so every profile is returned with the
+    instance it belongs to. An instance that cannot be reached is reported
+    rather than raised, so the rest stay pickable.
+    """
+    service_type = Service.RADARR if service == "radarr" else Service.SONARR
+    clients: dict[int, Any] = (
+        service_manager.radarr_clients()
+        if service_type is Service.RADARR
+        else service_manager.sonarr_clients()
+    )
+    if service_config_id is not None:
+        client = clients.get(service_config_id)
+        clients = {service_config_id: client} if client is not None else {}
+
+    names_by_config_id = {
+        config_id: name
+        for config_id, name in (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.name).where(
+                    ServiceConfig.service_type == service_type
+                )
+            )
+        ).all()
+    }
+
+    profiles: list[QualityProfileLookupResponse] = []
+    errors: list[QualityProfileLookupError] = []
+    for config_id, client in sorted(clients.items()):
+        service_name = names_by_config_id.get(config_id) or service.title()
+        try:
+            for profile in await client.get_quality_profiles():
+                profiles.append(
+                    QualityProfileLookupResponse(
+                        service_config_id=config_id,
+                        service_name=service_name,
+                        id=profile.id,
+                        name=profile.name,
+                    )
+                )
+        except Exception as exc:
+            LOG.warning(
+                f"Could not load {service} quality profiles for config "
+                f"{config_id}: {exc}"
+            )
+            errors.append(
+                QualityProfileLookupError(
+                    service_config_id=config_id,
+                    service_name=service_name,
+                    message=str(exc),
+                )
+            )
+
+    return QualityProfileLookup(profiles=profiles, errors=errors)
 
 
 @router.get("/rules/seerr-users", response_model=list[SeerrUserLookupResponse])
@@ -1159,6 +1271,14 @@ async def create_rule(
     )
     _validate_definition_path_syntax(rule_data.definition)
     _validate_definition_tag_regex_syntax(rule_data.definition)
+    try:
+        action = _normalize_rule_action(
+            rule_data.action, rule_data.name, rule_data.target_scope
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+        ) from e
     new_rule = ReclaimRule(
         name=rule_data.name,
         description=_normalize_rule_description(rule_data.description),
@@ -1166,9 +1286,7 @@ async def create_rule(
         enabled=rule_data.enabled,
         target_scope=rule_data.target_scope,
         definition=rule_data.definition,
-        action=_normalize_rule_action(
-            rule_data.action, rule_data.name, rule_data.target_scope
-        ),
+        action=action,
     )
 
     db.add(new_rule)
@@ -1532,11 +1650,16 @@ async def update_rule(
         or "name" in update_data
         or "target_scope" in update_data
     ):
-        update_data["action"] = _normalize_rule_action(
-            update_data.get("action", rule.action),
-            update_data.get("name", rule.name),
-            update_data.get("target_scope", rule.target_scope),
-        )
+        try:
+            update_data["action"] = _normalize_rule_action(
+                update_data.get("action", rule.action),
+                update_data.get("name", rule.name),
+                update_data.get("target_scope", rule.target_scope),
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+            ) from e
 
     if (
         "definition" in update_data

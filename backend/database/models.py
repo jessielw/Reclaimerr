@@ -181,7 +181,9 @@ class NotificationSetting(Base):
     )
 
     enabled: Mapped[bool] = mapped_column(Boolean)
-    url: Mapped[str] = mapped_column(String(500))
+    # Apprise destination URL, used verbatim. Null on a system_email row, whose
+    # URL is built at send time from SMTPSettings plus the resolved recipient.
+    url: Mapped[str | None] = mapped_column(String(500), default=None)
     name: Mapped[str | None] = mapped_column(String(100), default=None)
 
     # notification types
@@ -201,8 +203,15 @@ class NotificationSetting(Base):
     admin_new_protection_request: Mapped[bool] = mapped_column(Boolean, default=False)
     admin_request_cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
     admin_delete_execution_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    update_available: Mapped[bool] = mapped_column(Boolean, default=False)
     # per notification content preferences (formatting/detail controls)
     preferences: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+
+    # how the row is delivered: "apprise" uses url as given, "system_email"
+    # routes through the instance-wide SMTP server (see backend/services/smtp.py)
+    channel: Mapped[str] = mapped_column(String(16), default="apprise")
+    # system_email only: recipient override, falling back to the account email
+    target_email: Mapped[str | None] = mapped_column(String(255), default=None)
 
     # last updated
     updated_at: Mapped[datetime] = mapped_column(
@@ -448,6 +457,40 @@ class OIDCSettings(Base):
         String(32), default="client_secret_basic"
     )
     redirect_uri_override: Mapped[str | None] = mapped_column(String(500), default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+class SMTPSettings(Base):
+    """Instance-wide SMTP configuration for email notifications (singleton row).
+
+    Lets an admin configure one mail server so users receive notifications at
+    their account email address without having to compose an Apprise mailto://
+    URL themselves. Consumed by backend/services/smtp.py, which turns this row
+    plus a recipient into the URL Apprise actually delivers with.
+    """
+
+    __tablename__ = "smtp_settings"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    host: Mapped[str] = mapped_column(String(255), default="")
+    port: Mapped[int] = mapped_column(Integer, default=587)
+    # mirrors apprise SecureMailMode: "starttls", "ssl" or "insecure"
+    security: Mapped[str] = mapped_column(String(16), default="starttls")
+    # blank username means an unauthenticated relay
+    username: Mapped[str] = mapped_column(String(255), default="")
+    # encrypted at rest with fer_encrypt, like OIDCSettings.client_secret
+    password: Mapped[str] = mapped_column(Text, default="")
+    from_address: Mapped[str] = mapped_column(String(255), default="")
+    from_name: Mapped[str] = mapped_column(String(100), default="Reclaimerr")
+    reply_to: Mapped[str | None] = mapped_column(String(255), default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )

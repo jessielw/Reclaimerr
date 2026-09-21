@@ -38,6 +38,8 @@ export enum PageAccess {
   Requests = "requests",
   Protected = "protected",
   Candidates = "candidates",
+  Calendar = "calendar",
+  Storage = "storage",
   History = "history",
   Settings = "settings",
 }
@@ -116,6 +118,7 @@ export enum SettingsTab {
   UserSignals = "user_signals",
   Tasks = "tasks",
   Notifications = "notifications",
+  Logs = "logs",
   Account = "account",
   Rules = "rules",
   Users = "users",
@@ -179,6 +182,11 @@ export type NotificationPreferences = Record<
   NotificationTypePreference
 >;
 
+export enum NotificationChannel {
+  Apprise = "apprise",
+  SystemEmail = "system_email",
+}
+
 export enum NotificationType {
   NewCleanupCandidates = "new_cleanup_candidates",
   RequestApproved = "request_approved",
@@ -191,6 +199,7 @@ export enum NotificationType {
   AdminDeleteExecutionFailed = "admin_delete_execution_failed",
   DeleteRequestExecutionSucceeded = "delete_request_execution_succeeded",
   DeleteRequestExecutionFailed = "delete_request_execution_failed",
+  UpdateAvailable = "update_available",
 }
 
 export interface PathMapping {
@@ -360,6 +369,7 @@ export type LifecycleEventType =
   | "candidate.moved"
   | "candidate.unmonitored"
   | "candidate.unmonitored_only"
+  | "candidate.profile_changed"
   | "protection.created"
   | "protection.removed";
 
@@ -430,6 +440,37 @@ export interface MetadataProviderStatusResponse {
   last_checked_at: string | null;
   last_successful_refresh_at: string | null;
   last_error: string | null;
+}
+
+export interface SMTPSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  security: "starttls" | "ssl" | "insecure";
+  username: string;
+  from_address: string;
+  from_name: string;
+  reply_to: string | null;
+  password_configured: boolean;
+  updated_at: string | null;
+}
+
+export interface SMTPCoverage {
+  total_users: number;
+  with_email: number;
+  already_enabled: number;
+  eligible: number;
+}
+
+export interface SMTPEnableAllResult {
+  created: number;
+  skipped_no_email: number;
+}
+
+export interface NotificationEmailStatus {
+  available: boolean;
+  account_email: string | null;
+  already_configured: boolean;
 }
 
 export interface OIDCSettings {
@@ -551,15 +592,40 @@ export interface RuleAction {
   candidate: boolean;
   tag_enabled: boolean;
   arr_tag: string | null;
-  arr_action: "delete" | "unmonitor" | "unmonitor_only";
+  arr_action:
+    | "delete"
+    | "unmonitor"
+    | "unmonitor_only"
+    | "change_quality_profile";
   media_server_action: "delete" | null;
   auto_delete_enabled: boolean;
   auto_delete_delay_days: number | null;
   move_instead_of_delete: boolean;
+  /** Only set when arr_action is change_quality_profile. */
+  quality_profile_id: number | null;
+  trigger_search: boolean;
   radarr_service_config_id: number | null;
   sonarr_service_config_id: number | null;
   radarr_service_config_ids: number[];
   sonarr_service_config_ids: number[];
+}
+
+export interface QualityProfileLookupItem {
+  service_config_id: number;
+  service_name: string | null;
+  id: number;
+  name: string;
+}
+
+export interface QualityProfileLookupError {
+  service_config_id: number;
+  service_name: string | null;
+  message: string;
+}
+
+export interface QualityProfileLookup {
+  profiles: QualityProfileLookupItem[];
+  errors: QualityProfileLookupError[];
 }
 
 export enum ScheduleType {
@@ -1373,4 +1439,122 @@ export interface DashboardResponse {
   activity: DashboardActivityItem[];
   viewer: DashboardViewer;
   media_server_configured: boolean;
+}
+
+export interface CalendarItem {
+  candidate_id: number;
+  media_type: string;
+  scope: "movie" | "version" | "series" | "season" | "episode";
+  title: string;
+  year: number | null;
+  media_id: number;
+  movie_version_id: number | null;
+  series_id: number | null;
+  season_id: number | null;
+  episode_id: number | null;
+  estimated_space_bytes: number | null;
+  operation: "delete" | "move";
+  state: string;
+  eligible_at: string;
+}
+
+export interface CalendarDay {
+  /** Local YYYY-MM-DD, bucketed with the offset the client sent. */
+  date: string;
+  item_count: number;
+  total_bytes: number;
+  truncated: boolean;
+  items: CalendarItem[];
+}
+
+export interface CalendarResponse {
+  start: string;
+  end: string;
+  days: CalendarDay[];
+  total_items: number;
+  total_bytes: number;
+}
+
+export interface LogFileInfo {
+  name: string;
+  size_bytes: number;
+  modified_at: string;
+  is_current: boolean;
+}
+
+export interface LogEntryItem {
+  raw: string;
+  message: string;
+  timestamp: string | null;
+  level: string | null;
+  source: string | null;
+  task_child: boolean;
+}
+
+export interface LogTailResponse {
+  file: string;
+  entries: LogEntryItem[];
+  file_size_bytes: number;
+  scan_truncated: boolean;
+  configured_level: string;
+}
+
+export interface StorageMountSource {
+  service_type: string;
+  service_config_id: number;
+  name: string;
+}
+
+export interface StorageMount {
+  path: string;
+  label: string | null;
+  total_bytes: number | null;
+  free_bytes: number | null;
+  used_bytes: number | null;
+  sources: StorageMountSource[];
+}
+
+export interface StorageInstanceUsage {
+  service_type: string;
+  service_config_id: number;
+  name: string;
+  mount_count: number;
+  total_bytes: number;
+  free_bytes: number;
+  used_bytes: number;
+}
+
+export interface StorageLibraryTotals {
+  media_type: string;
+  item_count: number;
+  total_bytes: number;
+}
+
+export interface StorageReclaimable {
+  media_type: string;
+  candidate_count: number;
+  total_bytes: number;
+}
+
+export interface StorageReclaimed {
+  media_type: string;
+  action: string;
+  item_count: number;
+  total_bytes: number;
+}
+
+export interface StorageResponse {
+  mounts: StorageMount[];
+  capacity_total_bytes: number;
+  capacity_free_bytes: number;
+  capacity_used_bytes: number;
+  capacity_incomplete: boolean;
+  instances: StorageInstanceUsage[];
+  libraries: StorageLibraryTotals[];
+  library_total_bytes: number;
+  reclaimable: StorageReclaimable[];
+  reclaimable_total_bytes: number;
+  reclaimed: StorageReclaimed[];
+  reclaimed_total_bytes: number;
+  errors: string[];
 }

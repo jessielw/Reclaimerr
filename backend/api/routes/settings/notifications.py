@@ -10,13 +10,15 @@ from backend.core.auth import require_page_access
 from backend.core.logger import LOG
 from backend.database import get_db
 from backend.database.models import NotificationSetting, User
-from backend.enums import NotificationType, PageAccess, UserRole
+from backend.enums import NotificationChannel, NotificationType, PageAccess, UserRole
 from backend.models.settings import (
+    NotificationEmailStatus,
     NotificationSettingItem,
     NotificationTestRequest,
     normalize_notification_preferences,
 )
-from backend.services.notifications import test_notification_url
+from backend.services.notifications import test_notification_url, test_system_email
+from backend.services.smtp import load_smtp_config
 
 router = APIRouter(tags=["settings", "notifications"])
 
@@ -39,7 +41,9 @@ async def get_notification_settings(
             id=n.id,
             enabled=n.enabled,
             name=n.name,
+            channel=NotificationChannel(n.channel),
             url=n.url,
+            target_email=n.target_email,
             new_cleanup_candidates=n.new_cleanup_candidates,
             request_approved=n.request_approved,
             request_declined=n.request_declined,
@@ -49,6 +53,7 @@ async def get_notification_settings(
             admin_new_protection_request=n.admin_new_protection_request,
             admin_request_cancelled=n.admin_request_cancelled,
             admin_delete_execution_failed=n.admin_delete_execution_failed,
+            update_available=n.update_available,
             delete_request_execution_succeeded=n.delete_request_execution_succeeded,
             delete_request_execution_failed=n.delete_request_execution_failed,
             preferences=normalize_notification_preferences(n.preferences),
@@ -57,16 +62,64 @@ async def get_notification_settings(
     ]
 
 
+@router.get("/notifications/email-status")
+async def get_notification_email_status(
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
+    db: AsyncSession = Depends(get_db),
+) -> NotificationEmailStatus:
+    """Report whether this user can add a system email destination.
+
+    Kept separate from the list endpoint, which is typed as a bare list of
+    settings and has no room for instance-level state.
+    """
+    smtp = await load_smtp_config(db)
+    result = await db.execute(
+        select(NotificationSetting.id).where(
+            NotificationSetting.user_id == current_user.id,
+            NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL,
+        )
+    )
+    return NotificationEmailStatus(
+        available=smtp is not None,
+        account_email=current_user.email,
+        already_configured=result.scalars().first() is not None,
+    )
+
+
 @router.post("/notifications/test")
 async def test_notification(
     data: NotificationTestRequest,
-    _current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
+    current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    """Test a notification by sending a test payload to the provided URL."""
-    if not data.url:
-        raise HTTPException(status_code=400, detail="Apprise URL is required to test")
+    """Test a notification by sending a test payload to the destination."""
+    if data.channel == NotificationChannel.SYSTEM_EMAIL:
+        smtp = await load_smtp_config(db)
+        if smtp is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Email notifications are unavailable. Ask an administrator "
+                    "to configure the SMTP server."
+                ),
+            )
+        recipient = data.target_email or current_user.email
+        if not recipient:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No recipient address. Set an email address on your account, "
+                    "or enter one for this destination."
+                ),
+            )
+        success, error_message = await test_system_email(smtp, recipient)
+    else:
+        if not data.url:
+            raise HTTPException(
+                status_code=400, detail="Apprise URL is required to test"
+            )
+        success, error_message = await test_notification_url(data.url)
 
-    success, error_message = await test_notification_url(data.url)
     if not success:
         raise HTTPException(status_code=400, detail=error_message)
 
@@ -95,6 +148,7 @@ async def create_or_update_notification(
                 NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
                 data.admin_delete_execution_failed,
             ),
+            (NotificationType.UPDATE_AVAILABLE, data.update_available),
         )
         if any(
             enabled and notification_type.is_admin_only()
@@ -126,7 +180,9 @@ async def create_or_update_notification(
         # update fields
         notification.enabled = data.enabled
         notification.name = data.name
+        notification.channel = data.channel
         notification.url = data.url
+        notification.target_email = data.target_email
         notification.new_cleanup_candidates = data.new_cleanup_candidates
         notification.request_approved = data.request_approved
         notification.request_declined = data.request_declined
@@ -136,6 +192,7 @@ async def create_or_update_notification(
         notification.admin_new_protection_request = data.admin_new_protection_request
         notification.admin_request_cancelled = data.admin_request_cancelled
         notification.admin_delete_execution_failed = data.admin_delete_execution_failed
+        notification.update_available = data.update_available
         notification.delete_request_execution_succeeded = (
             data.delete_request_execution_succeeded
         )
@@ -152,12 +209,29 @@ async def create_or_update_notification(
         )
         message = "Notification setting updated successfully"
     else:
+        # One email destination per user is all that is useful: they all resolve
+        # to the same mailbox, so a second row would just duplicate every send.
+        if data.channel == NotificationChannel.SYSTEM_EMAIL:
+            existing = await db.execute(
+                select(NotificationSetting.id).where(
+                    NotificationSetting.user_id == current_user.id,
+                    NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL,
+                )
+            )
+            if existing.scalars().first() is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="You already have an email destination",
+                )
+
         # create new notification
         notification = NotificationSetting(
             user_id=current_user.id,
             enabled=data.enabled,
             name=data.name,
+            channel=data.channel,
             url=data.url,
+            target_email=data.target_email,
             new_cleanup_candidates=data.new_cleanup_candidates,
             request_approved=data.request_approved,
             request_declined=data.request_declined,
@@ -167,6 +241,7 @@ async def create_or_update_notification(
             admin_new_protection_request=data.admin_new_protection_request,
             admin_request_cancelled=data.admin_request_cancelled,
             admin_delete_execution_failed=data.admin_delete_execution_failed,
+            update_available=data.update_available,
             delete_request_execution_succeeded=data.delete_request_execution_succeeded,
             delete_request_execution_failed=data.delete_request_execution_failed,
             preferences=normalize_notification_preferences(data.preferences),
@@ -186,7 +261,9 @@ async def create_or_update_notification(
             id=notification.id,
             enabled=notification.enabled,
             name=notification.name,
+            channel=NotificationChannel(notification.channel),
             url=notification.url,
+            target_email=notification.target_email,
             new_cleanup_candidates=notification.new_cleanup_candidates,
             request_approved=notification.request_approved,
             request_declined=notification.request_declined,
@@ -196,6 +273,7 @@ async def create_or_update_notification(
             admin_new_protection_request=notification.admin_new_protection_request,
             admin_request_cancelled=notification.admin_request_cancelled,
             admin_delete_execution_failed=notification.admin_delete_execution_failed,
+            update_available=notification.update_available,
             delete_request_execution_succeeded=notification.delete_request_execution_succeeded,
             delete_request_execution_failed=notification.delete_request_execution_failed,
             preferences=normalize_notification_preferences(notification.preferences),
