@@ -26,6 +26,8 @@ These generated documents include internal UI routes as well as the mounted exte
 ## Dashboard And UI State
 
 - `GET /api/dashboard`
+- `GET /api/calendar`
+- `GET /api/storage`
 - `GET /api/info/sidebar-indicators`
 - `GET /api/info/ui-indicators`
 - `GET /api/alerts`
@@ -49,6 +51,9 @@ These generated documents include internal UI routes as well as the mounted exte
 - `GET /api/settings/integrations/api-tokens`
 - `GET /api/settings/integrations/webhooks`
 - `GET /api/settings/integrations/webhook-deliveries`
+- `GET /api/settings/logs`
+- `GET /api/settings/logs/files`
+- `GET /api/settings/logs/download`
 
 ## Tasks
 
@@ -91,6 +96,7 @@ The candidate list accepts `rule_id` to match exact membership in a candidate's 
 - `POST /api/rules/validate-regex`
 - `POST /api/rules/validate-paths`
 - `GET /api/rules/path-tree`
+- `GET /api/rules/quality-profiles`
 - `GET /api/rules/seerr-users`
 - `GET /api/rules/playback-users`
 - `GET /api/rules/requester-watch-explain`
@@ -105,7 +111,17 @@ The candidate list accepts `rule_id` to match exact membership in a candidate's 
 
 The lookup endpoints are admin-only helpers used by the rule editor. Language results use canonical ISO 639-3 codes. Country results use the codes currently stored in local TMDB metadata. Both endpoints support media-type filtering, search, and pagination.
 
+`GET /api/calendar` groups scheduled candidate actions by day. It takes `start` and `end` (inclusive), plus `tz_offset_minutes` so days are bucketed in the viewer's own zone rather than UTC, and `per_day_limit` to cap the items returned per day; `item_count` and `total_bytes` always describe the whole day. Only candidates whose deadline is scheduled, eligible, or postponed appear, and deadlines are resolved with the same code the candidates list and the auto-delete task use. The window is capped at 366 days.
+
+`GET /api/storage` reports disk capacity from the configured Radarr and Sonarr instances, library size, reclaimable space, and reclaimed totals by outcome. A volume reported by several instances is merged on path and total size and counted once. A mount that reports no total sets `capacity_incomplete`. An instance that cannot be reached is listed in `errors` instead of failing the request.
+
+The log endpoints are admin-only. `GET /api/settings/logs` returns the most recent entries oldest-first, with `level` filtering to that level and above and `search` matching anywhere in an entry, both applied across the whole window that is read rather than only the returned lines. A traceback stays attached to the entry that raised it. `scan_truncated` reports that the window did not reach the start of the file. `file` accepts only the names `GET /api/settings/logs/files` returns.
+
+`GET /api/rules/quality-profiles` lists the profiles a rule can switch media onto, for one `service` (`radarr` or `sonarr`) and optionally one `service_config_id`. Profile IDs are per instance, so each profile carries the instance it belongs to, and an unreachable instance is reported in `errors` rather than raised.
+
 Rule actions support `outcome: "candidate"` and `outcome: "protect"`. Existing rules without an outcome remain candidate rules for compatibility. Protection previews include items that are already protected because the preview reports what the rule itself matches.
+
+A rule's `arr_action` is one of `delete`, `unmonitor`, `unmonitor_only`, or `change_quality_profile`. The last one also requires `quality_profile_id` and accepts `trigger_search`, and is refused on season and episode scopes because a Sonarr quality profile covers the whole series. It clears `media_server_action` and `move_instead_of_delete`, since nothing is removed or relocated.
 
 Protected-entry responses include `source`, `source_rule_id`, and `source_rule_name`. Entries with `source: "rule"` are managed by cleanup scans; duration updates and direct deletion return `409 Conflict`. Movie entries scoped to a single file also carry `version_file_name`, `version_resolution`, `version_size`, `version_video_codec`, `version_hdr`, and `version_dolby_vision`, so the page can name the file a protection covers.
 

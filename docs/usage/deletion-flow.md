@@ -17,6 +17,9 @@ When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 | `delete` | Delete through Radarr, Sonarr, or the media server route used for the candidate |
 | `move` | Move to the configured destination and remove the source record |
 | `fallback deletion` | Use the media server when ARR cannot handle the delete path |
+| `change quality profile` | Switch the Radarr or Sonarr entry onto another quality profile and keep every file |
+
+A candidate whose rule asks for **Change Quality Profile** never enters the deletion routing below. It is handled first, resolved once the profile is applied, and recorded in reclaim history as `profile_changed`. See [Rules](rules.md#arr-action).
 
 ## Routing Order
 

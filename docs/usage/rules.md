@@ -28,6 +28,25 @@ Cleanup-candidate rules can optionally enable automatic deletion. Rules that do 
 
 Cleanup-candidate rules can also enable Move Instead of Delete. Delete actions for candidates matched by those rules move media to the configured destination folder instead of deleting the file. Destination folders are configured in General Settings. If multiple matched cleanup rules disagree, move wins.
 
+### Arr Action
+
+A cleanup-candidate rule chooses what its Radarr or Sonarr instance does once the review period is up.
+
+| Action | Behavior |
+| --- | --- |
+| Delete | The Arr entry and its files are removed |
+| Unmonitor + Delete File | Files are deleted, the Arr entry stays as unmonitored |
+| Unmonitor Only (Keep File) | The Arr entry is unmonitored and nothing is deleted |
+| Change Quality Profile | Nothing is removed. The Arr entry moves onto a different quality profile, optionally with a search queued |
+
+**Change Quality Profile** is the non-destructive option: use it to replace an oversized release with a smaller one rather than losing the title. It is available on movie and whole-series rules only, because a Sonarr quality profile applies to every season of a series, and it needs exactly one Radarr or Sonarr instance selected, because profile IDs are per instance.
+
+An item already sitting on the target profile is cleared from the candidate list without another write or search, so a rule that keeps matching while the replacement downloads does not re-search the item on every pass. The item can still be flagged again on the next scan until the replacement lands and the rule stops matching it.
+
+A profile change frees no space, so those candidates are left out of the reclaimable totals on the Dashboard and Storage pages. They are recorded in reclaim history as `profile_changed`.
+
+If several matched rules disagree, the most conservative action wins: Change Quality Profile, then Unmonitor Only, then Unmonitor, then Delete.
+
 Cleanup-candidate rules can target one or more Radarr or Sonarr instances. Reclaimerr applies the rule's managed tag to every selected instance where the item exists and limits ARR deletion or unmonitor actions to those selections. For movie versions, the synchronized Radarr movie folder must match the media-server file path before an explicitly selected instance is used. Configure instance-scoped Path Mappings in General Settings when the services report different container path prefixes. Leaving every instance unselected preserves automatic path-based routing across all matching active instances.
 
 When automatic deletion is enabled for a rule, the rule can also override the review period. Leave the override empty to inherit the default movie or TV delay. Values from `0` through `3650` days are supported, with `0` meaning immediately eligible. When multiple auto-delete-enabled cleanup rules match the same item, Reclaimerr uses the longest applicable delay so a shorter rule cannot reduce another rule's review period.
