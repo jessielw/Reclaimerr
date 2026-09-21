@@ -2,7 +2,10 @@
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import { get_api, post_api, delete_api } from "$lib/api";
-  import { NotificationType } from "$lib/types/shared";
+  import { NotificationChannel, NotificationType } from "$lib/types/shared";
+  import type { NotificationEmailStatus } from "$lib/types/shared";
+  import SmtpSettings from "./notifications/smtp-settings.svelte";
+  import Mail from "@lucide/svelte/icons/mail";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
@@ -31,7 +34,9 @@
     id: number;
     enabled: boolean;
     name: string;
+    channel: NotificationChannel;
     url: string;
+    targetEmail: string;
     newCleanupCandidates: boolean;
     requestApproved: boolean;
     requestDeclined: boolean;
@@ -54,11 +59,30 @@
   let editingTitle = $state<number | null>(null);
   let editedTitleValue = $state("");
   let isAdmin = $derived(userRole === "admin");
+  let emailStatus = $state<NotificationEmailStatus>({
+    available: false,
+    account_email: null,
+    already_configured: false,
+  });
+
+  const isEmail = (n: NotificationConfig) =>
+    n.channel === NotificationChannel.SystemEmail;
+  // The server allows one email destination per user, so the add button goes
+  // away once the list already holds one (saved or not).
+  let hasEmailDestination = $derived(notifications.some(isEmail));
+  const emailRecipient = (n: NotificationConfig) =>
+    n.targetEmail.trim() || emailStatus.account_email || "";
 
   // map enum values to camelCase property keys
   type NotificationKey = keyof Omit<
     NotificationConfig,
-    "id" | "enabled" | "name" | "url" | "preferences"
+    | "id"
+    | "enabled"
+    | "name"
+    | "channel"
+    | "url"
+    | "targetEmail"
+    | "preferences"
   >;
 
   const notificationTypeMap: Record<NotificationType, NotificationKey> = {
@@ -188,7 +212,9 @@
           id: number;
           enabled: boolean;
           name: string | null;
-          url: string;
+          channel: NotificationChannel;
+          url: string | null;
+          target_email: string | null;
           new_cleanup_candidates: boolean;
           request_approved: boolean;
           request_declined: boolean;
@@ -208,7 +234,9 @@
         id: n.id,
         enabled: n.enabled,
         name: n.name || "",
-        url: n.url,
+        channel: n.channel ?? NotificationChannel.Apprise,
+        url: n.url ?? "",
+        targetEmail: n.target_email ?? "",
         newCleanupCandidates: n.new_cleanup_candidates,
         requestApproved: n.request_approved,
         requestDeclined: n.request_declined,
@@ -230,15 +258,19 @@
   }
 
   // add new notification with default values
-  function addNotification() {
+  function addNotification(
+    channel: NotificationChannel = NotificationChannel.Apprise,
+  ) {
     const newId = Date.now() * -1; // generate a unique negative ID for new notifications
     notifications = [
       ...notifications,
       {
         id: newId,
         enabled: true,
-        name: "",
+        name: channel === NotificationChannel.SystemEmail ? "Email" : "",
+        channel,
         url: "",
+        targetEmail: "",
         newCleanupCandidates: false,
         requestApproved: false,
         requestDeclined: false,
@@ -259,7 +291,14 @@
   // save notification to API (create or update)
   async function saveNotification(index: number) {
     const notification = notifications[index];
-    if (!notification.url.trim()) {
+    if (isEmail(notification)) {
+      if (!emailRecipient(notification)) {
+        toast.error(
+          "No recipient address. Set an email address on your account, or enter one below.",
+        );
+        return;
+      }
+    } else if (!notification.url.trim()) {
       toast.error("Apprise URL is required");
       return;
     }
@@ -270,7 +309,11 @@
         id: notification.id > 0 ? notification.id : undefined,
         enabled: notification.enabled,
         name: notification.name.trim() || null,
-        url: notification.url,
+        channel: notification.channel,
+        url: isEmail(notification) ? null : notification.url,
+        target_email: isEmail(notification)
+          ? notification.targetEmail.trim() || null
+          : null,
         new_cleanup_candidates: notification.newCleanupCandidates,
         request_approved: notification.requestApproved,
         request_declined: notification.requestDeclined,
@@ -293,7 +336,9 @@
           id: number;
           enabled: boolean;
           name: string | null;
-          url: string;
+          channel: NotificationChannel;
+          url: string | null;
+          target_email: string | null;
           new_cleanup_candidates: boolean;
           request_approved: boolean;
           request_declined: boolean;
@@ -315,7 +360,9 @@
         id: response.data.id,
         enabled: response.data.enabled,
         name: response.data.name || "",
-        url: response.data.url,
+        channel: response.data.channel ?? NotificationChannel.Apprise,
+        url: response.data.url ?? "",
+        targetEmail: response.data.target_email ?? "",
         newCleanupCandidates: response.data.new_cleanup_candidates,
         requestApproved: response.data.request_approved,
         requestDeclined: response.data.request_declined,
@@ -400,7 +447,14 @@
   // test notification
   async function testNotification(index: number) {
     const notification = notifications[index];
-    if (!notification.url.trim()) {
+    if (isEmail(notification)) {
+      if (!emailRecipient(notification)) {
+        toast.error(
+          "No recipient address. Set an email address on your account, or enter one below.",
+        );
+        return;
+      }
+    } else if (!notification.url.trim()) {
       toast.error("Apprise URL is required to test");
       return;
     }
@@ -408,7 +462,11 @@
     try {
       testingIndex = index;
       await post_api("/api/settings/notifications/test", {
-        url: notification.url,
+        channel: notification.channel,
+        url: isEmail(notification) ? null : notification.url,
+        target_email: isEmail(notification)
+          ? notification.targetEmail.trim() || null
+          : null,
       });
       toast.success("Test notification sent successfully!");
     } catch (err: any) {
@@ -418,9 +476,32 @@
     }
   }
 
+  // whether an email destination can be offered at all
+  async function loadEmailStatus() {
+    try {
+      emailStatus = await get_api<NotificationEmailStatus>(
+        "/api/settings/notifications/email-status",
+      );
+    } catch (err: any) {
+      // a missing status only hides the email option, it is not worth a toast
+      console.warn(`Failed to load email status: ${err.message}`);
+    }
+  }
+
+  // Called when an admin changes the SMTP settings above. Reloading the list
+  // would discard any unsaved destination the user has open, so it only
+  // happens when the bulk enable actually created rows to show.
+  async function refreshAfterSmtpChange(destinationsCreated: boolean) {
+    await loadEmailStatus();
+    if (destinationsCreated) {
+      await loadNotifications();
+    }
+  }
+
   // load notifications on component mount
   onMount(() => {
     loadNotifications();
+    loadEmailStatus();
   });
 </script>
 
@@ -447,9 +528,23 @@
       <Spinner class="w-12 h-12 text-primary" />
     </div>
   {:else}
-    <!-- add notification button -->
-    <div class="flex justify-end mb-4">
-      <Button onclick={addNotification} class="cursor-pointer gap-2">
+    {#if isAdmin}
+      <SmtpSettings onChanged={refreshAfterSmtpChange} />
+    {/if}
+
+    <!-- add notification buttons -->
+    <div class="flex flex-wrap justify-end gap-3 mb-4">
+      {#if emailStatus.available && !hasEmailDestination}
+        <Button
+          variant="outline"
+          onclick={() => addNotification(NotificationChannel.SystemEmail)}
+          class="cursor-pointer gap-2"
+        >
+          <Mail />
+          Add Email
+        </Button>
+      {/if}
+      <Button onclick={() => addNotification()} class="cursor-pointer gap-2">
         <Plus />
         Add Notification Service
       </Button>
@@ -676,36 +771,68 @@
                   </p>
                 </div>
 
-                <!-- apprise url input -->
-                <div>
-                  <label
-                    for="url-{index}"
-                    class="block text-sm font-medium text-foreground mb-2"
-                  >
-                    Apprise URL
-                  </label>
-                  <Textarea
-                    id="url-{index}"
-                    bind:value={notification.url}
-                    placeholder="e.g., discord://webhook_id/webhook_token or tgram://bot_token/chat_id"
-                    class="input-hover-el font-mono text-sm"
-                    rows={3}
-                  ></Textarea>
-                  <p class="mt-1 text-xs text-muted-foreground">
-                    Enter your Apprise-compatible notification URL. See <a
-                      href="https://appriseit.com/getting-started/universal-syntax/"
-                      target="_blank"
-                      class="text-primary hover:underline"
-                      >Apprise documentation</a
+                <!-- destination: an email address, or an apprise url -->
+                {#if isEmail(notification)}
+                  <div>
+                    <label
+                      for="target-email-{index}"
+                      class="block text-sm font-medium text-foreground mb-2"
                     >
-                    for supported
-                    <a
-                      href="https://appriseit.com/services/"
-                      target="_blank"
-                      class="text-primary hover:underline">services</a
+                      Deliver to
+                    </label>
+                    <Input
+                      id="target-email-{index}"
+                      type="text"
+                      bind:value={notification.targetEmail}
+                      placeholder={emailStatus.account_email ||
+                        "Enter an email address"}
+                      class="input-hover-el text-sm"
+                    />
+                    <p class="mt-1 text-xs text-muted-foreground">
+                      {#if notification.targetEmail.trim()}
+                        Sent through the server's email settings to this
+                        address.
+                      {:else if emailStatus.account_email}
+                        Sent through the server's email settings to your account
+                        address, <strong>{emailStatus.account_email}</strong>.
+                        Enter an address above to use a different one.
+                      {:else}
+                        Your account has no email address. Add one on the
+                        Account tab, or enter an address above.
+                      {/if}
+                    </p>
+                  </div>
+                {:else}
+                  <div>
+                    <label
+                      for="url-{index}"
+                      class="block text-sm font-medium text-foreground mb-2"
                     >
-                  </p>
-                </div>
+                      Apprise URL
+                    </label>
+                    <Textarea
+                      id="url-{index}"
+                      bind:value={notification.url}
+                      placeholder="e.g., discord://webhook_id/webhook_token or tgram://bot_token/chat_id"
+                      class="input-hover-el font-mono text-sm"
+                      rows={3}
+                    ></Textarea>
+                    <p class="mt-1 text-xs text-muted-foreground">
+                      Enter your Apprise-compatible notification URL. See <a
+                        href="https://appriseit.com/getting-started/universal-syntax/"
+                        target="_blank"
+                        class="text-primary hover:underline"
+                        >Apprise documentation</a
+                      >
+                      for supported
+                      <a
+                        href="https://appriseit.com/services/"
+                        target="_blank"
+                        class="text-primary hover:underline">services</a
+                      >
+                    </p>
+                  </div>
+                {/if}
 
                 <!-- notification types -->
                 <div>

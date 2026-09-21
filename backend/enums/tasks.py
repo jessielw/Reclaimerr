@@ -36,6 +36,15 @@ class CandidateFileOpOperation(StrEnum):
     MOVE = auto()
 
 
+class NotificationChannel(StrEnum):
+    """How a notification destination is delivered."""
+
+    # the stored url is handed to Apprise as-is
+    APPRISE = auto()
+    # the url is built at send time from the instance SMTP settings
+    SYSTEM_EMAIL = auto()
+
+
 class NotificationType(StrEnum):
     NEW_CLEANUP_CANDIDATES = auto()
     REQUEST_APPROVED = auto()

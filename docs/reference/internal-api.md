@@ -39,6 +39,12 @@ These generated documents include internal UI routes as well as the mounted exte
 - `POST /api/settings/save/service`
 - `DELETE /api/settings/service/{service_config_id}`
 - `POST /api/settings/notifications/test`
+- `GET /api/settings/notifications/email-status`
+- `GET /api/settings/smtp`
+- `PUT /api/settings/smtp`
+- `POST /api/settings/smtp/test`
+- `GET /api/settings/smtp/coverage`
+- `POST /api/settings/smtp/enable-all`
 - `GET /api/settings/oidc`
 - `GET /api/settings/integrations/api-tokens`
 - `GET /api/settings/integrations/webhooks`

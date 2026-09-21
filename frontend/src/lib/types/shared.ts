@@ -179,6 +179,11 @@ export type NotificationPreferences = Record<
   NotificationTypePreference
 >;
 
+export enum NotificationChannel {
+  Apprise = "apprise",
+  SystemEmail = "system_email",
+}
+
 export enum NotificationType {
   NewCleanupCandidates = "new_cleanup_candidates",
   RequestApproved = "request_approved",
@@ -430,6 +435,37 @@ export interface MetadataProviderStatusResponse {
   last_checked_at: string | null;
   last_successful_refresh_at: string | null;
   last_error: string | null;
+}
+
+export interface SMTPSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  security: "starttls" | "ssl" | "insecure";
+  username: string;
+  from_address: string;
+  from_name: string;
+  reply_to: string | null;
+  password_configured: boolean;
+  updated_at: string | null;
+}
+
+export interface SMTPCoverage {
+  total_users: number;
+  with_email: number;
+  already_enabled: number;
+  eligible: number;
+}
+
+export interface SMTPEnableAllResult {
+  created: number;
+  skipped_no_email: number;
+}
+
+export interface NotificationEmailStatus {
+  available: boolean;
+  account_email: string | null;
+  already_configured: boolean;
 }
 
 export interface OIDCSettings {

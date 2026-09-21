@@ -30,12 +30,14 @@ from backend.database.models import (
     Series,
     User,
 )
-from backend.enums import LogLevel, NotificationType, UserRole
+from backend.enums import LogLevel, NotificationChannel, NotificationType, UserRole
 from backend.models.settings import normalize_notification_preferences
 from backend.services.admin_notices import create_event_notice
+from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
 
 __all__ = [
     "build_cleanup_notification_context",
+    "test_system_email",
     "notify_task_failure",
     "notify_user",
     "notify_users",
@@ -637,10 +639,18 @@ async def send_notification(
     message: str,
     body_format: apprise.NotifyFormat = _DEFAULT_BODY_FORMAT,
     notify_type: apprise.NotifyType = apprise.NotifyType.INFO,
+    log_label: str | None = None,
 ) -> bool:
-    """Send a single notification to a specific URL with automatic retry logic."""
+    """Send a single notification to a specific URL with automatic retry logic.
+
+    `log_label` names the destination in the log instead of the URL. A system
+    email URL carries the SMTP password in its userinfo, so it must never be
+    logged verbatim; callers pass a label and everything else falls back to the
+    URL, which is what the user typed in themselves.
+    """
     ap = apprise.Apprise()
     ap.add(url)
+    label = log_label or url
 
     try:
         result = await ap.async_notify(
@@ -650,11 +660,47 @@ async def send_notification(
             notify_type=notify_type,
         )
         if not result:
-            LOG.warning(f"Apprise returned False for notification to {url}")
+            LOG.warning(f"Apprise returned False for notification to {label}")
         return bool(result)
     except Exception as e:
-        LOG.error(f"Failed to send notification to {url}: {e}")
+        LOG.error(f"Failed to send notification to {label}: {e}")
         raise
+
+
+def _resolve_destination(
+    setting: NotificationSetting,
+    user: User | None,
+    smtp: SmtpConfig | None,
+) -> tuple[str, str] | None:
+    """Resolve a setting into the (url, log_label) pair used to deliver it.
+
+    Returns None when the destination cannot be delivered to at all. That is a
+    skip rather than a failure: an admin who has not configured SMTP, or a user
+    with no email address on file, should not register as a failed send.
+    """
+    if setting.channel == NotificationChannel.SYSTEM_EMAIL:
+        if smtp is None:
+            LOG.debug(
+                f"Skipping email destination {setting.id}: system SMTP is not "
+                "configured or is incomplete"
+            )
+            return None
+        recipient = (
+            setting.target_email or (user.email if user else None) or ""
+        ).strip()
+        if not recipient:
+            LOG.warning(
+                f"Skipping email destination {setting.id}: no recipient address "
+                "on the destination or the account"
+            )
+            return None
+        return build_mailto_url(smtp, recipient), f"system email to {recipient}"
+
+    url = (setting.url or "").strip()
+    if not url:
+        LOG.warning(f"Skipping notification destination {setting.id}: no URL set")
+        return None
+    return url, setting.name or url
 
 
 async def notify_user(
@@ -670,10 +716,14 @@ async def notify_user(
 
     async with async_db() as session:
         result = await session.execute(
-            select(NotificationSetting).where(
+            # the owning user is needed for the account email a system email
+            # destination falls back to; the relationship is lazy="noload"
+            select(NotificationSetting)
+            .where(
                 NotificationSetting.user_id == user_id,
                 NotificationSetting.enabled == True,
             )
+            .options(selectinload(NotificationSetting.user))
         )
         settings = result.scalars().all()
 
@@ -687,8 +737,14 @@ async def notify_user(
             return results
 
         application_url = await _get_application_url(session)
+        smtp = await load_smtp_config(session)
 
         for setting in eligible_settings:
+            destination = _resolve_destination(setting, setting.user, smtp)
+            if destination is None:
+                continue
+            url, log_label = destination
+
             composed_title, composed_message, composed_format = _compose_notification(
                 notification_type=notification_type,
                 setting=setting,
@@ -698,22 +754,23 @@ async def notify_user(
                 application_url=application_url,
             )
             success = await send_notification(
-                url=setting.url,
+                url=url,
                 title=composed_title,
                 message=composed_message,
                 body_format=composed_format or body_format,
                 notify_type=_notify_type_for(notification_type),
+                log_label=log_label,
             )
 
             if success:
                 results["sent"] += 1
                 LOG.info(
-                    f"Sent {notification_type} notification to user {user_id} via {setting.name or setting.url}"
+                    f"Sent {notification_type} notification to user {user_id} via {log_label}"
                 )
             else:
                 results["failed"] += 1
                 LOG.warning(
-                    f"Failed to send {notification_type} notification to user {user_id} via {setting.name or setting.url}"
+                    f"Failed to send {notification_type} notification to user {user_id} via {log_label}"
                 )
 
     return results
@@ -824,6 +881,7 @@ async def notify_all_users(
         result = await session.execute(stmt)
         users = result.scalars().all()
         application_url = await _get_application_url(session)
+        smtp = await load_smtp_config(session)
 
     if not users:
         LOG.debug("No active users found to send notification to")
@@ -845,6 +903,11 @@ async def notify_all_users(
             continue
 
         for setting in eligible_settings:
+            destination = _resolve_destination(setting, user, smtp)
+            if destination is None:
+                continue
+            url, log_label = destination
+
             composed_title, composed_message, composed_format = _compose_notification(
                 notification_type=notification_type,
                 setting=setting,
@@ -854,22 +917,23 @@ async def notify_all_users(
                 application_url=application_url,
             )
             success = await send_notification(
-                url=setting.url,
+                url=url,
                 title=composed_title,
                 message=composed_message,
                 body_format=composed_format or body_format,
                 notify_type=_notify_type_for(notification_type),
+                log_label=log_label,
             )
 
             if success:
                 results["sent"] += 1
                 LOG.info(
-                    f"Sent {notification_type} notification to user {user.id} via {setting.name or setting.url}"
+                    f"Sent {notification_type} notification to user {user.id} via {log_label}"
                 )
             else:
                 results["failed"] += 1
                 LOG.warning(
-                    f"Failed to send {notification_type} notification to user {user.id} via {setting.name or setting.url}"
+                    f"Failed to send {notification_type} notification to user {user.id} via {log_label}"
                 )
 
     return results
@@ -909,8 +973,10 @@ async def notify_task_failure(
 
 async def test_notification_url(
     url: str,
+    log_label: str | None = None,
 ) -> tuple[bool, str | None]:
     """Test a notification by sending a test payload to the provided URL."""
+    label = log_label or url
     try:
         return await send_notification(
             url=url,
@@ -926,13 +992,25 @@ async def test_notification_url(
             ),
             body_format=_DEFAULT_BODY_FORMAT,
             notify_type=apprise.NotifyType.SUCCESS,
+            log_label=log_label,
         ), None
     except RetryError:
-        LOG.error(f"Failed to send notification after multiple attempts to {url}")
+        LOG.error(f"Failed to send notification after multiple attempts to {label}")
         return False, (
             "Failed to send test notification after multiple attempts, check your "
             "connection/credentials and try again"
         )
     except Exception as e:
-        LOG.error(f"Unhandled Error testing notification URL {url}: {e}")
+        LOG.error(f"Unhandled Error testing notification URL {label}: {e}")
         return False, str(e)
+
+
+async def test_system_email(
+    smtp: SmtpConfig,
+    recipient: str,
+) -> tuple[bool, str | None]:
+    """Send a test email through the instance SMTP server."""
+    return await test_notification_url(
+        build_mailto_url(smtp, recipient),
+        log_label=f"system email to {recipient}",
+    )

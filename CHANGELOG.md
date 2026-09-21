@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Reclaimerr can now send notifications by email through a mail server you configure once for the whole instance. Set it up under **Settings - Notifications - Email server (SMTP)**, and users can then add an **Email** destination that goes to their account email address, with no Apprise URL to write. A user can still send to a different address if they want to, and the per-notification-type switches and formatting options work exactly as they do for any other destination. After saving the server settings, **Enable for remaining** creates a destination for every user who has an email address and does not already have one; each of them can edit or delete it afterwards, and running it again never changes a destination someone has already set up.
+
 ## [0.4.7] - 2026-09-18
 
 ### Added

@@ -7,7 +7,7 @@ Reclaimerr is configured through General Settings, service settings, and a small
 - **Media servers** - connect Plex, Jellyfin, Emby, Radarr, and Sonarr
 - **General Settings** - path mappings, move destinations, public application URL, fallback deletion, Leaving Soon, and default auto-delete review periods
 - **Tasks** - schedule scans, tagging, syncs, and optional auto-deletion
-- **Notifications** - configure Apprise destinations
+- **Notifications** - configure Apprise destinations, and an instance-wide SMTP server so users can be notified at their account email address
 
 ## Important Environment Variables
 
@@ -33,6 +33,8 @@ Reclaimerr is configured through General Settings, service settings, and a small
 | `LOG_RETENTION_DAYS` | Days of rotated log files to keep (default: 30) |
 
 `LOG_LEVEL` is read once at startup and there is no in-app switch for it, so raising it means setting the variable and restarting the container. Confirm it took effect by looking for the `Log level: LogLevel.DEBUG` line the API logs on boot - if that line says `LogLevel.INFO`, the variable did not reach the container and debug lines will be missing no matter what else is configured.
+
+Email notifications are configured under Settings - Notifications, in the **Email server (SMTP)** panel, which only administrators see. Enter the host, port, encryption mode (STARTTLS, SSL/TLS or none), optional credentials and a from address, then use **Send Test Email** to confirm it works. The password is encrypted at rest with `ENCRYPTION_KEY` and is never returned to the browser; leaving the field blank on a later save keeps the stored one. Once it is enabled, each user can add an **Email** destination from the same page, and it is delivered to the address on their account unless they enter a different one.
 
 Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy, and it is what lets notifications link back into Reclaimerr. When it is unset, notifications are still delivered but contain no links.
 
