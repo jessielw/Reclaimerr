@@ -35,6 +35,8 @@
     SettingsTab,
     type LibraryType,
     type PaginatedRulePreviewResponse,
+    type QualityProfileLookup,
+    type QualityProfileLookupItem,
     type ReclaimRule,
     type RuleCondition,
     type RuleConditionOperator,
@@ -116,12 +118,23 @@
     initial.action?.auto_delete_delay_days?.toString() ?? "",
   );
 
-  let radarrArrAction = $state<"delete" | "unmonitor" | "unmonitor_only">(
+  type ArrAction =
+    | "delete"
+    | "unmonitor"
+    | "unmonitor_only"
+    | "change_quality_profile";
+  const ARR_ACTIONS: ArrAction[] = [
+    "delete",
+    "unmonitor",
+    "unmonitor_only",
+    "change_quality_profile",
+  ];
+  let radarrArrAction = $state<ArrAction>(
     initial.targetScope === "movie_version"
       ? (initial.action?.arr_action ?? "delete")
       : "delete",
   );
-  let sonarrArrAction = $state<"delete" | "unmonitor" | "unmonitor_only">(
+  let sonarrArrAction = $state<ArrAction>(
     initial.targetScope !== "movie_version"
       ? (initial.action?.arr_action ?? "delete")
       : "delete",
@@ -129,6 +142,13 @@
   const arrAction = $derived(
     targetScope === "movie_version" ? radarrArrAction : sonarrArrAction,
   );
+  let qualityProfileId = $state<number | null>(
+    initial.action?.quality_profile_id ?? null,
+  );
+  let triggerSearch = $state(initial.action?.trigger_search !== false);
+  let qualityProfiles = $state<QualityProfileLookupItem[]>([]);
+  let qualityProfilesLoading = $state(false);
+  let qualityProfilesError = $state("");
   let radarrServiceConfigIds = $state<number[]>(
     initial.action?.radarr_service_config_ids ??
       (initial.action?.radarr_service_config_id != null
@@ -227,6 +247,80 @@
       ? radarrServiceConfigIds
       : sonarrServiceConfigIds,
   );
+
+  // A Sonarr quality profile belongs to the series, so a season or episode
+  // rule would silently re-profile the whole show; the server refuses those.
+  const profileChangeAllowed = $derived(
+    targetScope === "movie_version" || targetScope === "series",
+  );
+  // Profile IDs are per instance, so the rule has to name exactly one.
+  const profileChangeSelectable = $derived(
+    profileChangeAllowed && selectedArrConfigIds.length === 1,
+  );
+
+  const setArrAction = (value: ArrAction) => {
+    if (targetScope === "movie_version") {
+      radarrArrAction = value;
+    } else {
+      sonarrArrAction = value;
+    }
+  };
+
+  const arrActionLabel = (value: ArrAction) => {
+    switch (value) {
+      case "unmonitor":
+        return "Unmonitor + Delete File";
+      case "unmonitor_only":
+        return "Unmonitor Only (Keep File)";
+      case "change_quality_profile":
+        return "Change Quality Profile";
+      default:
+        return "Delete";
+    }
+  };
+
+  const loadQualityProfiles = async () => {
+    if (!profileChangeSelectable) {
+      qualityProfiles = [];
+      return;
+    }
+    qualityProfilesLoading = true;
+    qualityProfilesError = "";
+    try {
+      const service = targetScope === "movie_version" ? "radarr" : "sonarr";
+      const lookup = await get_api<QualityProfileLookup>(
+        `/api/rules/quality-profiles?service=${service}` +
+          `&service_config_id=${selectedArrConfigIds[0]}`,
+      );
+      qualityProfiles = lookup.profiles;
+      if (lookup.errors.length > 0) {
+        qualityProfilesError = lookup.errors[0].message;
+      }
+      if (
+        qualityProfileId != null &&
+        !lookup.profiles.some((profile) => profile.id === qualityProfileId)
+      ) {
+        qualityProfileId = null;
+      }
+    } catch (e) {
+      qualityProfiles = [];
+      qualityProfilesError =
+        e instanceof Error ? e.message : "Could not load quality profiles";
+    } finally {
+      qualityProfilesLoading = false;
+    }
+  };
+
+  $effect(() => {
+    // the option stops being valid when the scope or instance choice changes
+    if (arrAction === "change_quality_profile" && !profileChangeSelectable) {
+      setArrAction("delete");
+      return;
+    }
+    if (arrAction === "change_quality_profile") {
+      void loadQualityProfiles();
+    }
+  });
 
   const toggleArrInstance = (instanceId: number, checked: boolean) => {
     const current =
@@ -668,6 +762,14 @@
         toast.error("Auto-delete delay must be a whole number from 0 to 3650");
         return;
       }
+      if (
+        outcome === "candidate" &&
+        arrAction === "change_quality_profile" &&
+        qualityProfileId == null
+      ) {
+        toast.error("Pick the quality profile to switch matching media onto");
+        return;
+      }
       await onSave({
         name: name.trim(),
         description: description.trim() || null,
@@ -681,7 +783,18 @@
           tag_enabled: outcome === "candidate" ? tagEnabled : false,
           arr_tag: outcome === "candidate" ? normalizedTag : null,
           arr_action: arrAction,
-          media_server_action: outcome === "candidate" ? "delete" : null,
+          quality_profile_id:
+            outcome === "candidate" && arrAction === "change_quality_profile"
+              ? qualityProfileId
+              : null,
+          trigger_search:
+            outcome === "candidate" && arrAction === "change_quality_profile"
+              ? triggerSearch
+              : false,
+          media_server_action:
+            outcome === "candidate" && arrAction !== "change_quality_profile"
+              ? "delete"
+              : null,
           auto_delete_enabled:
             outcome === "candidate" ? autoDeleteEnabled : false,
           auto_delete_delay_days:
@@ -1315,27 +1428,20 @@
               type="single"
               value={arrAction}
               onValueChange={(value) => {
+                const next = ARR_ACTIONS.find((item) => item === value);
+                if (!next) return;
                 if (
-                  value === "delete" ||
-                  value === "unmonitor" ||
-                  value === "unmonitor_only"
-                ) {
-                  if (targetScope === "movie_version") {
-                    radarrArrAction = value;
-                  } else {
-                    sonarrArrAction = value;
-                  }
-                }
+                  next === "change_quality_profile" &&
+                  !profileChangeSelectable
+                )
+                  return;
+                setArrAction(next);
               }}
             >
               <Select.Trigger
                 class="w-full bg-card text-card-foreground cursor-pointer"
               >
-                {arrAction === "unmonitor"
-                  ? "Unmonitor + Delete File"
-                  : arrAction === "unmonitor_only"
-                    ? "Unmonitor Only (Keep File)"
-                    : "Delete"}
+                {arrActionLabel(arrAction)}
               </Select.Trigger>
               <Select.Content>
                 <Select.Item value="delete" label="Delete">Delete</Select.Item>
@@ -1348,10 +1454,91 @@
                 >
                   Unmonitor Only (Keep File)
                 </Select.Item>
+                {#if profileChangeSelectable}
+                  <Select.Item
+                    value="change_quality_profile"
+                    label="Change Quality Profile"
+                  >
+                    Change Quality Profile
+                  </Select.Item>
+                {/if}
               </Select.Content>
             </Select.Root>
           {/key}
-          {#if arrAction === "unmonitor"}
+          {#if !profileChangeSelectable}
+            <p class="text-xs text-muted-foreground">
+              {#if !profileChangeAllowed}
+                Changing the quality profile is available on movie and
+                whole-series rules only, because a Sonarr quality profile
+                applies to every season of a series.
+              {:else}
+                Select exactly one {selectedArrName} instance to switch matching media
+                onto a different quality profile.
+              {/if}
+            </p>
+          {/if}
+          {#if arrAction === "change_quality_profile"}
+            <div class="space-y-2 rounded-md border border-border p-3">
+              <Label class="text-sm font-medium text-foreground">
+                Quality profile
+              </Label>
+              {#if qualityProfilesLoading}
+                <p class="text-xs text-muted-foreground">
+                  Loading profiles from {selectedArrName}...
+                </p>
+              {:else}
+                <Select.Root
+                  type="single"
+                  value={qualityProfileId != null
+                    ? String(qualityProfileId)
+                    : ""}
+                  onValueChange={(value) => {
+                    const parsed = Number(value);
+                    qualityProfileId = Number.isFinite(parsed) ? parsed : null;
+                  }}
+                >
+                  <Select.Trigger
+                    class="w-full bg-card text-card-foreground cursor-pointer"
+                  >
+                    {qualityProfiles.find(
+                      (profile) => profile.id === qualityProfileId,
+                    )?.name ?? "Select a profile"}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each qualityProfiles as profile (profile.id)}
+                      <Select.Item
+                        value={String(profile.id)}
+                        label={profile.name}
+                      >
+                        {profile.name}
+                      </Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+              {/if}
+              {#if qualityProfilesError}
+                <p class="text-xs text-destructive">{qualityProfilesError}</p>
+              {/if}
+              <div class="flex items-center justify-between pt-1">
+                <div>
+                  <p class="text-sm font-medium text-foreground">
+                    Search after switching
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    Ask {selectedArrName} to look for a release matching the new profile.
+                  </p>
+                </div>
+                <Switch bind:checked={triggerSearch} />
+              </div>
+            </div>
+          {/if}
+          {#if arrAction === "change_quality_profile"}
+            <p class="text-xs text-muted-foreground">
+              Nothing is deleted, moved or unmonitored. The {selectedArrName} entry
+              keeps its files and moves onto the chosen profile. An item already on
+              that profile is cleared from the candidate list without another search.
+            </p>
+          {:else if arrAction === "unmonitor"}
             <p class="text-xs text-muted-foreground">
               Files are deleted from disk but the entry remains in {selectedArrName}
               as unmonitored. Requires filesystem access on the Reclaimerr host.

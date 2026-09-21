@@ -16,11 +16,13 @@
   import DoorClosed from "@lucide/svelte/icons/door-closed";
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
+  import Gauge from "@lucide/svelte/icons/gauge";
   import Ticket from "@lucide/svelte/icons/ticket";
   import Shield from "@lucide/svelte/icons/shield";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import Filter from "@lucide/svelte/icons/filter";
   import History from "@lucide/svelte/icons/history";
+  import CalendarDays from "@lucide/svelte/icons/calendar-days";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Check from "@lucide/svelte/icons/check";
@@ -98,6 +100,22 @@
       page: PageAccess.Candidates,
       tooltip:
         "Review media that are candidates for deletion based on your retention settings",
+    },
+    {
+      path: "/calendar",
+      label: "Calendar",
+      icon: CalendarDays,
+      adminOnly: false,
+      page: PageAccess.Calendar,
+      tooltip: "See when scheduled deletions and moves are due",
+    },
+    {
+      path: "/storage",
+      label: "Storage",
+      icon: Gauge,
+      adminOnly: false,
+      page: PageAccess.Storage,
+      tooltip: "Disk capacity, library size, and what cleanup has reclaimed",
     },
     {
       path: "/history",

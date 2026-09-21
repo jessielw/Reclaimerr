@@ -6,6 +6,7 @@
   import InstanceManagerBar from "$lib/components/settings/instance-manager-bar.svelte";
   import MediaServers from "$lib/components/settings/media-servers.svelte";
   import Notifications from "$lib/components/settings/notifications.svelte";
+  import Logs from "$lib/components/settings/logs.svelte";
   import Tasks from "$lib/components/settings/tasks/tasks.svelte";
   import Account from "$lib/components/settings/account.svelte";
   import Users from "$lib/components/settings/users.svelte";
@@ -25,6 +26,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Wrench from "@lucide/svelte/icons/wrench";
   import Bell from "@lucide/svelte/icons/bell";
+  import ScrollText from "@lucide/svelte/icons/scroll-text";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Server from "@lucide/svelte/icons/server";
   import RadarrSVG from "$lib/components/svgs/radarr-svg.svelte";
@@ -242,6 +244,12 @@
           adminOnly: true,
         },
         {
+          id: SettingsTab.Logs,
+          label: "Logs",
+          icon: ScrollText,
+          adminOnly: true,
+        },
+        {
           id: SettingsTab.Users,
           label: "Users",
           icon: UserCog,
@@ -314,6 +322,7 @@
     [SettingsTab.UserSignals]: "idle",
     [SettingsTab.Tasks]: "idle",
     [SettingsTab.Notifications]: "idle",
+    [SettingsTab.Logs]: "idle",
     [SettingsTab.Account]: "idle",
     [SettingsTab.Rules]: "idle",
     [SettingsTab.Users]: "idle",
@@ -1273,6 +1282,10 @@
               userRole={$auth.user?.role || "user"}
               svgIcon={getTabIcon(activeTab)}
             />
+
+            <!-- logs -->
+          {:else if activeTab === SettingsTab.Logs}
+            <Logs svgIcon={getTabIcon(activeTab)} />
 
             <!-- account -->
           {:else if activeTab === SettingsTab.Account}

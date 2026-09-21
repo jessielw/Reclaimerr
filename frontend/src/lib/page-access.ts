@@ -45,6 +45,18 @@ export const PAGE_ACCESS_OPTIONS: PageAccessOption[] = [
     description: "Review cleanup candidates.",
   },
   {
+    value: PageAccess.Calendar,
+    label: "Calendar",
+    path: "/calendar",
+    description: "See when scheduled deletions and moves are due.",
+  },
+  {
+    value: PageAccess.Storage,
+    label: "Storage",
+    path: "/storage",
+    description: "See disk capacity, library size, and what cleanup reclaimed.",
+  },
+  {
     value: PageAccess.History,
     label: "History",
     path: "/history",
@@ -73,6 +85,8 @@ const redirectPreference = [
   PageAccess.Series,
   PageAccess.Requests,
   PageAccess.Protected,
+  PageAccess.Calendar,
+  PageAccess.Storage,
   PageAccess.History,
   PageAccess.Settings,
 ];
