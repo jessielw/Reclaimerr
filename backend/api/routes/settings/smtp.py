@@ -42,6 +42,7 @@ _DEFAULT_ADMIN_TYPES: tuple[str, ...] = (
     "admin_new_protection_request",
     "admin_request_cancelled",
     "admin_delete_execution_failed",
+    "update_available",
 )
 
 

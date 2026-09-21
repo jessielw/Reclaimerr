@@ -39,6 +39,7 @@ __all__ = [
     "build_cleanup_notification_context",
     "test_system_email",
     "notify_task_failure",
+    "notify_update_available",
     "notify_user",
     "notify_users",
     "notify_all_users",
@@ -72,6 +73,7 @@ _NOTIFY_TYPES: dict[NotificationType, apprise.NotifyType] = {
     NotificationType.ADMIN_DELETE_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
     NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: apprise.NotifyType.SUCCESS,
     NotificationType.DELETE_REQUEST_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
+    NotificationType.UPDATE_AVAILABLE: apprise.NotifyType.INFO,
 }
 
 # Frontend uses hash routing, so deep links are "<application_url>/#<route>".
@@ -254,6 +256,9 @@ def _compose_title(
         return title
     if notification_type is NotificationType.TASK_FAILURE:
         subject = str(context.get("task_name") or "").strip()
+    elif notification_type is NotificationType.UPDATE_AVAILABLE:
+        latest = str(context.get("latest_version") or "").strip()
+        subject = f"v{latest}" if latest else ""
     else:
         subject = str(context.get("media_title") or "").strip()
     if not subject or subject.lower() in title.lower():
@@ -458,6 +463,22 @@ def _compose_body(
         error = str(context.get("error_message") or "").strip()
         if error:
             return title, _body(lead, [], error), _DEFAULT_BODY_FORMAT
+
+    if notification_type is NotificationType.UPDATE_AVAILABLE:
+        # the release page is the only link worth following here, so it goes in
+        # the body rather than the generic app deep link appended by the caller
+        release_url = str(context.get("release_url") or "").strip()
+        fields = _field_lines(
+            (
+                ("Installed", context.get("current_version")),
+                ("Latest", context.get("latest_version")),
+                (
+                    "Release notes",
+                    f"[View on GitHub]({release_url})" if release_url else "",
+                ),
+            )
+        )
+        return title, _body(lead, fields), _DEFAULT_BODY_FORMAT
 
     return title, lead, _DEFAULT_BODY_FORMAT
 
@@ -952,6 +973,7 @@ def _notification_type_to_field(notification_type: NotificationType) -> str:
         NotificationType.ADMIN_DELETE_EXECUTION_FAILED: "admin_delete_execution_failed",
         NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: "delete_request_execution_succeeded",
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED: "delete_request_execution_failed",
+        NotificationType.UPDATE_AVAILABLE: "update_available",
     }
 
     return mapping.get(notification_type, "")
@@ -968,6 +990,31 @@ async def notify_task_failure(
         message=f"Task {task_name} failed",
         body_format=_DEFAULT_BODY_FORMAT,
         context={"task_name": task_name, "error_message": error_message},
+    )
+
+
+async def notify_update_available(
+    *,
+    latest_version: str,
+    current_version: str,
+    release_url: str | None = None,
+) -> dict[str, int]:
+    """Tell admins a newer Reclaimerr release is out.
+
+    The caller is responsible for sending this once per version: the update
+    check runs hourly, and admins should not hear about the same release again
+    on every pass.
+    """
+    return await notify_admins(
+        notification_type=NotificationType.UPDATE_AVAILABLE,
+        title="Update Available",
+        message=f"Reclaimerr {latest_version} is available.",
+        body_format=_DEFAULT_BODY_FORMAT,
+        context={
+            "latest_version": latest_version,
+            "current_version": current_version,
+            "release_url": release_url,
+        },
     )
 
 

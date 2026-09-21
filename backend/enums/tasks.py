@@ -59,6 +59,7 @@ class NotificationType(StrEnum):
     ADMIN_NEW_PROTECTION_REQUEST = auto()
     ADMIN_REQUEST_CANCELLED = auto()
     ADMIN_DELETE_EXECUTION_FAILED = auto()
+    UPDATE_AVAILABLE = auto()
 
     def is_admin_only(self) -> bool:
         """Check if this notification type is restricted to admins."""
@@ -69,6 +70,7 @@ class NotificationType(StrEnum):
             NotificationType.ADMIN_NEW_PROTECTION_REQUEST,
             NotificationType.ADMIN_REQUEST_CANCELLED,
             NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
+            NotificationType.UPDATE_AVAILABLE,
         }
 
 

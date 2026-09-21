@@ -46,6 +46,7 @@
     adminNewProtectionRequest: boolean;
     adminRequestCancelled: boolean;
     adminDeleteExecutionFailed: boolean;
+    updateAvailable: boolean;
     deleteRequestExecutionSucceeded: boolean;
     deleteRequestExecutionFailed: boolean;
     preferences: Record<string, { detail: string; max_items?: number }>;
@@ -95,6 +96,7 @@
     [NotificationType.AdminNewProtectionRequest]: "adminNewProtectionRequest",
     [NotificationType.AdminRequestCancelled]: "adminRequestCancelled",
     [NotificationType.AdminDeleteExecutionFailed]: "adminDeleteExecutionFailed",
+    [NotificationType.UpdateAvailable]: "updateAvailable",
     [NotificationType.DeleteRequestExecutionSucceeded]:
       "deleteRequestExecutionSucceeded",
     [NotificationType.DeleteRequestExecutionFailed]:
@@ -116,6 +118,7 @@
     [NotificationType.AdminDeleteExecutionFailed]: { detail: "standard" },
     [NotificationType.DeleteRequestExecutionSucceeded]: { detail: "standard" },
     [NotificationType.DeleteRequestExecutionFailed]: { detail: "standard" },
+    [NotificationType.UpdateAvailable]: { detail: "standard" },
   });
 
   const normalizedPreferences = (
@@ -201,6 +204,12 @@
       description: "Notified when your approved deletion fails",
       adminOnly: false,
     },
+    {
+      type: NotificationType.UpdateAvailable,
+      label: "Update Available",
+      description: "Notified once when a newer Reclaimerr release is published",
+      adminOnly: true,
+    },
   ];
 
   // load existing notifications from API
@@ -224,6 +233,7 @@
           admin_new_protection_request: boolean;
           admin_request_cancelled: boolean;
           admin_delete_execution_failed: boolean;
+          update_available: boolean;
           delete_request_execution_succeeded: boolean;
           delete_request_execution_failed: boolean;
           preferences?: Record<string, { detail?: string; max_items?: number }>;
@@ -246,6 +256,7 @@
         adminNewProtectionRequest: n.admin_new_protection_request,
         adminRequestCancelled: n.admin_request_cancelled,
         adminDeleteExecutionFailed: n.admin_delete_execution_failed,
+        updateAvailable: n.update_available,
         deleteRequestExecutionSucceeded: n.delete_request_execution_succeeded,
         deleteRequestExecutionFailed: n.delete_request_execution_failed,
         preferences: normalizedPreferences(n.preferences),
@@ -280,6 +291,7 @@
         adminNewProtectionRequest: false,
         adminRequestCancelled: false,
         adminDeleteExecutionFailed: false,
+        updateAvailable: false,
         deleteRequestExecutionSucceeded: false,
         deleteRequestExecutionFailed: false,
         preferences: defaultPreferences(),
@@ -323,6 +335,7 @@
         admin_new_protection_request: notification.adminNewProtectionRequest,
         admin_request_cancelled: notification.adminRequestCancelled,
         admin_delete_execution_failed: notification.adminDeleteExecutionFailed,
+        update_available: notification.updateAvailable,
         delete_request_execution_succeeded:
           notification.deleteRequestExecutionSucceeded,
         delete_request_execution_failed:
@@ -348,6 +361,7 @@
           admin_new_protection_request: boolean;
           admin_request_cancelled: boolean;
           admin_delete_execution_failed: boolean;
+          update_available: boolean;
           delete_request_execution_succeeded: boolean;
           delete_request_execution_failed: boolean;
           preferences?: Record<string, { detail?: string; max_items?: number }>;
@@ -372,6 +386,7 @@
         adminNewProtectionRequest: response.data.admin_new_protection_request,
         adminRequestCancelled: response.data.admin_request_cancelled,
         adminDeleteExecutionFailed: response.data.admin_delete_execution_failed,
+        updateAvailable: response.data.update_available,
         deleteRequestExecutionSucceeded:
           response.data.delete_request_execution_succeeded,
         deleteRequestExecutionFailed:

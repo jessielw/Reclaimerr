@@ -53,6 +53,7 @@ async def get_notification_settings(
             admin_new_protection_request=n.admin_new_protection_request,
             admin_request_cancelled=n.admin_request_cancelled,
             admin_delete_execution_failed=n.admin_delete_execution_failed,
+            update_available=n.update_available,
             delete_request_execution_succeeded=n.delete_request_execution_succeeded,
             delete_request_execution_failed=n.delete_request_execution_failed,
             preferences=normalize_notification_preferences(n.preferences),
@@ -147,6 +148,7 @@ async def create_or_update_notification(
                 NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
                 data.admin_delete_execution_failed,
             ),
+            (NotificationType.UPDATE_AVAILABLE, data.update_available),
         )
         if any(
             enabled and notification_type.is_admin_only()
@@ -190,6 +192,7 @@ async def create_or_update_notification(
         notification.admin_new_protection_request = data.admin_new_protection_request
         notification.admin_request_cancelled = data.admin_request_cancelled
         notification.admin_delete_execution_failed = data.admin_delete_execution_failed
+        notification.update_available = data.update_available
         notification.delete_request_execution_succeeded = (
             data.delete_request_execution_succeeded
         )
@@ -238,6 +241,7 @@ async def create_or_update_notification(
             admin_new_protection_request=data.admin_new_protection_request,
             admin_request_cancelled=data.admin_request_cancelled,
             admin_delete_execution_failed=data.admin_delete_execution_failed,
+            update_available=data.update_available,
             delete_request_execution_succeeded=data.delete_request_execution_succeeded,
             delete_request_execution_failed=data.delete_request_execution_failed,
             preferences=normalize_notification_preferences(data.preferences),
@@ -269,6 +273,7 @@ async def create_or_update_notification(
             admin_new_protection_request=notification.admin_new_protection_request,
             admin_request_cancelled=notification.admin_request_cancelled,
             admin_delete_execution_failed=notification.admin_delete_execution_failed,
+            update_available=notification.update_available,
             delete_request_execution_succeeded=notification.delete_request_execution_succeeded,
             delete_request_execution_failed=notification.delete_request_execution_failed,
             preferences=normalize_notification_preferences(notification.preferences),

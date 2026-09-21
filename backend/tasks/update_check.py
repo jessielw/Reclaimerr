@@ -14,6 +14,7 @@ from backend.database import async_db
 from backend.database.models import AppUpdateState
 from backend.enums import Task
 from backend.services.admin_notices import sync_update_available_notice
+from backend.services.notifications import notify_update_available
 
 
 def _parse_repo_slug(url: str) -> tuple[str, str]:
@@ -43,6 +44,10 @@ async def _persist_result(
             state = AppUpdateState()
             db.add(state)
 
+        # captured before the overwrite: the check runs hourly, so a release is
+        # only worth announcing the first time we see its version
+        previously_seen_version = state.latest_version
+
         state.current_version = str(__version__)
         if latest_version is not None:
             state.latest_version = latest_version
@@ -60,6 +65,24 @@ async def _persist_result(
             latest_release_url=latest_release_url,
         )
         await db.commit()
+
+        announce = (
+            update_available
+            and latest_version is not None
+            and latest_version != previously_seen_version
+        )
+
+    if announce and latest_version is not None:
+        try:
+            await notify_update_available(
+                latest_version=latest_version,
+                current_version=str(__version__),
+                release_url=latest_release_url,
+            )
+        except Exception as e:
+            # the state is already persisted; a failed announcement must not
+            # fail the task or block the next check
+            LOG.warning(f"Could not send update-available notification: {e}")
 
 
 async def check_app_updates() -> None:

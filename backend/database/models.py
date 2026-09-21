@@ -203,6 +203,7 @@ class NotificationSetting(Base):
     admin_new_protection_request: Mapped[bool] = mapped_column(Boolean, default=False)
     admin_request_cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
     admin_delete_execution_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    update_available: Mapped[bool] = mapped_column(Boolean, default=False)
     # per notification content preferences (formatting/detail controls)
     preferences: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
