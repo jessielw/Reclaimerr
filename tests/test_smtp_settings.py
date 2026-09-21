@@ -34,23 +34,29 @@ def _run(test: Callable[[AsyncSession, User], Awaitable[T]]) -> T:
 
     async def main() -> T:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        session_maker = async_sessionmaker(
-            engine, expire_on_commit=False, class_=AsyncSession
-        )
-        async with session_maker() as session:
-            admin = User(
-                username="admin",
-                password_hash="hashed",
-                email="admin@example.com",
-                role=UserRole.ADMIN,
-                permissions=[],
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            session_maker = async_sessionmaker(
+                engine, expire_on_commit=False, class_=AsyncSession
             )
-            session.add(admin)
-            await session.commit()
-            await session.refresh(admin)
-            return await test(session, admin)
+            async with session_maker() as session:
+                admin = User(
+                    username="admin",
+                    password_hash="hashed",
+                    email="admin@example.com",
+                    role=UserRole.ADMIN,
+                    permissions=[],
+                )
+                session.add(admin)
+                await session.commit()
+                await session.refresh(admin)
+                return await test(session, admin)
+        finally:
+            # aiosqlite runs each connection on its own thread. Without this the
+            # thread outlives asyncio.run() and resolves its future against a
+            # closed loop, which pytest reports as an unhandled thread exception.
+            await engine.dispose()
 
     return asyncio.run(main())
 
