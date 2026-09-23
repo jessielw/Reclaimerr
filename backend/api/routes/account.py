@@ -56,6 +56,7 @@ from backend.models.auth import (
 )
 from backend.services.admin_notices import resolve_singleton_notice
 from backend.services.media_auth import media_auth_conflict_notice_key_for_source
+from backend.services.smtp import auto_enable_system_email
 from backend.user_types import DEFAULT_NEW_USER_ALLOWED_PAGES
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -164,10 +165,13 @@ async def update_profile(
     # independently from the profile form.
     if "display_name" in new_info.model_fields_set:
         current_user.display_name = new_info.display_name
+    had_email = bool(current_user.email)
     if "email" in new_info.model_fields_set:
         current_user.email = new_info.email
     if new_info.date_format is not None:
         current_user.date_format = new_info.date_format
+    if not had_email:
+        await auto_enable_system_email(db, current_user)
     await db.commit()
 
     LOG.info(f"User {current_user.username} updated their profile info")
@@ -399,6 +403,8 @@ async def create_user(
         require_password_change=request.require_password_change,
     )
     db.add(new_user)
+    await db.flush()
+    await auto_enable_system_email(db, new_user)
     await db.commit()
     await db.refresh(new_user)
 
@@ -520,6 +526,7 @@ async def update_user(
             f"User manager {actor.username} renamed user {old_username} to {new_username}"
         )
 
+    had_email = bool(user.email)
     user.display_name = request.display_name
     user.email = request.email
     user.role = request.role
@@ -541,6 +548,8 @@ async def update_user(
         )
 
     try:
+        if not had_email:
+            await auto_enable_system_email(db, user)
         await db.commit()
     except IntegrityError:
         # the pre-checks above can lose a race against a concurrent write

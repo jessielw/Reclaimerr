@@ -10,9 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed a failed Plex watch-history request wiping view counts for a whole library ([#401](https://github.com/jessielw/Reclaimerr/issues/401)). If Plex dropped the connection partway through **Sync Media**, Reclaimerr used the partial history as if it were complete and overwrote view counts and last-watched dates with lower values. A **View count** or **Days since watched** rule could then flag hundreds of watched shows at once. A partial fetch can now only raise stored watch data, never lower it, and it is logged as a warning. Partial history is also no longer cached and reused by the next step of the sync.
 - New users signing in with Emby was not getting their Emby Connect email imported.
+- Spaces in the SMTP **From name** showed up as `+` signs in sent emails.
 
 ### Changed
 
+- Email notifications are now set up automatically. Turning SMTP on gives every existing user with an email address an email destination, and users added later (or who add an email address later) get one too while SMTP is on. The **Enable for existing users** button is still there to re-add anyone missing. A user who deletes their email destination is not re-subscribed.
 - A cleanup scan that suddenly adds far more candidates than usual now holds them back from auto-delete. When a scan adds at least 25 candidates and more than the number that already existed, auto-delete for the new ones is postponed 3 days and admins are notified. A sudden jump usually means bad input, such as lost watch data, and the next sync normally corrects it. A genuine jump, such as a newly added rule, is only delayed.
 - Playback rules no longer treat unmatched history as zero plays. When the media server says an item was watched but none of Tracearr's or Tautulli's events matched it, its **Playback** fields now count as unknown instead of 0. Auto-delete then holds those items rather than deleting them. As a result, items Plex counted before your playback provider was set up also show as unknown in playback rules.
 - Tracearr refreshes now log how many history rows were skipped, and why (missing rating key, unsupported media type, missing timestamp, or too short).

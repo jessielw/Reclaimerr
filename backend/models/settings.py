@@ -616,6 +616,9 @@ class SMTPSettingsResponse(BaseModel):
     reply_to: str | None = None
     password_configured: bool = False
     updated_at: datetime | None = None
+    # only set by a save that switched email on: destinations created for
+    # existing users as a result
+    auto_enabled_users: int = 0
 
 
 class SMTPSettingsUpdate(BaseModel):

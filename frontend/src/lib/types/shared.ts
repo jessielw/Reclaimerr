@@ -453,6 +453,8 @@ export interface SMTPSettings {
   reply_to: string | null;
   password_configured: boolean;
   updated_at: string | null;
+  // only on a save that switched email on: destinations created as a result
+  auto_enabled_users?: number;
 }
 
 export interface SMTPCoverage {

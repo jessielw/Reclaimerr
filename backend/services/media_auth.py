@@ -27,6 +27,7 @@ from backend.services.admin_notices import (
     resolve_singleton_notice,
     upsert_singleton_notice,
 )
+from backend.services.smtp import auto_enable_system_email
 from backend.user_types import DEFAULT_NEW_USER_ALLOWED_PAGES, MEDIA_SERVERS
 
 MediaAuthMode = Literal["credentials", "redirect"]
@@ -996,6 +997,7 @@ async def resolve_or_create_user_for_identity(
     )
     db.add(new_user)
     await db.flush()
+    await auto_enable_system_email(db, new_user)
     await upsert_media_identity(db, item=identity, user_id=new_user.id, now=now)
     await resolve_singleton_notice(
         db,
