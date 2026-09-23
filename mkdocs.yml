@@ -68,6 +68,7 @@ nav:
   - Using Reclaimerr:
       - How It Works: usage/how-it-works.md
       - Deletion Flow: usage/deletion-flow.md
+      - Duplicates: usage/duplicates.md
       - Rules: usage/rules.md
       - Tasks: usage/tasks.md
   - Deployment:

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- New **Duplicates** page that lists movies and episodes your media server holds more than one file for. It suggests which file to keep using an adjustable **Keeper preference**, and removes the other copies through Radarr/Sonarr (or the media server) without unmonitoring anything. Copies in separate libraries (such as a 4K library) are hidden by default, and anything unsafe to automate, such as multi-episode files, is flagged for manual review. Episode duplicates appear after the next **Sync Media**. See [Duplicates](https://jessielw.github.io/Reclaimerr/usage/duplicates/).
 - Can now see who watched what on Candidates page (if the data is valid) with a count/total count.
 - Added filter options in Candidates page for **last viewed**, **watch count**, **date added**, **tmdb rating**, **imdb rating**, and **release year**.
   - How grouped cards sort:
