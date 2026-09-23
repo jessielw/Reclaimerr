@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -587,6 +587,12 @@ class CandidateDisplayGroup:
     sort_deletion_active: bool
     sort_size: int
     candidate_ids: list[int]
+    sort_tmdb_rating: float | None = None
+    sort_imdb_rating: float | None = None
+    sort_year: int | None = None
+    sort_added_at: datetime | None = None
+    sort_last_viewed_at: datetime = datetime.min.replace(tzinfo=UTC)
+    sort_view_count: int = 0
 
 
 class CandidateLibraryRef(BaseModel):

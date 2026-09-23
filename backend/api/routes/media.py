@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -11,7 +12,7 @@ from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.rule_engine import RULE_OUTCOME_CANDIDATE, normalize_rule_outcome
-from backend.core.utils.datetime_utils import to_utc_isoformat
+from backend.core.utils.datetime_utils import ensure_utc, to_utc_isoformat
 from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.database import get_db
@@ -313,6 +314,77 @@ async def _get_candidate_job_labels(
     return labels, details, len(details)
 
 
+# Never-watched sorts as the oldest possible view, so it leads "oldest first".
+_NEVER_VIEWED = datetime.min.replace(tzinfo=UTC)
+
+# Sort keys whose value can be missing; those groups always sort last.
+_CANDIDATE_OPTIONAL_SORT_KEYS: dict[str, Callable[[CandidateDisplayGroup], Any]] = {
+    "tmdb_rating": lambda group: group.sort_tmdb_rating,
+    "imdb_rating": lambda group: group.sort_imdb_rating,
+    "year": lambda group: group.sort_year,
+    "added_at": lambda group: group.sort_added_at,
+}
+
+
+def _candidate_row_watch_fields(
+    row: Any, *, whole_series: bool
+) -> tuple[datetime | None, datetime, int]:
+    """(added_at, last_viewed_at, view_count) for a candidate descriptor row.
+
+    Mirrors the scope the candidate card shows, except a grouped series uses the
+    series totals so its seasons and episodes are not compared piecemeal.
+    """
+    if row.media_type is MediaType.MOVIE:
+        added_at = (
+            row.version_added_at
+            if row.movie_version_id is not None
+            else row.movie_added_at
+        )
+        last_viewed_at, view_count = row.movie_last_viewed_at, row.movie_view_count
+    elif whole_series or (row.season_id is None and row.episode_id is None):
+        added_at = row.series_added_at
+        last_viewed_at, view_count = row.series_last_viewed_at, row.series_view_count
+    elif row.episode_id is not None:
+        added_at = row.episode_arr_added_at
+        last_viewed_at, view_count = (
+            row.episode_last_viewed_at,
+            row.episode_view_count,
+        )
+    else:
+        added_at = row.season_added_at
+        last_viewed_at, view_count = row.season_last_viewed_at, row.season_view_count
+    return (
+        ensure_utc(added_at) if added_at is not None else None,
+        ensure_utc(last_viewed_at) if last_viewed_at is not None else _NEVER_VIEWED,
+        view_count or 0,
+    )
+
+
+def _sort_groups_missing_last(
+    groups: list[CandidateDisplayGroup],
+    value: Callable[[CandidateDisplayGroup], Any],
+    *,
+    descending: bool,
+) -> list[CandidateDisplayGroup]:
+    present = [group for group in groups if value(group) is not None]
+    missing = [group for group in groups if value(group) is None]
+    present.sort(
+        key=lambda group: (
+            value(group),
+            group.sort_title.lower(),
+            group.media_id or group.candidate_ids[0],
+        ),
+        reverse=descending,
+    )
+    missing.sort(
+        key=lambda group: (
+            group.sort_title.lower(),
+            group.media_id or group.candidate_ids[0],
+        )
+    )
+    return present + missing
+
+
 async def _get_candidate_page_groups(
     db: AsyncSession,
     *,
@@ -345,6 +417,25 @@ async def _get_candidate_page_groups(
             _candidate_effective_size_expr().label("effective_size_bytes"),
             Movie.title.label("movie_title"),
             Series.title.label("series_title"),
+            Movie.vote_average.label("movie_vote_average"),
+            Series.vote_average.label("series_vote_average"),
+            Movie.imdb_rating.label("movie_imdb_rating"),
+            Series.imdb_rating.label("series_imdb_rating"),
+            Movie.year.label("movie_year"),
+            Series.year.label("series_year"),
+            Movie.added_at.label("movie_added_at"),
+            Movie.last_viewed_at.label("movie_last_viewed_at"),
+            Movie.view_count.label("movie_view_count"),
+            MovieVersion.added_at.label("version_added_at"),
+            Series.added_at.label("series_added_at"),
+            Series.last_viewed_at.label("series_last_viewed_at"),
+            Series.view_count.label("series_view_count"),
+            Season.added_at.label("season_added_at"),
+            Season.last_viewed_at.label("season_last_viewed_at"),
+            Season.view_count.label("season_view_count"),
+            Episode.arr_added_at.label("episode_arr_added_at"),
+            Episode.last_viewed_at.label("episode_last_viewed_at"),
+            Episode.view_count.label("episode_view_count"),
         )
         .outerjoin(Movie, ReclaimCandidate.movie_id == Movie.id)
         .outerjoin(MovieVersion, ReclaimCandidate.movie_version_id == MovieVersion.id)
@@ -432,6 +523,10 @@ async def _get_candidate_page_groups(
             if deletion_policy.is_enabled
             else datetime.max.replace(tzinfo=UTC)
         )
+        is_movie = row.media_type is MediaType.MOVIE
+        added_at, last_viewed_at, view_count = _candidate_row_watch_fields(
+            row, whole_series=key[0] == "series_seasons"
+        )
         group = groups_by_key.get(key)
         if group is None:
             groups_by_key[key] = CandidateDisplayGroup(
@@ -443,6 +538,18 @@ async def _get_candidate_page_groups(
                 sort_deletion_active=deletion_policy.is_enabled,
                 sort_size=size_bytes,
                 candidate_ids=[row.candidate_id],
+                # TMDB reports 0 for titles nobody has voted on yet.
+                sort_tmdb_rating=(
+                    row.movie_vote_average if is_movie else row.series_vote_average
+                )
+                or None,
+                sort_imdb_rating=(
+                    row.movie_imdb_rating if is_movie else row.series_imdb_rating
+                ),
+                sort_year=row.movie_year if is_movie else row.series_year,
+                sort_added_at=added_at,
+                sort_last_viewed_at=last_viewed_at,
+                sort_view_count=view_count,
             )
             continue
 
@@ -453,6 +560,10 @@ async def _get_candidate_page_groups(
             group.sort_deletion_active or deletion_policy.is_enabled
         )
         group.sort_size += size_bytes
+        if added_at is not None:
+            group.sort_added_at = min(group.sort_added_at or added_at, added_at)
+        group.sort_last_viewed_at = max(group.sort_last_viewed_at, last_viewed_at)
+        group.sort_view_count = max(group.sort_view_count, view_count)
 
     groups = list(groups_by_key.values())
     if sort_by == "auto_delete_eligible_at":
@@ -489,6 +600,30 @@ async def _get_candidate_page_groups(
                 group.media_id or group.candidate_ids[0],
             ),
             reverse=sort_order == "desc",
+        )
+    elif sort_by == "last_viewed_at":
+        groups.sort(
+            key=lambda group: (
+                group.sort_last_viewed_at,
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            ),
+            reverse=sort_order == "desc",
+        )
+    elif sort_by == "view_count":
+        groups.sort(
+            key=lambda group: (
+                group.sort_view_count,
+                group.sort_title.lower(),
+                group.media_id or group.candidate_ids[0],
+            ),
+            reverse=sort_order == "desc",
+        )
+    elif sort_by in _CANDIDATE_OPTIONAL_SORT_KEYS:
+        groups = _sort_groups_missing_last(
+            groups,
+            _CANDIDATE_OPTIONAL_SORT_KEYS[sort_by],
+            descending=sort_order == "desc",
         )
     else:
         groups.sort(
@@ -1358,7 +1493,10 @@ async def get_candidates(
     per_page: int = Query(25, ge=1, le=200),
     sort_by: str = Query(
         "created_at",
-        pattern="^(created_at|auto_delete_eligible_at|media_title|estimated_space_bytes)$",
+        pattern=(
+            "^(created_at|auto_delete_eligible_at|media_title|estimated_space_bytes"
+            "|tmdb_rating|imdb_rating|year|added_at|last_viewed_at|view_count)$"
+        ),
     ),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),

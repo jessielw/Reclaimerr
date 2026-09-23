@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Can now see who watched what on Candidates page (if the data is valid) with a count/total count.
+- Added filter options in Candidates page for **last viewed**, **watch count**, **date added**, **tmdb rating**, **imdb rating**, and **release year**.
+  - How grouped cards sort:
+    - Movie versions: all versions share the movie's rating, year and watch data.
+    - Series with season or episode candidates: sorted by the whole show's watch count and last-viewed date. Otherwise one heavily watched episode would decide where the whole group lands.
 
 ### Fixed
 

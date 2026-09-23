@@ -367,6 +367,67 @@ def test_get_candidates_sorts_groups_by_auto_delete_date() -> None:
     asyncio.run(run())
 
 
+def test_get_candidates_sorts_groups_by_rating_and_watch_fields() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            await _seed_candidates(db_session)
+
+            async def titles(sort_by: str, sort_order: str) -> list[str]:
+                response = await get_candidates(
+                    _admin_user(),
+                    db_session,
+                    page=1,
+                    per_page=10,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    search=None,
+                    media_type=None,
+                )
+                return list(dict.fromkeys(item.media_title for item in response.items))
+
+            # unrated titles stay last in both directions
+            assert await titles("imdb_rating", "desc") == [
+                "Delta Show",
+                "Alpha Movie",
+                "Bravo Movie",
+                "Charlie Show",
+            ]
+            assert await titles("imdb_rating", "asc") == [
+                "Alpha Movie",
+                "Delta Show",
+                "Bravo Movie",
+                "Charlie Show",
+            ]
+            # a grouped series sorts by its series totals, not its episode's
+            assert await titles("view_count", "desc") == [
+                "Delta Show",
+                "Charlie Show",
+                "Bravo Movie",
+                "Alpha Movie",
+            ]
+            assert await titles("last_viewed_at", "asc") == [
+                "Alpha Movie",
+                "Bravo Movie",
+                "Charlie Show",
+                "Delta Show",
+            ]
+            assert await titles("year", "desc") == [
+                "Delta Show",
+                "Charlie Show",
+                "Bravo Movie",
+                "Alpha Movie",
+            ]
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_get_candidates_search_keeps_series_group_intact() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)

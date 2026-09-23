@@ -69,6 +69,12 @@
     { value: "auto_delete_eligible_at", label: "Deletion date" },
     { value: "media_title", label: "Title" },
     { value: "estimated_space_bytes", label: "Size" },
+    { value: "last_viewed_at", label: "Last viewed" },
+    { value: "view_count", label: "Watch count" },
+    { value: "added_at", label: "Date added" },
+    { value: "tmdb_rating", label: "TMDB rating" },
+    { value: "imdb_rating", label: "IMDb rating" },
+    { value: "year", label: "Release year" },
   ] as const;
   type CandidateSortBy = (typeof sortByOptions)[number]["value"];
   type CandidateMediaFilter = "all" | MediaType.Movie | MediaType.Series;
