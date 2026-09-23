@@ -1,8 +1,11 @@
 # Duplicates
 
-The **Duplicates** page lists movies and TV episodes that your main media server holds more than one file for. Pick the file to keep, and Reclaimerr removes the others.
+The **Duplicates** page has two views:
 
-Duplicates come from the files your media server already reports. Reclaimerr does not scan your disks. Episode duplicates show up after the first **Sync Media** run on this version.
+- **Media server copies**: movies and TV episodes that your main media server holds more than one file for. Pick the file to keep, and Reclaimerr removes the others.
+- **Upgrade leftovers**: old downloads that Radarr replaced with an upgrade but that are still in its download folder. See [Upgrade leftovers](#upgrade-leftovers).
+
+Media server copies come from the files your media server already reports. Episode duplicates show up after the first **Sync Media** run on this version.
 
 ## What counts as a duplicate
 
@@ -43,3 +46,33 @@ For each file you remove:
 2. Otherwise Reclaimerr deletes it through the main media server. This needs **Allow Media Server Fallback Deletion** in General Settings.
 
 Nothing is unmonitored or removed from Radarr/Sonarr, and no import exclusion is added. Protected files are never deleted, and every group always keeps at least one file. Each removed file is recorded in reclaim history.
+
+## Upgrade leftovers
+
+When Radarr upgrades a movie, the original download can stay in the download folder. Your media server never sees it, so it is not a media server copy. Radarr's history still records where each import came from, and the **Scan Upgrade Leftovers** task uses that history to find these files.
+
+For every movie Radarr still has, each import except the latest one has been replaced. If that older import's file is still on disk, it is listed as a leftover. The scan runs daily at 9 AM, and **Scan now** on the page runs it right away. Only Radarr is supported for now.
+
+A file is never listed when:
+
+- it is the same file as the movie's current library file (a hardlink of it),
+- it is the latest import of any movie, on any Radarr instance,
+- it sits inside a Radarr movie folder.
+
+A leftover marked **Hardlinked, frees no space** has another hardlink somewhere else. You can still delete it, but the data stays on disk until the other link is gone too.
+
+### Path mappings
+
+Reclaimerr reads the download path from Radarr, so it needs to reach Radarr's download folder. If Reclaimerr runs in a different container, add a path mapping for that folder (scoped to Radarr, or global). Folders the scan couldn't reach are listed in a banner on the page.
+
+### Manual review
+
+- **Couldn't find the current movie file on disk to compare**: Reclaimerr can't check that the leftover isn't the current file.
+- **This filesystem doesn't report hardlinks**: some network shares report no file IDs, so hardlinks can't be checked.
+- **Path is a folder, not a single file**.
+
+Use **Ignore** to hide a leftover you want to keep. It stays hidden across scans while the file exists.
+
+### How leftovers are removed
+
+Leftovers are deleted directly from disk. No Radarr or media server call is made, because neither tracks these files. Before each delete, Reclaimerr checks again that the file is the same one the scan found and that Radarr isn't using it now. After the file is deleted, its release folder is removed too, but only when the folder is named after the release and holds nothing but extras such as `.nfo` files, samples, screenshots or subtitles. Each deleted leftover is recorded in reclaim history.

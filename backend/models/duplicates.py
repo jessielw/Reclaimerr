@@ -83,3 +83,53 @@ class KeeperPriorityEntry(BaseModel):
 
 class DuplicateSettings(BaseModel):
     keeper_priority: list[KeeperPriorityEntry]
+
+
+class UpgradeLeftoverResponse(BaseModel):
+    id: int
+    movie_id: int | None
+    title: str
+    year: int | None
+    poster_url: str | None
+    source_title: str | None
+    # the path as Radarr reported it
+    dropped_path: str
+    size: int
+    link_count: int
+    # False when another hardlink keeps the data on disk
+    frees_space: bool
+    imported_at: datetime | None
+    manual_reason: str | None
+    ignored: bool
+
+
+class LeftoverSummary(BaseModel):
+    # counts over the whole filtered result, not just this page
+    leftovers: int
+    actionable: int
+    reclaimable_size: int
+
+
+class LeftoverScanInfo(BaseModel):
+    scanned_at: datetime | None
+    # Radarr download folders the last scan couldn't reach (need a path mapping)
+    unmapped_roots: list[str]
+    running: bool
+
+
+class PaginatedLeftoversResponse(BaseModel):
+    items: list[UpgradeLeftoverResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+    summary: LeftoverSummary
+    scan: LeftoverScanInfo
+
+
+class LeftoverDeleteRequest(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class LeftoverIgnoreRequest(BaseModel):
+    id: int

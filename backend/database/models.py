@@ -435,6 +435,10 @@ class GeneralSettings(Base):
     duplicate_keeper_priority: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSON, default=None
     )
+    # last upgrade-leftover scan: {"scanned_at": iso, "unmapped_roots": [...]}
+    upgrade_leftover_scan: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, default=None
+    )
 
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
@@ -1672,6 +1676,46 @@ class DuplicateIgnore(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )
+
+
+class UpgradeLeftover(Base):
+    """A file Radarr imported from its download folder and has since replaced.
+
+    Rows are rewritten by the upgrade-leftover scan; only ``ignored`` is the
+    user's, and it survives rescans because rows are keyed by path.
+    """
+
+    __tablename__ = "upgrade_leftovers"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_config_id", "dropped_path", name="uq_upgrade_leftover_path"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"), index=True
+    )
+    arr_movie_id: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(512))
+    # path as Radarr reported it, and where it resolved to on this machine
+    dropped_path: Mapped[str] = mapped_column(String(2048))
+    local_path: Mapped[str] = mapped_column(String(2048))
+    size: Mapped[int] = mapped_column(Integer)
+    # > 1 means another hardlink keeps the data, so deleting frees no space
+    link_count: Mapped[int] = mapped_column(Integer)
+    # "st_dev:st_ino" at scan time; a delete refuses a path that now holds another file
+    file_key: Mapped[str | None] = mapped_column(String(64), default=None)
+    movie_id: Mapped[int | None] = mapped_column(
+        ForeignKey("movies.id", ondelete="SET NULL"), default=None, index=True
+    )
+    year: Mapped[int | None] = mapped_column(Integer, default=None)
+    source_title: Mapped[str | None] = mapped_column(String(1024), default=None)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    manual_reason: Mapped[str | None] = mapped_column(String(255), default=None)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class MovieArrRef(Base):

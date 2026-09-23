@@ -1004,6 +1004,34 @@ export interface PaginatedDuplicatesResponse extends PaginatedResponse<Duplicate
   summary: { groups: number; actionable: number; reclaimable_size: number };
 }
 
+export interface UpgradeLeftover {
+  id: number;
+  movie_id: number | null;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  source_title: string | null;
+  /** the path as Radarr reported it */
+  dropped_path: string;
+  size: number;
+  link_count: number;
+  /** false when another hardlink keeps the data on disk */
+  frees_space: boolean;
+  imported_at: string | null;
+  manual_reason: string | null;
+  ignored: boolean;
+}
+
+export interface PaginatedLeftoversResponse extends PaginatedResponse<UpgradeLeftover> {
+  summary: { leftovers: number; actionable: number; reclaimable_size: number };
+  scan: {
+    scanned_at: string | null;
+    /** Radarr download folders the last scan couldn't reach */
+    unmapped_roots: string[];
+    running: boolean;
+  };
+}
+
 export interface DuplicateKeeperPriorityEntry {
   key: string;
   enabled: boolean;

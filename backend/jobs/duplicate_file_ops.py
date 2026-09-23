@@ -7,11 +7,15 @@ the Arr entry or add an import exclusion. Per file the route is:
 1. the Arr instance tracking that exact file (Radarr moviefile / Sonarr
    episodefile delete), which keeps the entry monitored with its other file;
 2. otherwise the main media server, when media server fallback is enabled.
+
+Upgrade leftovers (Radarr download-folder copies of replaced files) ride the same
+job but are removed straight from disk: no Arr or media server tracks them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +44,7 @@ from backend.database.models import (
     Season,
     Series,
     SeriesArrRef,
+    UpgradeLeftover,
 )
 from backend.enums import BackgroundJobPriority, BackgroundJobType, MediaType, Service
 from backend.jobs.queue import enqueue_background_job, update_background_job_payload
@@ -48,12 +53,17 @@ from backend.models.jobs import (
     DuplicateDeleteJobItem,
     DuplicateDeleteJobPayload,
     DuplicateDeleteJobResult,
+    LeftoverDeleteJobItem,
 )
 from backend.services.duplicates import (
     DuplicateActionError,
     DuplicateFile,
     DuplicateGroup,
     plan_duplicate_delete,
+)
+from backend.services.upgrade_leftovers import (
+    check_before_delete,
+    remove_release_folder,
 )
 from backend.tasks.cleanup import (
     _best_effort_radarr_rescan,
@@ -69,13 +79,16 @@ async def queue_duplicate_delete_job(
     items: list[DuplicateDeleteJobItem],
     requested_by_user_id: int,
     requested_by_username: str,
+    leftovers: list[LeftoverDeleteJobItem] | None = None,
 ) -> BackgroundJob:
+    leftovers = leftovers or []
     payload = DuplicateDeleteJobPayload(
         items=items,
+        leftovers=leftovers,
         requested_by_user_id=requested_by_user_id,
         requested_by_username=requested_by_username,
-        item_labels=[item.display_label for item in items],
-        progress=CandidateFileOpJobProgress(total_items=len(items)),
+        item_labels=[i.display_label for i in [*items, *leftovers]],
+        progress=CandidateFileOpJobProgress(total_items=len(items) + len(leftovers)),
     ).model_dump(mode="json")
     job = await enqueue_background_job(
         job_type=BackgroundJobType.DUPLICATE_DELETE,
@@ -98,7 +111,7 @@ async def run_duplicate_delete_job(
 async def _run_unlocked(
     job_id: int, payload: DuplicateDeleteJobPayload
 ) -> dict[str, Any]:
-    total = len(payload.items)
+    total = len(payload.items) + len(payload.leftovers)
     succeeded = 0
     failed = 0
     freed = 0
@@ -117,21 +130,33 @@ async def _run_unlocked(
             job_id, {"progress": progress.model_dump(mode="json")}
         )
 
-    for index, item in enumerate(payload.items):
-        await _progress(item.display_label, index)
+    approved_by = payload.requested_by_username
+    work: Sequence[tuple[str, Callable[[], Awaitable[int]]]] = [
+        (
+            item.display_label,
+            partial(delete_duplicate_files, item, approved_by=approved_by),
+        )
+        for item in payload.items
+    ] + [
+        (
+            leftover.display_label,
+            partial(delete_leftover, leftover, approved_by=approved_by),
+        )
+        for leftover in payload.leftovers
+    ]
+    for index, (label, run) in enumerate(work):
+        await _progress(label, index)
         try:
-            freed += await delete_duplicate_files(
-                item, approved_by=payload.requested_by_username
-            )
+            freed += await run()
             succeeded += 1
         except DuplicateActionError as e:
             failed += 1
-            errors.append(f"{item.display_label}: {e}")
+            errors.append(f"{label}: {e}")
         except Exception as e:
-            LOG.exception(f"Duplicate delete failed for {item.display_label}")
+            LOG.exception(f"Duplicate delete failed for {label}")
             failed += 1
             reason = summarize_error_message(str(e), max_chars=300) or str(e)
-            errors.append(f"{item.display_label}: {reason}")
+            errors.append(f"{label}: {reason}")
     await _progress(None, total)
 
     return DuplicateDeleteJobResult(
@@ -512,3 +537,57 @@ async def _delete_episode_file(
         episode_id=group.item_id,
         episode_number=group.episode_number,
     )
+
+
+async def delete_leftover(item: LeftoverDeleteJobItem, *, approved_by: str) -> int:
+    """Delete one upgrade leftover from disk. Returns bytes freed.
+
+    Hardlinked leftovers free nothing, since another link keeps the data.
+    """
+    async with async_db() as db:
+        row = await db.get(UpgradeLeftover, item.id)
+        settings = (
+            (await db.execute(select(GeneralSettings).limit(1))).scalars().first()
+        )
+    if row is None:
+        raise DuplicateActionError("No longer listed - rescan")
+    client = service_manager.get_radarr(row.service_config_id)
+    if client is None:
+        raise DuplicateActionError("Its Radarr instance isn't connected")
+    movie = await client.get_movie(row.arr_movie_id)
+    mappings: list[dict[str, Any]] = (
+        list(settings.path_mappings or []) if settings else []
+    )
+    st = check_before_delete(row, movie, mappings)
+
+    local = Path(row.local_path)
+    local.unlink()
+    remove_release_folder(local.parent, [row.source_title or "", local.stem])
+    freed = st.st_size if st.st_nlink <= 1 else 0
+    LOG.info(f"Upgrade leftover deleted: {local} ({item.display_label})")
+
+    async with async_db() as db:
+        await db.execute(delete(UpgradeLeftover).where(UpgradeLeftover.id == row.id))
+        db.add(
+            ReclaimHistory(
+                approved_by=approved_by,
+                media_type=MediaType.MOVIE,
+                tmdb_id=movie.tmdb_id,
+                name=item.display_label,
+                path=row.dropped_path,
+                size=freed,
+                attributes={"source": "upgrade_leftover"},
+            )
+        )
+        await db.commit()
+    await _dispatch_reclaim_event(
+        action="deleted",
+        media_type=MediaType.MOVIE,
+        title=item.display_label,
+        tmdb_id=movie.tmdb_id,
+        path=row.dropped_path,
+        local_path=str(local),
+        service_type=Service.RADARR,
+        service_config_id=row.service_config_id,
+    )
+    return freed

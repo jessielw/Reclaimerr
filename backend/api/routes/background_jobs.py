@@ -101,8 +101,11 @@ def _duplicate_delete_summary(payload: dict[str, Any]) -> str:
             if failed > 0:
                 details.append(f"{failed} failed")
             return f"Delete duplicates: {', '.join(details)}{suffix}"
-    items = payload.get("items")
-    count = len(items) if isinstance(items, list) else 0
+    count = sum(
+        len(value)
+        for value in (payload.get("items"), payload.get("leftovers"))
+        if isinstance(value, list)
+    )
     return f"Delete duplicates: {count} item{'s' if count != 1 else ''}{suffix}"
 
 

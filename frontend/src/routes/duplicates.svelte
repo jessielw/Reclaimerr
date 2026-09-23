@@ -4,6 +4,7 @@
   import ErrorBox from "$lib/components/error-box.svelte";
   import CompactPagination from "$lib/components/compact-pagination.svelte";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
+  import UpgradeLeftovers from "$lib/components/duplicates/upgrade-leftovers.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
@@ -39,9 +40,12 @@
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import Copy from "@lucide/svelte/icons/copy";
+  import FolderDown from "@lucide/svelte/icons/folder-down";
 
   type MediaFilter = "all" | MediaType.Movie | MediaType.Series;
   type SortBy = "title" | "size";
+  type View = "media" | "leftovers";
 
   interface DuplicateJobResult {
     succeeded?: number;
@@ -65,6 +69,13 @@
     v === "all" || v === MediaType.Movie || v === MediaType.Series;
   const isSortBy = (v: unknown): v is SortBy => v === "title" || v === "size";
   const isBool = (v: unknown): v is boolean => typeof v === "boolean";
+  const isView = (v: unknown): v is View => v === "media" || v === "leftovers";
+
+  const _viewStore = createFilterState<View>(
+    "duplicates_view",
+    "media",
+    isView,
+  );
 
   const _mediaStore = createFilterState<MediaFilter>(
     "duplicates_media_filter",
@@ -93,6 +104,7 @@
   );
   const _perPageStore = createPerPageState("duplicates_per_page");
 
+  let view = $state<View>(_viewStore.getInitial());
   let data = $state<PaginatedDuplicatesResponse | null>(null);
   let loading = $state(true);
   let error = $state("");
@@ -129,6 +141,7 @@
 
   const groups = $derived(data?.items ?? []);
 
+  $effect(() => _viewStore.save(view));
   $effect(() => _mediaStore.save(mediaFilter));
   $effect(() => _sortStore.save(sortBy));
   $effect(() => _crossStore.save(includeCrossLibrary));
@@ -143,7 +156,7 @@
     includeManual;
     includeIgnored;
     perPage;
-    if (mounted) void load(1);
+    if (mounted && view === "media") void load(1);
   });
 
   onMount(() => {
@@ -539,11 +552,12 @@
       <div>
         <h1 class="text-3xl font-bold text-foreground">Duplicates</h1>
         <p class="text-muted-foreground">
-          Movies and episodes your media server holds more than one file for.
-          Pick the file to keep; the rest can be removed.
+          {view === "media"
+            ? "Movies and episodes your media server holds more than one file for. Pick the file to keep; the rest can be removed."
+            : "Old downloads Radarr no longer needs after an upgrade."}
         </p>
       </div>
-      {#if isAdmin}
+      {#if isAdmin && view === "media"}
         <Button variant="outline" class="cursor-pointer" onclick={openSettings}>
           <SlidersHorizontal class="size-4" />
           Keeper preference
@@ -551,407 +565,437 @@
       {/if}
     </div>
 
-    {#if data && data.summary.groups > 0}
-      <div class="grid grid-cols-3 gap-2">
-        <div class="rounded-lg border border-border bg-card px-4 py-3">
-          <p class="text-xs text-muted-foreground">Duplicate groups</p>
-          <p class="text-xl font-semibold text-foreground">
-            {data.summary.groups}
-          </p>
-        </div>
-        <div class="rounded-lg border border-border bg-card px-4 py-3">
-          <p class="text-xs text-muted-foreground">Ready to clean up</p>
-          <p class="text-xl font-semibold text-foreground">
-            {data.summary.actionable}
-          </p>
-        </div>
-        <div class="rounded-lg border border-border bg-card px-4 py-3">
-          <p class="text-xs text-muted-foreground">Reclaimable</p>
-          <p class="text-xl font-semibold text-foreground">
-            {formatFileSize(data.summary.reclaimable_size)}
-          </p>
-        </div>
-      </div>
-    {/if}
+    <div class="flex gap-1 rounded-lg border bg-muted/40 p-1 w-fit">
+      <!-- media server copies tab -->
+      <Button
+        onclick={() => (view = "media")}
+        class="cursor-pointer
+          {view === 'media'
+          ? 'bg-primary text-background dark:text-foreground'
+          : 'text-foreground bg-transparent'}"
+      >
+        <Copy class="size-4" />
+        Media Server Copies
+      </Button>
 
-    <!-- filters -->
-    <div class="flex flex-col gap-2 lg:flex-row">
-      <div class="relative flex-1">
-        <Search
-          class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
-        />
-        <Input
-          type="text"
-          placeholder="Search by title"
-          value={searchQuery}
-          oninput={handleSearch}
-          class="pl-10 bg-card"
-        />
-      </div>
-      <div class="flex flex-1 gap-2">
-        <Select.Root
-          type="single"
-          value={mediaFilter}
-          onValueChange={(v) => {
-            if (isMediaFilter(v)) mediaFilter = v;
-          }}
-        >
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {mediaFilter === "all"
-              ? "All media"
-              : mediaFilter === MediaType.Movie
-                ? "Movies"
-                : "Episodes"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="all"
-              label="All media"
-              class="text-card-foreground"
-            >
-              All media
-            </Select.Item>
-            <Select.Item
-              value={MediaType.Movie}
-              label="Movies"
-              class="text-card-foreground"
-            >
-              Movies
-            </Select.Item>
-            <Select.Item
-              value={MediaType.Series}
-              label="Episodes"
-              class="text-card-foreground"
-            >
-              Episodes
-            </Select.Item>
-          </Select.Content>
-        </Select.Root>
-        <Select.Root
-          type="single"
-          value={sortBy}
-          onValueChange={(v) => {
-            if (isSortBy(v)) sortBy = v;
-          }}
-        >
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {sortBy === "title" ? "Title" : "Most reclaimable"}
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            <Select.Item
-              value="title"
-              label="Title"
-              class="text-card-foreground"
-            >
-              Title
-            </Select.Item>
-            <Select.Item
-              value="size"
-              label="Most reclaimable"
-              class="text-card-foreground"
-            >
-              Most reclaimable
-            </Select.Item>
-          </Select.Content>
-        </Select.Root>
-        <Select.Root
-          type="single"
-          value={perPage.toString()}
-          onValueChange={(v) => {
-            const n = parseInt(v, 10);
-            if (!isNaN(n)) {
-              perPage = n;
-              _perPageStore.save(n);
-            }
-          }}
-        >
-          <Select.Trigger class="flex-1 bg-card text-card-foreground">
-            {perPage} / page
-          </Select.Trigger>
-          <Select.Content class="bg-card">
-            {#each PER_PAGE_OPTIONS as opt}
+      <!-- upgrade leftovers tab -->
+      <Button
+        onclick={() => (view = "leftovers")}
+        class="cursor-pointer
+          {view === 'leftovers'
+          ? 'bg-primary text-background dark:text-foreground'
+          : 'text-foreground bg-transparent'}"
+      >
+        <FolderDown class="size-4" />
+        Upgrade Leftovers
+      </Button>
+    </div>
+
+    {#if view === "leftovers"}
+      <UpgradeLeftovers {canManage} />
+    {:else}
+      {#if data && data.summary.groups > 0}
+        <div class="grid grid-cols-3 gap-2">
+          <div class="rounded-lg border border-border bg-card px-4 py-3">
+            <p class="text-xs text-muted-foreground">Duplicate groups</p>
+            <p class="text-xl font-semibold text-foreground">
+              {data.summary.groups}
+            </p>
+          </div>
+          <div class="rounded-lg border border-border bg-card px-4 py-3">
+            <p class="text-xs text-muted-foreground">Ready to clean up</p>
+            <p class="text-xl font-semibold text-foreground">
+              {data.summary.actionable}
+            </p>
+          </div>
+          <div class="rounded-lg border border-border bg-card px-4 py-3">
+            <p class="text-xs text-muted-foreground">Reclaimable</p>
+            <p class="text-xl font-semibold text-foreground">
+              {formatFileSize(data.summary.reclaimable_size)}
+            </p>
+          </div>
+        </div>
+      {/if}
+
+      <!-- filters -->
+      <div class="flex flex-col gap-2 lg:flex-row">
+        <div class="relative flex-1">
+          <Search
+            class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
+          />
+          <Input
+            type="text"
+            placeholder="Search by title"
+            value={searchQuery}
+            oninput={handleSearch}
+            class="pl-10 bg-card"
+          />
+        </div>
+        <div class="flex flex-1 gap-2">
+          <Select.Root
+            type="single"
+            value={mediaFilter}
+            onValueChange={(v) => {
+              if (isMediaFilter(v)) mediaFilter = v;
+            }}
+          >
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {mediaFilter === "all"
+                ? "All media"
+                : mediaFilter === MediaType.Movie
+                  ? "Movies"
+                  : "Episodes"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
               <Select.Item
-                value={opt.toString()}
-                label={`${opt} / page`}
+                value="all"
+                label="All media"
                 class="text-card-foreground"
               >
-                {opt} / page
+                All media
               </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+              <Select.Item
+                value={MediaType.Movie}
+                label="Movies"
+                class="text-card-foreground"
+              >
+                Movies
+              </Select.Item>
+              <Select.Item
+                value={MediaType.Series}
+                label="Episodes"
+                class="text-card-foreground"
+              >
+                Episodes
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+          <Select.Root
+            type="single"
+            value={sortBy}
+            onValueChange={(v) => {
+              if (isSortBy(v)) sortBy = v;
+            }}
+          >
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {sortBy === "title" ? "Title" : "Most reclaimable"}
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              <Select.Item
+                value="title"
+                label="Title"
+                class="text-card-foreground"
+              >
+                Title
+              </Select.Item>
+              <Select.Item
+                value="size"
+                label="Most reclaimable"
+                class="text-card-foreground"
+              >
+                Most reclaimable
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+          <Select.Root
+            type="single"
+            value={perPage.toString()}
+            onValueChange={(v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n)) {
+                perPage = n;
+                _perPageStore.save(n);
+              }
+            }}
+          >
+            <Select.Trigger class="flex-1 bg-card text-card-foreground">
+              {perPage} / page
+            </Select.Trigger>
+            <Select.Content class="bg-card">
+              {#each PER_PAGE_OPTIONS as opt}
+                <Select.Item
+                  value={opt.toString()}
+                  label={`${opt} / page`}
+                  class="text-card-foreground"
+                >
+                  {opt} / page
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
       </div>
-    </div>
 
-    <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground">
-      <label class="flex items-center gap-2 cursor-pointer">
-        <Switch bind:checked={includeCrossLibrary} />
-        Include copies in different libraries
-      </label>
-      <label class="flex items-center gap-2 cursor-pointer">
-        <Switch bind:checked={includeManual} />
-        Show items that need manual review
-      </label>
-      <label class="flex items-center gap-2 cursor-pointer">
-        <Switch bind:checked={includeIgnored} />
-        Show "not a duplicate"
-      </label>
-    </div>
-
-    {#if canManage && !loading && selectableOnPage.length > 0}
-      <div
-        class="flex flex-col gap-2 rounded-lg border border-border bg-muted/35 px-4 py-2.5
-          sm:flex-row sm:items-center sm:justify-between"
-      >
-        <label
-          class="flex items-center gap-2 text-sm font-medium text-foreground cursor-pointer"
-        >
-          <input
-            type="checkbox"
-            checked={allPageSelected}
-            indeterminate={somePageSelected}
-            onchange={toggleSelectAll}
-            class="cursor-pointer accent-primary"
-          />
-          Select all on this page
+      <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <Switch bind:checked={includeCrossLibrary} />
+          Include copies in different libraries
         </label>
-        <span class="text-xs text-muted-foreground sm:text-sm">
-          {selectedGroups.length} of {selectableOnPage.length} selected
-        </span>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <Switch bind:checked={includeManual} />
+          Show items that need manual review
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <Switch bind:checked={includeIgnored} />
+          Show "not a duplicate"
+        </label>
       </div>
-    {/if}
 
-    {#if canManage && selectedGroups.length > 0}
-      <div
-        class="flex items-center justify-between gap-4 px-4 py-3 bg-primary/10 border border-primary/30 rounded-lg"
-      >
-        <span class="text-sm text-foreground font-medium">
-          {selectedGroups.length} item{selectedGroups.length === 1 ? "" : "s"} selected
-          <span class="text-muted-foreground font-normal">
-            - {formatFileSize(selectedBytes)} reclaimable
-          </span>
-        </span>
-        <Button
-          size="sm"
-          variant="destructive"
-          class="cursor-pointer"
-          onclick={() => openConfirm(selectedGroups)}
+      {#if canManage && !loading && selectableOnPage.length > 0}
+        <div
+          class="flex flex-col gap-2 rounded-lg border border-border bg-muted/35 px-4 py-2.5
+          sm:flex-row sm:items-center sm:justify-between"
         >
-          <Trash2 class="size-4" />
-          Delete other copies
-        </Button>
-      </div>
-    {/if}
-
-    <ErrorBox {error} />
-
-    <div class="bg-card rounded-lg border border-border">
-      {#if loading}
-        <div class="p-8 text-center text-muted-foreground">
-          <div
-            class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
-          ></div>
-          <p class="mt-4">Loading duplicates...</p>
+          <label
+            class="flex items-center gap-2 text-sm font-medium text-foreground cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={allPageSelected}
+              indeterminate={somePageSelected}
+              onchange={toggleSelectAll}
+              class="cursor-pointer accent-primary"
+            />
+            Select all on this page
+          </label>
+          <span class="text-xs text-muted-foreground sm:text-sm">
+            {selectedGroups.length} of {selectableOnPage.length} selected
+          </span>
         </div>
-      {:else if groups.length === 0}
-        <div class="p-8 text-center text-muted-foreground">
-          No duplicates found.
-          {#if !includeCrossLibrary}
-            <span class="block text-sm mt-1">
-              Copies in different libraries (for example a separate 4K library)
-              are hidden by default.
+      {/if}
+
+      {#if canManage && selectedGroups.length > 0}
+        <div
+          class="flex items-center justify-between gap-4 px-4 py-3 bg-primary/10 border border-primary/30 rounded-lg"
+        >
+          <span class="text-sm text-foreground font-medium">
+            {selectedGroups.length} item{selectedGroups.length === 1 ? "" : "s"} selected
+            <span class="text-muted-foreground font-normal">
+              - {formatFileSize(selectedBytes)} reclaimable
             </span>
-          {/if}
+          </span>
+          <Button
+            size="sm"
+            variant="destructive"
+            class="cursor-pointer"
+            onclick={() => openConfirm(selectedGroups)}
+          >
+            <Trash2 class="size-4" />
+            Delete other copies
+          </Button>
         </div>
-      {:else}
-        <ul class="divide-y divide-border">
-          {#each groups as group (group.key)}
-            <li class="p-3 md:p-4 space-y-3">
-              <div class="flex items-start gap-3">
-                {#if canManage}
-                  <input
-                    type="checkbox"
-                    class="mt-1 cursor-pointer accent-primary disabled:cursor-not-allowed"
-                    checked={selectedKeys.has(group.key)}
-                    disabled={!canClean(group)}
-                    onchange={() => toggleSelect(group.key)}
-                    aria-label="Select {groupLabel(group)}"
-                  />
-                {/if}
-                <PosterThumb
-                  mediaType={group.media_type}
-                  posterUrl={group.poster_url}
-                  tailWindElSize="w-12"
-                  showMediaType
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="font-semibold text-foreground truncate">
-                    {groupLabel(group)}
-                  </p>
-                  {#if group.episode_name}
-                    <p class="text-sm text-muted-foreground truncate">
-                      {group.episode_name}
-                    </p>
-                  {/if}
-                  <div class="flex flex-wrap gap-1.5 mt-1 text-xs">
-                    <span class="text-muted-foreground">
-                      {group.files.length} files
-                    </span>
-                    {#if group.cross_library}
-                      <span
-                        class="px-2 rounded-full border border-border text-muted-foreground"
-                      >
-                        Different libraries
-                      </span>
-                    {/if}
-                    {#if group.ignored}
-                      <span
-                        class="px-2 rounded-full border border-border text-muted-foreground"
-                      >
-                        Not a duplicate
-                      </span>
-                    {/if}
-                  </div>
-                  {#if group.manual_reason}
-                    <p
-                      class="mt-1.5 flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400"
-                    >
-                      <TriangleAlert class="size-4 shrink-0" />
-                      Manual review: {group.manual_reason}
-                    </p>
-                  {/if}
-                </div>
-                {#if canManage}
-                  <div class="flex flex-wrap justify-end gap-2">
-                    {#if group.ignored}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        class="cursor-pointer"
-                        onclick={() => setIgnored(group, false)}
-                      >
-                        <Eye class="size-4" />
-                        Restore
-                      </Button>
-                    {:else}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        class="cursor-pointer"
-                        onclick={() => setIgnored(group, true)}
-                      >
-                        <EyeOff class="size-4" />
-                        Not a duplicate
-                      </Button>
-                    {/if}
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      class="cursor-pointer"
-                      disabled={!canClean(group)}
-                      onclick={() => openConfirm([group])}
-                    >
-                      <Trash2 class="size-4" />
-                      Delete others ({formatFileSize(deleteBytes(group))})
-                    </Button>
-                  </div>
-                {/if}
-              </div>
+      {/if}
 
-              <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {#each group.files as file, index (file.version_ids[0])}
-                  {@const isKeeper = index === keeperIndex(group)}
-                  <label
-                    class="rounded-md border px-3 py-2 text-sm transition-colors
-                      {isKeeper
-                      ? 'border-primary bg-primary/10'
-                      : 'border-border bg-muted/30'}
-                      {canManage && isActionable(group)
-                      ? 'cursor-pointer'
-                      : ''}"
-                  >
-                    <div class="flex items-center gap-2">
-                      {#if canManage}
-                        <input
-                          type="radio"
-                          name="keep-{group.key}"
-                          class="accent-primary"
-                          checked={isKeeper}
-                          disabled={!isActionable(group)}
-                          onchange={() =>
-                            (keepers = { ...keepers, [group.key]: index })}
-                        />
-                      {/if}
-                      <span class="font-medium text-foreground">
-                        {isKeeper ? "Keep" : "Remove"}
-                      </span>
-                      {#if index === 0}
-                        <span class="text-xs text-muted-foreground"
-                          >(suggested)</span
-                        >
-                      {/if}
-                      <span class="ml-auto flex items-center gap-2">
-                        {#if file.protected}
-                          <span
-                            class="flex items-center gap-1 text-xs text-muted-foreground"
-                            title="Protected files are never deleted"
-                          >
-                            <Lock class="size-3.5" /> Protected
-                          </span>
-                        {/if}
-                        <span class="font-medium text-foreground">
-                          {formatFileSize(file.size)}
-                        </span>
-                      </span>
-                    </div>
-                    <div class="flex flex-wrap gap-1 mt-1.5">
-                      {#each fileChips(file) as chip}
-                        <span
-                          class="text-xs leading-5 px-2 rounded-full border border-border text-muted-foreground"
-                        >
-                          {chip}
-                        </span>
-                      {/each}
-                    </div>
-                    <p class="mt-1.5 text-xs text-foreground break-all">
-                      {fileName(file.path)}
+      <ErrorBox {error} />
+
+      <div class="bg-card rounded-lg border border-border">
+        {#if loading}
+          <div class="p-8 text-center text-muted-foreground">
+            <div
+              class="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"
+            ></div>
+            <p class="mt-4">Loading duplicates...</p>
+          </div>
+        {:else if groups.length === 0}
+          <div class="p-8 text-center text-muted-foreground">
+            No duplicates found.
+            {#if !includeCrossLibrary}
+              <span class="block text-sm mt-1">
+                Copies in different libraries (for example a separate 4K
+                library) are hidden by default.
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <ul class="divide-y divide-border">
+            {#each groups as group (group.key)}
+              <li class="p-3 md:p-4 space-y-3">
+                <div class="flex items-start gap-3">
+                  {#if canManage}
+                    <input
+                      type="checkbox"
+                      class="mt-1 cursor-pointer accent-primary disabled:cursor-not-allowed"
+                      checked={selectedKeys.has(group.key)}
+                      disabled={!canClean(group)}
+                      onchange={() => toggleSelect(group.key)}
+                      aria-label="Select {groupLabel(group)}"
+                    />
+                  {/if}
+                  <PosterThumb
+                    mediaType={group.media_type}
+                    posterUrl={group.poster_url}
+                    tailWindElSize="w-12"
+                    showMediaType
+                  />
+                  <div class="flex-1 min-w-0">
+                    <p class="font-semibold text-foreground truncate">
+                      {groupLabel(group)}
                     </p>
-                    {#if folderName(file.path)}
-                      <p
-                        class="text-xs font-mono text-muted-foreground break-all"
-                      >
-                        {folderName(file.path)}
+                    {#if group.episode_name}
+                      <p class="text-sm text-muted-foreground truncate">
+                        {group.episode_name}
                       </p>
                     {/if}
-                    <p class="mt-1 text-xs text-muted-foreground">
-                      {file.library_names.join(", ")}
-                    </p>
-                  </label>
-                {/each}
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
+                    <div class="flex flex-wrap gap-1.5 mt-1 text-xs">
+                      <span class="text-muted-foreground">
+                        {group.files.length} files
+                      </span>
+                      {#if group.cross_library}
+                        <span
+                          class="px-2 rounded-full border border-border text-muted-foreground"
+                        >
+                          Different libraries
+                        </span>
+                      {/if}
+                      {#if group.ignored}
+                        <span
+                          class="px-2 rounded-full border border-border text-muted-foreground"
+                        >
+                          Not a duplicate
+                        </span>
+                      {/if}
+                    </div>
+                    {#if group.manual_reason}
+                      <p
+                        class="mt-1.5 flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400"
+                      >
+                        <TriangleAlert class="size-4 shrink-0" />
+                        Manual review: {group.manual_reason}
+                      </p>
+                    {/if}
+                  </div>
+                  {#if canManage}
+                    <div class="flex flex-wrap justify-end gap-2">
+                      {#if group.ignored}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          class="cursor-pointer"
+                          onclick={() => setIgnored(group, false)}
+                        >
+                          <Eye class="size-4" />
+                          Restore
+                        </Button>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          class="cursor-pointer"
+                          onclick={() => setIgnored(group, true)}
+                        >
+                          <EyeOff class="size-4" />
+                          Not a duplicate
+                        </Button>
+                      {/if}
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        class="cursor-pointer"
+                        disabled={!canClean(group)}
+                        onclick={() => openConfirm([group])}
+                      >
+                        <Trash2 class="size-4" />
+                        Delete others ({formatFileSize(deleteBytes(group))})
+                      </Button>
+                    </div>
+                  {/if}
+                </div>
 
-    {#if !loading && data && data.total_pages > 1}
-      <div
-        class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
-      >
-        <p class="text-sm text-muted-foreground">
-          Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
-            data.page * data.per_page,
-            data.total,
-          )} of {data.total} results
-        </p>
-        <CompactPagination
-          currentPage={data.page}
-          totalPages={data.total_pages}
-          maxVisiblePages={3}
-          onPageChange={load}
-        />
+                <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {#each group.files as file, index (file.version_ids[0])}
+                    {@const isKeeper = index === keeperIndex(group)}
+                    <label
+                      class="rounded-md border px-3 py-2 text-sm transition-colors
+                      {isKeeper
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border bg-muted/30'}
+                      {canManage && isActionable(group)
+                        ? 'cursor-pointer'
+                        : ''}"
+                    >
+                      <div class="flex items-center gap-2">
+                        {#if canManage}
+                          <input
+                            type="radio"
+                            name="keep-{group.key}"
+                            class="accent-primary"
+                            checked={isKeeper}
+                            disabled={!isActionable(group)}
+                            onchange={() =>
+                              (keepers = { ...keepers, [group.key]: index })}
+                          />
+                        {/if}
+                        <span class="font-medium text-foreground">
+                          {isKeeper ? "Keep" : "Remove"}
+                        </span>
+                        {#if index === 0}
+                          <span class="text-xs text-muted-foreground"
+                            >(suggested)</span
+                          >
+                        {/if}
+                        <span class="ml-auto flex items-center gap-2">
+                          {#if file.protected}
+                            <span
+                              class="flex items-center gap-1 text-xs text-muted-foreground"
+                              title="Protected files are never deleted"
+                            >
+                              <Lock class="size-3.5" /> Protected
+                            </span>
+                          {/if}
+                          <span class="font-medium text-foreground">
+                            {formatFileSize(file.size)}
+                          </span>
+                        </span>
+                      </div>
+                      <div class="flex flex-wrap gap-1 mt-1.5">
+                        {#each fileChips(file) as chip}
+                          <span
+                            class="text-xs leading-5 px-2 rounded-full border border-border text-muted-foreground"
+                          >
+                            {chip}
+                          </span>
+                        {/each}
+                      </div>
+                      <p class="mt-1.5 text-xs text-foreground break-all">
+                        {fileName(file.path)}
+                      </p>
+                      {#if folderName(file.path)}
+                        <p
+                          class="text-xs font-mono text-muted-foreground break-all"
+                        >
+                          {folderName(file.path)}
+                        </p>
+                      {/if}
+                      <p class="mt-1 text-xs text-muted-foreground">
+                        {file.library_names.join(", ")}
+                      </p>
+                    </label>
+                  {/each}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </div>
+
+      {#if !loading && data && data.total_pages > 1}
+        <div
+          class="flex flex-wrap justify-center gap-2 md:flex-nowrap md:justify-between items-center"
+        >
+          <p class="text-sm text-muted-foreground">
+            Showing {(data.page - 1) * data.per_page + 1} to {Math.min(
+              data.page * data.per_page,
+              data.total,
+            )} of {data.total} results
+          </p>
+          <CompactPagination
+            currentPage={data.page}
+            totalPages={data.total_pages}
+            maxVisiblePages={3}
+            onPageChange={load}
+          />
+        </div>
+      {/if}
     {/if}
   </div>
 </div>

@@ -86,8 +86,16 @@ class DuplicateDeleteJobItem(BaseModel):
     display_label: str
 
 
+class LeftoverDeleteJobItem(BaseModel):
+    # upgrade_leftovers.id
+    id: int
+    display_label: str
+
+
 class DuplicateDeleteJobPayload(BaseModel):
     items: list[DuplicateDeleteJobItem]
+    # upgrade leftovers ride the same job: both remove a redundant copy
+    leftovers: list[LeftoverDeleteJobItem] = []
     requested_by_user_id: int
     requested_by_username: str
     # same shape as candidate jobs so job history can preview it

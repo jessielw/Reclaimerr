@@ -106,6 +106,7 @@ class Task(StrEnum):
     MDBLIST_RATINGS_REFRESH = auto()
     OMDB_RATINGS_REFRESH = auto()
     REFRESH_PLAYBACK_HISTORY = auto()
+    SCAN_UPGRADE_LEFTOVERS = auto()
 
     def friendly_name(self) -> str:
         branded_names = {

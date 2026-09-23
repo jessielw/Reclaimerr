@@ -175,6 +175,18 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "default_schedule_value": "0 7 * * *",
         "enabled": True,
     },
+    {
+        "task": Task.SCAN_UPGRADE_LEFTOVERS,
+        "description": (
+            "Finds files Radarr replaced with an upgrade that are still in its "
+            "download folder (shown on the Duplicates page)"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        "schedule_value": "0 9 * * *",  # daily at 9 AM
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 9 * * *",
+        "enabled": True,
+    },
 )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from math import ceil
 from typing import Annotated, Any, Literal
 
@@ -8,9 +9,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import has_permission, require_admin, require_page_access
+from backend.core.task_runtime import is_task_active, request_task_run
 from backend.database import get_db
-from backend.database.models import DuplicateIgnore, GeneralSettings, User
-from backend.enums import MediaType, PageAccess, Permission, UserRole
+from backend.database.models import (
+    DuplicateIgnore,
+    GeneralSettings,
+    UpgradeLeftover,
+    User,
+)
+from backend.enums import MediaType, PageAccess, Permission, Task, UserRole
 from backend.jobs.duplicate_file_ops import queue_duplicate_delete_job
 from backend.models.duplicates import (
     DuplicateDeleteRequest,
@@ -20,9 +27,15 @@ from backend.models.duplicates import (
     DuplicateSettings,
     DuplicateSummary,
     KeeperPriorityEntry,
+    LeftoverDeleteRequest,
+    LeftoverIgnoreRequest,
+    LeftoverScanInfo,
+    LeftoverSummary,
     PaginatedDuplicatesResponse,
+    PaginatedLeftoversResponse,
+    UpgradeLeftoverResponse,
 )
-from backend.models.jobs import DuplicateDeleteJobItem
+from backend.models.jobs import DuplicateDeleteJobItem, LeftoverDeleteJobItem
 from backend.services.duplicates import (
     DuplicateActionError,
     DuplicateGroup,
@@ -32,6 +45,11 @@ from backend.services.duplicates import (
     load_keeper_priority,
     normalize_keeper_priority,
     plan_duplicate_delete,
+)
+from backend.services.upgrade_leftovers import (
+    LeftoverView,
+    load_leftovers,
+    load_scan_summary,
 )
 
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"])
@@ -237,6 +255,167 @@ async def unignore_duplicate(
     )
     await db.commit()
     return {"message": "Duplicate restored"}
+
+
+# ---------------------------------------------------------------------------
+# upgrade leftovers
+# ---------------------------------------------------------------------------
+
+
+def _leftover_label(view: LeftoverView) -> str:
+    row = view.row
+    title = f"{row.title} ({row.year})" if row.year else row.title
+    return f"{title} - upgrade leftover"
+
+
+def _serialize_leftover(view: LeftoverView) -> UpgradeLeftoverResponse:
+    row = view.row
+    return UpgradeLeftoverResponse(
+        id=row.id,
+        movie_id=row.movie_id,
+        title=row.title,
+        year=row.year,
+        poster_url=view.poster_url,
+        source_title=row.source_title,
+        dropped_path=row.dropped_path,
+        size=row.size,
+        link_count=row.link_count,
+        frees_space=view.frees_space,
+        imported_at=row.imported_at,
+        manual_reason=row.manual_reason,
+        ignored=row.ignored,
+    )
+
+
+@router.get("/leftovers", response_model=PaginatedLeftoversResponse)
+async def list_leftovers(
+    _user: Annotated[User, Depends(require_page_access(PageAccess.DUPLICATES))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=25, ge=1, le=200),
+    search: str | None = Query(default=None, max_length=200),
+    sort_by: Literal["title", "size", "imported"] = Query(default="title"),
+    include_manual: bool = Query(default=True),
+    include_ignored: bool = Query(default=False),
+) -> PaginatedLeftoversResponse:
+    views = [
+        v
+        for v in await load_leftovers(db, search=search)
+        if (include_manual or v.row.manual_reason is None)
+        and (include_ignored or not v.row.ignored)
+    ]
+    if sort_by == "size":
+        views.sort(key=lambda v: v.row.size, reverse=True)
+    elif sort_by == "imported":
+        views.sort(key=lambda v: v.row.imported_at or datetime.min)
+
+    total = len(views)
+    start = (page - 1) * per_page
+    scanned_at, unmapped_roots = await load_scan_summary(db)
+    return PaginatedLeftoversResponse(
+        items=[_serialize_leftover(v) for v in views[start : start + per_page]],
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=ceil(total / per_page) if total else 0,
+        summary=LeftoverSummary(
+            leftovers=total,
+            actionable=sum(1 for v in views if v.actionable),
+            reclaimable_size=sum(v.reclaimable_size for v in views),
+        ),
+        scan=LeftoverScanInfo(
+            scanned_at=scanned_at,
+            unmapped_roots=unmapped_roots,
+            running=await is_task_active(Task.SCAN_UPGRADE_LEFTOVERS),
+        ),
+    )
+
+
+@router.post("/leftovers/delete")
+async def delete_leftovers(
+    body: LeftoverDeleteRequest,
+    user: Annotated[User, Depends(require_page_access(PageAccess.DUPLICATES))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Queue removal of the picked leftovers; each is re-checked before deletion."""
+    _require_manage_reclaim(user)
+    ids = list(dict.fromkeys(body.ids))
+    views = {v.row.id: v for v in await load_leftovers(db, ids=ids)}
+    problems = [
+        f"leftover {i}: no longer listed - rescan" for i in ids if i not in views
+    ]
+    problems += [
+        f"{v.row.title}: needs manual review: {v.row.manual_reason}"
+        for v in views.values()
+        if v.row.manual_reason
+    ]
+    if problems:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(problems[:5])
+        )
+
+    job = await queue_duplicate_delete_job(
+        items=[],
+        leftovers=[
+            LeftoverDeleteJobItem(id=i, display_label=_leftover_label(views[i]))
+            for i in ids
+        ],
+        requested_by_user_id=user.id,
+        requested_by_username=user.username,
+    )
+    count = len(ids)
+    return {
+        "message": f"Queued deletion of {count} leftover{'s' if count != 1 else ''}",
+        "job_id": job.id,
+    }
+
+
+@router.post("/leftovers/scan")
+async def scan_leftovers(
+    user: Annotated[User, Depends(require_page_access(PageAccess.DUPLICATES))],
+) -> dict[str, Any]:
+    _require_manage_reclaim(user)
+    try:
+        job, queued = await request_task_run(Task.SCAN_UPGRADE_LEFTOVERS)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "message": "Scan queued" if queued else "A scan is already running",
+        "job_id": job.id if job else None,
+    }
+
+
+async def _set_leftover_ignored(
+    db: AsyncSession, leftover_id: int, ignored: bool
+) -> None:
+    row = await db.get(UpgradeLeftover, leftover_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Leftover not found")
+    row.ignored = ignored
+    await db.commit()
+
+
+@router.post("/leftovers/ignore")
+async def ignore_leftover(
+    body: LeftoverIgnoreRequest,
+    user: Annotated[User, Depends(require_page_access(PageAccess.DUPLICATES))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    """Hide a leftover; it stays hidden across rescans while the file exists."""
+    _require_manage_reclaim(user)
+    await _set_leftover_ignored(db, body.id, True)
+    return {"message": "Leftover ignored"}
+
+
+@router.post("/leftovers/unignore")
+async def unignore_leftover(
+    body: LeftoverIgnoreRequest,
+    user: Annotated[User, Depends(require_page_access(PageAccess.DUPLICATES))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    _require_manage_reclaim(user)
+    await _set_leftover_ignored(db, body.id, False)
+    return {"message": "Leftover restored"}
 
 
 @router.get("/settings", response_model=DuplicateSettings)
