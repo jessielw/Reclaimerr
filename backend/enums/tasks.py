@@ -23,6 +23,7 @@ class BackgroundJobType(StrEnum):
     TASK_RUN = auto()
     CANDIDATE_FILE_OP = auto()
     WEBHOOK_DELIVERY = auto()
+    DUPLICATE_DELETE = auto()
 
 
 class BackgroundJobPriority(StrEnum):

@@ -430,6 +430,12 @@ class GeneralSettings(Base):
         JSON, default_factory=dict
     )
 
+    # duplicates: ordered [{"key": <criterion>, "enabled": bool}]; None = defaults.
+    # Read and written only through /api/duplicates/settings.
+    duplicate_keeper_priority: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, default=None
+    )
+
     # timestamps
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
@@ -1591,6 +1597,80 @@ class Episode(Base):
     # relationships
     season: Mapped[Season] = relationship(
         back_populates="episodes", init=False, lazy="noload", repr=False
+    )
+
+
+class EpisodeVersion(Base):
+    """Individual physical file version of an episode.
+
+    Only the main media server writes these (like movie_versions). Episode.path
+    and Episode.size still describe the primary file; these rows exist so
+    duplicate detection can see every file the server reports for an episode.
+    """
+
+    __tablename__ = "episode_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "episode_id", "service", "service_media_id", name="uq_episode_version"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    episode_id: Mapped[int] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), index=True
+    )
+    service: Mapped[Service] = mapped_column(Enum(Service))
+    # plex ratingKey or jellyfin/emby item ID (used for item-level ops like delete)
+    service_item_id: Mapped[str] = mapped_column(String(100))
+    # plex Media.id or jellyfin/emby MediaSource.Id (unique per physical file)
+    service_media_id: Mapped[str] = mapped_column(String(100))
+    library_id: Mapped[str] = mapped_column(String(100))
+    library_name: Mapped[str] = mapped_column(String(255))
+    path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    added_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    video_resolution: Mapped[str | None] = mapped_column(String(20), default=None)
+    video_width: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_height: Mapped[int | None] = mapped_column(Integer, default=None)
+    video_codec_family: Mapped[VideoCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    video_hdr: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_dolby_vision: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    video_bitrate: Mapped[int | None] = mapped_column(Integer, default=None)
+    audio_codec_family: Mapped[AudioCodecFamily | None] = mapped_column(
+        String(24), default=None
+    )
+    audio_channels: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
+class DuplicateIgnore(Base):
+    """A duplicate group the user marked as "not a duplicate".
+
+    The fingerprint hashes the group's physical paths, so the group comes back
+    on its own once its files change.
+    """
+
+    __tablename__ = "duplicate_ignores"
+    __table_args__ = (
+        UniqueConstraint("media_type", "item_id", name="uq_duplicate_ignore_item"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, init=False, autoincrement=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType))
+    # movies.id for movies, episodes.id for episodes
+    item_id: Mapped[int] = mapped_column(Integer, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
     )
 
 

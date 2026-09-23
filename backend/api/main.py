@@ -21,6 +21,7 @@ from backend.api.routes.background_jobs import router as background_jobs_router
 from backend.api.routes.calendar import router as calendar_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.delete_requests import router as delete_requests_router
+from backend.api.routes.duplicates import router as duplicates_router
 from backend.api.routes.info import router as info_router
 from backend.api.routes.media import router as media_router
 from backend.api.routes.protected import router as protected_router
@@ -221,6 +222,7 @@ fastapi_app.include_router(background_jobs_router)
 fastapi_app.include_router(media_router)
 fastapi_app.include_router(requests_router)
 fastapi_app.include_router(delete_requests_router)
+fastapi_app.include_router(duplicates_router)
 fastapi_app.include_router(protected_router)
 fastapi_app.include_router(system_router)
 fastapi_app.include_router(external_api_router)

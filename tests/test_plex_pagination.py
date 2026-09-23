@@ -140,7 +140,10 @@ def test_get_series_keeps_hama_items_in_scan_results(monkeypatch) -> None:
             return {}
 
         async def fake_get_episode_data(
-            self: PlexService, section_id: str
+            self: PlexService,
+            section_id: str,
+            library_id: str | None = None,
+            library_name: str | None = None,
         ) -> tuple[dict[str, int], dict[str, str], dict[object, object]]:
             assert section_id == "2"
             return {"99": 1234}, {"99": "/anime/Example"}, {}

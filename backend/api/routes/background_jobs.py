@@ -24,6 +24,12 @@ router = APIRouter(prefix="/api/tasks", tags=["background-jobs"])
 
 _REDACTED_PAYLOAD_KEYS = {"api_key", "password", "token", "secret"}
 
+# jobs a non-admin can start from the UI and follow afterwards
+_USER_FILE_OP_JOB_TYPES = (
+    BackgroundJobType.CANDIDATE_FILE_OP,
+    BackgroundJobType.DUPLICATE_DELETE,
+)
+
 
 def _candidate_file_op_label_preview(payload: dict[str, Any]) -> str | None:
     raw_details = payload.get("item_details")
@@ -83,6 +89,23 @@ def _candidate_file_op_summary(payload: dict[str, Any]) -> str:
     return label
 
 
+def _duplicate_delete_summary(payload: dict[str, Any]) -> str:
+    preview = _candidate_file_op_label_preview(payload)
+    suffix = f" - {preview}" if preview else ""
+    result = payload.get("result")
+    if isinstance(result, dict):
+        succeeded = result.get("succeeded")
+        failed = result.get("failed")
+        if isinstance(succeeded, int) and isinstance(failed, int):
+            details = [f"{succeeded} succeeded"]
+            if failed > 0:
+                details.append(f"{failed} failed")
+            return f"Delete duplicates: {', '.join(details)}{suffix}"
+    items = payload.get("items")
+    count = len(items) if isinstance(items, list) else 0
+    return f"Delete duplicates: {count} item{'s' if count != 1 else ''}{suffix}"
+
+
 def _candidate_job_requested_by_user_id(job: BackgroundJob) -> int | None:
     raw_user_id = (job.payload or {}).get("requested_by_user_id")
     return raw_user_id if isinstance(raw_user_id, int) else None
@@ -92,7 +115,7 @@ def _can_view_candidate_file_op_job(user: User, job: BackgroundJob) -> bool:
     if user.role is UserRole.ADMIN:
         return True
     return (
-        job.job_type is BackgroundJobType.CANDIDATE_FILE_OP
+        job.job_type in _USER_FILE_OP_JOB_TYPES
         and _candidate_job_requested_by_user_id(job) == user.id
     )
 
@@ -109,7 +132,7 @@ def _allowed_history_job_types(user: User) -> tuple[BackgroundJobType, ...]:
     if user.role is UserRole.ADMIN:
         return tuple(BackgroundJobType)
     if _can_view_history_details(user):
-        return (BackgroundJobType.CANDIDATE_FILE_OP,)
+        return _USER_FILE_OP_JOB_TYPES
     return ()
 
 
@@ -134,6 +157,8 @@ def _serialize_background_job(job: BackgroundJob) -> dict[str, Any]:
             summary = f"Service toggle: {service_type}"
     elif job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
         summary = _candidate_file_op_summary(payload)
+    elif job.job_type is BackgroundJobType.DUPLICATE_DELETE:
+        summary = _duplicate_delete_summary(payload)
 
     return {
         "id": job.id,
@@ -272,7 +297,7 @@ async def get_candidate_file_op_job(
     """Get a candidate file-op job if visible to the current user."""
     result = await db.execute(select(BackgroundJob).where(BackgroundJob.id == job_id))
     job = result.scalar_one_or_none()
-    if job is None or job.job_type is not BackgroundJobType.CANDIDATE_FILE_OP:
+    if job is None or job.job_type not in _USER_FILE_OP_JOB_TYPES:
         raise HTTPException(
             status_code=404, detail=f"Background job '{job_id}' not found"
         )
