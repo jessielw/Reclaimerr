@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a failed Plex watch-history request wiping view counts for a whole library ([#401](https://github.com/jessielw/Reclaimerr/issues/401)). If Plex dropped the connection partway through **Sync Media**, Reclaimerr used the partial history as if it were complete and overwrote view counts and last-watched dates with lower values. A **View count** or **Days since watched** rule could then flag hundreds of watched shows at once. A partial fetch can now only raise stored watch data, never lower it, and it is logged as a warning. Partial history is also no longer cached and reused by the next step of the sync.
 - New users signing in with Emby was not getting their Emby Connect email imported.
 - Spaces in the SMTP **From name** showed up as `+` signs in sent emails.
+- Nav customization button not staying fixed to bottom left section on the navbar.
 
 ### Changed
 

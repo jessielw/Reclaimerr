@@ -274,8 +274,8 @@
   </div>
 
   <!-- navigation -->
-  <nav class="flex-1 relative p-4 overflow-y-auto">
-    <!-- navigation customization -->
+  <div class="flex-1 min-h-0 relative">
+    <!-- navigation customization (outside the scroll container so it stays pinned) -->
     <DropdownMenu.Root bind:open={menuOpen}>
       <DropdownMenu.Trigger>
         {#snippet child({ props })}
@@ -332,68 +332,70 @@
       </DropdownMenu.Content>
     </DropdownMenu.Root>
 
-    <!-- navigation items -->
-    {#each visibleNavItems as item}
-      {#if canAccessNavItem(item)}
-        <Tooltip.Root>
-          <!-- we'll only add a trigger if tooltip exists -->
-          {#if item.tooltip}
-            <Tooltip.Root>
-              <Tooltip.Trigger class="w-full">
-                <a
-                  href={item.path}
-                  use:link
-                  onclick={onNavigate}
-                  class="flex items-center gap-3 px-6 py-3 rounded-lg transition-colors duration-200 ml-3
+    <nav class="h-full p-4 overflow-y-auto">
+      <!-- navigation items -->
+      {#each visibleNavItems as item}
+        {#if canAccessNavItem(item)}
+          <Tooltip.Root>
+            <!-- we'll only add a trigger if tooltip exists -->
+            {#if item.tooltip}
+              <Tooltip.Root>
+                <Tooltip.Trigger class="w-full">
+                  <a
+                    href={item.path}
+                    use:link
+                    onclick={onNavigate}
+                    class="flex items-center gap-3 px-6 py-3 rounded-lg transition-colors duration-200 ml-3
                     {isActive(item.path)
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
-                >
-                  <item.icon />
-                  <span class="flex items-center gap-2 flex-1 min-w-0">
-                    <span class="font-medium">{item.label}</span>
-                    {#if item.path === "/requests"}
-                      <SidebarRequestsBadge />
-                    {/if}
-                    {#if item.path === "/candidates"}
-                      <SidebarCandidatesBadge />
-                    {/if}
-                  </span>
-                </a>
-              </Tooltip.Trigger>
-              <Tooltip.Content>
-                <p>{item.tooltip}</p>
-              </Tooltip.Content>
-            </Tooltip.Root>
-          {:else}
-            <a
-              href={item.path}
-              use:link
-              onclick={onNavigate}
-              class="flex items-center gap-3 px-6 py-3 rounded-lg transition-colors duration-200 ml-3
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
+                  >
+                    <item.icon />
+                    <span class="flex items-center gap-2 flex-1 min-w-0">
+                      <span class="font-medium">{item.label}</span>
+                      {#if item.path === "/requests"}
+                        <SidebarRequestsBadge />
+                      {/if}
+                      {#if item.path === "/candidates"}
+                        <SidebarCandidatesBadge />
+                      {/if}
+                    </span>
+                  </a>
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                  <p>{item.tooltip}</p>
+                </Tooltip.Content>
+              </Tooltip.Root>
+            {:else}
+              <a
+                href={item.path}
+                use:link
+                onclick={onNavigate}
+                class="flex items-center gap-3 px-6 py-3 rounded-lg transition-colors duration-200 ml-3
                 {isActive(item.path)
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
-            >
-              <item.icon />
-              <span class="flex items-center gap-2 flex-1 min-w-0">
-                <span class="font-medium">{item.label}</span>
-                {#if item.path === "/requests"}
-                  <SidebarRequestsBadge />
-                {/if}
-                {#if item.path === "/candidates"}
-                  <SidebarCandidatesBadge />
-                {/if}
-              </span>
-            </a>
-          {/if}
-          <Tooltip.Content>
-            <p>{item.tooltip}</p>
-          </Tooltip.Content>
-        </Tooltip.Root>
-      {/if}
-    {/each}
-  </nav>
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}"
+              >
+                <item.icon />
+                <span class="flex items-center gap-2 flex-1 min-w-0">
+                  <span class="font-medium">{item.label}</span>
+                  {#if item.path === "/requests"}
+                    <SidebarRequestsBadge />
+                  {/if}
+                  {#if item.path === "/candidates"}
+                    <SidebarCandidatesBadge />
+                  {/if}
+                </span>
+              </a>
+            {/if}
+            <Tooltip.Content>
+              <p>{item.tooltip}</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        {/if}
+      {/each}
+    </nav>
+  </div>
 
   <div class="flex flex-col p-2 border-t border-border space-y-3">
     {#if $auth.user}
