@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - A cleanup scan no longer skips an entire rule that uses **Playback** fields just because a few media items cannot be seen by your playback provider. Those items now count as unknown for their **Playback** conditions only, the same way rule preview already handled them, so the rest of the rule still runs and an **OR** branch without **Playback** fields can still match them. The **Playback history rule data is unavailable** notice still lists how many items were affected. Rules are still skipped when the playback provider itself fails to refresh or none is configured.
+- Fix **Select all on this page** not showing the correct count.
 
 ## [0.4.9] - 2026-09-23
 
