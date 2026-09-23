@@ -9,6 +9,7 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 import niquests
+from email_validator import EmailNotValidError, validate_email
 from niquests.exceptions import HTTPError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -395,6 +396,24 @@ def _media_policy_bool(policy: object, key: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _emby_family_email(user_payload: Mapping[str, Any]) -> str | None:
+    """Pull an email address from an Emby/Jellyfin user payload.
+
+    Emby's UserDto has no email field; the Emby Connect address is exposed as
+    ConnectUserName, which can also hold a plain Connect username, so it is only
+    used when it parses as an email.
+    """
+    for key in ("PrimaryEmail", "Email", "ConnectUserName"):
+        candidate = str(user_payload.get(key) or "").strip()
+        if not candidate:
+            continue
+        try:
+            return validate_email(candidate, check_deliverability=False).normalized
+        except EmailNotValidError:
+            continue
+    return None
+
+
 async def authenticate_emby_family_credentials(
     *,
     provider: MediaAuthProvider,
@@ -447,11 +466,7 @@ async def authenticate_emby_family_credentials(
         server_username = (
             str(user_payload.get("Username") or "").strip() or display_name or username
         )
-        email = (
-            str(user_payload.get("PrimaryEmail") or "").strip()
-            or str(user_payload.get("Email") or "").strip()
-            or None
-        )
+        email = _emby_family_email(user_payload)
 
         return _build_discovered_user(
             provider=provider,
