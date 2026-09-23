@@ -125,6 +125,18 @@ class _HistoryAggregate:
         return (self.view_count, self.last_viewed_at, len(self.account_ids))
 
 
+class PlexHistoryIncompleteError(Exception):
+    """A history page failed, so the records fetched so far are only partial.
+
+    Callers must not treat the partial records as the full history: an item
+    missing from them may simply sit on a page that never arrived.
+    """
+
+    def __init__(self, records: JsonList, reason: str) -> None:
+        super().__init__(reason)
+        self.records = records
+
+
 class PlexService:
     """Plex media server backend."""
 
@@ -1844,7 +1856,7 @@ class PlexService:
         library_section_ids: list[str] | None = None,
         key_field: str = "ratingKey",
         page_size: int = 1000,
-    ) -> dict[str, _HistEntry]:
+    ) -> tuple[dict[str, _HistEntry], bool]:
         """Fetch watch history for ALL users from /status/sessions/history/all.
 
         Requires an admin token so records from every account on the server are returned.
@@ -1864,12 +1876,18 @@ class PlexService:
 
         Returns:
             Dict mapping the chosen key field value to
-            (total_view_count, max_last_viewed_at, distinct_user_count).
+            (total_view_count, max_last_viewed_at, distinct_user_count), and
+            whether every history page was fetched.
         """
-        records = await self._get_all_history_records(
-            library_section_ids=library_section_ids,
-            page_size=page_size,
-        )
+        complete = True
+        try:
+            records = await self._get_all_history_records(
+                library_section_ids=library_section_ids,
+                page_size=page_size,
+            )
+        except PlexHistoryIncompleteError as e:
+            records = e.records
+            complete = False
         # key -> [view_count, max_lva, set(accountIDs)]
         aggregated: dict[str, _HistoryAggregate] = {}
         for record in records:
@@ -1887,7 +1905,10 @@ class PlexService:
 
             aggregated[key].add(viewed_at, account_id)
 
-        return {key: aggregate.as_entry() for key, aggregate in aggregated.items()}
+        return (
+            {key: aggregate.as_entry() for key, aggregate in aggregated.items()},
+            complete,
+        )
 
     @staticmethod
     def _history_cache_key(
@@ -1907,7 +1928,11 @@ class PlexService:
         page_size: int = 1000,
         viewed_at_gte: datetime | None = None,
     ) -> JsonList:
-        """Fetch raw watch history records for all users (uncached)."""
+        """Fetch raw watch history records for all users (uncached).
+
+        Raises PlexHistoryIncompleteError (carrying the records fetched so far)
+        when any page still fails after the request retries.
+        """
         records_out: JsonList = []
         cutoff_ts = (
             int(viewed_at_gte.astimezone(UTC).timestamp())
@@ -1917,6 +1942,7 @@ class PlexService:
         sections_to_fetch: Sequence[str | None] = (
             library_section_ids if library_section_ids else [None]
         )
+        failures: list[str] = []
         for section_id in sections_to_fetch:
             container_start = 0
             while True:
@@ -1935,6 +1961,9 @@ class PlexService:
                     LOG.warning(
                         f"Plex history records fetch failed at offset {container_start} "
                         f"section={section_id}: {e}"
+                    )
+                    failures.append(
+                        f"section={section_id} offset={container_start}: {e}"
                     )
                     break
                 if not isinstance(data, dict):
@@ -1972,6 +2001,8 @@ class PlexService:
                 container_start += len(records)
                 if container_start >= total_size:
                     break
+        if failures:
+            raise PlexHistoryIncompleteError(records_out, "; ".join(failures))
         return records_out
 
     async def _get_all_history_records(
@@ -2000,6 +2031,8 @@ class PlexService:
         ):
             return list(self._history_records_cache[cache_key])
 
+        # An incomplete fetch raises before reaching the cache, so a partial
+        # history is never reused by the next caller within the TTL.
         records_out = await self._fetch_all_history_records(
             library_section_ids=library_section_ids,
             page_size=page_size,
@@ -2365,7 +2398,7 @@ class PlexService:
         movie_section_ids = [s["key"] for s in movie_sections if s.get("key")]
 
         movie_keys = {m.id for m in movies}
-        history = await self._get_all_history(
+        history, history_complete = await self._get_all_history(
             rating_keys=movie_keys,
             library_section_ids=movie_section_ids,
         )
@@ -2382,6 +2415,7 @@ class PlexService:
                 ),
                 played_by_user_count=history[m.id][2] if m.id in history else None,
                 media_server_user_rating=m.media_server_user_rating,
+                watch_history_complete=history_complete,
             )
             for m in movies
         ]
@@ -2412,16 +2446,17 @@ class PlexService:
 
         # fetch cross user episode history keyed by season/series ratingKey
         # episodes: ratingKey=episode, parentRatingKey=season, grandparentRatingKey=series
-        season_history = await self._get_all_history(
+        season_history, season_history_complete = await self._get_all_history(
             rating_keys=season_keys,
             library_section_ids=show_section_ids,
             key_field="parentRatingKey",
         )
-        series_history = await self._get_all_history(
+        series_history, series_history_complete = await self._get_all_history(
             rating_keys=series_keys,
             library_section_ids=show_section_ids,
             key_field="grandparentRatingKey",
         )
+        history_complete = season_history_complete and series_history_complete
 
         result = []
         for s in series:
@@ -2478,6 +2513,7 @@ class PlexService:
                     media_server_genres=s.media_server_genres,
                     media_server_user_rating=s.media_server_user_rating,
                     season_data=merged_seasons,
+                    watch_history_complete=history_complete,
                 )
             )
         return result

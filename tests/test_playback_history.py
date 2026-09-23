@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +99,57 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         self.assertEqual(events[0].source_username, "Alice")
         self.assertTrue(events[0].completed)
         self.assertIsNone(events[0].played_at.tzinfo)
+
+    def test_tracearr_counts_skipped_rows_by_reason(self) -> None:
+        base = {
+            "id": "play",
+            "server_id": "server-1",
+            "media_type": "episode",
+            "rating_key": "episode-1",
+            "duration_ms": 600_000,
+            "stopped_at": "2026-08-10T12:02:05.900Z",
+            "user": {"id": "identity-1"},
+        }
+        skipped: Counter[str] = Counter()
+        events = _normalize_tracearr_events(
+            [
+                base,
+                {**base, "id": "no-key", "rating_key": None},
+                {**base, "id": "show", "media_type": "show"},
+                {**base, "id": "short", "duration_ms": 1_000},
+                {**base, "id": "no-time", "stopped_at": None},
+            ],
+            None,
+            server_id="server-1",
+            skipped=skipped,
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            skipped,
+            Counter(
+                {
+                    "missing rating_key": 1,
+                    "unsupported media type": 1,
+                    "below minimum duration": 1,
+                    "missing timestamp": 1,
+                }
+            ),
+        )
+
+    def test_unmatched_events_warn_on_share_or_jump(self) -> None:
+        with patch.object(playback_history, "_last_unmatched_events", None):
+            with patch.object(playback_history.LOG, "warning") as warning:
+                # the #401 reporter's steady state: 370 of ~12k, no warning
+                playback_history._warn_on_unmatched_events(370, 12_000)
+                warning.assert_not_called()
+                # a sudden jump warns even while the share stays small
+                playback_history._warn_on_unmatched_events(834, 12_000)
+                self.assertIn("up from 370", warning.call_args.args[0])
+                warning.reset_mock()
+                # a large share warns on its own
+                playback_history._warn_on_unmatched_events(834, 1_000)
+                self.assertIn("834 of 1000", warning.call_args.args[0])
 
     def test_tracearr_retry_after_header_is_parsed(self) -> None:
         """The parsing body used to sit unreachable inside another function."""
@@ -1165,9 +1217,7 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
             aggregates = {
                 (row.target_scope, row.target_id): row.play_count
                 for row in (
-                    (await db.execute(select(PlaybackHistoryAggregate)))
-                    .scalars()
-                    .all()
+                    (await db.execute(select(PlaybackHistoryAggregate))).scalars().all()
                 )
             }
 
@@ -1431,6 +1481,59 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any(str(jellyfin_version_id) in message for message in debug_messages)
+        )
+
+    async def test_snapshot_does_not_zero_fill_server_watched_targets(self) -> None:
+        """Issue #401: unmatched provider history must not read as 0 plays."""
+        async with self.sessionmaker() as db:
+            watched = Movie(title="Watched On Plex", tmdb_id=111)
+            watched.view_count = 5
+            unwatched = Movie(title="Never Played", tmdb_id=112)
+            db.add_all([watched, unwatched])
+            await db.flush()
+            watched_version = MovieVersion(
+                movie_id=watched.id,
+                service=Service.PLEX,
+                service_item_id="plex-watched",
+                service_media_id="plex-watched-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            unwatched_version = MovieVersion(
+                movie_id=unwatched.id,
+                service=Service.PLEX,
+                service_item_id="plex-unwatched",
+                service_media_id="plex-unwatched-media",
+                library_id="plex-library",
+                library_name="Movies",
+            )
+            db.add_all([watched_version, unwatched_version])
+            await db.commit()
+            watched_key = ("movie_version", watched_version.id)
+            unwatched_key = ("movie_version", unwatched_version.id)
+
+            snapshot = await load_playback_rule_snapshot(
+                db,
+                PlaybackRefreshResult(
+                    statuses=[
+                        PlaybackProviderStatus(
+                            config_id=7,
+                            provider=Service.TRACEARR,
+                            observed_service=Service.PLEX,
+                            available=True,
+                        )
+                    ]
+                ),
+            )
+
+        self.assertNotIn(watched_key, snapshot.available_targets)
+        self.assertEqual(
+            snapshot.unavailable_reasons["movie_version"],
+            {"media server reports plays that no playback history event matched": 1},
+        )
+        self.assertIn(unwatched_key, snapshot.available_targets)
+        self.assertEqual(
+            snapshot.values_by_target[unwatched_key]["playback.play_count"], 0
         )
 
     async def test_snapshot_explains_missing_season_identity(self) -> None:
