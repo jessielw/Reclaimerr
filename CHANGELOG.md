@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.9] - 2026-09-23
 
 ### Fixed
 
@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Playback rules no longer treat unmatched history as zero plays. When the media server says an item was watched but none of Tracearr's or Tautulli's events matched it, its **Playback** fields now count as unknown instead of 0. Auto-delete then holds those items rather than deleting them. As a result, items Plex counted before your playback provider was set up also show as unknown in playback rules.
 - Tracearr refreshes now log how many history rows were skipped, and why (missing rating key, unsupported media type, missing timestamp, or too short).
 - Reclaimerr now warns when playback events stop matching current media: either more than 5% of them, or a jump of more than 50 since the last rebuild. Those plays are not counted by playback rules.
+- Updated niquests and platformdirs.
 
 ## [0.4.8] - 2026-09-21
 
