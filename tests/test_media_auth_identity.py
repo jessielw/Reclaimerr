@@ -339,6 +339,52 @@ def test_authenticate_emby_family_credentials_sets_admin_role(monkeypatch) -> No
     asyncio.run(run())
 
 
+def test_authenticate_emby_family_credentials_reads_emby_connect_email(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        provider = MediaAuthProvider(
+            service_config_id=7,
+            service_type=Service.EMBY,
+            name="emby-main",
+            base_url="https://emby.example.com",
+            auth_mode="credentials",
+        )
+        connect_user_name = "Viewer@Example.com"
+
+        def responder(url: str, **_kwargs) -> _FakeResponse:
+            return _FakeResponse(
+                json_data={
+                    "User": {
+                        "Id": "emby-viewer",
+                        "Name": "viewer",
+                        "ConnectUserName": connect_user_name,
+                        "ConnectLinkType": "LinkedUser",
+                        "Policy": {"IsAdministrator": False, "IsDisabled": False},
+                    }
+                }
+            )
+
+        monkeypatch.setattr(
+            "backend.services.media_auth.niquests.AsyncSession",
+            lambda: _FakeSession(responder),
+        )
+
+        identity = await authenticate_emby_family_credentials(
+            provider=provider, username="viewer", password="secret"
+        )
+        assert identity.email == "viewer@example.com"
+
+        # a Connect link can hold a plain username, which is not an email
+        connect_user_name = "viewer_connect"
+        identity = await authenticate_emby_family_credentials(
+            provider=provider, username="viewer", password="secret"
+        )
+        assert identity.email is None
+
+    asyncio.run(run())
+
+
 def test_media_auth_new_user_uses_provider_role_and_existing_roles_are_preserved() -> (
     None
 ):

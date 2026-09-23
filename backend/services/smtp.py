@@ -8,16 +8,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.encryption import fer_decrypt
 from backend.core.logger import LOG
-from backend.database.models import SMTPSettings
+from backend.database.models import NotificationSetting, SMTPSettings, User
+from backend.enums import NotificationChannel, UserRole
 
 __all__ = [
     "SECURITY_DEFAULT_PORTS",
     "SECURITY_MODES",
     "SmtpConfig",
+    "auto_enable_system_email",
     "build_mailto_url",
+    "email_destination_user_ids",
     "load_smtp_config",
+    "new_system_email_destination",
     "redact_mailto_url",
     "smtp_config_from_row",
+    "system_email_enabled",
 ]
 
 # Mirrors apprise.plugins.email.common.SECURE_MODES. Apprise picks the same
@@ -29,6 +34,26 @@ SECURITY_DEFAULT_PORTS: dict[str, int] = {
 }
 
 SECURITY_MODES = tuple(SECURITY_DEFAULT_PORTS)
+
+# What an auto-created destination opts into. These are the types a person
+# actually wants in their inbox; the noisier admin-only ones are added for
+# admins, who can still turn any of them off afterwards.
+_DEFAULT_USER_TYPES: tuple[str, ...] = (
+    "new_cleanup_candidates",
+    "request_approved",
+    "request_declined",
+    "admin_message",
+    "delete_request_execution_succeeded",
+    "delete_request_execution_failed",
+)
+_DEFAULT_ADMIN_TYPES: tuple[str, ...] = (
+    "task_failure",
+    "admin_new_delete_request",
+    "admin_new_protection_request",
+    "admin_request_cancelled",
+    "admin_delete_execution_failed",
+    "update_available",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +121,62 @@ async def load_smtp_config(session: AsyncSession) -> SmtpConfig | None:
     return smtp_config_from_row(row, password=password)
 
 
+async def system_email_enabled(session: AsyncSession) -> bool:
+    """Whether the admin has switched system email on."""
+    result = await session.execute(select(SMTPSettings.enabled))
+    return bool(result.scalars().first())
+
+
+async def email_destination_user_ids(session: AsyncSession) -> set[int]:
+    """Ids of every user who already has a system email destination."""
+    result = await session.execute(
+        select(NotificationSetting.user_id).where(
+            NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL
+        )
+    )
+    return set(result.scalars().all())
+
+
+def new_system_email_destination(user: User) -> NotificationSetting:
+    """Build (but do not add) a default system email destination for a user."""
+    destination = NotificationSetting(
+        user_id=user.id,
+        enabled=True,
+        name="Email",
+        channel=NotificationChannel.SYSTEM_EMAIL,
+    )
+    enabled_types = list(_DEFAULT_USER_TYPES)
+    if user.role is UserRole.ADMIN:
+        enabled_types += _DEFAULT_ADMIN_TYPES
+    for field in enabled_types:
+        setattr(destination, field, True)
+    return destination
+
+
+async def auto_enable_system_email(session: AsyncSession, user: User) -> bool:
+    """Give a user a system email destination if SMTP is on and they lack one.
+
+    Called when a user is created or first gains an email address, so admins do
+    not have to re-run the bulk enable every time someone new signs in. The
+    user must already have an id (flush first). Does not commit.
+    """
+    if not user.email or not user.is_active or user.id is None:
+        return False
+    if not await system_email_enabled(session):
+        return False
+    existing = await session.execute(
+        select(NotificationSetting.id).where(
+            NotificationSetting.user_id == user.id,
+            NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL,
+        )
+    )
+    if existing.first() is not None:
+        return False
+    session.add(new_system_email_destination(user))
+    LOG.info(f"Enabled system email notifications for {user.username}")
+    return True
+
+
 def build_mailto_url(config: SmtpConfig, recipient: str) -> str:
     """Build the Apprise mailto:// URL that delivers to a single recipient.
 
@@ -123,7 +204,11 @@ def build_mailto_url(config: SmtpConfig, recipient: str) -> str:
         params["reply"] = config.reply_to
 
     host = quote(config.host, safe="")
-    return f"mailto://{auth}{host}:{config.port}/?{urlencode(params)}"
+    # quote_via=quote writes spaces as %20; Apprise does not decode the '+'
+    # that urlencode emits by default, so a from name like "My Server" would
+    # arrive as "My+Server".
+    query = urlencode(params, quote_via=quote)
+    return f"mailto://{auth}{host}:{config.port}/?{query}"
 
 
 def redact_mailto_url(url: str) -> str:

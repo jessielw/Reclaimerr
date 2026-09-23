@@ -11,8 +11,7 @@ from backend.core.auth import require_admin
 from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.logger import LOG
 from backend.database import get_db
-from backend.database.models import NotificationSetting, SMTPSettings, User
-from backend.enums import NotificationChannel, UserRole
+from backend.database.models import SMTPSettings, User
 from backend.models.settings import (
     SMTPCoverageResponse,
     SMTPEnableAllResponse,
@@ -21,29 +20,13 @@ from backend.models.settings import (
     SMTPTestRequest,
 )
 from backend.services.notifications import test_system_email
-from backend.services.smtp import SmtpConfig
+from backend.services.smtp import (
+    SmtpConfig,
+    email_destination_user_ids,
+    new_system_email_destination,
+)
 
 router = APIRouter(tags=["settings", "smtp"])
-
-# What a bulk-enabled destination opts into. These are the types a person
-# actually wants in their inbox; the noisier admin-only ones are added for
-# admins, who can still turn any of them off afterwards.
-_DEFAULT_USER_TYPES: tuple[str, ...] = (
-    "new_cleanup_candidates",
-    "request_approved",
-    "request_declined",
-    "admin_message",
-    "delete_request_execution_succeeded",
-    "delete_request_execution_failed",
-)
-_DEFAULT_ADMIN_TYPES: tuple[str, ...] = (
-    "task_failure",
-    "admin_new_delete_request",
-    "admin_new_protection_request",
-    "admin_request_cancelled",
-    "admin_delete_execution_failed",
-    "update_available",
-)
 
 
 async def _get_or_create_smtp_settings(db: AsyncSession) -> SMTPSettings:
@@ -123,6 +106,7 @@ async def update_smtp_settings(
     """
     _validate_enabled_config(request)
     row = await _get_or_create_smtp_settings(db)
+    was_enabled = row.enabled
 
     row.enabled = request.enabled
     row.host = request.host
@@ -142,7 +126,17 @@ async def update_smtp_settings(
     await db.refresh(row)
 
     LOG.info(f"SMTP settings updated by {admin.username} (enabled={row.enabled})")
-    return _to_response(row)
+
+    # turning email on backfills every existing user; users created later are
+    # handled as they arrive (see auto_enable_system_email)
+    auto_enabled_users = 0
+    if row.enabled and not was_enabled:
+        auto_enabled_users, _ = await _enable_for_all_users(db)
+        LOG.info(f"Enabled system email notifications for {auto_enabled_users} user(s)")
+
+    response = _to_response(row)
+    response.auto_enabled_users = auto_enabled_users
+    return response
 
 
 @router.post("/smtp/test")
@@ -190,13 +184,30 @@ async def test_smtp_settings(
     return {"message": f"Test email sent to {recipient}"}
 
 
-async def _email_destination_user_ids(db: AsyncSession) -> set[int]:
-    result = await db.execute(
-        select(NotificationSetting.user_id).where(
-            NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL
-        )
-    )
-    return set(result.scalars().all())
+async def _enable_for_all_users(db: AsyncSession) -> tuple[int, int]:
+    """Create a system email destination for every active user lacking one.
+
+    Returns (created, skipped_no_email). A user who already has an email
+    destination is left exactly as they configured it.
+    """
+    result = await db.execute(select(User).where(User.is_active == True))
+    users = result.scalars().all()
+    configured = await email_destination_user_ids(db)
+
+    created = 0
+    skipped_no_email = 0
+    for user in users:
+        if not user.email:
+            skipped_no_email += 1
+            continue
+        if user.id in configured:
+            continue
+        db.add(new_system_email_destination(user))
+        created += 1
+
+    if created:
+        await db.commit()
+    return created, skipped_no_email
 
 
 @router.get("/smtp/coverage", response_model=SMTPCoverageResponse)
@@ -212,7 +223,7 @@ async def get_smtp_coverage(
         select(User.id).where(User.is_active == True, User.email.is_not(None))
     )
     with_email = set(result.scalars().all())
-    configured = await _email_destination_user_ids(db)
+    configured = await email_destination_user_ids(db)
 
     return SMTPCoverageResponse(
         total_users=total or 0,
@@ -232,37 +243,7 @@ async def enable_email_for_all_users(
     Idempotent: a user who already has an email destination is left exactly as
     they configured it, so running this twice never resets anyone's choices.
     """
-    result = await db.execute(select(User).where(User.is_active == True))
-    users = result.scalars().all()
-    configured = await _email_destination_user_ids(db)
-
-    created = 0
-    skipped_no_email = 0
-    for user in users:
-        if not user.email:
-            skipped_no_email += 1
-            continue
-        if user.id in configured:
-            continue
-
-        destination = NotificationSetting(
-            user_id=user.id,
-            enabled=True,
-            name="Email",
-            channel=NotificationChannel.SYSTEM_EMAIL,
-        )
-        enabled_types = list(_DEFAULT_USER_TYPES)
-        if user.role is UserRole.ADMIN:
-            enabled_types += _DEFAULT_ADMIN_TYPES
-        for field in enabled_types:
-            setattr(destination, field, True)
-
-        db.add(destination)
-        created += 1
-
-    if created:
-        await db.commit()
-
+    created, skipped_no_email = await _enable_for_all_users(db)
     LOG.info(
         f"{admin.username} enabled system email notifications for {created} user(s)"
     )

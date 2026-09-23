@@ -101,6 +101,9 @@ class AggregatedMovieData:
     # jellyfin-specific (None for Plex)
     played_by_user_count: int | None = None
     media_server_user_rating: float | None = None
+    # False when the server's watch history could only be partly read, so
+    # view_count/last_viewed_at may be understated and must not lower stored values
+    watch_history_complete: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -222,6 +225,9 @@ class AggregatedSeriesData:
     media_server_user_rating: float | None = None
     # season level breakdown (populated by service layer)
     season_data: list[AggregatedSeasonData] = field(default_factory=list)
+    # False when the server's watch history could only be partly read, so
+    # series/season watch values may be understated and must not lower stored values
+    watch_history_complete: bool = True
 
 
 @dataclass(slots=True, frozen=True)

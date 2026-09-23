@@ -114,13 +114,18 @@
         "/api/settings/smtp",
         buildPayload(),
       );
+      const autoEnabled = response.auto_enabled_users ?? 0;
       settings = { ...defaultSettings, ...response };
       password = "";
-      toast.success("SMTP settings saved");
+      toast.success(
+        autoEnabled > 0
+          ? `SMTP settings saved. Email notifications enabled for ${autoEnabled} user${autoEnabled === 1 ? "" : "s"}`
+          : "SMTP settings saved",
+      );
       await loadCoverage();
       // enabling SMTP is what makes an email destination offerable, so the
       // parent has to re-check rather than wait for a page reload
-      onChanged?.(false);
+      onChanged?.(autoEnabled > 0);
     } catch (error) {
       toast.error(
         `Failed to save SMTP settings: ${error instanceof Error ? error.message : String(error)}`,
@@ -378,9 +383,10 @@
             {coverage.with_email} of {coverage.total_users} active
             {coverage.total_users === 1 ? "user has" : "users have"} an email address,
             and {coverage.already_enabled} already
-            {coverage.already_enabled === 1 ? "receives" : "receive"} email. This
-            creates a destination each user can then edit or delete; it never changes
-            one they already have.
+            {coverage.already_enabled === 1 ? "receives" : "receive"} email. Turning
+            SMTP on, and adding a user with an email address while it is on, sets
+            this up automatically. Use this to re-add anyone missing; it never changes
+            a destination someone already has.
           </p>
         </div>
         <div class="flex justify-end">

@@ -203,6 +203,12 @@ SONARR_FINALE_FIELD = "sonarr.latest_season_has_finale"
 SONARR_STATUS_FIELD = "sonarr.series_status"
 SONARR_EPISODE_FETCH_CONCURRENCY = 8
 
+# A scan that adds at least this many candidates, and more than the pool it
+# started with, is treated as suspect (e.g. watch data lost to a failed media
+# server fetch) and its new candidates are postponed instead of auto-deleted.
+CANDIDATE_SPIKE_MIN_NEW = 25
+CANDIDATE_SPIKE_POSTPONE_DAYS = 3
+
 
 @dataclass(slots=True)
 class _SonarrRuleDataResult:
@@ -5385,6 +5391,55 @@ async def _reconcile_leaving_soon_after_candidate_actions() -> None:
         LOG.warning(f"Leaving Soon post-action reconciliation failed: {e}")
 
 
+def _is_candidate_spike(created: int, existing: int) -> bool:
+    """Return True when a scan added far more candidates than it started with."""
+    return created >= CANDIDATE_SPIKE_MIN_NEW and created > existing
+
+
+async def _postpone_candidate_spike(
+    db: AsyncSession, existing_candidate_ids: set[int], created: int
+) -> int:
+    """Postpone auto-delete for this scan's new candidates when they spike.
+
+    A sudden jump is far more often bad input (a partial watch-history fetch,
+    an unreachable service) than a real change in the library, and the next
+    sync usually corrects it. Postponing gives that sync and an admin time to
+    act; a genuine spike such as a newly added rule is only delayed.
+    Returns the number of candidates postponed.
+    """
+    if not _is_candidate_spike(created, len(existing_candidate_ids)):
+        return 0
+    await db.flush()
+    new_ids = [
+        candidate_id
+        for candidate_id in (await db.scalars(select(ReclaimCandidate.id))).all()
+        if candidate_id not in existing_candidate_ids
+    ]
+    if not new_ids:
+        return 0
+    now = datetime.now(UTC)
+    await db.execute(
+        update(ReclaimCandidate)
+        .where(ReclaimCandidate.id.in_(new_ids))
+        .values(
+            auto_delete_postponed_until=now
+            + timedelta(days=CANDIDATE_SPIKE_POSTPONE_DAYS),
+            lifecycle_reason=(
+                f"Scan added {created} candidates from a pool of "
+                f"{len(existing_candidate_ids)}; auto-delete postponed "
+                f"{CANDIDATE_SPIKE_POSTPONE_DAYS} days as a precaution"
+            ),
+            lifecycle_updated_at=now,
+        )
+    )
+    LOG.warning(
+        f"Cleanup scan added {created} candidates from a pool of "
+        f"{len(existing_candidate_ids)}; postponed auto-delete for "
+        f"{len(new_ids)} new candidate(s) by {CANDIDATE_SPIKE_POSTPONE_DAYS} days"
+    )
+    return len(new_ids)
+
+
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
@@ -5413,6 +5468,9 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             return None
 
         LOG.info(f"Found {len(rules)} enabled cleanup rules")
+        existing_candidate_ids = set(
+            (await db.scalars(select(ReclaimCandidate.id))).all()
+        )
 
         favorites_ready, favorites_error = await _ensure_favorites_snapshot_if_enabled(
             db
@@ -5676,10 +5734,36 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             )
             candidates_removed += del_result.rowcount or 0
 
+        spike_postponed = await _postpone_candidate_spike(
+            db, existing_candidate_ids, candidates_created
+        )
         lifecycle_event_ids = await reconcile_candidate_schedule_events(db)
         await db.commit()
         for lifecycle_event_id in lifecycle_event_ids:
             await enqueue_event_deliveries(lifecycle_event_id)
+
+        if spike_postponed:
+            try:
+                await notify_admins(
+                    notification_type=NotificationType.ADMIN_MESSAGE,
+                    title="Unusual number of new cleanup candidates",
+                    message=(
+                        f"The cleanup scan added {candidates_created} candidates "
+                        f"(there were {len(existing_candidate_ids)} before). "
+                        f"Auto-delete for the new ones is postponed "
+                        f"{CANDIDATE_SPIKE_POSTPONE_DAYS} days. Check that watch "
+                        "data synced correctly before they become eligible."
+                    ),
+                    context={
+                        "created": candidates_created,
+                        "existing": len(existing_candidate_ids),
+                        "postponed": spike_postponed,
+                    },
+                )
+            except Exception as notify_error:
+                LOG.error(
+                    f"Failed to notify admins about candidate spike: {notify_error}"
+                )
 
         if seerr_skipped_rules:
             try:

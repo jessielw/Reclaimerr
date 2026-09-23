@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from asyncio import Lock
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -928,15 +928,22 @@ def _normalize_tracearr_events(
     server_id: str,
     movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
     episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
+    skipped: Counter[str] | None = None,
 ) -> list[_NormalizedEvent]:
-    """Convert Tracearr public-v2 play chains into normalized playback events."""
+    """Convert Tracearr public-v2 play chains into normalized playback events.
 
+    When ``skipped`` is given, each dropped row is counted there by reason.
+    """
+
+    skip_counts: Counter[str] = skipped if skipped is not None else Counter()
     events: list[_NormalizedEvent] = []
     for row in rows:
         if str(row.get("server_id") or "").strip() != server_id:
+            skip_counts["other server"] += 1
             continue
         media_type_raw = str(row.get("media_type") or "").strip().lower()
         if media_type_raw not in {"movie", "episode"}:
+            skip_counts["unsupported media type"] += 1
             continue
         media_type: Literal["movie", "episode"] = (
             "movie" if media_type_raw == "movie" else "episode"
@@ -962,7 +969,17 @@ def _normalize_tracearr_events(
             ).strip()
             or None
         )
-        if not event_id or not item_id or played_at is None or duration < threshold:
+        if not event_id:
+            skip_counts["missing id"] += 1
+            continue
+        if not item_id:
+            skip_counts["missing rating_key"] += 1
+            continue
+        if played_at is None:
+            skip_counts["missing timestamp"] += 1
+            continue
+        if duration < threshold:
+            skip_counts["below minimum duration"] += 1
             continue
         events.append(
             _NormalizedEvent(
@@ -1775,13 +1792,24 @@ async def _refresh_tracearr_binding(
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
+        skipped: Counter[str] = Counter()
         events = _normalize_tracearr_events(
             rows,
             usernames_by_identity,
             server_id=binding.tracearr_server_id,
             movie_min_seconds=movie_min_seconds,
             episode_min_seconds=episode_min_seconds,
+            skipped=skipped,
         )
+        if skipped:
+            # Short plays are routine; anything else means Tracearr sent rows
+            # Reclaimerr cannot attribute to media, which is worth surfacing.
+            log = LOG.debug if set(skipped) == {"below minimum duration"} else LOG.info
+            log(
+                f"Tracearr {binding.tracearr_server_name}: {len(rows)} row(s), "
+                f"{len(events)} accepted, skipped "
+                + ", ".join(f"{reason}={n}" for reason, n in skipped.most_common())
+            )
     except Exception as exc:
         error = _provider_error_message(exc)
         LOG.warning(
@@ -2348,6 +2376,32 @@ def _observed_service_for_event(event: PlaybackHistoryEvent) -> Service:
     )
 
 
+# Unmatched events are normal in small numbers (media since removed from the
+# library). A large share, or a sudden jump, usually means event identities
+# stopped lining up with media, and every such play silently stops counting.
+UNMATCHED_EVENT_WARN_RATIO = 0.05
+UNMATCHED_EVENT_WARN_JUMP = 50
+_last_unmatched_events: int | None = None
+
+
+def _warn_on_unmatched_events(unmatched: int, total: int) -> None:
+    """Warn when playback events stop mapping to current media."""
+    global _last_unmatched_events
+    previous = _last_unmatched_events
+    _last_unmatched_events = unmatched
+    if not unmatched or not total:
+        return
+    share = unmatched / total
+    jumped = previous is not None and unmatched - previous > UNMATCHED_EVENT_WARN_JUMP
+    if share > UNMATCHED_EVENT_WARN_RATIO or jumped:
+        change = f", up from {previous}" if jumped else ""
+        LOG.warning(
+            f"{unmatched} of {total} playback event(s) ({share:.0%}) do not match "
+            f"any current media{change}; those plays are not counted by "
+            "playback rules"
+        )
+
+
 async def rebuild_playback_history_aggregates() -> None:
     """Remap retained events to current media rows and rebuild rule aggregates."""
     async with async_db() as session:
@@ -2441,6 +2495,7 @@ async def rebuild_playback_history_aggregates() -> None:
         episode_watch: dict[int, _Aggregate] = {}
         remapped_events = 0
         unmatched_events = 0
+        active_events = 0
         events = list(
             (await session.execute(select(PlaybackHistoryEvent))).scalars().all()
         )
@@ -2470,6 +2525,7 @@ async def rebuild_playback_history_aggregates() -> None:
         for event in events:
             if not _playback_event_is_active(event, active_tracearr_sources):
                 continue
+            active_events += 1
             target_keys: list[PlaybackTargetKey] = []
             previous_ids = (
                 event.movie_id,
@@ -2673,6 +2729,7 @@ async def rebuild_playback_history_aggregates() -> None:
                 f"Playback aggregate rebuild retained {unmatched_events} "
                 "event(s) without a current media target"
             )
+        _warn_on_unmatched_events(unmatched_events, active_events)
 
 
 async def load_playback_rule_snapshot(
@@ -2683,23 +2740,44 @@ async def load_playback_rule_snapshot(
     target_services: dict[str, dict[int, set[Service]]] = {
         scope: {} for scope in PLAYBACK_TARGET_SCOPES
     }
+    # Targets the media server itself reports as watched. When a playback
+    # provider covers one of these but none of its events mapped to it, the
+    # history is unmatched rather than empty, so it must not read as 0 plays.
+    server_watched_targets: set[PlaybackTargetKey] = set()
     movie_identity_rows = (
         await db.execute(
-            select(MovieVersion.id, MovieVersion.service)
+            select(
+                MovieVersion.id,
+                MovieVersion.service,
+                Movie.view_count,
+                Movie.last_viewed_at,
+            )
             .join(Movie, MovieVersion.movie_id == Movie.id)
             .where(Movie.removed_at.is_(None))
         )
     ).all()
     target_services["movie_version"] = {
-        version_id: {service} for version_id, service in movie_identity_rows
+        version_id: {service} for version_id, service, _, _ in movie_identity_rows
     }
+    server_watched_targets.update(
+        ("movie_version", version_id)
+        for version_id, _, view_count, last_viewed_at in movie_identity_rows
+        if (view_count or 0) > 0 or last_viewed_at is not None
+    )
 
-    active_series_ids = {
-        series_id
-        for (series_id,) in (
-            await db.execute(select(Series.id).where(Series.removed_at.is_(None)))
-        ).all()
-    }
+    active_series_rows = (
+        await db.execute(
+            select(Series.id, Series.view_count, Series.last_viewed_at).where(
+                Series.removed_at.is_(None)
+            )
+        )
+    ).all()
+    active_series_ids = {series_id for series_id, _, _ in active_series_rows}
+    server_watched_targets.update(
+        ("series", series_id)
+        for series_id, view_count, last_viewed_at in active_series_rows
+        if (view_count or 0) > 0 or last_viewed_at is not None
+    )
     series_services: dict[int, set[Service]] = {
         series_id: set() for series_id in active_series_ids
     }
@@ -2721,11 +2799,18 @@ async def load_playback_rule_snapshot(
                 Season.plex_season_rating_key,
                 Season.jellyfin_season_id,
                 Season.emby_season_id,
+                Season.view_count,
+                Season.last_viewed_at,
             )
             .join(Series, Season.series_id == Series.id)
             .where(Series.removed_at.is_(None))
         )
     ).all()
+    server_watched_targets.update(
+        ("season", row[0])
+        for row in season_identity_rows
+        if (row[4] or 0) > 0 or row[5] is not None
+    )
     target_services["season"] = {
         season_id: {
             service
@@ -2736,7 +2821,7 @@ async def load_playback_rule_snapshot(
             )
             if identity
         }
-        for season_id, plex_id, jellyfin_id, emby_id in season_identity_rows
+        for season_id, plex_id, jellyfin_id, emby_id, _, _ in season_identity_rows
     }
 
     episode_identity_rows = (
@@ -2746,12 +2831,19 @@ async def load_playback_rule_snapshot(
                 Episode.plex_rating_key,
                 Episode.jellyfin_episode_id,
                 Episode.emby_episode_id,
+                Episode.view_count,
+                Episode.last_viewed_at,
             )
             .join(Season, Episode.season_id == Season.id)
             .join(Series, Season.series_id == Series.id)
             .where(Series.removed_at.is_(None))
         )
     ).all()
+    server_watched_targets.update(
+        ("episode", row[0])
+        for row in episode_identity_rows
+        if (row[4] or 0) > 0 or row[5] is not None
+    )
     target_services["episode"] = {
         episode_id: {
             service
@@ -2762,7 +2854,7 @@ async def load_playback_rule_snapshot(
             )
             if identity
         }
-        for episode_id, plex_id, jellyfin_id, emby_id in episode_identity_rows
+        for episode_id, plex_id, jellyfin_id, emby_id, _, _ in episode_identity_rows
     }
 
     supplemental_rows = (
@@ -2916,8 +3008,12 @@ async def load_playback_rule_snapshot(
         available_fields_by_target.setdefault(key, set()).update(
             field for field in values if field not in PLAYBACK_USER_FIELDS
         )
+    unmatched_watched_targets: set[PlaybackTargetKey] = set()
     for key in plugin_covered_targets:
         if key not in plugin_values_by_target:
+            if key in server_watched_targets:
+                unmatched_watched_targets.add(key)
+                continue
             plugin_values_by_target[key] = dict(plugin_zero_values)
             available_fields_by_target.setdefault(key, set()).update(
                 field
@@ -2973,7 +3069,10 @@ async def load_playback_rule_snapshot(
                             usernames_complete=evidence.usernames_complete,
                         )
                         has_authoritative_source = True
-                    elif service in plugin_available_services:
+                    elif (
+                        service in plugin_available_services
+                        and key not in unmatched_watched_targets
+                    ):
                         has_authoritative_source = True
                     else:
                         source_unknown = True
@@ -3030,7 +3129,11 @@ async def load_playback_rule_snapshot(
                 for status in native_statuses
                 if status.service in services and not status.available
             ]
-            if native_failures:
+            if (scope, target_id) in unmatched_watched_targets:
+                reason = (
+                    "media server reports plays that no playback history event matched"
+                )
+            elif native_failures:
                 reason = "; ".join(
                     sorted(
                         status.error or "native playback snapshot unavailable"
@@ -3057,6 +3160,12 @@ async def load_playback_rule_snapshot(
         for status in native_statuses
         if not status.available and status.error
     ]
+    if unmatched_watched_targets:
+        LOG.info(
+            f"{len(unmatched_watched_targets)} playback target(s) have plays on "
+            "the media server but no matched playback history; their playback "
+            "rule fields are treated as unknown instead of 0"
+        )
     return PlaybackRuleSnapshot(
         values_by_target=values_by_target,
         available_targets=available_targets,

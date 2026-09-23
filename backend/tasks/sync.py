@@ -307,6 +307,39 @@ def _as_naive_utc(value: datetime | None) -> datetime | None:
     return ensure_utc(value).replace(tzinfo=None)
 
 
+def _apply_media_server_watch(
+    row: Movie | Series | Season,
+    view_count: int,
+    last_viewed_at: datetime | None,
+    *,
+    history_complete: bool,
+    naive: bool = False,
+) -> bool:
+    """Write a media server's watch values onto a stored row.
+
+    A complete fetch is authoritative and may lower the stored values (history
+    cleared on the server). A partial one can only understate them, so it is
+    merged upward instead. Returns True when a partial fetch would have lowered
+    either value, meaning the stored value was kept.
+    """
+    incoming_lva = _as_naive_utc(last_viewed_at) if naive else last_viewed_at
+    if history_complete:
+        row.view_count = view_count
+        row.last_viewed_at = incoming_lva
+        return False
+
+    stored_count = row.view_count or 0
+    stored_lva = _as_naive_utc(row.last_viewed_at)
+    new_lva = _as_naive_utc(last_viewed_at)
+    kept = view_count < stored_count or (
+        stored_lva is not None and (new_lva is None or new_lva < stored_lva)
+    )
+    row.view_count = max(stored_count, view_count)
+    if new_lva is not None and (stored_lva is None or new_lva > stored_lva):
+        row.last_viewed_at = incoming_lva
+    return kept
+
+
 def _merge_last_viewed(
     current: datetime | None, incoming: datetime | None
 ) -> datetime | None:
@@ -830,6 +863,7 @@ async def _sync_seasons(
     series_id: int,
     season_data: list[AggregatedSeasonData],
     service_type: Service,
+    history_complete: bool = True,
 ) -> None:
     """Upsert season rows for a series from freshly-fetched media server data."""
     result = await session.execute(select(Season).where(Season.series_id == series_id))
@@ -842,10 +876,15 @@ async def _sync_seasons(
             s = existing[sd.season_number]
             s.size = sd.size
             s.episode_count = sd.episode_count
-            s.view_count = sd.view_count
             # Normalized on the way in so these never mix with the naive values
             # SQLite reads back, which is what broke episode syncs.
-            s.last_viewed_at = _as_naive_utc(sd.last_viewed_at)
+            _apply_media_server_watch(
+                s,
+                sd.view_count,
+                sd.last_viewed_at,
+                history_complete=history_complete,
+                naive=True,
+            )
             s.air_date = sd.air_date
             s.added_at = _as_naive_utc(sd.added_at)
             s.has_hdr = sd.has_hdr
@@ -1458,6 +1497,9 @@ async def gather_movies(
                 view_count=merged_view_count,
                 last_viewed_at=merged_lva,
                 played_by_user_count=max(pbu_candidates) if pbu_candidates else None,
+                watch_history_complete=(
+                    existing.watch_history_complete and movie.watch_history_complete
+                ),
                 media_server_user_rating=max(
                     rating
                     for rating in (
@@ -1701,6 +1743,9 @@ async def sync_movies(
             # tmdb_id, which is not the id that was just parsed.
             matched_row_ids: set[int] = set()
 
+            # rows whose stored watch data outlived a partial history fetch
+            kept_watch_count = 0
+
             # iterate through aggregated movies
             batch_count = 0
             for idx, movie in enumerate[AggregatedMovieData](
@@ -1722,8 +1767,13 @@ async def sync_movies(
                     # update added_at if available
                     if earliest_added:
                         existing_movie.added_at = earliest_added
-                    existing_movie.last_viewed_at = movie.last_viewed_at
-                    existing_movie.view_count = movie.view_count
+                    if _apply_media_server_watch(
+                        existing_movie,
+                        movie.view_count,
+                        movie.last_viewed_at,
+                        history_complete=movie.watch_history_complete,
+                    ):
+                        kept_watch_count += 1
                     existing_movie.media_server_user_rating = (
                         movie.media_server_user_rating
                     )
@@ -1764,8 +1814,13 @@ async def sync_movies(
                         )
                         if earliest_added:
                             existing_movie.added_at = earliest_added
-                        existing_movie.last_viewed_at = movie.last_viewed_at
-                        existing_movie.view_count = movie.view_count
+                        if _apply_media_server_watch(
+                            existing_movie,
+                            movie.view_count,
+                            movie.last_viewed_at,
+                            history_complete=movie.watch_history_complete,
+                        ):
+                            kept_watch_count += 1
                         existing_movie.media_server_user_rating = (
                             movie.media_server_user_rating
                         )
@@ -1868,6 +1923,12 @@ async def sync_movies(
             LOG.debug(
                 f"Committed {len(aggregated_movies)} movies in {batch_count + 1} batches"
             )
+            if not all(m.watch_history_complete for m in aggregated_movies.values()):
+                LOG.warning(
+                    f"{effective_service.value} watch history was only partly "
+                    "fetched; movie view counts and last-watched dates were not "
+                    f"lowered ({kept_watch_count} movie(s) kept their stored values)"
+                )
 
             # refresh per instance Radarr refs for active movies
             await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
@@ -2166,6 +2227,9 @@ async def sync_series(
             # own tmdb_id, which is not the id that was just parsed.
             matched_row_ids: set[int] = set()
 
+            # rows whose stored watch data outlived a partial history fetch
+            kept_watch_count = 0
+
             # iterate through aggregated series
             batch_count = 0
             for idx, series in enumerate[AggregatedSeriesData](
@@ -2231,8 +2295,13 @@ async def sync_series(
                     # update added_at if available
                     if series.added_at:
                         existing_series_obj.added_at = series.added_at
-                    existing_series_obj.last_viewed_at = series.last_viewed_at
-                    existing_series_obj.view_count = series.view_count
+                    if _apply_media_server_watch(
+                        existing_series_obj,
+                        series.view_count,
+                        series.last_viewed_at,
+                        history_complete=series.watch_history_complete,
+                    ):
+                        kept_watch_count += 1
                     existing_series_obj.media_server_user_rating = (
                         series.media_server_user_rating
                     )
@@ -2259,6 +2328,7 @@ async def sync_series(
                         existing_series_obj.id,
                         series.season_data,
                         series.service,
+                        history_complete=series.watch_history_complete,
                     )
 
                 # if series doesn't exist, create new entry
@@ -2319,6 +2389,13 @@ async def sync_series(
             LOG.debug(
                 f"Committed {len(aggregated_series)} series in {batch_count + 1} batches"
             )
+            if not all(s.watch_history_complete for s in aggregated_series.values()):
+                LOG.warning(
+                    f"{source_label} watch history was only partly fetched; "
+                    "series and season view counts and last-watched dates were "
+                    f"not lowered ({kept_watch_count} series kept their stored "
+                    "values)"
+                )
 
             #### supplemental episode ID pass ####
             # For series reported more than once by the gather, the losing

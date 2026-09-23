@@ -121,6 +121,14 @@ def test_from_name_is_optional() -> None:
     assert plugin.from_addr == (False, "notify@example.com")
 
 
+def test_from_name_keeps_its_spaces() -> None:
+    plugin = _parse(
+        build_mailto_url(_config(from_name="My Media Server"), "user@inbox.net")
+    )
+
+    assert plugin.from_addr == ("My Media Server", "notify@example.com")
+
+
 def test_redaction_hides_the_password() -> None:
     url = build_mailto_url(_config(password="hunter2"), "user@inbox.net")
     redacted = redact_mailto_url(url)

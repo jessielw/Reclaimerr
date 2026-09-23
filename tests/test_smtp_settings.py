@@ -25,6 +25,7 @@ from backend.models.settings import (
     NotificationSettingItem,
     SMTPSettingsUpdate,
 )
+from backend.services.smtp import auto_enable_system_email
 
 T = TypeVar("T")
 
@@ -280,8 +281,7 @@ def test_enable_all_seeds_destinations_and_is_idempotent() -> None:
             (
                 await session.execute(
                     select(NotificationSetting).where(
-                        NotificationSetting.channel
-                        == NotificationChannel.SYSTEM_EMAIL
+                        NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL
                     )
                 )
             )
@@ -296,6 +296,72 @@ def test_enable_all_seeds_destinations_and_is_idempotent() -> None:
         coverage = await get_smtp_coverage(admin, session)
         assert coverage.eligible == 0
         assert coverage.already_enabled == 2
+
+    _run(run)
+
+
+async def _email_rows(session: AsyncSession) -> list[NotificationSetting]:
+    result = await session.execute(
+        select(NotificationSetting).where(
+            NotificationSetting.channel == NotificationChannel.SYSTEM_EMAIL
+        )
+    )
+    return list(result.scalars().all())
+
+
+def test_switching_smtp_on_backfills_existing_users_once() -> None:
+    async def run(session: AsyncSession, admin: User) -> None:
+        session.add(User(username="a", password_hash="h", email="a@example.com"))
+        await session.commit()
+
+        first = await update_smtp_settings(_valid_update(), admin, session)
+        assert first.auto_enabled_users == 2
+        rows = await _email_rows(session)
+        assert len(rows) == 2
+
+        # a user who deletes theirs is not re-subscribed by a later save
+        await session.delete(rows[0])
+        await session.commit()
+        again = await update_smtp_settings(_valid_update(), admin, session)
+        assert again.auto_enabled_users == 0
+        assert len(await _email_rows(session)) == 1
+
+    _run(run)
+
+
+def test_saving_smtp_disabled_creates_no_destinations() -> None:
+    async def run(session: AsyncSession, admin: User) -> None:
+        response = await update_smtp_settings(
+            _valid_update(enabled=False), admin, session
+        )
+        assert response.auto_enabled_users == 0
+        assert await _email_rows(session) == []
+
+    _run(run)
+
+
+def test_new_user_is_auto_enabled_only_while_smtp_is_on() -> None:
+    async def run(session: AsyncSession, admin: User) -> None:
+        early = User(username="early", password_hash="h", email="e@example.com")
+        session.add(early)
+        await session.flush()
+        assert await auto_enable_system_email(session, early) is False
+
+        await update_smtp_settings(_valid_update(), admin, session)
+
+        late = User(username="late", password_hash="h", email="l@example.com")
+        no_email = User(username="none", password_hash="h", email=None)
+        session.add_all([late, no_email])
+        await session.flush()
+        assert await auto_enable_system_email(session, late) is True
+        assert await auto_enable_system_email(session, no_email) is False
+        await session.commit()
+
+        # idempotent: a second call never duplicates the destination
+        assert await auto_enable_system_email(session, late) is False
+        owners = {row.user_id for row in await _email_rows(session)}
+        assert late.id in owners
+        assert no_email.id not in owners
 
     _run(run)
 
