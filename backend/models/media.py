@@ -622,6 +622,24 @@ class CandidateReasonPart(BaseModel):
     text: str
 
 
+class CandidatePlaybackWatcher(BaseModel):
+    name: str
+    # null when only the media server's own watched state names the user
+    play_count: int | None = None
+    last_activity_at: str | None = None
+
+
+class CandidatePlaybackWatchers(BaseModel):
+    """Who a playback provider or media server saw play this candidate."""
+
+    user_count: int
+    # most plays first; can be shorter than `user_count` when some plays
+    # carried no username
+    users: list[CandidatePlaybackWatcher] = Field(default_factory=list)
+    play_count: int
+    last_activity_at: str | None = None
+
+
 class CandidateEntryBase(BaseModel):
     """Shared media payload used by candidate and preview responses."""
 
@@ -665,6 +683,7 @@ class CandidateEntryBase(BaseModel):
     media_arr_added_at: str | None = None
     media_last_viewed_at: str | None = None
     media_view_count: int | None = None
+    playback_watchers: CandidatePlaybackWatchers | None = None
     arr_refs: list[ArrRefResponse] = Field(default_factory=list)
     arr_tags: list[str] = Field(default_factory=list)
     seerr_links: list[SeerrLinkResponse] = Field(default_factory=list)

@@ -47,6 +47,8 @@ from backend.models.media import (
     CandidateEntry,
     CandidateLibraryRef,
     CandidateOperationQueuedResponse,
+    CandidatePlaybackWatcher,
+    CandidatePlaybackWatchers,
     CandidateRuleFilterOption,
     CandidatesPresenceResponse,
     DeleteCandidatesRequest,
@@ -67,6 +69,11 @@ from backend.models.media import (
 from backend.services.media_origins import (
     load_library_origins,
     load_media_origin_lookup,
+)
+from backend.services.playback_history import (
+    PlaybackTargetKey,
+    PlaybackWatchers,
+    load_playback_watchers,
 )
 
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -1651,17 +1658,28 @@ async def get_candidates(
     # Deduped by library id, not by name: two servers can both call a library
     # "Movies", and collapsing them would hide one of them entirely.
     movie_libraries_by_id: dict[int, list[CandidateLibraryRef]] = {}
+    version_ids_by_movie: dict[int, list[int]] = {}
     if movie_ids:
         movie_versions_result = await db.execute(
             select(
+                MovieVersion.id,
                 MovieVersion.movie_id,
                 MovieVersion.library_id,
                 MovieVersion.library_name,
                 MovieVersion.service,
             ).where(MovieVersion.movie_id.in_(movie_ids))
         )
-        for movie_id, library_id, library_name, service in movie_versions_result.all():
-            if movie_id is None or not library_id or not library_name:
+        for (
+            version_id,
+            movie_id,
+            library_id,
+            library_name,
+            service,
+        ) in movie_versions_result.all():
+            if movie_id is None:
+                continue
+            version_ids_by_movie.setdefault(movie_id, []).append(version_id)
+            if not library_id or not library_name:
                 continue
             refs = movie_libraries_by_id.setdefault(movie_id, [])
             if any(ref.library_id == library_id for ref in refs):
@@ -1703,6 +1721,55 @@ async def get_candidates(
                     service_name=library_origins.name_for(library_id),
                 )
             )
+
+    # A whole-movie candidate covers every version, so it reads all of their
+    # playback targets; everything else maps to exactly one target.
+    playback_targets_by_candidate: dict[int, list[PlaybackTargetKey]] = {}
+    for row in rows:
+        c = row.ReclaimCandidate
+        if c.media_type is MediaType.MOVIE:
+            if c.movie_version_id is not None:
+                keys = [("movie_version", c.movie_version_id)]
+            else:
+                keys = [
+                    ("movie_version", version_id)
+                    for version_id in version_ids_by_movie.get(c.movie_id or -1, [])
+                ]
+        elif c.episode_id is not None:
+            keys = [("episode", c.episode_id)]
+        elif c.season_id is not None:
+            keys = [("season", c.season_id)]
+        elif c.series_id is not None:
+            keys = [("series", c.series_id)]
+        else:
+            keys = []
+        playback_targets_by_candidate[c.id] = keys
+    watchers_by_target = await load_playback_watchers(
+        db,
+        (key for keys in playback_targets_by_candidate.values() for key in keys),
+    )
+
+    def _candidate_watchers(candidate_id: int) -> CandidatePlaybackWatchers | None:
+        merged = PlaybackWatchers()
+        for key in playback_targets_by_candidate.get(candidate_id, []):
+            target_watchers = watchers_by_target.get(key)
+            if target_watchers is not None:
+                merged.merge_watchers(target_watchers)
+        if merged.user_count < 1:
+            return None
+        return CandidatePlaybackWatchers(
+            user_count=merged.user_count,
+            users=[
+                CandidatePlaybackWatcher(
+                    name=user.name,
+                    play_count=user.play_count,
+                    last_activity_at=to_utc_isoformat(user.last_activity_at),
+                )
+                for user in merged.sorted_users()
+            ],
+            play_count=merged.play_count,
+            last_activity_at=to_utc_isoformat(merged.last_activity_at),
+        )
 
     items_out: list[CandidateEntry] = []
     for row in rows:
@@ -1974,6 +2041,7 @@ async def get_candidates(
                 media_arr_added_at=to_utc_isoformat(media_arr_added_at),
                 media_last_viewed_at=to_utc_isoformat(media_last_viewed_at),
                 media_view_count=media_view_count,
+                playback_watchers=_candidate_watchers(c.id),
                 arr_refs=origin_lookup.arr_refs(c.media_type, media_id),
                 arr_tags=(row.movie_arr_tags if is_movie else row.series_arr_tags)
                 or [],

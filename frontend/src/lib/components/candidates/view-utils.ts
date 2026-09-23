@@ -1,7 +1,10 @@
 import { formatFileSize, cleanResolutionString } from "$lib/utils/formatters";
 import { fileNameFromPath } from "$lib/utils/candidate-rules";
+import { MediaType } from "$lib/types/shared";
 import type {
   ArrRef,
+  CandidatePlaybackWatcher,
+  CandidatePlaybackWatchers,
   ReclaimCandidateEntry,
   SeerrLink,
   SeerrRequester,
@@ -14,6 +17,105 @@ export type CandidateOriginMetadata = {
   arrTags: string[];
   seerrLinks: SeerrLink[];
   seerrRequesters: SeerrRequester[];
+  playbackWatchers: CandidatePlaybackWatchers | null;
+};
+
+/** The entries of a series group whose plays do not overlap.
+ *
+ * A whole-series candidate already covers every season and episode, and a
+ * season candidate covers its own episodes, so counting those again would
+ * double their plays.
+ */
+const nonOverlappingSeriesEntries = (
+  entries: ReclaimCandidateEntry[],
+): ReclaimCandidateEntry[] => {
+  const whole = entries.find(
+    (entry) => entry.season_id == null && entry.episode_id == null,
+  );
+  if (whole) return [whole];
+  const seasonIds = new Set(
+    entries
+      .filter((entry) => entry.episode_id == null)
+      .map((entry) => entry.season_id),
+  );
+  return entries.filter(
+    (entry) => entry.episode_id == null || !seasonIds.has(entry.season_id),
+  );
+};
+
+const addCounts = (
+  left: number | null,
+  right: number | null,
+  combine: (left: number, right: number) => number,
+): number | null =>
+  left == null ? right : right == null ? left : combine(left, right);
+
+/** Merge the watchers of several candidates into one summary.
+ *
+ * Series entries are separate seasons or episodes, so their plays add up.
+ * Movie versions share one play history, so they take the max instead.
+ * Distinct users cannot be summed either way: the same person watches many
+ * episodes, and unnamed users cannot be told apart across entries.
+ */
+export const mergePlaybackWatchers = (
+  entries: ReclaimCandidateEntry[],
+): CandidatePlaybackWatchers | null => {
+  const isSeries = entries.some(
+    (entry) => entry.media_type === MediaType.Series,
+  );
+  const combine = isSeries ? (a: number, b: number) => a + b : Math.max;
+  const users = new Map<string, CandidatePlaybackWatcher>();
+  let userCount = 0;
+  let playCount = 0;
+  let lastActivityAt: string | null = null;
+  for (const entry of isSeries
+    ? nonOverlappingSeriesEntries(entries)
+    : entries) {
+    const watchers = entry.playback_watchers;
+    if (!watchers) continue;
+    for (const user of watchers.users) {
+      const key = user.name.toLocaleLowerCase();
+      const existing = users.get(key);
+      users.set(key, {
+        name: existing?.name ?? user.name,
+        play_count: addCounts(
+          existing?.play_count ?? null,
+          user.play_count,
+          combine,
+        ),
+        last_activity_at: laterDate(
+          existing?.last_activity_at ?? null,
+          user.last_activity_at,
+        ),
+      });
+    }
+    userCount = Math.max(userCount, watchers.user_count);
+    playCount = combine(playCount, watchers.play_count);
+    lastActivityAt = laterDate(lastActivityAt, watchers.last_activity_at);
+  }
+  userCount = Math.max(userCount, users.size);
+  if (userCount < 1) return null;
+  return {
+    user_count: userCount,
+    users: [...users.values()].sort(
+      (left, right) =>
+        (right.play_count ?? 0) - (left.play_count ?? 0) ||
+        left.name.localeCompare(right.name),
+    ),
+    play_count: playCount,
+    last_activity_at: lastActivityAt,
+  };
+};
+
+const laterDate = (
+  left: string | null,
+  right: string | null,
+): string | null => {
+  if (!left) return right;
+  if (!right) return left;
+  return candidateCreatedAtEpoch(right) > candidateCreatedAtEpoch(left)
+    ? right
+    : left;
 };
 
 export const candidateOriginMetadata = (
@@ -46,6 +148,7 @@ export const candidateOriginMetadata = (
     seerrRequesters: [...seerrRequesters.values()].sort((left, right) =>
       left.display_name.localeCompare(right.display_name),
     ),
+    playbackWatchers: mergePlaybackWatchers(entries),
   };
 };
 

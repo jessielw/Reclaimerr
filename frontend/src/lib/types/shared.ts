@@ -1153,6 +1153,22 @@ export interface ProtectedEntry {
   updated_at: string;
 }
 
+export interface CandidatePlaybackWatcher {
+  name: string;
+  /** Null when only the media server's own watched state names the user. */
+  play_count: number | null;
+  last_activity_at: string | null;
+}
+
+export interface CandidatePlaybackWatchers {
+  user_count: number;
+  /** Most plays first. Can be shorter than `user_count` when some plays
+   * carried no username. */
+  users: CandidatePlaybackWatcher[];
+  play_count: number;
+  last_activity_at: string | null;
+}
+
 export interface ReclaimCandidateEntry {
   id: number;
   matched_rule_ids: number[];
@@ -1198,6 +1214,7 @@ export interface ReclaimCandidateEntry {
   media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
+  playback_watchers?: CandidatePlaybackWatchers | null;
   arr_refs: ArrRef[];
   arr_tags: string[];
   seerr_links: SeerrLink[];

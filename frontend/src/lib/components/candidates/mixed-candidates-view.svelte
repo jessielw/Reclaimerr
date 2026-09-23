@@ -251,6 +251,7 @@
           arrTags={groupOrigin.arrTags}
           seerrLinks={groupOrigin.seerrLinks}
           seerrRequesters={groupOrigin.seerrRequesters}
+          playbackWatchers={groupOrigin.playbackWatchers}
           compact
           class={canBulkSelect ? "ml-7" : ""}
         />
@@ -478,6 +479,7 @@
           arrTags={groupOrigin.arrTags}
           seerrLinks={groupOrigin.seerrLinks}
           seerrRequesters={groupOrigin.seerrRequesters}
+          playbackWatchers={groupOrigin.playbackWatchers}
           compact
           class={canBulkSelect ? "ml-7" : ""}
         />
