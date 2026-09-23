@@ -222,6 +222,10 @@ class _PlaybackRuleDataResult:
     snapshot: PlaybackRuleSnapshot | None
     unavailable_count: int = 0
     error: str | None = None
+    # True when provider data itself could not be verified, so playback rules
+    # must not run; False when only some targets lack coverage, which the
+    # evaluator already treats as unknown per target
+    blocking: bool = False
 
 
 @dataclass(slots=True)
@@ -1970,6 +1974,7 @@ async def _activate_playback_history_for_rules(
     errors = [*snapshot.errors]
     if native_error and native_error not in errors:
         errors.append(native_error)
+    blocking = bool(errors) or not snapshot.has_configured_provider
     if errors:
         error = "; ".join(errors)
     elif not snapshot.has_configured_provider:
@@ -1987,6 +1992,7 @@ async def _activate_playback_history_for_rules(
         snapshot=snapshot,
         unavailable_count=unavailable_count,
         error=error,
+        blocking=blocking,
     )
 
 
@@ -5562,7 +5568,10 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         playback_dependent_rules = [
             rule for rule in rules if _rule_uses_playback_fields(rule)
         ]
-        if playback_rule_result.error:
+        # partial coverage is not a reason to skip: targets without playback
+        # data resolve as unknown, so they fail playback conditions on their
+        # own while other branches of the rule still evaluate normally
+        if playback_rule_result.blocking:
             preserved_protection_rule_ids.update(
                 rule.id
                 for rule in playback_dependent_rules
