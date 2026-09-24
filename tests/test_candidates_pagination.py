@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import AsyncMock, patch
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.api.routes.media import (
@@ -19,6 +20,8 @@ from backend.database.models import (
     Movie,
     MovieArrRef,
     MovieVersion,
+    PlaybackHistoryAggregate,
+    PlaybackHistoryEvent,
     ReclaimCandidate,
     ReclaimRule,
     Season,
@@ -364,6 +367,67 @@ def test_get_candidates_sorts_groups_by_auto_delete_date() -> None:
     asyncio.run(run())
 
 
+def test_get_candidates_sorts_groups_by_rating_and_watch_fields() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            await _seed_candidates(db_session)
+
+            async def titles(sort_by: str, sort_order: str) -> list[str]:
+                response = await get_candidates(
+                    _admin_user(),
+                    db_session,
+                    page=1,
+                    per_page=10,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    search=None,
+                    media_type=None,
+                )
+                return list(dict.fromkeys(item.media_title for item in response.items))
+
+            # unrated titles stay last in both directions
+            assert await titles("imdb_rating", "desc") == [
+                "Delta Show",
+                "Alpha Movie",
+                "Bravo Movie",
+                "Charlie Show",
+            ]
+            assert await titles("imdb_rating", "asc") == [
+                "Alpha Movie",
+                "Delta Show",
+                "Bravo Movie",
+                "Charlie Show",
+            ]
+            # a grouped series sorts by its series totals, not its episode's
+            assert await titles("view_count", "desc") == [
+                "Delta Show",
+                "Charlie Show",
+                "Bravo Movie",
+                "Alpha Movie",
+            ]
+            assert await titles("last_viewed_at", "asc") == [
+                "Alpha Movie",
+                "Bravo Movie",
+                "Charlie Show",
+                "Delta Show",
+            ]
+            assert await titles("year", "desc") == [
+                "Delta Show",
+                "Charlie Show",
+                "Bravo Movie",
+                "Alpha Movie",
+            ]
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_get_candidates_search_keeps_series_group_intact() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -679,6 +743,139 @@ def test_get_candidates_includes_media_page_metadata() -> None:
             assert charlie_episode.media_added_at is None
             assert charlie_episode.media_last_viewed_at == "2025-05-06T10:00:00+00:00"
             assert charlie_episode.media_view_count == 8
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_get_candidates_includes_playback_watchers() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+            alpha_version_id = (
+                await db_session.execute(
+                    select(MovieVersion.id).where(
+                        MovieVersion.movie_id == ids["alpha_movie_id"]
+                    )
+                )
+            ).scalar_one()
+            charlie_season_candidate = await db_session.get(
+                ReclaimCandidate, ids["charlie_candidate_ids"][1]
+            )
+            assert charlie_season_candidate is not None
+            assert charlie_season_candidate.season_id is not None
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+            )
+            db_session.add(tautulli)
+            await db_session.flush()
+
+            def _event(
+                key: str,
+                username: str,
+                played_at: datetime,
+                *,
+                movie_id: int | None = None,
+                season_id: int | None = None,
+            ) -> PlaybackHistoryEvent:
+                return PlaybackHistoryEvent(
+                    source_service=Service.TAUTULLI,
+                    source_service_config_id=tautulli.id,
+                    source_event_key=key,
+                    source_item_id="item",
+                    provider_media_type="movie" if movie_id else "episode",
+                    played_at=played_at,
+                    duration_seconds=600,
+                    source_user_id=username,
+                    source_username=username,
+                    movie_id=movie_id,
+                    season_id=season_id,
+                )
+
+            alpha_id = ids["alpha_movie_id"]
+            season_id = charlie_season_candidate.season_id
+            db_session.add_all(
+                [
+                    _event("a1", "bob", datetime(2025, 3, 1), movie_id=alpha_id),
+                    _event("a2", "bob", datetime(2025, 4, 1), movie_id=alpha_id),
+                    _event("a3", "bob", datetime(2025, 5, 1), movie_id=alpha_id),
+                    _event("a4", "Alice", datetime(2025, 6, 1), movie_id=alpha_id),
+                    _event("c1", "carol", datetime(2025, 6, 2), season_id=season_id),
+                ]
+            )
+            db_session.add_all(
+                [
+                    # a whole-movie candidate reads its versions' targets
+                    PlaybackHistoryAggregate(
+                        target_scope="movie_version",
+                        target_id=alpha_version_id,
+                        media_type=MediaType.MOVIE,
+                        play_count=4,
+                        unique_user_count=2,
+                        usernames=["bob", "Alice"],
+                        last_activity_at=datetime(2025, 6, 1, 12, 0),
+                    ),
+                    # one of three users played without a username
+                    PlaybackHistoryAggregate(
+                        target_scope="season",
+                        target_id=charlie_season_candidate.season_id,
+                        media_type=MediaType.SERIES,
+                        play_count=5,
+                        unique_user_count=3,
+                        usernames=["carol", "dave"],
+                        usernames_complete=False,
+                    ),
+                ]
+            )
+            await db_session.commit()
+
+            response = await get_candidates(
+                _admin_user(),
+                db_session,
+                page=1,
+                per_page=10,
+                sort_by="created_at",
+                sort_order="desc",
+                search=None,
+                media_type=None,
+            )
+            by_id = {item.id: item for item in response.items}
+
+            alpha = by_id[ids["alpha_candidate_id"]].playback_watchers
+            assert alpha is not None
+            # most plays first, each with their own latest play
+            assert [
+                (u.name, u.play_count, u.last_activity_at) for u in alpha.users
+            ] == [
+                ("bob", 3, "2025-05-01T00:00:00+00:00"),
+                ("Alice", 1, "2025-06-01T00:00:00+00:00"),
+            ]
+            assert alpha.user_count == 2
+            assert alpha.play_count == 4
+            assert alpha.last_activity_at == "2025-06-01T12:00:00+00:00"
+
+            # dave is named by the aggregate but has no event behind him
+            charlie_season = by_id[ids["charlie_candidate_ids"][1]].playback_watchers
+            assert charlie_season is not None
+            assert [(u.name, u.play_count) for u in charlie_season.users] == [
+                ("carol", 1),
+                ("dave", None),
+            ]
+            assert charlie_season.user_count == 3
+
+            # no aggregate is not the same as zero watchers, so nothing is shown
+            assert by_id[ids["charlie_candidate_ids"][0]].playback_watchers is None
+            assert by_id[ids["delta_candidate_id"]].playback_watchers is None
 
         await engine.dispose()
 

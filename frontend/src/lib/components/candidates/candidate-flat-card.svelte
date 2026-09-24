@@ -107,6 +107,7 @@
             arrTags={entry.arr_tags}
             seerrLinks={entry.seerr_links}
             seerrRequesters={entry.seerr_requesters}
+            playbackWatchers={entry.playback_watchers}
             compact
             class="mt-2"
           />

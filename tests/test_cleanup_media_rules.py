@@ -4239,6 +4239,126 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
             self.assertFalse(stored_notice.is_active)
 
+    async def _scan_with_playback_result(
+        self, playback_result: object
+    ) -> tuple[AsyncMock, AdminNotice | None]:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(MediaType.MOVIE, min_size=1)
+            rule.definition = {
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "or",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "playback.play_count",
+                            "operator": "less_than",
+                            "value": 6,
+                        },
+                        {
+                            "type": "condition",
+                            "field": "watch.view_count",
+                            "operator": "less_than",
+                            "value": 6,
+                        },
+                    ],
+                },
+            }
+            db.add(rule)
+            await db.commit()
+
+        process_media = AsyncMock(return_value=(0, 0, 0))
+        with (
+            patch.object(
+                cleanup_tasks,
+                "_ensure_favorites_snapshot_if_enabled",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+            patch.object(
+                cleanup_tasks, "_load_arr_disk_space", new=AsyncMock(return_value=[])
+            ),
+            patch.object(
+                cleanup_tasks, "_load_path_mappings", new=AsyncMock(return_value=[])
+            ),
+            patch.object(cleanup_tasks, "_refresh_arr_tags_for_rules", new=AsyncMock()),
+            patch.object(
+                cleanup_tasks, "_refresh_arr_monitoring_for_rules", new=AsyncMock()
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_seerr_request_resolver_for_rules",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_sonarr_rule_data_for_rules",
+                new=AsyncMock(
+                    return_value=cleanup_tasks._SonarrRuleDataResult(set(), set())
+                ),
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_activate_playback_history_for_rules",
+                new=AsyncMock(return_value=playback_result),
+            ),
+            patch.object(
+                cleanup_tasks,
+                "_reconcile_rule_managed_protections",
+                new=AsyncMock(return_value=(0, 0, 0)),
+            ),
+            patch.object(cleanup_tasks, "_process_media", new=process_media),
+            patch.object(
+                cleanup_tasks, "_sync_leaving_soon_collections", new=AsyncMock()
+            ),
+        ):
+            async with self._sessionmaker() as db:
+                await _scan_with_db(db)
+
+        async with self._sessionmaker() as db:
+            notice = (
+                await db.execute(
+                    select(AdminNotice).where(
+                        AdminNotice.dedupe_key == "playback_rule_data_unavailable"
+                    )
+                )
+            ).scalar_one_or_none()
+        return process_media, notice
+
+    async def test_scan_runs_playback_rules_when_only_some_targets_unobservable(
+        self,
+    ) -> None:
+        process_media, notice = await self._scan_with_playback_result(
+            cleanup_tasks._PlaybackRuleDataResult(
+                snapshot=None,
+                unavailable_count=11,
+                error="Some media targets are not observable",
+            )
+        )
+
+        process_media.assert_awaited_once()
+        self.assertEqual(len(process_media.await_args.args[1]), 1)
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertTrue(notice.is_active)
+
+    async def test_scan_skips_playback_rules_when_provider_data_unverified(
+        self,
+    ) -> None:
+        process_media, notice = await self._scan_with_playback_result(
+            cleanup_tasks._PlaybackRuleDataResult(
+                snapshot=None,
+                unavailable_count=11,
+                error="Tautulli unreachable",
+                blocking=True,
+            )
+        )
+
+        process_media.assert_not_awaited()
+        self.assertIsNotNone(notice)
+        assert notice is not None
+        self.assertTrue(notice.is_active)
+
     async def test_automated_protection_wins_over_matching_candidate(self) -> None:
         async with self._sessionmaker() as db:
             protection_rule = _make_rule(MediaType.MOVIE, min_size=1)

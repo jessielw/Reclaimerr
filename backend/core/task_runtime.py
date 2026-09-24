@@ -22,6 +22,7 @@ from backend.enums import (
 )
 from backend.jobs.queue import enqueue_background_job
 from backend.models.jobs import TaskRunJobPayload
+from backend.services.upgrade_leftovers import scan_upgrade_leftovers
 from backend.tasks.anilist import refresh_anilist_ratings
 from backend.tasks.cleanup import (
     delete_cleanup_candidates,
@@ -74,6 +75,7 @@ DISABLE_ABLE_TASKS: frozenset[Task] = frozenset(
         Task.MDBLIST_RATINGS_REFRESH,
         Task.OMDB_RATINGS_REFRESH,
         Task.DELETE_CLEANUP_CANDIDATES,
+        Task.SCAN_UPGRADE_LEFTOVERS,
     }
 )
 
@@ -122,6 +124,11 @@ async def _get_active_task_job(
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+
+async def is_task_active(task: Task) -> bool:
+    """Whether a run of the task is queued or running."""
+    return await _get_active_task_job(task) is not None
 
 
 async def request_task_run(
@@ -269,4 +276,6 @@ async def execute_task(
     if task is Task.OMDB_RATINGS_REFRESH:
         await refresh_omdb_ratings()
         return None
+    if task is Task.SCAN_UPGRADE_LEFTOVERS:
+        return await scan_upgrade_leftovers()
     raise ValueError(f"Unsupported task for background execution: {task}")

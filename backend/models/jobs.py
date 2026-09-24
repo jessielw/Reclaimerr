@@ -75,3 +75,37 @@ class CandidateFileOpJobResult(BaseModel):
     failed: int
     # per item "<label>: <reason>" for each failure, so the UI can say why
     errors: list[str] = Field(default_factory=list)
+
+
+class DuplicateDeleteJobItem(BaseModel):
+    media_type: MediaType
+    # movies.id for movies, episodes.id for episodes
+    item_id: int
+    # version rows the user picked; every file they describe is removed
+    version_ids: list[int]
+    display_label: str
+
+
+class LeftoverDeleteJobItem(BaseModel):
+    # upgrade_leftovers.id
+    id: int
+    display_label: str
+
+
+class DuplicateDeleteJobPayload(BaseModel):
+    items: list[DuplicateDeleteJobItem]
+    # upgrade leftovers ride the same job: both remove a redundant copy
+    leftovers: list[LeftoverDeleteJobItem] = []
+    requested_by_user_id: int
+    requested_by_username: str
+    # same shape as candidate jobs so job history can preview it
+    item_labels: list[str] = []
+    progress: CandidateFileOpJobProgress | None = None
+
+
+class DuplicateDeleteJobResult(BaseModel):
+    processed: int
+    succeeded: int
+    failed: int
+    freed_bytes: int = 0
+    errors: list[str] = Field(default_factory=list)

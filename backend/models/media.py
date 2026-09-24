@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -107,6 +107,31 @@ class AggregatedMovieData:
 
 
 @dataclass(slots=True, frozen=True)
+class EpisodeVersionData:
+    """Single physical file version of an episode (slim, duplicate detection only)."""
+
+    service: MediaServerType
+    # plex ratingKey or jellyfin/emby item ID (used for item level ops like delete)
+    service_item_id: str
+    # plex Media.id or jellyfin/emby MediaSource.Id (unique per physical file)
+    service_media_id: str
+    library_id: str
+    library_name: str
+    path: str | None
+    size: int
+    added_at: datetime | None = None
+    video_resolution: str | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+    video_codec_family: VideoCodecFamily | None = None
+    video_hdr: bool | None = None
+    video_dolby_vision: bool | None = None
+    video_bitrate: int | None = None
+    audio_codec_family: AudioCodecFamily | None = None
+    audio_channels: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class AggregatedEpisodeData:
     """Per episode data collected from a media server during sync."""
 
@@ -126,6 +151,8 @@ class AggregatedEpisodeData:
     media_server_user_rating: float | None = None
     # file runtime in whole seconds, from the media server's item metadata
     runtime_seconds: int | None = None
+    # every physical file the server reports for this episode item
+    versions: tuple[EpisodeVersionData, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -587,6 +614,12 @@ class CandidateDisplayGroup:
     sort_deletion_active: bool
     sort_size: int
     candidate_ids: list[int]
+    sort_tmdb_rating: float | None = None
+    sort_imdb_rating: float | None = None
+    sort_year: int | None = None
+    sort_added_at: datetime | None = None
+    sort_last_viewed_at: datetime = datetime.min.replace(tzinfo=UTC)
+    sort_view_count: int = 0
 
 
 class CandidateLibraryRef(BaseModel):
@@ -620,6 +653,24 @@ class CandidateReasonPart(BaseModel):
     season_label: str | None = None
     conditions: list[CandidateReasonCondition]
     text: str
+
+
+class CandidatePlaybackWatcher(BaseModel):
+    name: str
+    # null when only the media server's own watched state names the user
+    play_count: int | None = None
+    last_activity_at: str | None = None
+
+
+class CandidatePlaybackWatchers(BaseModel):
+    """Who a playback provider or media server saw play this candidate."""
+
+    user_count: int
+    # most plays first; can be shorter than `user_count` when some plays
+    # carried no username
+    users: list[CandidatePlaybackWatcher] = Field(default_factory=list)
+    play_count: int
+    last_activity_at: str | None = None
 
 
 class CandidateEntryBase(BaseModel):
@@ -665,6 +716,7 @@ class CandidateEntryBase(BaseModel):
     media_arr_added_at: str | None = None
     media_last_viewed_at: str | None = None
     media_view_count: int | None = None
+    playback_watchers: CandidatePlaybackWatchers | None = None
     arr_refs: list[ArrRefResponse] = Field(default_factory=list)
     arr_tags: list[str] = Field(default_factory=list)
     seerr_links: list[SeerrLinkResponse] = Field(default_factory=list)

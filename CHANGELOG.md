@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-24
+
+### Added
+
+- New **Duplicates** page that lists movies and episodes your media server holds more than one file for. It suggests which file to keep using an adjustable **Keeper preference**, and removes the other copies through Radarr/Sonarr (or the media server) without unmonitoring anything. A delete through Radarr/Sonarr is refused when the kept copy is outside the Arr's folder, since the Arr would otherwise download the item again. Copies in separate libraries (such as a 4K library) are hidden by default, and anything unsafe to automate, such as multi-episode files, is flagged for manual review. Episode duplicates appear after the next **Sync Media**. See [Duplicates](https://jessielw.github.io/Reclaimerr/usage/duplicates/).
+- **Upgrade leftovers** on the **Duplicates** page: old downloads that Radarr replaced with an upgrade but that are still in its download folder. A new **Scan Upgrade Leftovers** task (daily, or **Scan now**) finds them from Radarr's import history. It skips anything hardlinked to the current file or still used by any movie, and flags hardlinked leftovers that would free no space. Deleting one removes the file from disk after checking it again, plus its release folder when only extras are left. Radarr only for now.
+- Can now see who watched what on Candidates page (if the data is valid) with a count/total count.
+- Added filter options in Candidates page for **last viewed**, **watch count**, **date added**, **tmdb rating**, **imdb rating**, and **release year**.
+  - How grouped cards sort:
+    - Movie versions: all versions share the movie's rating, year and watch data.
+    - Series with season or episode candidates: sorted by the whole show's watch count and last-viewed date. Otherwise one heavily watched episode would decide where the whole group lands.
+
+### Fixed
+
+- A cleanup scan no longer skips an entire rule that uses **Playback** fields just because a few media items cannot be seen by your playback provider. Those items now count as unknown for their **Playback** conditions only, the same way rule preview already handled them, so the rest of the rule still runs and an **OR** branch without **Playback** fields can still match them. The **Playback history rule data is unavailable** notice still lists how many items were affected. Rules are still skipped when the playback provider itself fails to refresh or none is configured.
+- Fix **Select all on this page** not showing the correct count.
+
 ## [0.4.9] - 2026-09-23
 
 ### Fixed

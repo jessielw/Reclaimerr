@@ -38,6 +38,7 @@ export enum PageAccess {
   Requests = "requests",
   Protected = "protected",
   Candidates = "candidates",
+  Duplicates = "duplicates",
   Calendar = "calendar",
   Storage = "storage",
   History = "history",
@@ -657,6 +658,7 @@ export enum BackgroundJobType {
   TaskRun = "task_run",
   CandidateFileOp = "candidate_file_op",
   WebhookDelivery = "webhook_delivery",
+  DuplicateDelete = "duplicate_delete",
 }
 
 export enum BackgroundJobPriority {
@@ -960,6 +962,81 @@ export interface PaginatedResponse<T> {
   total_pages: number;
 }
 
+export interface DuplicateFile {
+  version_ids: number[];
+  service: string;
+  library_names: string[];
+  path: string | null;
+  size: number;
+  added_at: string | null;
+  video_resolution: string | null;
+  video_width: number | null;
+  video_height: number | null;
+  video_codec_family: string | null;
+  video_hdr: boolean | null;
+  video_dolby_vision: boolean | null;
+  video_bitrate_kbps: number | null;
+  audio_codec_family: string | null;
+  audio_channels: number | null;
+  protected: boolean;
+}
+
+export interface DuplicateGroup {
+  key: string;
+  media_type: MediaType;
+  item_id: number;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  series_id: number | null;
+  season_number: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
+  /** best first; files[0] is the suggested keeper */
+  files: DuplicateFile[];
+  manual_reason: string | null;
+  cross_library: boolean;
+  ignored: boolean;
+  reclaimable_size: number;
+}
+
+export interface PaginatedDuplicatesResponse extends PaginatedResponse<DuplicateGroup> {
+  summary: { groups: number; actionable: number; reclaimable_size: number };
+}
+
+export interface UpgradeLeftover {
+  id: number;
+  movie_id: number | null;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  source_title: string | null;
+  /** the path as Radarr reported it */
+  dropped_path: string;
+  size: number;
+  link_count: number;
+  /** false when another hardlink keeps the data on disk */
+  frees_space: boolean;
+  imported_at: string | null;
+  manual_reason: string | null;
+  ignored: boolean;
+}
+
+export interface PaginatedLeftoversResponse extends PaginatedResponse<UpgradeLeftover> {
+  summary: { leftovers: number; actionable: number; reclaimable_size: number };
+  scan: {
+    scanned_at: string | null;
+    /** Radarr download folders the last scan couldn't reach */
+    unmapped_roots: string[];
+    running: boolean;
+  };
+}
+
+export interface DuplicateKeeperPriorityEntry {
+  key: string;
+  enabled: boolean;
+}
+
 export interface SidebarIndicatorsResponse {
   has_candidates: boolean;
   has_pending_requests: boolean;
@@ -1153,6 +1230,22 @@ export interface ProtectedEntry {
   updated_at: string;
 }
 
+export interface CandidatePlaybackWatcher {
+  name: string;
+  /** Null when only the media server's own watched state names the user. */
+  play_count: number | null;
+  last_activity_at: string | null;
+}
+
+export interface CandidatePlaybackWatchers {
+  user_count: number;
+  /** Most plays first. Can be shorter than `user_count` when some plays
+   * carried no username. */
+  users: CandidatePlaybackWatcher[];
+  play_count: number;
+  last_activity_at: string | null;
+}
+
 export interface ReclaimCandidateEntry {
   id: number;
   matched_rule_ids: number[];
@@ -1198,6 +1291,7 @@ export interface ReclaimCandidateEntry {
   media_arr_added_at: string | null;
   media_last_viewed_at: string | null;
   media_view_count: number | null;
+  playback_watchers?: CandidatePlaybackWatchers | null;
   arr_refs: ArrRef[];
   arr_tags: string[];
   seerr_links: SeerrLink[];

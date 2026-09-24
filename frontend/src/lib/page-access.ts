@@ -45,6 +45,12 @@ export const PAGE_ACCESS_OPTIONS: PageAccessOption[] = [
     description: "Review cleanup candidates.",
   },
   {
+    value: PageAccess.Duplicates,
+    label: "Duplicates",
+    path: "/duplicates",
+    description: "Find media with more than one file and pick which to keep.",
+  },
+  {
     value: PageAccess.Calendar,
     label: "Calendar",
     path: "/calendar",
@@ -85,6 +91,7 @@ const redirectPreference = [
   PageAccess.Series,
   PageAccess.Requests,
   PageAccess.Protected,
+  PageAccess.Duplicates,
   PageAccess.Calendar,
   PageAccess.Storage,
   PageAccess.History,

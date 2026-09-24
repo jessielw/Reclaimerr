@@ -7,8 +7,10 @@ from backend.core.task_process import run_task_job
 from backend.database.models import BackgroundJob
 from backend.enums import BackgroundJobType
 from backend.jobs.candidate_file_ops import run_candidate_file_op_job
+from backend.jobs.duplicate_file_ops import run_duplicate_delete_job
 from backend.models.jobs import (
     CandidateFileOpJobPayload,
+    DuplicateDeleteJobPayload,
     ServiceToggleJobPayload,
     TaskRunJobPayload,
     WebhookDeliveryJobPayload,
@@ -42,6 +44,10 @@ async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
     if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
         file_op_payload = CandidateFileOpJobPayload.model_validate(job.payload)
         return await run_candidate_file_op_job(job.id, file_op_payload)
+
+    if job.job_type is BackgroundJobType.DUPLICATE_DELETE:
+        duplicate_payload = DuplicateDeleteJobPayload.model_validate(job.payload)
+        return await run_duplicate_delete_job(job.id, duplicate_payload)
 
     if job.job_type is BackgroundJobType.WEBHOOK_DELIVERY:
         delivery_payload = WebhookDeliveryJobPayload.model_validate(job.payload)

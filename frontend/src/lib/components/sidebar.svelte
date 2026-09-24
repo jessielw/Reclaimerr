@@ -20,6 +20,7 @@
   import Ticket from "@lucide/svelte/icons/ticket";
   import Shield from "@lucide/svelte/icons/shield";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import Copy from "@lucide/svelte/icons/copy";
   import Filter from "@lucide/svelte/icons/filter";
   import History from "@lucide/svelte/icons/history";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
@@ -100,6 +101,14 @@
       page: PageAccess.Candidates,
       tooltip:
         "Review media that are candidates for deletion based on your retention settings",
+    },
+    {
+      path: "/duplicates",
+      label: "Duplicates",
+      icon: Copy,
+      adminOnly: false,
+      page: PageAccess.Duplicates,
+      tooltip: "Find media with more than one file and pick which to keep",
     },
     {
       path: "/calendar",

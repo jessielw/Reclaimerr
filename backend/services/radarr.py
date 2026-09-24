@@ -100,6 +100,10 @@ def build_radarr_movie_from_dict(data: Mapping[str, object]) -> RadarrMovie:
     return _movie_from_mapping(data)
 
 
+# Radarr MovieHistoryEventType.DownloadFolderImported
+_HISTORY_EVENT_DOWNLOAD_FOLDER_IMPORTED = 3
+
+
 class RadarrClient:
     """Client for interacting with Radarr API."""
 
@@ -503,6 +507,50 @@ class RadarrClient:
                 f"(status: {status_code})"
             )
         return [dict(entry) for entry in data if isinstance(entry, Mapping)]
+
+    async def get_import_history(
+        self, page_size: int = 1000
+    ) -> list[dict[str, object]]:
+        """Get every download-folder import event across all movies, newest first.
+
+        Asks Radarr to filter by event type, then filters again locally in case
+        an older Radarr ignores the parameter.
+        """
+        records: list[dict[str, object]] = []
+        page = 1
+        while True:
+            status_code, data = await self._make_request(
+                "GET",
+                "history",
+                params={
+                    "page": page,
+                    "pageSize": page_size,
+                    "sortKey": "date",
+                    "sortDirection": "descending",
+                    "eventType": _HISTORY_EVENT_DOWNLOAD_FOLDER_IMPORTED,
+                },
+                timeout=self.timeout,
+            )
+            if not isinstance(data, Mapping):
+                raise ValueError(
+                    f"Invalid response getting import history page {page} "
+                    f"(status: {status_code})"
+                )
+            raw_records = data.get("records")
+            page_records = (
+                [dict(r) for r in raw_records if isinstance(r, Mapping)]
+                if isinstance(raw_records, list)
+                else []
+            )
+            records += [
+                r
+                for r in page_records
+                if r.get("eventType") == "downloadFolderImported"
+            ]
+            total = as_int(data.get("totalRecords")) or 0
+            if not page_records or page * page_size >= total:
+                return records
+            page += 1
 
     async def delete_movie_files(self, movie_file_ids: list[int]) -> None:
         """Delete individual movie files without touching the Radarr movie entry.

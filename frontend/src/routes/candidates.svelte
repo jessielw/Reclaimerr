@@ -69,6 +69,12 @@
     { value: "auto_delete_eligible_at", label: "Deletion date" },
     { value: "media_title", label: "Title" },
     { value: "estimated_space_bytes", label: "Size" },
+    { value: "last_viewed_at", label: "Last viewed" },
+    { value: "view_count", label: "Watch count" },
+    { value: "added_at", label: "Date added" },
+    { value: "tmdb_rating", label: "TMDB rating" },
+    { value: "imdb_rating", label: "IMDb rating" },
+    { value: "year", label: "Release year" },
   ] as const;
   type CandidateSortBy = (typeof sortByOptions)[number]["value"];
   type CandidateMediaFilter = "all" | MediaType.Movie | MediaType.Series;
@@ -332,32 +338,35 @@
   const canBulkSelect = $derived(isAdmin || canDelete);
 
   // all selectable IDs on the current page (flat entries + all season sub entries)
-  const allSelectableIds = $derived((): number[] => {
-    const ids: number[] = [];
-    for (const row of displayRows()) {
-      if (row.kind === "flat") ids.push(row.entry.id);
-      else {
-        if (row.group_type === "series_seasons") {
-          if (row.seriesEntry) ids.push(row.seriesEntry.id);
-          for (const s of row.seasons) ids.push(s.id);
-        } else {
-          for (const v of row.versions) ids.push(v.id);
-        }
-      }
+  // every candidate id that belongs to a display row (one row per title)
+  const rowIds = (row: DisplayRow): number[] => {
+    if (row.kind === "flat") return [row.entry.id];
+    if (row.group_type === "series_seasons") {
+      return [
+        ...(row.seriesEntry ? [row.seriesEntry.id] : []),
+        ...row.seasons.map((s) => s.id),
+      ];
     }
-    return ids;
-  });
+    return row.versions.map((v) => v.id);
+  };
+
+  const allSelectableIds = $derived((): number[] =>
+    displayRows().flatMap(rowIds),
+  );
 
   const allPageSelected = $derived(
     allSelectableIds().length > 0 &&
       allSelectableIds().every((id) => selectedIds.has(id)),
   );
-  const selectableOnPageCount = $derived(allSelectableIds().length);
+  // counted per title so it lines up with the per-page setting
+  const selectableOnPageCount = $derived(displayRows().length);
   const selectedOnPageCount = $derived(
-    allSelectableIds().filter((id) => selectedIds.has(id)).length,
+    displayRows().filter((row) =>
+      rowIds(row).every((id) => selectedIds.has(id)),
+    ).length,
   );
   const allPagePartiallySelected = $derived(
-    selectedOnPageCount > 0 && !allPageSelected,
+    selectedIds.size > 0 && !allPageSelected,
   );
 
   const selectedEntries = $derived(

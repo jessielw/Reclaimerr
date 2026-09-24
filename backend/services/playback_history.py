@@ -9,9 +9,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import and_, delete, false, func, or_, select
+from sqlalchemy import ColumnElement, and_, delete, false, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from backend.core.encryption import fer_decrypt
 from backend.core.logger import LOG
@@ -3181,6 +3182,265 @@ async def load_playback_rule_snapshot(
         native_statuses=native_statuses,
         target_ids_by_scope=target_ids_by_scope,
     )
+
+
+@dataclass(slots=True)
+class PlaybackWatcher:
+    """One named user who played a target."""
+
+    name: str
+    # None when only native media-server state names the user: it says they
+    # watched, not how many times.
+    play_count: int | None = None
+    last_activity_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class PlaybackWatchers:
+    """Who has played a set of playback targets, for display rather than rules.
+
+    ``users`` can hold fewer entries than ``user_count`` when some plays were
+    recorded without a username; the difference is users the provider could
+    not name.
+
+    Every count merges with max rather than sum: history and native state both
+    observe the same plays, and a movie's plays are fanned out to every one of
+    its versions, so adding them would count one play several times.
+    """
+
+    user_count: int = 0
+    users: dict[str, PlaybackWatcher] = field(default_factory=dict)
+    play_count: int = 0
+    last_activity_at: datetime | None = None
+
+    def merge(
+        self,
+        *,
+        user_count: int,
+        usernames: Iterable[object],
+        play_count: int,
+        last_activity_at: datetime | None,
+    ) -> None:
+        """Merge another observation of the same plays."""
+
+        for raw_name in usernames:
+            self.merge_user(str(raw_name or ""))
+        self.user_count = max(self.user_count, user_count, len(self.users))
+        self.play_count = max(self.play_count, play_count)
+        self.last_activity_at = _latest(self.last_activity_at, last_activity_at)
+
+    def merge_user(
+        self,
+        raw_name: str,
+        play_count: int | None = None,
+        last_activity_at: datetime | None = None,
+    ) -> None:
+        """Merge one user's plays, keeping the highest count seen for them."""
+
+        name = raw_name.strip()
+        if not name:
+            return
+        user = self.users.setdefault(name.casefold(), PlaybackWatcher(name=name))
+        if play_count is not None:
+            user.play_count = max(user.play_count or 0, play_count)
+        user.last_activity_at = _latest(user.last_activity_at, last_activity_at)
+        self.user_count = max(self.user_count, len(self.users))
+
+    def merge_watchers(self, other: PlaybackWatchers) -> None:
+        self.merge(
+            user_count=other.user_count,
+            usernames=(),
+            play_count=other.play_count,
+            last_activity_at=other.last_activity_at,
+        )
+        for user in other.users.values():
+            self.merge_user(user.name, user.play_count, user.last_activity_at)
+
+    def sorted_users(self) -> list[PlaybackWatcher]:
+        """Most plays first, then by name, with count-less users last."""
+
+        return sorted(
+            self.users.values(),
+            key=lambda user: (-(user.play_count or 0), user.name.casefold()),
+        )
+
+
+def _latest(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+async def load_playback_watchers(
+    db: AsyncSession,
+    targets: Iterable[PlaybackTargetKey],
+) -> dict[PlaybackTargetKey, PlaybackWatchers]:
+    """Return who has played each requested target, and how often.
+
+    Totals come from the persisted aggregates and current native media-server
+    state; per-user play counts are grouped from the durable events of only the
+    requested targets, so a page of candidates costs a handful of indexed
+    lookups. Native state from a server whose last snapshot failed is skipped,
+    matching what the rule engine trusts. Targets with no recorded plays are
+    absent.
+    """
+
+    ids_by_scope: dict[str, set[int]] = defaultdict(set)
+    for scope, target_id in targets:
+        ids_by_scope[scope].add(target_id)
+    if not ids_by_scope:
+        return {}
+
+    def _target_clause(
+        scope_column: InstrumentedAttribute[str],
+        id_column: InstrumentedAttribute[int],
+    ) -> ColumnElement[bool]:
+        return or_(
+            *(
+                and_(scope_column == scope, id_column.in_(ids))
+                for scope, ids in ids_by_scope.items()
+            )
+        )
+
+    watchers: dict[PlaybackTargetKey, PlaybackWatchers] = {}
+    history_rows = (
+        (
+            await db.execute(
+                select(PlaybackHistoryAggregate).where(
+                    PlaybackHistoryAggregate.play_count > 0,
+                    _target_clause(
+                        PlaybackHistoryAggregate.target_scope,
+                        PlaybackHistoryAggregate.target_id,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in history_rows:
+        watchers.setdefault(
+            (row.target_scope, row.target_id), PlaybackWatchers()
+        ).merge(
+            user_count=row.unique_user_count,
+            usernames=row.usernames or [],
+            play_count=row.play_count,
+            last_activity_at=row.last_activity_at,
+        )
+
+    native_config_ids = {
+        status.config_id
+        for status in await _load_native_playback_statuses(db)
+        if status.available
+    }
+    if native_config_ids:
+        native_rows = (
+            (
+                await db.execute(
+                    select(NativePlaybackAggregate).where(
+                        NativePlaybackAggregate.has_activity.is_(True),
+                        NativePlaybackAggregate.source_service_config_id.in_(
+                            native_config_ids
+                        ),
+                        _target_clause(
+                            NativePlaybackAggregate.target_scope,
+                            NativePlaybackAggregate.target_id,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in native_rows:
+            watchers.setdefault(
+                (row.target_scope, row.target_id), PlaybackWatchers()
+            ).merge(
+                user_count=row.unique_user_count,
+                usernames=row.usernames or [],
+                play_count=row.play_count,
+                last_activity_at=row.last_activity_at,
+            )
+
+    # Only targets with imported history can have per-user counts.
+    history_targets = {(row.target_scope, row.target_id) for row in history_rows}
+    if history_targets:
+        await _merge_user_play_counts(db, watchers, history_targets)
+
+    return {key: value for key, value in watchers.items() if value.user_count > 0}
+
+
+async def _merge_user_play_counts(
+    db: AsyncSession,
+    watchers: dict[PlaybackTargetKey, PlaybackWatchers],
+    targets: set[PlaybackTargetKey],
+) -> None:
+    """Add each user's play count and latest play to the given targets.
+
+    Counts the same active events the aggregates were built from. Movie events
+    are recorded per movie rather than per version, so each version reads its
+    movie's events.
+    """
+
+    active_event_clause = active_playback_event_clause(
+        await load_active_tracearr_sources(db)
+    )
+    # event column -> {event column id: [targets it counts toward]}
+    targets_by_event_id: dict[str, dict[int, list[PlaybackTargetKey]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    version_ids = [
+        target_id for scope, target_id in targets if scope == "movie_version"
+    ]
+    if version_ids:
+        for version_id, movie_id in (
+            await db.execute(
+                select(MovieVersion.id, MovieVersion.movie_id).where(
+                    MovieVersion.id.in_(version_ids),
+                    MovieVersion.movie_id.is_not(None),
+                )
+            )
+        ).all():
+            targets_by_event_id["movie"][movie_id].append(("movie_version", version_id))
+    for scope, target_id in targets:
+        if scope != "movie_version":
+            targets_by_event_id[scope][target_id].append((scope, target_id))
+
+    event_columns = {
+        "movie": PlaybackHistoryEvent.movie_id,
+        "series": PlaybackHistoryEvent.series_id,
+        "season": PlaybackHistoryEvent.season_id,
+        "episode": PlaybackHistoryEvent.episode_id,
+    }
+    for event_scope, targets_by_id in targets_by_event_id.items():
+        column = event_columns.get(event_scope)
+        if column is None:
+            continue
+        rows = (
+            await db.execute(
+                select(
+                    column,
+                    PlaybackHistoryEvent.source_username,
+                    func.count(PlaybackHistoryEvent.id),
+                    func.max(PlaybackHistoryEvent.played_at),
+                )
+                .where(
+                    column.in_(targets_by_id),
+                    PlaybackHistoryEvent.source_username.is_not(None),
+                    active_event_clause,
+                )
+                .group_by(column, PlaybackHistoryEvent.source_username)
+            )
+        ).all()
+        for event_id, username, play_count, last_activity_at in rows:
+            for key in targets_by_id.get(event_id, []):
+                target_watchers = watchers.get(key)
+                if target_watchers is not None:
+                    target_watchers.merge_user(
+                        str(username or ""), int(play_count or 0), last_activity_at
+                    )
 
 
 async def load_user_playback_totals(

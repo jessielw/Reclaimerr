@@ -1,13 +1,20 @@
 <script lang="ts">
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import { Badge } from "$lib/components/ui/badge/index.js";
-  import type { ArrRef, SeerrLink, SeerrRequester } from "$lib/types/shared";
+  import type {
+    ArrRef,
+    CandidatePlaybackWatcher,
+    CandidatePlaybackWatchers,
+    SeerrLink,
+    SeerrRequester,
+  } from "$lib/types/shared";
 
   interface Props {
     arrRefs?: ArrRef[];
     arrTags?: string[];
     seerrLinks?: SeerrLink[];
     seerrRequesters?: SeerrRequester[];
+    playbackWatchers?: CandidatePlaybackWatchers | null;
     compact?: boolean;
     class?: string;
   }
@@ -17,6 +24,7 @@
     arrTags = [],
     seerrLinks = [],
     seerrRequesters = [],
+    playbackWatchers = null,
     compact = false,
     class: className = "",
   }: Props = $props();
@@ -25,8 +33,55 @@
     arrRefs.length > 0 ||
       arrTags.length > 0 ||
       seerrLinks.length > 0 ||
-      seerrRequesters.length > 0,
+      seerrRequesters.length > 0 ||
+      playbackWatchers !== null,
   );
+
+  // Past this many names the row wraps into a wall; the rest go in a tooltip.
+  const WATCHER_NAME_LIMIT = 6;
+
+  const shownWatchers = $derived(
+    playbackWatchers?.users.slice(0, WATCHER_NAME_LIMIT) ?? [],
+  );
+  const hiddenWatchers = $derived(
+    playbackWatchers?.users.slice(WATCHER_NAME_LIMIT) ?? [],
+  );
+  // Users the provider counted but could not name.
+  const unnamedWatcherCount = $derived(
+    playbackWatchers
+      ? Math.max(0, playbackWatchers.user_count - playbackWatchers.users.length)
+      : 0,
+  );
+
+  const shortDate = (value: string | null): string | null => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString();
+  };
+
+  // A null count means only the media server's own watched state names this
+  // user: they watched it, but how often is unknown.
+  const watcherLabel = (user: CandidatePlaybackWatcher): string =>
+    user.play_count == null
+      ? `${user.name} ✓`
+      : `${user.name} (${user.play_count})`;
+
+  const watcherTitle = (user: CandidatePlaybackWatcher): string | undefined => {
+    if (user.play_count == null) {
+      return "Marked watched on the media server; play count unknown";
+    }
+    const last = shortDate(user.last_activity_at);
+    return last ? `Last watched ${last}` : undefined;
+  };
+
+  const watcherSummary = $derived.by(() => {
+    if (!playbackWatchers) return "";
+    const plays = playbackWatchers.play_count;
+    const parts = [`${plays} play${plays === 1 ? "" : "s"}`];
+    const last = shortDate(playbackWatchers.last_activity_at);
+    if (last) parts.push(`last ${last}`);
+    return parts.join(", ");
+  });
 
   // One Seerr needs no disambiguation; several do.
   const seerrLabel = (link: SeerrLink) =>
@@ -117,6 +172,38 @@
               {requester.display_name}
             </Badge>
           {/each}
+        </div>
+      {/if}
+
+      {#if playbackWatchers}
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-muted-foreground">Watched by:</span>
+          {#each shownWatchers as user (user.name)}
+            <Badge
+              variant="secondary"
+              class={user.play_count == null ? "text-muted-foreground" : ""}
+              title={watcherTitle(user)}
+            >
+              {watcherLabel(user)}
+            </Badge>
+          {/each}
+          {#if hiddenWatchers.length > 0}
+            <Badge
+              variant="outline"
+              title={hiddenWatchers.map(watcherLabel).join(", ")}
+            >
+              +{hiddenWatchers.length} more
+            </Badge>
+          {/if}
+          {#if unnamedWatcherCount > 0}
+            <Badge
+              variant="outline"
+              title="Plays the playback provider recorded without a username"
+            >
+              {shownWatchers.length > 0 ? "+" : ""}{unnamedWatcherCount} unnamed
+            </Badge>
+          {/if}
+          <span class="text-muted-foreground">({watcherSummary})</span>
         </div>
       {/if}
 

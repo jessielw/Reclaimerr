@@ -7,6 +7,7 @@ const UI_INDICATOR_MUTATION_PATH_PREFIXES = [
   "/api/delete-requests",
   "/api/media/candidates/delete",
   "/api/media/candidates/move",
+  "/api/duplicates/delete",
   "/api/info/notices",
 ];
 
