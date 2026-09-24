@@ -1034,6 +1034,7 @@ def test_get_candidates_includes_origin_metadata() -> None:
             get_snapshot.assert_awaited_once_with(
                 require_fresh=False,
                 allow_stale_on_failure=True,
+                wait_for_first_load=False,
             )
 
         await engine.dispose()

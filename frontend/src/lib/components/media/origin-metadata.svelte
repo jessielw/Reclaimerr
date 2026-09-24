@@ -164,12 +164,18 @@
                 ? (requester.service_name ??
                   `Seerr #${requester.service_config_id}`)
                 : null}
+            {@const requested = shortDate(requester.requested_at)}
             <Badge
               variant="secondary"
               title={[handle, instance].filter(Boolean).join(" | ") ||
                 undefined}
             >
               {requester.display_name}
+              {#if requested}
+                <span class="font-normal text-muted-foreground">
+                  · {requested}
+                </span>
+              {/if}
             </Badge>
           {/each}
         </div>

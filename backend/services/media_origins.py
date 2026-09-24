@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from datetime import datetime
 from urllib.parse import quote
 
 from sqlalchemy import func, select
@@ -82,18 +83,22 @@ class MediaOriginLookup:
         if self.seerr_snapshot is None or tmdb_id is None:
             return []
 
-        requester_ids: set[str]
+        snapshot = self.seerr_snapshot
+        requester_ids: set[str] = set()
+        request_dates: dict[str, datetime] = {}
         if media_type is MediaType.SERIES and season_number is not None:
-            requester_ids = self.seerr_snapshot.requester_ids_by_series_season.get(
+            requester_ids = snapshot.requester_ids_by_series_season.get(
                 (tmdb_id, season_number), set()
             )
-            if not requester_ids:
-                requester_ids = self.seerr_snapshot.requester_ids_by_key.get(
-                    (media_type, tmdb_id), set()
-                )
-        else:
-            requester_ids = self.seerr_snapshot.requester_ids_by_key.get(
+            request_dates = snapshot.first_request_at_by_series_season_user.get(
+                (tmdb_id, season_number), {}
+            )
+        if not requester_ids:
+            requester_ids = snapshot.requester_ids_by_key.get(
                 (media_type, tmdb_id), set()
+            )
+            request_dates = snapshot.first_request_at_by_key_user.get(
+                (media_type, tmdb_id), {}
             )
 
         requesters: list[SeerrRequesterResponse] = []
@@ -102,7 +107,7 @@ class MediaOriginLookup:
             bare_user_id = seerr_user_id_of(requester_key)
             if config_id is None or bare_user_id is None:
                 continue
-            user = self.seerr_snapshot.requester_users_by_id.get(requester_key)
+            user = snapshot.requester_users_by_id.get(requester_key)
             display_name = (
                 (user.display_name or user.username).strip()  # type: ignore[reportOptionalMemberAccess]
                 if user and (user.display_name or user.username)
@@ -117,6 +122,7 @@ class MediaOriginLookup:
                     user_id=bare_user_id,
                     display_name=display_name,
                     username=user.username if user else None,
+                    requested_at=request_dates.get(requester_key),
                 )
             )
         requesters.sort(
@@ -229,6 +235,7 @@ async def load_media_origin_lookup(
         snapshot, error = await seerr_snapshot_cache.get_request_snapshot(
             require_fresh=False,
             allow_stale_on_failure=True,
+            wait_for_first_load=False,
         )
         lookup.seerr_snapshot = snapshot
         if error:

@@ -950,6 +950,8 @@ export interface SeerrRequester {
   user_id: number;
   display_name: string;
   username: string | null;
+  /** This requester's earliest request for the title (or season). */
+  requested_at: string | null;
 }
 
 export type MediaItem = MovieWithStatus | SeriesWithStatus;

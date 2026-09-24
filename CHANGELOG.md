@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Seerr requester badges now show the date each user first requested the title (or season).
+
 ### Fixed
 
 - **Seerr requester has watched** no longer reads as false for titles nobody requested. It is now unknown for them, so an `is false` rule only matches requested titles.
 - Saving a rule could fail with "database is locked" while a watch snapshot refresh was running. The refresh now holds the database write lock only while it writes, and logs a warning if a write still takes longer than 5 seconds.
+- The Movies, Series and Candidates pages could get stuck loading after a restart while Seerr data was still being fetched. They now load right away, and requester badges appear once the fetch finishes.
 
 ## [0.5.0] - 2026-09-24
 

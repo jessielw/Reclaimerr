@@ -254,3 +254,65 @@ def test_removing_an_instance_drops_its_cached_state() -> None:
         assert state.merged.requester_ids_by_key[MOVIE_KEY] == {"7:3"}
 
     asyncio.run(run())
+
+
+def test_page_read_on_a_cold_cache_does_not_wait_on_seerr() -> None:
+    """Page requests hold a pooled DB connection, so they must not sit through
+    a full Seerr pull - enough of them waiting starved the pool and hung the UI."""
+
+    async def run() -> None:
+        release = asyncio.Event()
+
+        async def slow_requests(**_: object) -> list[SeerrRequest]:
+            await release.wait()
+            return []
+
+        client = SimpleNamespace(
+            get_all_requests=AsyncMock(side_effect=slow_requests),
+            get_all_users=AsyncMock(return_value=[]),
+        )
+        cache = SeerrSnapshotCache()
+        with patch.object(service_manager, "_seerr_clients", {7: client}):
+            snapshot, error = await asyncio.wait_for(
+                cache.get_request_snapshot(
+                    require_fresh=False,
+                    allow_stale_on_failure=True,
+                    wait_for_first_load=False,
+                ),
+                timeout=1,
+            )
+            assert snapshot is None
+            assert error is not None
+            # the background refresh was started
+            assert cache._request_refresh_task is not None
+            release.set()
+            await cache._request_refresh_task
+
+    asyncio.run(run())
+
+
+def test_concurrent_cold_reads_pull_seerr_once() -> None:
+    async def run() -> None:
+        client = _client(
+            requests=[
+                _request(
+                    request_id=1,
+                    requested_by_id=3,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            ]
+        )
+        cache = SeerrSnapshotCache()
+        with patch.object(service_manager, "_seerr_clients", {7: client}):
+            await asyncio.gather(
+                *(
+                    cache.get_request_snapshot(
+                        require_fresh=False, allow_stale_on_failure=True
+                    )
+                    for _ in range(5)
+                )
+            )
+
+        assert client.get_all_requests.await_count == 1
+
+    asyncio.run(run())
