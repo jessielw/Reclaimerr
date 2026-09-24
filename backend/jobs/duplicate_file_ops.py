@@ -5,7 +5,10 @@ redundant file while the item keeps another, so it must never unmonitor, remove
 the Arr entry or add an import exclusion. Per file the route is:
 
 1. the Arr instance tracking that exact file (Radarr moviefile / Sonarr
-   episodefile delete), which keeps the entry monitored with its other file;
+   episodefile delete), which keeps the entry monitored with its other file.
+   An Arr tracks one file per movie/episode, so this only runs when a kept file
+   sits in the Arr's folder, where the follow-up rescan picks it up; otherwise
+   the Arr would see the item as missing and download it again;
 2. otherwise the main media server, when media server fallback is enabled.
 
 Upgrade leftovers (Radarr download-folder copies of replaced files) ride the same
@@ -25,6 +28,7 @@ from backend.core.logger import LOG
 from backend.core.protection_scope import detach_movie_version_references
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import (
+    mapped_path_variants,
     paths_equivalent,
     resolve_path,
     sibling_cleanup,
@@ -242,6 +246,47 @@ def _arr_file_ids(
     return ids
 
 
+def _kept_in_arr_folder(
+    kept: Sequence[DuplicateFile],
+    folder: str | None,
+    mappings: list[dict[str, Any]],
+    *,
+    arr: Service,
+    config_id: int,
+) -> bool:
+    """Whether a kept file sits inside the Arr's movie/series folder."""
+    folders = mapped_path_variants(
+        folder, mappings, service_type=arr.value, service_config_id=config_id
+    )
+    return any(
+        variant.startswith(f"{root}/")
+        for f in kept
+        for variant in mapped_path_variants(
+            f.path, mappings, service_type=f.service.value
+        )
+        for root in folders
+    )
+
+
+def _require_kept_in_arr_folder(
+    kept: Sequence[DuplicateFile],
+    folder: str | None,
+    mappings: list[dict[str, Any]],
+    *,
+    arr: Service,
+    config_id: int,
+) -> None:
+    if not _kept_in_arr_folder(
+        kept, folder, mappings, arr=arr, config_id=config_id
+    ):
+        name = arr.value.capitalize()
+        raise DuplicateActionError(
+            f"{name} tracks this file and the kept copy is outside its folder, "
+            f"so {name} would download it again. Keep this file instead, or "
+            "delete it by hand"
+        )
+
+
 def _cleanup_sidecars(
     f: DuplicateFile, kept: Sequence[DuplicateFile], mappings: list[dict[str, Any]]
 ) -> Path | None:
@@ -324,9 +369,11 @@ async def _delete_movie_file(
         )
         refs = (
             await db.execute(
-                select(MovieArrRef.service_config_id, MovieArrRef.arr_movie_id).where(
-                    MovieArrRef.movie_id == group.item_id
-                )
+                select(
+                    MovieArrRef.service_config_id,
+                    MovieArrRef.arr_movie_id,
+                    MovieArrRef.arr_movie_path,
+                ).where(MovieArrRef.movie_id == group.item_id)
             )
         ).all()
         history_attrs = (
@@ -340,7 +387,7 @@ async def _delete_movie_file(
     if not clients and service_manager.radarr:
         clients = {0: service_manager.radarr}
     routed: dict[int, set[int]] = {}
-    for config_id, arr_movie_id in refs:
+    for config_id, arr_movie_id, arr_movie_path in refs:
         client = clients.get(config_id)
         if client is None:
             continue
@@ -352,6 +399,13 @@ async def _delete_movie_file(
             config_id=config_id,
         )
         if file_ids:
+            _require_kept_in_arr_folder(
+                kept,
+                arr_movie_path,
+                mappings,
+                arr=Service.RADARR,
+                config_id=config_id,
+            )
             await client.delete_movie_files(file_ids)
             routed.setdefault(config_id, set()).add(arr_movie_id)
             LOG.info(
@@ -436,7 +490,9 @@ async def _delete_episode_file(
         refs = (
             await db.execute(
                 select(
-                    SeriesArrRef.service_config_id, SeriesArrRef.arr_series_id
+                    SeriesArrRef.service_config_id,
+                    SeriesArrRef.arr_series_id,
+                    SeriesArrRef.arr_series_path,
                 ).where(SeriesArrRef.series_id == group.series_id)
             )
         ).all()
@@ -450,7 +506,7 @@ async def _delete_episode_file(
     if not clients and service_manager.sonarr:
         clients = {0: service_manager.sonarr}
     routed: dict[int, set[int]] = {}
-    for config_id, arr_series_id in refs:
+    for config_id, arr_series_id, arr_series_path in refs:
         client = clients.get(config_id)
         if client is None:
             continue
@@ -461,6 +517,14 @@ async def _delete_episode_file(
             arr=Service.SONARR,
             config_id=config_id,
         )
+        if file_ids:
+            _require_kept_in_arr_folder(
+                kept,
+                arr_series_path,
+                mappings,
+                arr=Service.SONARR,
+                config_id=config_id,
+            )
         for file_id in file_ids:
             await client.delete_episode_file(file_id)
         if file_ids:

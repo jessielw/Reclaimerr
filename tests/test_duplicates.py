@@ -5,9 +5,11 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from backend.api.routes.duplicates import delete_duplicates, delete_leftovers
 from backend.database import Base
 from backend.database.models import (
     Episode,
@@ -20,10 +22,17 @@ from backend.database.models import (
     ReclaimHistory,
     Season,
     Series,
+    SeriesArrRef,
     ServiceConfig,
+    User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import MediaType, Permission, Service, UserRole
 from backend.jobs import duplicate_file_ops
+from backend.models.duplicates import (
+    DuplicateDeleteItem,
+    DuplicateDeleteRequest,
+    LeftoverDeleteRequest,
+)
 from backend.models.jobs import DuplicateDeleteJobItem
 from backend.models.media import AggregatedEpisodeData, EpisodeVersionData
 from backend.services.duplicates import (
@@ -418,6 +427,21 @@ class _FakeRadarr:
         pass
 
 
+class _FakeSonarr:
+    def __init__(self, files: list[dict[str, Any]]) -> None:
+        self.files = files
+        self.deleted_file_ids: list[int] = []
+
+    async def get_episode_files(self, series_id: int) -> list[dict[str, Any]]:
+        return [dict(f) for f in self.files]
+
+    async def delete_episode_file(self, file_id: int) -> None:
+        self.deleted_file_ids.append(file_id)
+
+    async def refresh_series(self, ids: list[int]) -> None:
+        pass
+
+
 class _FakeMediaServer:
     def __init__(self) -> None:
         self.deleted_versions: list[tuple[str, str]] = []
@@ -432,7 +456,12 @@ class _FakeMediaServer:
 
 
 def _patch(
-    monkeypatch, sm, *, radarr: _FakeRadarr | None, media: _FakeMediaServer | None
+    monkeypatch,
+    sm,
+    *,
+    radarr: _FakeRadarr | None,
+    media: _FakeMediaServer | None,
+    sonarr: _FakeSonarr | None = None,
 ) -> list[dict[str, Any]]:
     from backend.core.service_manager import service_manager
     from backend.tasks import cleanup
@@ -442,6 +471,10 @@ def _patch(
     monkeypatch.setattr(service_manager, "_radarr", None)
     monkeypatch.setattr(
         service_manager, "_radarr_clients", {1: radarr} if radarr else {}
+    )
+    monkeypatch.setattr(service_manager, "_sonarr", None)
+    monkeypatch.setattr(
+        service_manager, "_sonarr_clients", {1: sonarr} if sonarr else {}
     )
     monkeypatch.setattr(service_manager, "_main_media_server", media)
     monkeypatch.setattr(service_manager, "_plex", media)
@@ -457,7 +490,11 @@ def _patch(
 
 
 async def _seed_radarr_case(
-    db: AsyncSession, *, fallback: bool
+    db: AsyncSession,
+    *,
+    fallback: bool,
+    uhd_path: str = "/data/movies/Movie1/Movie1-2160p.mkv",
+    arr_movie_path: str | None = "/data/movies/Movie1",
 ) -> tuple[int, list[int]]:
     db.add(GeneralSettings(media_server_fallback_enabled=fallback))
     config = ServiceConfig(
@@ -474,7 +511,7 @@ async def _seed_radarr_case(
         },
         {
             "media_id": "uhd",
-            "path": "/data/movies/Movie1/Movie1-2160p.mkv",
+            "path": uhd_path,
             "size": 20_000,
             "video_height": 2160,
             "video_width": 3840,
@@ -488,7 +525,7 @@ async def _seed_radarr_case(
             movie_id=movie_id,
             service_config_id=config.id,
             arr_movie_id=55,
-            arr_movie_path="/data/movies/Movie1",
+            arr_movie_path=arr_movie_path,
         )
     )
     await db.commit()
@@ -574,6 +611,203 @@ def test_job_falls_back_to_media_server_only_when_allowed(monkeypatch) -> None:
                 await db.commit()
             await duplicate_file_ops.delete_duplicate_files(item, approved_by="t")
             assert media.deleted_versions == [("rk-hd", "hd")]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("uhd_path", "arr_movie_path"),
+    [
+        # kept copy lives in a separate 4K folder Radarr doesn't manage
+        ("/data/movies-4k/Movie1/Movie1-2160p.mkv", "/data/movies/Movie1"),
+        # Radarr's folder isn't known yet, so it can't be checked
+        ("/data/movies/Movie1/Movie1-2160p.mkv", None),
+    ],
+)
+def test_job_refuses_radarr_delete_when_kept_copy_is_outside_its_folder(
+    monkeypatch, uhd_path: str, arr_movie_path: str | None
+) -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                movie_id, ids = await _seed_radarr_case(
+                    db,
+                    fallback=True,
+                    uhd_path=uhd_path,
+                    arr_movie_path=arr_movie_path,
+                )
+            radarr = _FakeRadarr(
+                [{"id": 901, "path": "/data/movies/Movie1/Movie1-1080p.mkv"}]
+            )
+            media = _FakeMediaServer()
+            _patch(monkeypatch, sm, radarr=radarr, media=media)
+
+            with pytest.raises(DuplicateActionError, match="download it again"):
+                await duplicate_file_ops.delete_duplicate_files(
+                    DuplicateDeleteJobItem(
+                        media_type=MediaType.MOVIE,
+                        item_id=movie_id,
+                        version_ids=[ids[0]],
+                        display_label="Movie One",
+                    ),
+                    approved_by="t",
+                )
+            # nothing removed anywhere, not even through the media server
+            assert radarr.deleted_file_ids == []
+            assert media.deleted_versions == []
+            async with sm() as db:
+                remaining = (await db.execute(select(MovieVersion))).scalars().all()
+                assert len(remaining) == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+_SONARR_FILE = "/data/tv/Show/Season 01/Show - S01E01 - 720p.mkv"
+
+
+async def _seed_sonarr_case(
+    db: AsyncSession, *, kept_path: str
+) -> tuple[int, list[int]]:
+    db.add(GeneralSettings(media_server_fallback_enabled=False))
+    config = ServiceConfig(
+        service_type=Service.SONARR, base_url="http://sonarr", api_key="k", enabled=True
+    )
+    db.add(config)
+    ep1, _ep2 = await _seed_episode(db)
+    episode = await db.get(Episode, ep1)
+    assert episode is not None
+    episode.path = _SONARR_FILE
+    db.add_all(
+        [
+            _episode_version(ep1, "a", path=_SONARR_FILE, size=500),
+            _episode_version(
+                ep1, "b", path=kept_path, size=900, video_height=2160, video_width=3840
+            ),
+        ]
+    )
+    await db.flush()
+    season = await db.get(Season, episode.season_id)
+    assert season is not None
+    db.add(
+        SeriesArrRef(
+            series_id=season.series_id,
+            service_config_id=config.id,
+            arr_series_id=77,
+            arr_series_path="/data/tv/Show",
+        )
+    )
+    await db.commit()
+    rows = (
+        (await db.execute(select(EpisodeVersion).order_by(EpisodeVersion.id)))
+        .scalars()
+        .all()
+    )
+    return ep1, [r.id for r in rows]
+
+
+def _episode_item(episode_id: int, version_ids: list[int]) -> DuplicateDeleteJobItem:
+    return DuplicateDeleteJobItem(
+        media_type=MediaType.SERIES,
+        item_id=episode_id,
+        version_ids=version_ids,
+        display_label="Show S01E01",
+    )
+
+
+def test_job_deletes_episode_file_via_sonarr(monkeypatch) -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            kept = "/data/tv/Show/Season 01/Show - S01E01 - 2160p.mkv"
+            async with sm() as db:
+                episode_id, ids = await _seed_sonarr_case(db, kept_path=kept)
+            sonarr = _FakeSonarr([{"id": 301, "path": _SONARR_FILE}])
+            media = _FakeMediaServer()
+            events = _patch(monkeypatch, sm, radarr=None, media=media, sonarr=sonarr)
+
+            freed = await duplicate_file_ops.delete_duplicate_files(
+                _episode_item(episode_id, [ids[0]]), approved_by="t"
+            )
+
+            assert freed == 500
+            assert sonarr.deleted_file_ids == [301]
+            assert media.deleted_versions == []
+            assert len(events) == 1
+            async with sm() as db:
+                remaining = (await db.execute(select(EpisodeVersion))).scalars().all()
+                assert [v.id for v in remaining] == [ids[1]]
+                episode = await db.get(Episode, episode_id)
+                # the episode now points at the kept file
+                assert episode is not None and episode.path == kept
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_job_refuses_sonarr_delete_when_kept_copy_is_outside_its_folder(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                episode_id, ids = await _seed_sonarr_case(
+                    db, kept_path="/data/tv-4k/Show/Season 01/Show - S01E01.mkv"
+                )
+            sonarr = _FakeSonarr([{"id": 301, "path": _SONARR_FILE}])
+            _patch(
+                monkeypatch, sm, radarr=None, media=_FakeMediaServer(), sonarr=sonarr
+            )
+
+            with pytest.raises(DuplicateActionError, match="download it again"):
+                await duplicate_file_ops.delete_duplicate_files(
+                    _episode_item(episode_id, [ids[0]]), approved_by="t"
+                )
+            assert sonarr.deleted_file_ids == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_delete_routes_require_manage_reclaim() -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            viewer = User(
+                username="viewer", password_hash="x", role=UserRole.USER, permissions=[]
+            )
+            manager = User(
+                username="manager",
+                password_hash="x",
+                role=UserRole.USER,
+                permissions=[Permission.MANAGE_RECLAIM.value],
+            )
+            body = DuplicateDeleteRequest(
+                items=[
+                    DuplicateDeleteItem(
+                        media_type=MediaType.MOVIE, item_id=1, version_ids=[1]
+                    )
+                ]
+            )
+            async with sm() as db:
+                with pytest.raises(HTTPException) as exc:
+                    await delete_duplicates(body, viewer, db)
+                assert exc.value.status_code == 403
+                with pytest.raises(HTTPException) as exc:
+                    await delete_leftovers(LeftoverDeleteRequest(ids=[1]), viewer, db)
+                assert exc.value.status_code == 403
+
+                # the permission check passes; the missing group is what fails
+                with pytest.raises(HTTPException) as exc:
+                    await delete_duplicates(body, manager, db)
+                assert exc.value.status_code == 400
         finally:
             await engine.dispose()
 

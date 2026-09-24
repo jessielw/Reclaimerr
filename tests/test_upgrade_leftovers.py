@@ -518,6 +518,19 @@ def test_check_before_delete_refuses_changed_state(tmp_path: Path) -> None:
     refused(gone, "already gone")
 
 
+def test_check_before_delete_handles_current_file_vanishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, _current, mappings = _delete_setup(tmp_path)
+    movie = _radarr_movie(1, "/movies/one.mkv")
+    # the current file resolves, then disappears before it is compared
+    monkeypatch.setattr(
+        upgrade_leftovers, "resolve_path", lambda *_a, **_k: tmp_path / "gone.mkv"
+    )
+    with pytest.raises(DuplicateActionError, match="current movie file"):
+        upgrade_leftovers.check_before_delete(_row(old), movie, mappings)
+
+
 class _RadarrForDelete:
     def __init__(self, movie: RadarrMovie) -> None:
         self.movie = movie

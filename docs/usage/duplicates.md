@@ -42,7 +42,7 @@ Use **Not a duplicate** to hide a group you want to keep as it is. It comes back
 
 For each file you remove:
 
-1. If Radarr or Sonarr tracks that exact file, Reclaimerr deletes it there. The movie or series stays in the Arr and stays monitored, because it still has the kept file.
+1. If Radarr or Sonarr tracks that exact file, Reclaimerr deletes it there and rescans, so the Arr picks up the kept file. The movie or series stays in the Arr and stays monitored. Radarr and Sonarr track one file per movie or episode, so this only happens when the kept file is inside the Arr's movie or series folder. If it isn't (for example, a copy in a separate 4K library folder), the Arr would see the item as missing and download it again, so the delete is refused. Keep the Arr's file instead, or delete the other file by hand.
 2. Otherwise Reclaimerr deletes it through the main media server. This needs **Allow Media Server Fallback Deletion** in General Settings.
 
 Nothing is unmonitored or removed from Radarr/Sonarr, and no import exclusion is added. Protected files are never deleted, and every group always keeps at least one file. Each removed file is recorded in reclaim history.

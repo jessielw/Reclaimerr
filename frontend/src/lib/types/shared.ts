@@ -975,7 +975,7 @@ export interface DuplicateFile {
   video_codec_family: string | null;
   video_hdr: boolean | null;
   video_dolby_vision: boolean | null;
-  video_bitrate: number | null;
+  video_bitrate_kbps: number | null;
   audio_codec_family: string | null;
   audio_channels: number | null;
   protected: boolean;

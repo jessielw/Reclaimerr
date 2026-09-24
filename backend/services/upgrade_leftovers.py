@@ -542,9 +542,13 @@ def check_before_delete(
         service_config_id=row.service_config_id,
         warn_missing=False,
     )
-    if current is None:
+    try:
+        current_st = current.stat() if current is not None else None
+    except OSError:
+        current_st = None
+    if current_st is None:
         raise DuplicateActionError(MANUAL_CURRENT_FILE_MISSING)
-    if _file_id(current.stat()) == _file_id(st):
+    if _file_id(current_st) == _file_id(st):
         raise DuplicateActionError("Radarr now uses this file")
     return st
 

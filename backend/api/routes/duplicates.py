@@ -17,7 +17,7 @@ from backend.database.models import (
     UpgradeLeftover,
     User,
 )
-from backend.enums import MediaType, PageAccess, Permission, Task, UserRole
+from backend.enums import MediaType, PageAccess, Permission, Service, Task, UserRole
 from backend.jobs.duplicate_file_ops import queue_duplicate_delete_job
 from backend.models.duplicates import (
     DuplicateDeleteRequest,
@@ -73,6 +73,13 @@ def _group_label(group: DuplicateGroup) -> str:
     )
 
 
+def _bitrate_kbps(value: int | None, service: Service) -> int | None:
+    # Plex reports kbps, Jellyfin/Emby bps
+    if value is None:
+        return None
+    return value // 1000 if service in {Service.JELLYFIN, Service.EMBY} else value
+
+
 def _serialize(group: DuplicateGroup) -> DuplicateGroupResponse:
     return DuplicateGroupResponse(
         key=group.key,
@@ -99,7 +106,7 @@ def _serialize(group: DuplicateGroup) -> DuplicateGroupResponse:
                 video_codec_family=f.video_codec_family,
                 video_hdr=f.video_hdr,
                 video_dolby_vision=f.video_dolby_vision,
-                video_bitrate=f.video_bitrate,
+                video_bitrate_kbps=_bitrate_kbps(f.video_bitrate, f.service),
                 audio_codec_family=f.audio_codec_family,
                 audio_channels=f.audio_channels,
                 protected=f.protected,

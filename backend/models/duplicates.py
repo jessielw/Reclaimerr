@@ -20,7 +20,7 @@ class DuplicateFileResponse(BaseModel):
     video_codec_family: str | None
     video_hdr: bool | None
     video_dolby_vision: bool | None
-    video_bitrate: int | None
+    video_bitrate_kbps: int | None
     audio_codec_family: str | None
     audio_channels: int | None
     protected: bool

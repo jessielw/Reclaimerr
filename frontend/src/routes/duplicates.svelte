@@ -159,8 +159,15 @@
     if (mounted && view === "media") void load(1);
   });
 
+  let destroyed = false;
+
   onMount(() => {
     mounted = true;
+    return () => {
+      destroyed = true;
+      abortController?.abort();
+      if (searchTimer) clearTimeout(searchTimer);
+    };
   });
 
   const load = async (page: number = currentPage) => {
@@ -249,11 +256,8 @@
           : f.audio_codec_family.toUpperCase(),
       );
     }
-    if (f.video_bitrate) {
-      // Plex reports kbps; Jellyfin/Emby report bps
-      const kbps =
-        f.video_bitrate > 1_000_000 ? f.video_bitrate / 1000 : f.video_bitrate;
-      chips.push(`${(kbps / 1000).toFixed(1)} Mbps`);
+    if (f.video_bitrate_kbps) {
+      chips.push(`${(f.video_bitrate_kbps / 1000).toFixed(1)} Mbps`);
     }
     return chips;
   };
@@ -302,17 +306,22 @@
   const sleep = (ms: number) =>
     new Promise((resolve) => window.setTimeout(resolve, ms));
 
+  /** Poll until the job ends; null if the page closes or it runs too long. */
   const watchJob = async (jobId: number) => {
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const job = await get_api<BackgroundJobRecord>(
-        `/api/tasks/candidate-file-op-jobs/${jobId}`,
-      );
-      if (
-        job.status === BackgroundJobStatus.Completed ||
-        job.status === BackgroundJobStatus.Failed ||
-        job.status === BackgroundJobStatus.Canceled
-      ) {
-        return job;
+    for (let attempt = 0; attempt < 400 && !destroyed; attempt += 1) {
+      try {
+        const job = await get_api<BackgroundJobRecord>(
+          `/api/tasks/candidate-file-op-jobs/${jobId}`,
+        );
+        if (
+          job.status === BackgroundJobStatus.Completed ||
+          job.status === BackgroundJobStatus.Failed ||
+          job.status === BackgroundJobStatus.Canceled
+        ) {
+          return job;
+        }
+      } catch {
+        // a dropped request shouldn't end the watch; try again next tick
       }
       await sleep(1500);
     }
@@ -372,8 +381,8 @@
       selectedKeys = new Set();
       void watchJob(response.job_id).then(async (job) => {
         reportJob(job);
-        await load(currentPage);
         uiIndicators.invalidate();
+        if (!destroyed) await load(currentPage);
       });
     } catch (e: any) {
       toast.error(e.message ?? "Failed to queue duplicate cleanup.");
