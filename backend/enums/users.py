@@ -22,6 +22,7 @@ class PageAccess(StrEnum):
     REQUESTS = auto()
     PROTECTED = auto()
     CANDIDATES = auto()
+    DUPLICATES = auto()
     CALENDAR = auto()
     STORAGE = auto()
     HISTORY = auto()

@@ -107,6 +107,31 @@ class AggregatedMovieData:
 
 
 @dataclass(slots=True, frozen=True)
+class EpisodeVersionData:
+    """Single physical file version of an episode (slim, duplicate detection only)."""
+
+    service: MediaServerType
+    # plex ratingKey or jellyfin/emby item ID (used for item level ops like delete)
+    service_item_id: str
+    # plex Media.id or jellyfin/emby MediaSource.Id (unique per physical file)
+    service_media_id: str
+    library_id: str
+    library_name: str
+    path: str | None
+    size: int
+    added_at: datetime | None = None
+    video_resolution: str | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+    video_codec_family: VideoCodecFamily | None = None
+    video_hdr: bool | None = None
+    video_dolby_vision: bool | None = None
+    video_bitrate: int | None = None
+    audio_codec_family: AudioCodecFamily | None = None
+    audio_channels: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class AggregatedEpisodeData:
     """Per episode data collected from a media server during sync."""
 
@@ -126,6 +151,8 @@ class AggregatedEpisodeData:
     media_server_user_rating: float | None = None
     # file runtime in whole seconds, from the media server's item metadata
     runtime_seconds: int | None = None
+    # every physical file the server reports for this episode item
+    versions: tuple[EpisodeVersionData, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, TypeGuard, TypeVar, cast
+from typing import Any, Literal, TypeGuard, TypeVar, cast
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
     Episode,
+    EpisodeVersion,
     GeneralSettings,
     Movie,
     MovieArrRef,
@@ -42,6 +43,7 @@ from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
+    EpisodeVersionData,
     MovieVersionData,
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
@@ -991,6 +993,13 @@ async def _sync_seasons(
             .values(season_id=None, episode_id=None)
         )
         await session.execute(
+            sql_delete(EpisodeVersion).where(
+                EpisodeVersion.episode_id.in_(
+                    select(Episode.id).where(Episode.season_id.in_(removed_season_ids))
+                )
+            )
+        )
+        await session.execute(
             sql_delete(Episode).where(Episode.season_id.in_(removed_season_ids))
         )
         for season_number, season_obj in existing.items():
@@ -1038,6 +1047,90 @@ async def _sync_seasons(
         await _upsert_episodes(session, season_id, sd.episode_data, service_type)
 
 
+EpisodeVersionsMode = Literal["replace", "append", "skip"]
+
+
+async def _sync_episode_versions(
+    session: AsyncSession,
+    episode_ids: dict[int, int],
+    episode_data: list[AggregatedEpisodeData],
+    *,
+    replace: bool,
+) -> None:
+    """Write EpisodeVersion rows for one season's episodes.
+
+    Several entries in episode_data can share an episode number (Jellyfin/Emby
+    report an unmerged second copy as its own item), so versions are pooled per
+    episode number. ``replace`` is the main server's pass: rows it did not
+    report are pruned. The supplemental pass (same server, another library)
+    appends afterwards, so its rows are re-created each sync - acceptable, since
+    nothing keeps a reference to an episode version id.
+    """
+    incoming: dict[int, dict[tuple[Service, str], EpisodeVersionData]] = {}
+    for ep in episode_data:
+        episode_id = episode_ids.get(ep.episode_number)
+        if episode_id is None:
+            continue
+        bucket = incoming.setdefault(episode_id, {})
+        for version in ep.versions:
+            bucket[(Service(version.service), version.service_media_id)] = version
+
+    target_ids = set(episode_ids.values()) if replace else set(incoming)
+    if not target_ids:
+        return
+    result = await session.execute(
+        select(EpisodeVersion).where(EpisodeVersion.episode_id.in_(target_ids))
+    )
+    existing: dict[tuple[int, Service, str], EpisodeVersion] = {
+        (row.episode_id, row.service, row.service_media_id): row
+        for row in result.scalars().all()
+    }
+
+    seen: set[tuple[int, Service, str]] = set()
+    for episode_id, versions in incoming.items():
+        for (service, media_id), data in versions.items():
+            key = (episode_id, service, media_id)
+            seen.add(key)
+            row = existing.get(key)
+            if row is None:
+                row = EpisodeVersion(
+                    episode_id=episode_id,
+                    service=service,
+                    service_item_id=data.service_item_id,
+                    service_media_id=media_id,
+                    library_id=data.library_id,
+                    library_name=data.library_name,
+                )
+                session.add(row)
+                existing[key] = row
+            row.service_item_id = data.service_item_id
+            row.library_id = data.library_id
+            row.library_name = data.library_name
+            row.path = data.path
+            row.size = data.size
+            row.added_at = _as_naive_utc(data.added_at)
+            row.video_resolution = data.video_resolution
+            row.video_width = data.video_width
+            row.video_height = data.video_height
+            row.video_codec_family = data.video_codec_family
+            row.video_hdr = data.video_hdr
+            row.video_dolby_vision = data.video_dolby_vision
+            row.video_bitrate = data.video_bitrate
+            row.audio_codec_family = data.audio_codec_family
+            row.audio_channels = data.audio_channels
+
+    if replace:
+        stale_ids = [
+            row.id
+            for key, row in existing.items()
+            if key not in seen and row.id is not None
+        ]
+        if stale_ids:
+            await session.execute(
+                sql_delete(EpisodeVersion).where(EpisodeVersion.id.in_(stale_ids))
+            )
+
+
 async def _upsert_episodes(
     session: AsyncSession,
     season_id: int,
@@ -1046,6 +1139,7 @@ async def _upsert_episodes(
     *,
     remove_stale: bool = True,
     backfill_ids: bool = True,
+    versions_mode: EpisodeVersionsMode = "replace",
 ) -> None:
     """Upsert Episode rows for a season from freshly-fetched media server episode data.
 
@@ -1061,6 +1155,7 @@ async def _upsert_episodes(
             server whose type matches the main server's type - otherwise its IDs
             would silently overwrite the main server's IDs, which media-server
             delete operations rely on.
+        versions_mode: How to write EpisodeVersion rows (see _sync_episode_versions).
     """
     # Flush any pending inserts (e.g. from a prior _upsert_episodes call for the same
     # season_id) so that the query below reflects the full current state. With
@@ -1138,6 +1233,15 @@ async def _upsert_episodes(
             # pending INSERT (which would violate the UNIQUE constraint on flush)!
             existing_eps[ep.episode_number] = new_ep
 
+    if versions_mode != "skip":
+        await session.flush()
+        await _sync_episode_versions(
+            session,
+            {num: e.id for num, e in existing_eps.items()},
+            episode_data,
+            replace=versions_mode == "replace",
+        )
+
     # remove episodes no longer present on the media server
     if remove_stale:
         for ep_num, ep_obj in existing_eps.items():
@@ -1179,6 +1283,11 @@ async def _upsert_episodes(
                         DeleteRequest.status != ProtectionRequestStatus.PENDING,
                     )
                     .values(episode_id=None)
+                )
+                await session.execute(
+                    sql_delete(EpisodeVersion).where(
+                        EpisodeVersion.episode_id == ep_obj.id
+                    )
                 )
                 await session.delete(ep_obj)
 
@@ -2434,9 +2543,19 @@ async def sync_series(
                                 sd.episode_data,
                                 sup_service,
                                 remove_stale=False,
+                                versions_mode="append",
                             )
                 await session.commit()
                 LOG.debug("Supplemental episode ID upsert committed")
+
+            # Background sessions run without PRAGMA foreign_keys, so episode
+            # deletes elsewhere (cleanup) do not cascade to episode_versions.
+            await session.execute(
+                sql_delete(EpisodeVersion).where(
+                    EpisodeVersion.episode_id.not_in(select(Episode.id))
+                )
+            )
+            await session.commit()
 
             # refresh per instance Sonarr refs for active series
             await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
@@ -2989,6 +3108,7 @@ async def sync_linked_data(
                             service,
                             remove_stale=False,
                             backfill_ids=backfill_episode_ids,
+                            versions_mode="skip",
                         )
                         ep_updated_count += len(sd.episode_data)
 

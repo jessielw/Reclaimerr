@@ -116,6 +116,7 @@
   const adminTypeOptions = [
     { value: "all", label: "All activity" },
     { value: BackgroundJobType.CandidateFileOp, label: "Reclaim activity" },
+    { value: BackgroundJobType.DuplicateDelete, label: "Duplicate cleanup" },
     { value: BackgroundJobType.TaskRun, label: "Task runs" },
     { value: BackgroundJobType.ServiceToggle, label: "Service toggles" },
   ] as const;
@@ -411,6 +412,8 @@
     switch (jobType) {
       case BackgroundJobType.CandidateFileOp:
         return "Reclaim";
+      case BackgroundJobType.DuplicateDelete:
+        return "Duplicates";
       case BackgroundJobType.TaskRun:
         return "Task run";
       case BackgroundJobType.ServiceToggle:

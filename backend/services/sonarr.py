@@ -727,6 +727,25 @@ class SonarrClient:
             episode_numbers_by_season=episode_numbers_by_season,
         )
 
+    async def get_episode_files(self, series_id: int) -> list[dict[str, object]]:
+        """Get the episode file records Sonarr holds for a series.
+
+        Raw dicts like Radarr's `get_movie_files`: callers only need `id` and
+        `path` to line a file up against the one they want removed.
+        """
+        status_code, data = await self._make_request(
+            "GET",
+            "episodefile",
+            params={"seriesId": series_id},
+            timeout=60,
+        )
+        if not isinstance(data, list):
+            raise ValueError(
+                f"Invalid response getting episode files for series {series_id} "
+                f"(status: {status_code})"
+            )
+        return [dict(entry) for entry in data if isinstance(entry, Mapping)]
+
     async def delete_episode_file(self, episode_file_id: int) -> None:
         """Delete a single episode file by its episode file ID.
 

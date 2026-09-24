@@ -48,7 +48,10 @@ def background_job_resources(job: BackgroundJob) -> frozenset[str]:
     if job.job_type is BackgroundJobType.SERVICE_TOGGLE:
         return frozenset({SERVICE_RUNTIME_RESOURCE})
 
-    if job.job_type is BackgroundJobType.CANDIDATE_FILE_OP:
+    if job.job_type in (
+        BackgroundJobType.CANDIDATE_FILE_OP,
+        BackgroundJobType.DUPLICATE_DELETE,
+    ):
         return frozenset({CANDIDATE_WORKFLOW_RESOURCE, SERVICE_RUNTIME_RESOURCE})
 
     if job.job_type is BackgroundJobType.WEBHOOK_DELIVERY:

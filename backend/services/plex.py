@@ -36,6 +36,7 @@ from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
+    EpisodeVersionData,
     ExternalIDs,
     MediaWatchSnapshot,
     MovieVersionData,
@@ -1089,7 +1090,10 @@ class PlexService:
         return paths
 
     async def _get_episode_data_for_section(
-        self, section_id: str
+        self,
+        section_id: str,
+        library_id: str | None = None,
+        library_name: str | None = None,
     ) -> tuple[
         dict[str, int], dict[str, str], dict[tuple[str, int], AggregatedSeasonData]
     ]:
@@ -1413,6 +1417,13 @@ class PlexService:
                             ),
                             runtime_seconds=ep_runtime_seconds,
                             added_at=ep_added_at,
+                            versions=self._episode_versions(
+                                str(episode.get("ratingKey", "")),
+                                _ep_media,
+                                library_id or section_id,
+                                library_name or "",
+                                ep_added_at,
+                            ),
                         )
                     )
                     episode_rating = as_float(
@@ -1798,7 +1809,9 @@ class PlexService:
                 series_sizes,
                 series_paths,
                 season_data_map,
-            ) = await self._get_episode_data_for_section(section_id)
+            ) = await self._get_episode_data_for_section(
+                section_id, library_id=section_uuid, library_name=section_name
+            )
 
             # type=2 to only fetch shows, not collections
             # includeGuids=1 to get external IDs
@@ -2758,6 +2771,68 @@ class PlexService:
             tvdb=tvdb_id,
             anidb=anidb_id,
         )
+
+    @classmethod
+    def _episode_versions(
+        cls,
+        rating_key: str,
+        media_entries: Sequence[JsonDict],
+        library_id: str,
+        library_name: str,
+        added_at: datetime | None,
+    ) -> tuple[EpisodeVersionData, ...]:
+        """One EpisodeVersionData per Plex Media entry (one physical file each)."""
+        versions: list[EpisodeVersionData] = []
+        for media in media_entries:
+            media_id = str(media.get("id", ""))
+            parts = media.get("Part") or []
+            if not media_id or not parts:
+                continue
+            part = parts[0]
+            streams = part.get("Stream", []) if isinstance(part, dict) else []
+            first_video = next(
+                (s for s in streams if str(s.get("streamType")) == "1"), {}
+            )
+            first_audio = next(
+                (s for s in streams if str(s.get("streamType")) == "2"), {}
+            )
+            width = as_int(first_video.get("width") or media.get("width"))
+            height = as_int(first_video.get("height") or media.get("height"))
+            video_codec_raw = first_video.get("codec") or media.get("videoCodec")
+            audio_codec_raw = first_audio.get("codec") or media.get("audioCodec")
+            versions.append(
+                EpisodeVersionData(
+                    service=Service.PLEX,
+                    service_item_id=rating_key,
+                    service_media_id=media_id,
+                    library_id=library_id,
+                    library_name=library_name,
+                    path=normalize_fpath(part["file"]) if part.get("file") else None,
+                    size=sum(p.get("size", 0) or 0 for p in parts),
+                    added_at=added_at,
+                    video_resolution=media.get("videoResolution")
+                    or (
+                        guesstimate_resolution(width, height)
+                        if width and height
+                        else None
+                    ),
+                    video_width=width,
+                    video_height=height,
+                    video_codec_family=normalize_video_codec_family(video_codec_raw),
+                    video_hdr=cls._is_hdr(first_video) if first_video else None,
+                    video_dolby_vision=bool(first_video.get("DOVIPresent"))
+                    if first_video
+                    else None,
+                    video_bitrate=as_int(
+                        first_video.get("bitrate") or media.get("bitrate")
+                    ),
+                    audio_codec_family=normalize_audio_codec_family(audio_codec_raw),
+                    audio_channels=as_int(
+                        first_audio.get("channels") or media.get("audioChannels")
+                    ),
+                )
+            )
+        return tuple(versions)
 
     @staticmethod
     def _is_hdr(stream: JsonDict) -> bool:

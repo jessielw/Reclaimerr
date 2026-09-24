@@ -35,6 +35,7 @@ from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
+    EpisodeVersionData,
     ExternalIDs,
     MediaWatchSnapshot,
     MovieVersionData,
@@ -1254,7 +1255,7 @@ class EmbyServiceBase:
         return data
 
     async def get_series_sizes_for_library(
-        self, library_id: str, user_id: str
+        self, library_id: str, user_id: str, library_name: str = ""
     ) -> tuple[dict[str, int], dict[tuple[str, int], AggregatedSeasonData]]:
         """Get total sizes and season data for all series in a library.
 
@@ -1494,6 +1495,13 @@ class EmbyServiceBase:
                                 media_server_user_rating=episode_user_rating,
                                 runtime_seconds=ep_runtime_seconds,
                                 added_at=ep_added_at,
+                                versions=self._episode_versions(
+                                    ep_item_id,
+                                    media_sources,
+                                    library_id,
+                                    library_name,
+                                    ep_added_at,
+                                ),
                             )
                         )
 
@@ -2133,7 +2141,9 @@ class EmbyServiceBase:
             (
                 series_sizes,
                 season_data_map,
-            ) = await self.get_series_sizes_for_library(library_id, users[0].id)
+            ) = await self.get_series_sizes_for_library(
+                library_id, users[0].id, library_name
+            )
 
             for user in users:
                 # get all watched episodes for this user in one API call
@@ -2510,6 +2520,58 @@ class EmbyServiceBase:
             )
 
         return mapping
+
+    def _episode_versions(
+        self,
+        item_id: str,
+        media_sources: JsonList,
+        library_id: str,
+        library_name: str,
+        added_at: datetime | None,
+    ) -> tuple[EpisodeVersionData, ...]:
+        """One EpisodeVersionData per path-backed MediaSource (one physical file each)."""
+        versions: list[EpisodeVersionData] = []
+        for source in media_sources:
+            source_id = str(source.get("Id") or "")
+            if not source_id:
+                continue
+            video_streams, audio_streams, _ = self._media_streams_by_type(source)
+            first_video = video_streams[0] if video_streams else {}
+            first_audio = audio_streams[0] if audio_streams else {}
+            width = as_int(first_video.get("Width"))
+            height = as_int(first_video.get("Height"))
+            versions.append(
+                EpisodeVersionData(
+                    service=self.service_type,
+                    service_item_id=item_id,
+                    service_media_id=source_id,
+                    library_id=library_id,
+                    library_name=library_name,
+                    path=normalize_fpath(source["Path"])
+                    if source.get("Path")
+                    else None,
+                    size=as_int(source.get("Size")) or 0,
+                    added_at=added_at,
+                    video_resolution=guesstimate_resolution(width, height)
+                    if width and height
+                    else None,
+                    video_width=width,
+                    video_height=height,
+                    video_codec_family=normalize_video_codec_family(
+                        first_video.get("Codec")
+                    ),
+                    video_hdr=self._is_hdr(first_video) if first_video else None,
+                    video_dolby_vision=first_video.get("DvProfile") is not None
+                    if first_video
+                    else None,
+                    video_bitrate=as_int(first_video.get("BitRate")),
+                    audio_codec_family=normalize_audio_codec_family(
+                        first_audio.get("Codec")
+                    ),
+                    audio_channels=as_int(first_audio.get("Channels")),
+                )
+            )
+        return tuple(versions)
 
     @staticmethod
     def _media_streams_by_type(
