@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Seerr requester has watched** no longer reads as false for titles nobody requested. It is now unknown for them, so an `is false` rule only matches requested titles.
 - Saving a rule could fail with "database is locked" while a watch snapshot refresh was running. The refresh now holds the database write lock only while it writes, and logs a warning if a write still takes longer than 5 seconds.
 - The Movies, Series and Candidates pages could get stuck loading after a restart while Seerr data was still being fetched. They now load right away, and requester badges appear once the fetch finishes.
+- Deleting a title that was never requested in Seerr no longer logs a false "Failed to delete Seerr data" warning, and real Seerr errors during the media delete are no longer hidden.
+- An unexpected request status from Seerr no longer breaks the whole Seerr refresh.
+- A slow Seerr page times out after 60s instead of 5 minutes.
 
 ## [0.5.0] - 2026-09-24
 

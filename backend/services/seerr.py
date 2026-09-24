@@ -25,6 +25,8 @@ from backend.models.services.seerr import (
 
 SeerrResponseData: TypeAlias = dict[str, Any] | list[dict[str, Any]]
 
+SEERR_TIMEOUT = 60
+
 
 class SeerrPageInfoData(TypedDict):
     page: int
@@ -151,6 +153,11 @@ def _request_data_from_dict(data: dict[str, Any]) -> SeerrRequestData | None:
         or request_type not in ("movie", "tv")
         or not isinstance(created_at, str)
     ):
+        return None
+    # skip statuses we don't know so one odd request can't fail the whole snapshot
+    try:
+        SeerrRequestStatus(status)
+    except ValueError:
         return None
 
     if request_type == "movie":
@@ -458,7 +465,9 @@ class SeerrClient:
         if requested_by:
             params["requestedBy"] = requested_by
 
-        _, data = await self._make_request("GET", "request", params=params, timeout=300)
+        _, data = await self._make_request(
+            "GET", "request", params=params, timeout=SEERR_TIMEOUT
+        )
         requests = _request_records_from_response(data)
         page_info = _page_info_from_response(data, default_results=len(requests))
         return page_info, [build_seerr_request_from_dict(req) for req in requests]
@@ -498,7 +507,9 @@ class SeerrClient:
             params["q"] = q.strip()
         if sort and sort.strip():
             params["sort"] = sort.strip()
-        _, data = await self._make_request("GET", "user", params=params, timeout=120)
+        _, data = await self._make_request(
+            "GET", "user", params=params, timeout=SEERR_TIMEOUT
+        )
         page_info, users_payload = _user_records_from_response(data)
         return page_info, [build_seerr_user_from_dict(item) for item in users_payload]
 
@@ -526,9 +537,10 @@ class SeerrClient:
             tmdb_id: TMDB movie ID
         """
         _, data = await self._make_request("GET", f"movie/{tmdb_id}")
+        # no mediaInfo means Seerr has never tracked this title, so nothing is requested
         requests = _requests_from_media_response(data)
         if requests is None:
-            raise ValueError(f"Movie {tmdb_id} not found")
+            return []
         return [build_seerr_request_from_dict(req) for req in requests]
 
     async def delete_movie_requests(self, tmdb_id: int) -> None:
@@ -548,9 +560,10 @@ class SeerrClient:
             tmdb_id: TMDB TV series ID
         """
         _, data = await self._make_request("GET", f"tv/{tmdb_id}")
+        # no mediaInfo means Seerr has never tracked this title, so nothing is requested
         requests = _requests_from_media_response(data)
         if requests is None:
-            raise ValueError(f"TV series {tmdb_id} not found")
+            return []
         return [build_seerr_request_from_dict(req) for req in requests]
 
     async def delete_tv_requests(self, tmdb_id: int) -> None:
@@ -571,14 +584,11 @@ class SeerrClient:
             media_type: Movie or Series
 
         Returns:
-            Seerr media ID or None if not found
+            Seerr media ID or None if Seerr has never tracked the title
         """
-        try:
-            endpoint = "movie" if media_type is MediaType.MOVIE else "tv"
-            _, data = await self._make_request("GET", f"{endpoint}/{tmdb_id}")
-            return _media_id_from_response(data)
-        except Exception:
-            return None
+        endpoint = "movie" if media_type is MediaType.MOVIE else "tv"
+        _, data = await self._make_request("GET", f"{endpoint}/{tmdb_id}")
+        return _media_id_from_response(data)
 
     async def delete_media(self, media_id: int) -> None:
         """Delete media item from Seerr database.
