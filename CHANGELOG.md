@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Seerr requester has watched** no longer reads as false for titles nobody requested. It is now unknown for them, so an `is false` rule only matches requested titles.
+- Saving a rule could fail with "database is locked" while a watch snapshot refresh was running. The refresh now holds the database write lock only while it writes, and logs a warning if a write still takes longer than 5 seconds.
+
 ## [0.5.0] - 2026-09-24
 
 ### Added

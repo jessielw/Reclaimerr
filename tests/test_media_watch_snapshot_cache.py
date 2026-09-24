@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from backend.database import Base
 from backend.database.models import (
     Episode,
+    MediaWatchUser,
     Movie,
     MovieVersion,
     NativePlaybackAggregate,
@@ -20,7 +21,11 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, Service
 from backend.models.media import MediaWatchSnapshot, NativePlaybackSnapshot
-from backend.services.media_watch_snapshot_cache import MediaWatchSnapshotCache
+from backend.services.media_watch_snapshot_cache import (
+    MediaWatchSnapshotCache,
+    _FetchedWatchState,
+)
+from backend.services.plex import PlexService
 
 
 def test_legacy_plex_sync_state_requires_full_rebuild() -> None:
@@ -529,5 +534,250 @@ def test_native_playback_ids_do_not_cross_two_servers_of_one_type(tmp_path) -> N
         assert [row.tmdb_id for row in main_requester_rows] == [101]
         assert aggregate_targets == {linked_version_id}
         assert main_version_id not in aggregate_targets
+
+    asyncio.run(run())
+
+
+def test_refresh_replaces_one_server_and_keeps_the_others(
+    tmp_path, monkeypatch
+) -> None:
+    """A Jellyfin refresh rewrites its own rows and rebuilds aggregates for all.
+
+    The reads now happen before the write transaction, so the aggregates are
+    built from this server's new rows plus the other servers' stored ones rather
+    than read back after the write. Both halves have to land.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'refresh.db'}")
+        session_factory = async_sessionmaker(
+            engine, expire_on_commit=False, autoflush=False
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            jellyfin = ServiceConfig(
+                service_type=Service.JELLYFIN,
+                base_url="http://jellyfin",
+                api_key="key",
+                enabled=True,
+                is_main=True,
+            )
+            emby = ServiceConfig(
+                service_type=Service.EMBY,
+                base_url="http://emby",
+                api_key="key",
+                enabled=True,
+            )
+            jellyfin_movie = Movie(title="Jellyfin Movie", tmdb_id=1)
+            emby_movie = Movie(title="Emby Movie", tmdb_id=2)
+            session.add_all([jellyfin, emby, jellyfin_movie, emby_movie])
+            await session.flush()
+            jellyfin_version = MovieVersion(
+                movie_id=jellyfin_movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jf-item",
+                service_media_id="jf-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            emby_version = MovieVersion(
+                movie_id=emby_movie.id,
+                service=Service.JELLYFIN,
+                service_item_id="jf-other-item",
+                service_media_id="jf-other-media",
+                library_id="movies",
+                library_name="Movies",
+            )
+            session.add_all(
+                [
+                    jellyfin_version,
+                    emby_version,
+                    SupplementalMediaMatch(
+                        source_service=Service.EMBY,
+                        source_service_config_id=emby.id,
+                        source_item_id="emby-item",
+                        media_type=MediaType.MOVIE,
+                        movie_id=emby_movie.id,
+                    ),
+                    NativePlaybackUser(
+                        source_service=Service.EMBY,
+                        source_service_config_id=emby.id,
+                        source_item_id="emby-item",
+                        provider_media_type="movie",
+                        source_user_id="e1",
+                        source_username="Bob",
+                        source_username_normalized="bob",
+                        play_count=1,
+                        completed=True,
+                        last_activity_at=datetime(2026, 7, 1, tzinfo=UTC),
+                        refreshed_at=datetime(2026, 7, 1, tzinfo=UTC),
+                    ),
+                    MediaWatchUser(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=2,
+                        watch_user_key="Bob",
+                        watch_user_key_normalized="bob",
+                        source_service=Service.EMBY,
+                        source_service_config_id=emby.id,
+                        last_watched_at=datetime(2026, 7, 1),
+                    ),
+                    MediaWatchUser(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=1,
+                        watch_user_key="Stale",
+                        watch_user_key_normalized="stale",
+                        source_service=Service.JELLYFIN,
+                        source_service_config_id=jellyfin.id,
+                        last_watched_at=datetime(2026, 6, 1),
+                    ),
+                ]
+            )
+            await session.commit()
+            jellyfin_id, emby_id = jellyfin.id, emby.id
+            jellyfin_version_id, emby_version_id = jellyfin_version.id, emby_version.id
+
+        @asynccontextmanager
+        async def db_override():
+            async with session_factory() as session:
+                yield session
+
+        async def fetch(_self, _config):
+            return _FetchedWatchState(
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=1,
+                        watch_user_key="Alice",
+                        last_watched_at=datetime(2026, 7, 10, tzinfo=UTC),
+                    )
+                ],
+                native_playback_snapshots=[
+                    NativePlaybackSnapshot(
+                        source_item_id="jf-item",
+                        provider_media_type="movie",
+                        source_user_id="u1",
+                        source_username="Alice",
+                        play_count=2,
+                        completed=True,
+                        last_activity_at=datetime(2026, 7, 10, tzinfo=UTC),
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(
+            "backend.services.media_watch_snapshot_cache.async_db", db_override
+        )
+        monkeypatch.setattr(MediaWatchSnapshotCache, "_fetch_watch_state", fetch)
+
+        assert await MediaWatchSnapshotCache().refresh_snapshot(
+            all_servers=[jellyfin]
+        ) == (True, None)
+
+        async with session_factory() as session:
+            watch_users = {
+                (row.source_service_config_id, row.watch_user_key_normalized)
+                for row in (await session.execute(select(MediaWatchUser))).scalars()
+            }
+            native_users = {
+                (row.source_service_config_id, row.source_user_id)
+                for row in (await session.execute(select(NativePlaybackUser))).scalars()
+            }
+            aggregates = {
+                (row.source_service_config_id, row.target_id, row.play_count)
+                for row in (
+                    await session.execute(select(NativePlaybackAggregate))
+                ).scalars()
+            }
+            refreshed = await session.get(ServiceConfig, jellyfin_id)
+
+        assert watch_users == {(emby_id, "bob"), (jellyfin_id, "alice")}
+        assert native_users == {(emby_id, "e1"), (jellyfin_id, "u1")}
+        assert aggregates == {
+            (emby_id, emby_version_id, 1),
+            (jellyfin_id, jellyfin_version_id, 2),
+        }
+        assert refreshed is not None
+        assert refreshed.extra_settings["native_playback_sync"]["available"] is True
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_incremental_plex_refresh_merges_into_stored_rows(
+    tmp_path, monkeypatch
+) -> None:
+    """A partial Plex pull adds to what is stored and never drops older rows."""
+
+    async def run() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'plex.db'}")
+        session_factory = async_sessionmaker(
+            engine, expire_on_commit=False, autoflush=False
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+                is_main=True,
+            )
+            session.add(plex)
+            await session.flush()
+            session.add(
+                MediaWatchUser(
+                    media_type=MediaType.MOVIE,
+                    tmdb_id=1,
+                    watch_user_key="Old",
+                    watch_user_key_normalized="old",
+                    source_service=Service.PLEX,
+                    source_service_config_id=plex.id,
+                    last_watched_at=datetime(2026, 6, 1),
+                )
+            )
+            await session.commit()
+
+        @asynccontextmanager
+        async def db_override():
+            async with session_factory() as session:
+                yield session
+
+        plex_client = PlexService.__new__(PlexService)
+
+        async def fetch(_self, _config):
+            return _FetchedWatchState(
+                service_instance=plex_client,
+                incremental_mode=True,
+                snapshots=[
+                    MediaWatchSnapshot(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=1,
+                        watch_user_key="New",
+                        last_watched_at=datetime(2026, 7, 10, tzinfo=UTC),
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(
+            "backend.services.media_watch_snapshot_cache.async_db", db_override
+        )
+        monkeypatch.setattr(MediaWatchSnapshotCache, "_fetch_watch_state", fetch)
+
+        assert await MediaWatchSnapshotCache().refresh_snapshot(all_servers=[plex]) == (
+            True,
+            None,
+        )
+
+        async with session_factory() as session:
+            watch_users = {
+                row.watch_user_key_normalized
+                for row in (await session.execute(select(MediaWatchUser))).scalars()
+            }
+        assert watch_users == {"old", "new"}
+        await engine.dispose()
 
     asyncio.run(run())

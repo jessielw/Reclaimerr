@@ -3986,6 +3986,10 @@ async def _activate_seerr_request_resolver_for_rules(
             # would let an "is false" cleanup rule delete media purely because
             # its media server could not be read.
             continue
+        if not requester_ids_by_key.get(key):
+            # Nobody requested it, so there is no requester to have watched it.
+            # Unknown keeps an "is false" rule off titles Seerr never saw.
+            continue
         watched_ever, watched_after = _compute_requester_has_watched_for_key(
             media_key=key,
             snapshot=snapshot,
@@ -4107,6 +4111,8 @@ async def _activate_seerr_request_resolver_for_rules(
     requester_watched_after_request_by_target: RequesterWatchTargets = {}
     for tmdb_id in series_tmdb_ids:
         if (MediaType.SERIES, tmdb_id) in unobservable_keys:
+            continue
+        if not requester_ids_by_key.get((MediaType.SERIES, tmdb_id)):
             continue
         watched_ever_targets, watched_after_targets = (
             _compute_requester_tv_watch_targets_for_key(
