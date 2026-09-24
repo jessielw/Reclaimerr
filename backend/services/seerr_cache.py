@@ -546,11 +546,17 @@ class SeerrSnapshotCache:
         *,
         require_fresh: bool,
         allow_stale_on_failure: bool,
+        wait_for_first_load: bool = True,
     ) -> SeerrSnapshotState:
         """Return the merged snapshot alongside per-instance health.
 
         Callers that decide whether a rule may run need the health half; a
         snapshot built from only the instances that answered looks complete.
+
+        `wait_for_first_load=False` never blocks on Seerr: with nothing cached
+        yet it starts a background refresh and returns what is there. Page
+        requests use it, since a full Seerr pull can take minutes and they hold
+        a pooled DB connection the whole time they wait.
         """
         now = datetime.now(UTC)
         configured = set(self._clients())
@@ -576,10 +582,12 @@ class SeerrSnapshotCache:
         if require_fresh:
             await self._refresh_request_snapshot()
         elif not all_fresh:
-            if have_any:
+            if have_any or not wait_for_first_load:
                 self._kickoff_background_request_refresh()
             else:
-                await self._refresh_request_snapshot()
+                # stale_only so callers queued on the lock behind a refresh that
+                # just finished reuse it instead of each pulling Seerr again
+                await self._refresh_request_snapshot(stale_only=True)
 
         state = self._snapshot_state(set(self._clients()))
         if not allow_stale_on_failure and state.unavailable_config_ids:
@@ -598,11 +606,13 @@ class SeerrSnapshotCache:
         *,
         require_fresh: bool,
         allow_stale_on_failure: bool,
+        wait_for_first_load: bool = True,
     ) -> tuple[SeerrRequestSnapshot | None, str | None]:
         """Return the merged snapshot and a summary of any instance failures."""
         state = await self.get_request_snapshot_state(
             require_fresh=require_fresh,
             allow_stale_on_failure=allow_stale_on_failure,
+            wait_for_first_load=wait_for_first_load,
         )
         if not state.configured_config_ids:
             return None, "Seerr service is not configured"

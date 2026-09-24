@@ -380,6 +380,8 @@ class SeerrRequesterResponse(BaseModel):
     user_id: int
     display_name: str
     username: str | None = None
+    # This requester's earliest request for the title (or season).
+    requested_at: datetime | None = None
 
 
 class MovieWithStatus(BaseModel):
