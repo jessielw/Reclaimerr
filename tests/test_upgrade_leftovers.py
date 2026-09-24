@@ -327,6 +327,14 @@ def test_scan_flags_only_real_leftovers_and_keeps_state(
             (row,) = await rows()
             assert row.ignored is True
 
+            # a different file at the same path clears it (made before the swap,
+            # so it can't reuse the old inode)
+            (downloads / "one-old.tmp").write_bytes(b"new" * 10)
+            os.replace(downloads / "one-old.tmp", downloads / "one-old.mkv")
+            await upgrade_leftovers.scan_upgrade_leftovers()
+            (row,) = await rows()
+            assert row.ignored is False
+
             # a failing instance stops the scan and keeps previous results
             (downloads / "one-old.mkv").unlink()
             radarr_b.fail = True

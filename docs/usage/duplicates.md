@@ -45,7 +45,7 @@ For each file you remove:
 1. If Radarr or Sonarr tracks that exact file, Reclaimerr deletes it there and rescans, so the Arr picks up the kept file. The movie or series stays in the Arr and stays monitored. Radarr and Sonarr track one file per movie or episode, so this only happens when the kept file is inside the Arr's movie or series folder. If it isn't (for example, a copy in a separate 4K library folder), the Arr would see the item as missing and download it again, so the delete is refused. Keep the Arr's file instead, or delete the other file by hand.
 2. Otherwise Reclaimerr deletes it through the main media server. This needs **Allow Media Server Fallback Deletion** in General Settings.
 
-Nothing is unmonitored or removed from Radarr/Sonarr, and no import exclusion is added. Protected files are never deleted, and every group always keeps at least one file. Each removed file is recorded in reclaim history.
+Reclaimerr never unmonitors or removes anything in Radarr/Sonarr, and adds no import exclusion. If **Unmonitor Deleted Movies** (Radarr) or **Unmonitor Deleted Episodes** (Sonarr) is on in the Arr's Media Management settings, the Arr may unmonitor the item on its own when its file is deleted. Protected files are never deleted, and every group always keeps at least one file. Each removed file is recorded in reclaim history.
 
 ## Upgrade leftovers
 
@@ -71,7 +71,7 @@ Reclaimerr reads the download path from Radarr, so it needs to reach Radarr's do
 - **This filesystem doesn't report hardlinks**: some network shares report no file IDs, so hardlinks can't be checked.
 - **Path is a folder, not a single file**.
 
-Use **Ignore** to hide a leftover you want to keep. It stays hidden across scans while the file exists.
+Use **Ignore** to hide a leftover you want to keep. It stays hidden across scans while the same file is at that path. If a different file later lands there, it shows up again.
 
 ### How leftovers are removed
 

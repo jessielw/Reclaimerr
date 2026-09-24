@@ -370,6 +370,9 @@ async def _store(
                     link_count=f.link_count,
                 )
                 db.add(row)
+            elif row.file_key and f.file_key and row.file_key != f.file_key:
+                # another file now sits at this path; the old "ignore" was for that one
+                row.ignored = False
             row.arr_movie_id = event.arr_movie_id
             row.title = movie.title
             row.year = movie.year

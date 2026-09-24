@@ -1682,7 +1682,8 @@ class UpgradeLeftover(Base):
     """A file Radarr imported from its download folder and has since replaced.
 
     Rows are rewritten by the upgrade-leftover scan; only ``ignored`` is the
-    user's, and it survives rescans because rows are keyed by path.
+    user's, and it survives rescans because rows are keyed by path (it resets
+    when a different file shows up at that path).
     """
 
     __tablename__ = "upgrade_leftovers"

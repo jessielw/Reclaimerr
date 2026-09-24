@@ -65,6 +65,8 @@ from backend.services.duplicates import (
     DuplicateGroup,
     plan_duplicate_delete,
 )
+from backend.services.radarr import RadarrClient
+from backend.services.sonarr import SonarrClient
 from backend.services.upgrade_leftovers import (
     check_before_delete,
     remove_release_folder,
@@ -386,7 +388,8 @@ async def _delete_movie_file(
     clients = service_manager.radarr_clients()
     if not clients and service_manager.radarr:
         clients = {0: service_manager.radarr}
-    routed: dict[int, set[int]] = {}
+    # check every instance before deleting on any, so a refusal leaves no half-done work
+    planned: list[tuple[RadarrClient, int, int, list[int]]] = []
     for config_id, arr_movie_id, arr_movie_path in refs:
         client = clients.get(config_id)
         if client is None:
@@ -406,12 +409,16 @@ async def _delete_movie_file(
                 arr=Service.RADARR,
                 config_id=config_id,
             )
-            await client.delete_movie_files(file_ids)
-            routed.setdefault(config_id, set()).add(arr_movie_id)
-            LOG.info(
-                f"Duplicate delete: removed '{f.path}' for '{title}' via Radarr "
-                f"(config_id={config_id}, file_ids={file_ids})"
-            )
+            planned.append((client, config_id, arr_movie_id, file_ids))
+
+    routed: dict[int, set[int]] = {}
+    for client, config_id, arr_movie_id, file_ids in planned:
+        await client.delete_movie_files(file_ids)
+        routed.setdefault(config_id, set()).add(arr_movie_id)
+        LOG.info(
+            f"Duplicate delete: removed '{f.path}' for '{title}' via Radarr "
+            f"(config_id={config_id}, file_ids={file_ids})"
+        )
 
     local_path: Path | None = None
     if routed:
@@ -505,7 +512,8 @@ async def _delete_episode_file(
     clients = service_manager.sonarr_clients()
     if not clients and service_manager.sonarr:
         clients = {0: service_manager.sonarr}
-    routed: dict[int, set[int]] = {}
+    # check every instance before deleting on any, so a refusal leaves no half-done work
+    planned: list[tuple[SonarrClient, int, int, list[int]]] = []
     for config_id, arr_series_id, arr_series_path in refs:
         client = clients.get(config_id)
         if client is None:
@@ -525,14 +533,17 @@ async def _delete_episode_file(
                 arr=Service.SONARR,
                 config_id=config_id,
             )
+            planned.append((client, config_id, arr_series_id, file_ids))
+
+    routed: dict[int, set[int]] = {}
+    for client, config_id, arr_series_id, file_ids in planned:
         for file_id in file_ids:
             await client.delete_episode_file(file_id)
-        if file_ids:
-            routed.setdefault(config_id, set()).add(arr_series_id)
-            LOG.info(
-                f"Duplicate delete: removed '{f.path}' for {label} via Sonarr "
-                f"(config_id={config_id}, file_ids={file_ids})"
-            )
+        routed.setdefault(config_id, set()).add(arr_series_id)
+        LOG.info(
+            f"Duplicate delete: removed '{f.path}' for {label} via Sonarr "
+            f"(config_id={config_id}, file_ids={file_ids})"
+        )
 
     local_path: Path | None = None
     if routed:

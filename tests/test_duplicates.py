@@ -667,6 +667,60 @@ def test_job_refuses_radarr_delete_when_kept_copy_is_outside_its_folder(
     asyncio.run(run())
 
 
+def test_job_checks_every_radarr_instance_before_deleting(monkeypatch) -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                movie_id, ids = await _seed_radarr_case(db, fallback=True)
+                # a second instance also tracks the file, but from another folder
+                other = ServiceConfig(
+                    service_type=Service.RADARR,
+                    base_url="http://radarr-2",
+                    name="radarr-2",
+                    api_key="k",
+                    enabled=True,
+                )
+                db.add(other)
+                await db.flush()
+                db.add(
+                    MovieArrRef(
+                        movie_id=movie_id,
+                        service_config_id=other.id,
+                        arr_movie_id=66,
+                        arr_movie_path="/data/other/Movie1",
+                    )
+                )
+                await db.commit()
+                other_id = other.id
+            tracked = [{"id": 901, "path": "/data/movies/Movie1/Movie1-1080p.mkv"}]
+            first, second = _FakeRadarr(tracked), _FakeRadarr(tracked)
+            _patch(monkeypatch, sm, radarr=first, media=_FakeMediaServer())
+            from backend.core.service_manager import service_manager
+
+            monkeypatch.setattr(
+                service_manager, "_radarr_clients", {1: first, other_id: second}
+            )
+
+            with pytest.raises(DuplicateActionError, match="download it again"):
+                await duplicate_file_ops.delete_duplicate_files(
+                    DuplicateDeleteJobItem(
+                        media_type=MediaType.MOVIE,
+                        item_id=movie_id,
+                        version_ids=[ids[0]],
+                        display_label="Movie One",
+                    ),
+                    approved_by="t",
+                )
+            # the first instance passed its check but nothing was deleted
+            assert first.deleted_file_ids == []
+            assert second.deleted_file_ids == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 _SONARR_FILE = "/data/tv/Show/Season 01/Show - S01E01 - 720p.mkv"
 
 
