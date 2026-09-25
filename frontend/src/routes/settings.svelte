@@ -797,6 +797,7 @@
           name: string;
           enabled: boolean;
           base_url: string;
+          api_key: string;
           extra_settings?: Record<string, any>;
         };
       } = await post_api("/api/settings/save/service", {
@@ -821,7 +822,8 @@
         ),
         apiKey: "",
       };
-      serviceState[serviceId as SettingsTab].apiKeyIsSet = true;
+      serviceState[serviceId as SettingsTab].apiKeyIsSet =
+        !!response.data.api_key;
       if (isMultiInstanceTab(serviceId)) {
         const saved = serviceState[serviceId as SettingsTab].config;
         const existing = arrInstances[serviceId] ?? [];
