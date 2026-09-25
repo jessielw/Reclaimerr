@@ -92,7 +92,9 @@ def _default_service_name(service_type: Service) -> str:
 
 def _mask_api_key(key: str) -> str:
     """Return a masked version of an API key, showing only the last 4 characters."""
-    if not key or len(key) <= 4:
+    if not key:
+        return ""
+    if len(key) <= 4:
         return "****"
     return f"{'*' * (len(key) - 4)}{key[-4:]}"
 
@@ -651,21 +653,30 @@ async def set_service_settings(
 ) -> dict[str, Any]:
     """Set service settings for a given service."""
     service_name = data.name or _default_service_name(data.service_type)
+    existing_result = await _find_existing_service_config(db, data, service_name)
+    existing_config = existing_result.scalar_one_or_none()
+
     # if the client omitted the api_key (unchanged masked field), resolve the
     # existing key from the database so we don't overwrite it with garbage
     resolved_api_key = data.api_key
     if not resolved_api_key:
-        existing = await _find_existing_service_config(db, data, service_name)
-        existing_config = existing.scalar_one_or_none()
-        if not existing_config:
+        if existing_config:
+            resolved_api_key = (
+                fer_decrypt(existing_config.api_key) if existing_config.api_key else ""
+            )
+        elif data.enabled:
             raise HTTPException(
                 status_code=400,
-                detail="API key is required when configuring a service for the first time",
+                detail="API key is required when enabling a service",
             )
-        resolved_api_key = fer_decrypt(existing_config.api_key)
+        else:
+            resolved_api_key = ""
 
-    existing_result = await _find_existing_service_config(db, data, service_name)
-    existing_config = existing_result.scalar_one_or_none()
+    if data.enabled and not resolved_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="API key is required when enabling a service",
+        )
     if (
         not data.enabled
         and data.service_type in MEDIA_SERVERS
@@ -951,10 +962,13 @@ async def _upsert_service_config(
     """Upsert service configuration into the database."""
     LOG.info(f"Updating config for {data.service_type}")
 
-    if data.api_key is None:
+    if data.api_key is None and data.enabled:
         raise ValueError(
             "api_key must be resolved before calling _upsert_service_config"
         )
+    # The column is non-nullable. Disabled, not-yet-configured services use an
+    # encrypted empty value until a key is supplied when they are enabled.
+    api_key = data.api_key or ""
 
     # if this server is being made main, clear is_main from every OTHER media
     # server first - identity, not type. Two configs of the same type can both
@@ -974,7 +988,7 @@ async def _upsert_service_config(
         service_type=data.service_type,
         name=service_name,
         base_url=data.base_url,
-        api_key=fer_encrypt(data.api_key),
+        api_key=fer_encrypt(api_key),
         enabled=data.enabled,
         is_main=data.is_main,
         extra_settings=data.extra_settings,
@@ -992,7 +1006,7 @@ async def _upsert_service_config(
             index_elements=["service_type", "name"],
             set_={
                 "base_url": data.base_url,
-                "api_key": fer_encrypt(data.api_key),
+                "api_key": fer_encrypt(api_key),
                 "enabled": data.enabled,
                 "is_main": data.is_main,
                 "extra_settings": data.extra_settings,

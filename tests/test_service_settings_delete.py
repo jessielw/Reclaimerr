@@ -17,7 +17,7 @@ from backend.api.routes.settings.services import (
     set_service_settings,
 )
 from backend.core import service_runtime
-from backend.core.encryption import fer_encrypt
+from backend.core.encryption import fer_decrypt, fer_encrypt
 from backend.core.service_manager import service_manager
 from backend.database import Base
 from backend.database.models import (
@@ -188,6 +188,60 @@ def test_disable_unreachable_service_skips_connection_test(monkeypatch):
             assert response["data"]["enabled"] is False
             test_mock.assert_not_awaited()
             enqueue_mock.assert_awaited_once()
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_save_disabled_unconfigured_service_without_api_key(monkeypatch):
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            test_mock = AsyncMock(return_value=(True, ""))
+            enqueue_mock = AsyncMock(return_value=SimpleNamespace(id=123))
+            monkeypatch.setattr(service_manager, "test_service", test_mock)
+            monkeypatch.setattr(services, "enqueue_background_job", enqueue_mock)
+
+            response = await set_service_settings(
+                ServiceConfigUpdate(
+                    name="Tautulli",
+                    service_type=Service.TAUTULLI,
+                    base_url="http://tautulli.local",
+                    enabled=False,
+                ),
+                _admin_user(),
+                db_session,
+            )
+
+            stored = await db_session.get(ServiceConfig, response["data"]["id"])
+            assert stored is not None
+            assert stored.enabled is False
+            assert fer_decrypt(stored.api_key) == ""
+            assert response["data"]["api_key"] == ""
+            test_mock.assert_not_awaited()
+            enqueue_mock.assert_awaited_once()
+
+            with pytest.raises(HTTPException) as exc:
+                await set_service_settings(
+                    ServiceConfigUpdate(
+                        id=stored.id,
+                        name="Tautulli",
+                        service_type=Service.TAUTULLI,
+                        base_url="http://tautulli.local",
+                        enabled=True,
+                    ),
+                    _admin_user(),
+                    db_session,
+                )
+
+            assert exc.value.status_code == 400
+            assert exc.value.detail == "API key is required when enabling a service"
+            test_mock.assert_not_awaited()
         await engine.dispose()
 
     asyncio.run(run())

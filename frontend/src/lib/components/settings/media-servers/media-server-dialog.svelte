@@ -76,7 +76,7 @@
       !!name.trim() &&
       !!baseUrl.trim() &&
       !nameCollision &&
-      (apiKeyIsSet || !!apiKey.trim()),
+      (!effectiveEnabled || apiKeyIsSet || !!apiKey.trim()),
   );
 
   // seed the form from the target row each time the dialog opens, and clear the
