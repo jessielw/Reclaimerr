@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.5.2"
+version = "0.5.3"
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -23,7 +23,7 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "semver>=3.1.0",
     "slowapi>=0.1.10",
-    "sqlalchemy[asyncio]>=2.0.54",
+    "sqlalchemy[asyncio]>=2.0.54,<2.1",
     "tenacity>=9.1.4",
 ]
 
