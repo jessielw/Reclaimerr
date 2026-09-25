@@ -1559,7 +1559,7 @@ wheels = [
 
 [[package]]
 name = "reclaimerr"
-version = "0.5.2"
+version = "0.5.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1631,7 +1631,7 @@ requires-dist = [
     { name = "python-iso639", specifier = ">=2026.7.23" },
     { name = "semver", specifier = ">=3.1.0" },
     { name = "slowapi", specifier = ">=0.1.10" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.54" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.54,<2.1" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", marker = "extra == 'desktop'", specifier = ">=0.53.0" },
     { name = "zensical", marker = "extra == 'docs'", specifier = ">=0.0.63" },

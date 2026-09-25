@@ -20,11 +20,15 @@ WORKDIR /app
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential curl gosu tzdata \
 	&& rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml README.md CHANGELOG.md ./
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock README.md CHANGELOG.md ./
+# install the exact versions from uv.lock so new upstream releases can't break the image
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+	&& uv pip install --system --no-cache -r /tmp/requirements.txt \
+	&& rm /tmp/requirements.txt
 COPY backend ./backend
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN python -m pip install --upgrade pip \
-	&& python -m pip install .
+RUN uv pip install --system --no-cache --no-deps .
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 	&& mkdir -p /app/data/database /app/data/logs /app/data/static/avatars
 EXPOSE 8000
