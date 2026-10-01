@@ -14,7 +14,7 @@ Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect
 
 | Feature | What It Gives You |
 | --- | --- |
-| Leaving Soon | Named, auto-synced collections for items that are approaching removal, with optional custom poster art, optionally ordered by deadline on Plex |
+| Leaving Soon | Named, auto-synced collections for items that are approaching removal, with optional custom poster and thumb art, optionally ordered by deadline on Plex |
 | Duplicates | Movies and episodes with more than one file, a suggested keeper, and one-click removal of the other copies. Also finds old downloads Radarr left behind after an upgrade |
 | Calendar | Month and week views of when flagged media is due to be deleted or moved, with per-day counts and reclaimable space |
 | Storage | Disk capacity per mount and per Arr instance, library size, reclaimable space, and reclaimed totals by outcome |

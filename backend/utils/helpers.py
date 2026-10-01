@@ -12,6 +12,7 @@ __all__ = [
     "DEFAULT_LEAVING_SOON_SERIES_TITLE",
     "MAX_LEAVING_SOON_TITLE_LENGTH",
     "LeavingSoonPosters",
+    "LeavingSoonThumbs",
     "LeavingSoonTitles",
     "leaving_soon_titles_from_base_title",
     "normalize_leaving_soon_collection_sort",
@@ -52,6 +53,15 @@ class LeavingSoonPosters:
 
     def __bool__(self) -> bool:
         return self.movies is not None or self.series is not None
+
+
+@dataclass(frozen=True, slots=True)
+class LeavingSoonThumbs(LeavingSoonPosters):
+    """Custom landscape thumb artwork for the managed collections.
+
+    Only Jellyfin and Emby have a separate thumb image; a Plex collection's
+    thumb is its poster.
+    """
 
 
 def _normalize_title(value: object, default: str) -> str:

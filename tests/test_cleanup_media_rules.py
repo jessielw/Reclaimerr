@@ -369,6 +369,8 @@ class _LeavingSoonSyncServiceFake:
         item_deadlines: Mapping[str, datetime] | None = None,
         movie_poster: bytes | None = None,
         series_poster: bytes | None = None,
+        movie_thumb: bytes | None = None,
+        series_thumb: bytes | None = None,
     ) -> None:
         if self._fail_sync:
             raise RuntimeError("sync failure")
@@ -382,6 +384,8 @@ class _LeavingSoonSyncServiceFake:
                 "item_deadlines": dict(item_deadlines or {}),
                 "movie_poster": movie_poster,
                 "series_poster": series_poster,
+                "movie_thumb": movie_thumb,
+                "series_thumb": series_thumb,
             }
         )
 
@@ -6022,6 +6026,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             settings.leaving_soon_movie_poster_path = "movies.jpg"
             settings.leaving_soon_series_poster_path = "missing.jpg"
+            settings.leaving_soon_series_thumb_path = "series-thumb.jpg"
             rule = _make_rule(
                 MediaType.MOVIE,
                 min_size=1,
@@ -6053,6 +6058,7 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(poster_root.cleanup)
         poster_dir = Path(poster_root.name)
         (poster_dir / "movies.jpg").write_bytes(b"movie-poster-bytes")
+        (poster_dir / "series-thumb.jpg").write_bytes(b"series-thumb-bytes")
 
         fake_plex = _LeavingSoonSyncServiceFake()
         previous_plex = cleanup_tasks.service_manager._plex
@@ -6082,6 +6088,9 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # a poster whose file has gone missing degrades to no artwork rather
         # than failing the sync it was about to travel with
         self.assertIsNone(call["series_poster"])
+        # thumbs travel alongside the posters, each read independently
+        self.assertIsNone(call["movie_thumb"])
+        self.assertEqual(call["series_thumb"], b"series-thumb-bytes")
 
     async def test_scan_skips_leaving_soon_sync_when_disabled(self) -> None:
         async with self._sessionmaker() as db:

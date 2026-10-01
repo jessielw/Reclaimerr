@@ -89,20 +89,27 @@
     DEFAULT_LEAVING_SOON_SERIES_TITLE,
   );
   let leavingSoonCollectionSort = $state<LeavingSoonCollectionSort>("default");
-  // posters are saved the moment they are picked, unlike everything else on
-  // this page, so they are keyed by kind rather than folded into the payload
+  // posters and thumbs are saved the moment they are picked, unlike everything
+  // else on this page, so they are keyed by kind rather than folded into the
+  // payload
   type PosterKind = "movies" | "series";
-  let leavingSoonPosters = $state<Record<PosterKind, string | null>>({
-    movies: null,
-    series: null,
+  type ArtworkType = "poster" | "thumb";
+  let leavingSoonArtwork = $state<
+    Record<ArtworkType, Record<PosterKind, string | null>>
+  >({
+    poster: { movies: null, series: null },
+    thumb: { movies: null, series: null },
   });
-  let posterBusy = $state<Record<PosterKind, boolean>>({
-    movies: false,
-    series: false,
+  let artworkBusy = $state<Record<ArtworkType, Record<PosterKind, boolean>>>({
+    poster: { movies: false, series: false },
+    thumb: { movies: false, series: false },
   });
-  let posterInputs: Record<PosterKind, HTMLInputElement | null> = {
-    movies: null,
-    series: null,
+  let artworkInputs: Record<
+    ArtworkType,
+    Record<PosterKind, HTMLInputElement | null>
+  > = {
+    poster: { movies: null, series: null },
+    thumb: { movies: null, series: null },
   };
   const leavingSoonMovieTitle = $derived(
     leavingSoonMovieCollectionTitle.trim() || DEFAULT_LEAVING_SOON_MOVIE_TITLE,
@@ -329,45 +336,71 @@
     series: "Series",
   };
 
-  const posterUrl = (kind: PosterKind): string | null => {
-    const filename = leavingSoonPosters[kind];
+  const artworkUrl = (type: ArtworkType, kind: PosterKind): string | null => {
+    const filename = leavingSoonArtwork[type][kind];
     return filename ? `/static/collection-posters/${filename}` : null;
   };
 
-  const uploadPoster = async (kind: PosterKind, event: Event) => {
+  const setArtworkBusy = (
+    type: ArtworkType,
+    kind: PosterKind,
+    busy: boolean,
+  ) => {
+    artworkBusy = {
+      ...artworkBusy,
+      [type]: { ...artworkBusy[type], [kind]: busy },
+    };
+  };
+
+  const setArtwork = (
+    type: ArtworkType,
+    kind: PosterKind,
+    path: string | null,
+  ) => {
+    leavingSoonArtwork = {
+      ...leavingSoonArtwork,
+      [type]: { ...leavingSoonArtwork[type], [kind]: path },
+    };
+  };
+
+  const uploadArtwork = async (
+    type: ArtworkType,
+    kind: PosterKind,
+    event: Event,
+  ) => {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     // clear the input so re-picking the same file still fires a change event
     input.value = "";
     if (!file) return;
 
-    posterBusy = { ...posterBusy, [kind]: true };
+    setArtworkBusy(type, kind, true);
     try {
       const formData = new FormData();
-      formData.append("poster", file);
+      formData.append(type, file);
       const response: { message: string; path: string } = await post_api(
-        `/api/settings/general/leaving-soon-poster/${kind}`,
+        `/api/settings/general/leaving-soon-${type}/${kind}`,
         formData,
       );
-      leavingSoonPosters = { ...leavingSoonPosters, [kind]: response.path };
-      toast.success(`${POSTER_LABELS[kind]} collection poster uploaded`);
+      setArtwork(type, kind, response.path);
+      toast.success(`${POSTER_LABELS[kind]} collection ${type} uploaded`);
     } catch (error: any) {
-      toast.error(`Failed to upload poster: ${error.message}`);
+      toast.error(`Failed to upload ${type}: ${error.message}`);
     } finally {
-      posterBusy = { ...posterBusy, [kind]: false };
+      setArtworkBusy(type, kind, false);
     }
   };
 
-  const removePoster = async (kind: PosterKind) => {
-    posterBusy = { ...posterBusy, [kind]: true };
+  const removeArtwork = async (type: ArtworkType, kind: PosterKind) => {
+    setArtworkBusy(type, kind, true);
     try {
-      await delete_api(`/api/settings/general/leaving-soon-poster/${kind}`);
-      leavingSoonPosters = { ...leavingSoonPosters, [kind]: null };
-      toast.success(`${POSTER_LABELS[kind]} collection poster removed`);
+      await delete_api(`/api/settings/general/leaving-soon-${type}/${kind}`);
+      setArtwork(type, kind, null);
+      toast.success(`${POSTER_LABELS[kind]} collection ${type} removed`);
     } catch (error: any) {
-      toast.error(`Failed to remove poster: ${error.message}`);
+      toast.error(`Failed to remove ${type}: ${error.message}`);
     } finally {
-      posterBusy = { ...posterBusy, [kind]: false };
+      setArtworkBusy(type, kind, false);
     }
   };
 
@@ -440,9 +473,15 @@
           DEFAULT_LEAVING_SOON_SERIES_TITLE;
         leavingSoonCollectionSort =
           settings.leaving_soon_collection_sort ?? "default";
-        leavingSoonPosters = {
-          movies: settings.leaving_soon_movie_poster_path ?? null,
-          series: settings.leaving_soon_series_poster_path ?? null,
+        leavingSoonArtwork = {
+          poster: {
+            movies: settings.leaving_soon_movie_poster_path ?? null,
+            series: settings.leaving_soon_series_poster_path ?? null,
+          },
+          thumb: {
+            movies: settings.leaving_soon_movie_thumb_path ?? null,
+            series: settings.leaving_soon_series_thumb_path ?? null,
+          },
         };
       }
     } catch (error) {
@@ -827,9 +866,9 @@
                 <div
                   class="w-24 shrink-0 aspect-2/3 rounded-md border bg-muted/50 overflow-hidden flex items-center justify-center"
                 >
-                  {#if posterUrl(kind)}
+                  {#if artworkUrl("poster", kind)}
                     <img
-                      src={posterUrl(kind)}
+                      src={artworkUrl("poster", kind)}
                       alt="{POSTER_LABELS[kind]} collection poster"
                       class="w-full h-full object-cover"
                     />
@@ -849,32 +888,32 @@
                     type="file"
                     class="hidden"
                     accept="image/jpeg,image/png,image/webp"
-                    bind:this={posterInputs[kind]}
-                    onchange={(event) => uploadPoster(kind, event)}
+                    bind:this={artworkInputs.poster[kind]}
+                    onchange={(event) => uploadArtwork("poster", kind, event)}
                   />
                   <Button
                     variant="secondary"
                     size="sm"
                     class="cursor-pointer"
-                    disabled={posterBusy[kind]}
-                    onclick={() => posterInputs[kind]?.click()}
+                    disabled={artworkBusy.poster[kind]}
+                    onclick={() => artworkInputs.poster[kind]?.click()}
                   >
-                    {#if posterBusy[kind]}
+                    {#if artworkBusy.poster[kind]}
                       <Spinner class="size-4" />
                     {:else}
                       <ImageUp class="size-4" />
                     {/if}
-                    {leavingSoonPosters[kind]
+                    {leavingSoonArtwork.poster[kind]
                       ? "Replace poster"
                       : "Upload poster"}
                   </Button>
-                  {#if leavingSoonPosters[kind]}
+                  {#if leavingSoonArtwork.poster[kind]}
                     <Button
                       variant="ghost"
                       size="sm"
                       class="cursor-pointer text-destructive"
-                      disabled={posterBusy[kind]}
-                      onclick={() => removePoster(kind)}
+                      disabled={artworkBusy.poster[kind]}
+                      onclick={() => removeArtwork("poster", kind)}
                     >
                       <Trash2 class="size-4" />
                       Remove
@@ -896,6 +935,88 @@
             disappears at the next sync, which rebuilds the collection; on
             Jellyfin and Emby the last poster pushed stays until you change it
             there.
+          </p>
+        </div>
+
+        <!-- custom collection thumbs -->
+        <div class="mt-4">
+          <span class="text-sm text-foreground font-medium"
+            >Custom collection thumbs</span
+          >
+          <p class="text-xs text-muted-foreground mt-1">
+            Upload a landscape (16:9) thumb image for the managed collections,
+            used by Jellyfin and Emby wherever they show thumb artwork. Like
+            posters, a thumb is saved as soon as you pick it.
+          </p>
+          <div class="grid gap-4 sm:grid-cols-2 max-w-2xl mt-3">
+            {#each ["movies", "series"] as const as kind (kind)}
+              <div class="flex gap-3">
+                <div
+                  class="w-40 shrink-0 aspect-video rounded-md border bg-muted/50 overflow-hidden flex items-center justify-center"
+                >
+                  {#if artworkUrl("thumb", kind)}
+                    <img
+                      src={artworkUrl("thumb", kind)}
+                      alt="{POSTER_LABELS[kind]} collection thumb"
+                      class="w-full h-full object-cover"
+                    />
+                  {:else}
+                    <span
+                      class="text-[0.65rem] text-muted-foreground text-center px-2"
+                    >
+                      No custom thumb
+                    </span>
+                  {/if}
+                </div>
+                <div class="flex flex-col gap-2 justify-center">
+                  <span class="text-sm text-foreground"
+                    >{POSTER_LABELS[kind]} collection</span
+                  >
+                  <input
+                    type="file"
+                    class="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    bind:this={artworkInputs.thumb[kind]}
+                    onchange={(event) => uploadArtwork("thumb", kind, event)}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    class="cursor-pointer"
+                    disabled={artworkBusy.thumb[kind]}
+                    onclick={() => artworkInputs.thumb[kind]?.click()}
+                  >
+                    {#if artworkBusy.thumb[kind]}
+                      <Spinner class="size-4" />
+                    {:else}
+                      <ImageUp class="size-4" />
+                    {/if}
+                    {leavingSoonArtwork.thumb[kind]
+                      ? "Replace thumb"
+                      : "Upload thumb"}
+                  </Button>
+                  {#if leavingSoonArtwork.thumb[kind]}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="cursor-pointer text-destructive"
+                      disabled={artworkBusy.thumb[kind]}
+                      onclick={() => removeArtwork("thumb", kind)}
+                    >
+                      <Trash2 class="size-4" />
+                      Remove
+                    </Button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+          <p class="text-xs text-muted-foreground mt-3">
+            Same formats and limits as posters, re-applied on every sync. Thumbs
+            are pushed to <strong>Jellyfin and Emby only</strong> - a Plex collection's
+            thumb is its poster, so there is nothing separate to set. Removing a thumb
+            only stops Reclaimerr pushing it; the last thumb pushed stays until you
+            change it on the server.
           </p>
         </div>
 

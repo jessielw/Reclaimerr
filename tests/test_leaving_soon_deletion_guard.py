@@ -261,6 +261,7 @@ class LeavingSoonEmbyCollectionSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_sync_skips_missing_jellyfin_ids_and_adds_valid_items(self) -> None:
         class FakeService:
             service_type = Service.JELLYFIN
+            _apply_collection_artwork = EmbyServiceBase._apply_collection_artwork
 
             def __init__(self) -> None:
                 self.added: set[str] = set()
@@ -903,6 +904,7 @@ class LeavingSoonEmbySortIsIgnoredTests(unittest.IsolatedAsyncioTestCase):
                     "expected_item_ids": {"b", "a"},
                     "include_item_types": "Movie",
                     "poster": None,
+                    "thumb": None,
                 }
             ],
         )

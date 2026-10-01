@@ -97,20 +97,28 @@ def delete_collection_poster(image_path: PathLike[str]) -> None:
         raise
 
 
+# poster artwork is 2:3; thumb artwork is a 16:9 landscape
+COLLECTION_POSTER_BOUND = (1000, 1500)
+COLLECTION_THUMB_BOUND = (1920, 1080)
+
+
 def save_collection_poster_from_bytes(
     image_bytes: bytes,
     del_old_path: PathLike[str] | None = None,
+    bound: tuple[int, int] = COLLECTION_POSTER_BOUND,
 ) -> str:
     """Save a custom collection poster from bytes data.
 
     Always re-encoded to JPEG: collection artwork is opaque, every media server
     accepts JPEG, and it keeps one predictable suffix on disk. The bound is a
     poster aspect rather than the avatar's square, so a 2:3 image is not
-    letterboxed into a thumbnail.
+    letterboxed into a thumbnail. Collection thumbs share this storage with a
+    landscape `bound`.
 
     Args:
         image_bytes: Raw image bytes
         del_old_path: Optional path to the poster this one replaces
+        bound: Maximum (width, height), preserving aspect ratio
 
     Returns:
         The new poster filename
@@ -138,9 +146,9 @@ def save_collection_poster_from_bytes(
         else:
             img = i.convert("RGB")
 
-        # cap at a poster-sized bound, preserving aspect ratio
-        if img.width > 1000 or img.height > 1500:
-            img.thumbnail((1000, 1500), resample=Image.Resampling.LANCZOS)
+        # cap at the artwork-sized bound, preserving aspect ratio
+        if img.width > bound[0] or img.height > bound[1]:
+            img.thumbnail(bound, resample=Image.Resampling.LANCZOS)
 
         img.save(picture_path, format="JPEG", quality=90, optimize=True)
 

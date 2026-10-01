@@ -390,10 +390,13 @@ class GeneralSettingsResponse(BaseModel):
         LeavingSoonCollectionSort.DEFAULT
     )
     # read-only here: stored filenames served from /static/collection-posters.
-    # The poster upload and delete endpoints own these; the general settings PUT
-    # ignores whatever a client sends so a stale body cannot clear a poster.
+    # The poster/thumb upload and delete endpoints own these; the general
+    # settings PUT ignores whatever a client sends so a stale body cannot clear
+    # an image.
     leaving_soon_movie_poster_path: str | None = None
     leaving_soon_series_poster_path: str | None = None
+    leaving_soon_movie_thumb_path: str | None = None
+    leaving_soon_series_thumb_path: str | None = None
 
     # metadata (only updated on PUT, not required on GET)
     updated_at: datetime | None = None

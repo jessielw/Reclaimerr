@@ -163,6 +163,7 @@ from backend.services.watch_identity import (
 )
 from backend.utils.helpers import (
     LeavingSoonPosters,
+    LeavingSoonThumbs,
     LeavingSoonTitles,
     normalize_leaving_soon_collection_sort,
     normalize_leaving_soon_movie_title,
@@ -4580,6 +4581,14 @@ def load_leaving_soon_posters(settings_row: GeneralSettings) -> LeavingSoonPoste
     )
 
 
+def load_leaving_soon_thumbs(settings_row: GeneralSettings) -> LeavingSoonThumbs:
+    """Read both configured thumbs once; they live alongside the posters."""
+    return LeavingSoonThumbs(
+        movies=read_leaving_soon_poster(settings_row.leaving_soon_movie_thumb_path),
+        series=read_leaving_soon_poster(settings_row.leaving_soon_series_thumb_path),
+    )
+
+
 async def _load_leaving_soon_collection_settings(
     db: AsyncSession,
 ) -> tuple[
@@ -4589,6 +4598,7 @@ async def _load_leaving_soon_collection_settings(
     dict[int, LeavingSoonTitles],
     LeavingSoonCollectionSort,
     LeavingSoonPosters,
+    LeavingSoonThumbs,
 ]:
     settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
     default_titles = LeavingSoonTitles(
@@ -4603,6 +4613,7 @@ async def _load_leaving_soon_collection_settings(
             {},
             LeavingSoonCollectionSort.DEFAULT,
             LeavingSoonPosters(),
+            LeavingSoonThumbs(),
         )
     collection_titles = LeavingSoonTitles(
         movies=normalize_leaving_soon_movie_title(
@@ -4624,6 +4635,7 @@ async def _load_leaving_soon_collection_settings(
             settings_row.leaving_soon_collection_sort
         ),
         load_leaving_soon_posters(settings_row),
+        load_leaving_soon_thumbs(settings_row),
     )
 
 
@@ -5017,6 +5029,7 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
         last_success_titles_by_config,
         collection_sort,
         collection_posters,
+        collection_thumbs,
     ) = await _load_leaving_soon_collection_settings(db)
     if not enabled:
         await _cleanup_disabled_leaving_soon_collections(
@@ -5106,6 +5119,8 @@ async def _sync_leaving_soon_collections(db: AsyncSession) -> None:
                 item_deadlines=deadlines_by_config.get(config.id, {}),
                 movie_poster=collection_posters.movies,
                 series_poster=collection_posters.series,
+                movie_thumb=collection_thumbs.movies,
+                series_thumb=collection_thumbs.series,
             )
         except Exception as e:
             service_success = False
@@ -5151,6 +5166,7 @@ async def push_leaving_soon_posters(db: AsyncSession) -> None:
         _last_success_titles,
         _collection_sort,
         collection_posters,
+        _collection_thumbs,
     ) = await _load_leaving_soon_collection_settings(db)
     if settings_row is None or not enabled or not collection_posters:
         return
@@ -5177,6 +5193,52 @@ async def push_leaving_soon_posters(db: AsyncSession) -> None:
         except Exception as e:
             LOG.warning(
                 "Failed pushing Leaving Soon collection posters to "
+                f"{config.service_type.value} (config {config.id}): {e}"
+            )
+
+
+async def push_leaving_soon_thumbs(db: AsyncSession) -> None:
+    """Push the configured thumbs onto every managed collection that exists.
+
+    The thumb counterpart of `push_leaving_soon_posters`, with the same
+    best-effort behaviour. Servers without an
+    `apply_leaving_soon_collection_thumbs` method (Plex, whose collection thumb
+    is its poster) are skipped.
+    """
+    (
+        settings_row,
+        enabled,
+        collection_titles,
+        _last_success_titles,
+        _collection_sort,
+        _collection_posters,
+        collection_thumbs,
+    ) = await _load_leaving_soon_collection_settings(db)
+    if settings_row is None or not enabled or not collection_thumbs:
+        return
+
+    for config in await _get_enabled_leaving_soon_configs(db):
+        service_client = service_manager.get_media_server(
+            config.service_type, config.id
+        )
+        if service_client is None:
+            continue
+        apply_method = getattr(
+            service_client, "apply_leaving_soon_collection_thumbs", None
+        )
+        if not callable(apply_method):
+            continue
+        apply_func = cast(Callable[..., Awaitable[Any]], apply_method)
+        try:
+            await apply_func(
+                movie_title=collection_titles.movies,
+                series_title=collection_titles.series,
+                movie_thumb=collection_thumbs.movies,
+                series_thumb=collection_thumbs.series,
+            )
+        except Exception as e:
+            LOG.warning(
+                "Failed pushing Leaving Soon collection thumbs to "
                 f"{config.service_type.value} (config {config.id}): {e}"
             )
 
@@ -5328,6 +5390,7 @@ async def _prune_leaving_soon_before_candidate_actions(
             last_success_titles,
             collection_sort,
             collection_posters,
+            _collection_thumbs,
         ) = await _load_leaving_soon_collection_settings(db)
         if not enabled:
             return

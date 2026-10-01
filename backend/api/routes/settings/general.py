@@ -23,6 +23,8 @@ from backend.core.logger import LOG
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.image_handling import (
+    COLLECTION_POSTER_BOUND,
+    COLLECTION_THUMB_BOUND,
     delete_collection_poster,
     save_collection_poster_from_bytes,
 )
@@ -54,6 +56,7 @@ from backend.tasks.cleanup import (
     LEAVING_SOON_MEDIA_SERVICES,
     normalize_leaving_soon_last_success_titles,
     push_leaving_soon_posters,
+    push_leaving_soon_thumbs,
     serialize_leaving_soon_last_success_titles,
 )
 from backend.utils.helpers import (
@@ -210,10 +213,10 @@ async def update_general_settings(
     settings.leaving_soon_movie_collection_title = current_leaving_soon_movie_title
     settings.leaving_soon_series_collection_title = current_leaving_soon_series_title
     settings.leaving_soon_collection_sort = request.leaving_soon_collection_sort.value
-    # leaving_soon_*_poster_path is deliberately not copied from the request:
-    # the poster upload and delete endpoints own those columns. A client that
-    # loaded this settings body before an upload would otherwise save its way
-    # over a poster it never knew about.
+    # leaving_soon_*_poster_path and leaving_soon_*_thumb_path are deliberately
+    # not copied from the request: the upload and delete endpoints own those
+    # columns. A client that loaded this settings body before an upload would
+    # otherwise save its way over an image it never knew about.
     if was_leaving_soon_enabled and not settings.leaving_soon_enabled:
         await _cleanup_leaving_soon_collections_on_disable(db, settings)
 
@@ -231,6 +234,11 @@ _POSTER_COLUMNS: dict[str, str] = {
     "movies": "leaving_soon_movie_poster_path",
     "series": "leaving_soon_series_poster_path",
 }
+# thumbs are Jellyfin and Emby only; a Plex collection's thumb is its poster
+_THUMB_COLUMNS: dict[str, str] = {
+    "movies": "leaving_soon_movie_thumb_path",
+    "series": "leaving_soon_series_thumb_path",
+}
 # JPEG, PNG, and WebP only - an animated poster is not a thing on any of the
 # three servers, and everything is re-encoded to JPEG anyway.
 _POSTER_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -244,21 +252,24 @@ async def _get_general_settings_row(db: AsyncSession) -> GeneralSettings:
     return settings
 
 
-@router.post("/general/leaving-soon-poster/{kind}")
-async def upload_leaving_soon_poster(
-    kind: Literal["movies", "series"],
-    admin: Annotated[User, Depends(require_admin)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    poster: UploadFile = File(...),
+async def _upload_leaving_soon_image(
+    *,
+    kind: str,
+    label: str,
+    column: str,
+    bound: tuple[int, int],
+    upload: UploadFile,
+    admin: User,
+    db: AsyncSession,
+    push: Callable[[AsyncSession], Awaitable[None]],
 ) -> dict[str, str | None]:
-    """Upload the custom poster for one managed Leaving Soon collection."""
-    if not poster.content_type or poster.content_type not in _POSTER_CONTENT_TYPES:
+    if not upload.content_type or upload.content_type not in _POSTER_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File must be a JPEG, PNG, or WebP image",
         )
 
-    contents = await poster.read()
+    contents = await upload.read()
     if len(contents) > _POSTER_MAX_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -266,7 +277,6 @@ async def upload_leaving_soon_poster(
         )
 
     settings = await _get_general_settings_row(db)
-    column = _POSTER_COLUMNS[kind]
     old_filename = getattr(settings, column)
 
     # run CPU-bound image processing in thread pool to avoid blocking event loop
@@ -275,6 +285,7 @@ async def upload_leaving_soon_poster(
             save_collection_poster_from_bytes,
             contents,
             old_filename,
+            bound,
         )
     except Exception as e:
         raise HTTPException(
@@ -288,13 +299,63 @@ async def upload_leaving_soon_poster(
     db.add(settings)
     await db.commit()
 
-    LOG.info(f"User {admin.username} uploaded the {kind} Leaving Soon poster")
+    LOG.info(f"User {admin.username} uploaded the {kind} Leaving Soon {label}")
 
     # push it now so the collection does not wear stale artwork until the next
     # scan; failures are logged per server rather than failing a saved upload
-    await push_leaving_soon_posters(db)
+    await push(db)
 
-    return {"message": "Poster uploaded successfully", "path": filename}
+    return {"message": f"{label.capitalize()} uploaded successfully", "path": filename}
+
+
+async def _delete_leaving_soon_image(
+    *,
+    kind: str,
+    label: str,
+    column: str,
+    admin: User,
+    db: AsyncSession,
+) -> dict[str, str | None]:
+    settings = await _get_general_settings_row(db)
+    if (old_filename := getattr(settings, column)) is None:
+        return {"message": f"No {label} to remove", "path": None}
+
+    try:
+        delete_collection_poster(old_filename)
+    except Exception:
+        # the file is already unreachable or unremovable; dropping the reference
+        # is still the right outcome, so do not strand the setting on it
+        LOG.warning(f"Could not remove the {kind} Leaving Soon {label} from disk")
+
+    setattr(settings, column, None)
+    settings.updated_at = datetime.now(UTC)
+    settings.updated_by_user_id = admin.id
+    db.add(settings)
+    await db.commit()
+
+    LOG.info(f"User {admin.username} removed the {kind} Leaving Soon {label}")
+
+    return {"message": f"{label.capitalize()} removed successfully", "path": None}
+
+
+@router.post("/general/leaving-soon-poster/{kind}")
+async def upload_leaving_soon_poster(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    poster: UploadFile = File(...),
+) -> dict[str, str | None]:
+    """Upload the custom poster for one managed Leaving Soon collection."""
+    return await _upload_leaving_soon_image(
+        kind=kind,
+        label="poster",
+        column=_POSTER_COLUMNS[kind],
+        bound=COLLECTION_POSTER_BOUND,
+        upload=poster,
+        admin=admin,
+        db=db,
+        push=push_leaving_soon_posters,
+    )
 
 
 @router.delete("/general/leaving-soon-poster/{kind}")
@@ -309,27 +370,56 @@ async def delete_leaving_soon_poster(
     next sync, which rebuilds the collection from scratch; on Jellyfin and Emby
     the last poster Reclaimerr pushed stays until it is changed there.
     """
-    settings = await _get_general_settings_row(db)
-    column = _POSTER_COLUMNS[kind]
-    if (old_filename := getattr(settings, column)) is None:
-        return {"message": "No poster to remove", "path": None}
+    return await _delete_leaving_soon_image(
+        kind=kind,
+        label="poster",
+        column=_POSTER_COLUMNS[kind],
+        admin=admin,
+        db=db,
+    )
 
-    try:
-        delete_collection_poster(old_filename)
-    except Exception:
-        # the file is already unreachable or unremovable; dropping the reference
-        # is still the right outcome, so do not strand the setting on it
-        LOG.warning(f"Could not remove the {kind} Leaving Soon poster from disk")
 
-    setattr(settings, column, None)
-    settings.updated_at = datetime.now(UTC)
-    settings.updated_by_user_id = admin.id
-    db.add(settings)
-    await db.commit()
+@router.post("/general/leaving-soon-thumb/{kind}")
+async def upload_leaving_soon_thumb(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    thumb: UploadFile = File(...),
+) -> dict[str, str | None]:
+    """Upload the custom landscape thumb for one managed Leaving Soon collection.
 
-    LOG.info(f"User {admin.username} removed the {kind} Leaving Soon poster")
+    Pushed to Jellyfin and Emby only; a Plex collection has no separate thumb.
+    """
+    return await _upload_leaving_soon_image(
+        kind=kind,
+        label="thumb",
+        column=_THUMB_COLUMNS[kind],
+        bound=COLLECTION_THUMB_BOUND,
+        upload=thumb,
+        admin=admin,
+        db=db,
+        push=push_leaving_soon_thumbs,
+    )
 
-    return {"message": "Poster removed successfully", "path": None}
+
+@router.delete("/general/leaving-soon-thumb/{kind}")
+async def delete_leaving_soon_thumb(
+    kind: Literal["movies", "series"],
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str | None]:
+    """Clear the custom thumb for one managed Leaving Soon collection.
+
+    The last thumb Reclaimerr pushed stays on Jellyfin and Emby until it is
+    changed there.
+    """
+    return await _delete_leaving_soon_image(
+        kind=kind,
+        label="thumb",
+        column=_THUMB_COLUMNS[kind],
+        admin=admin,
+        db=db,
+    )
 
 
 @router.get(

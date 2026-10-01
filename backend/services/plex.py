@@ -281,6 +281,8 @@ class PlexService:
         item_deadlines: Mapping[str, datetime] | None = None,
         movie_poster: bytes | None = None,
         series_poster: bytes | None = None,
+        movie_thumb: bytes | None = None,
+        series_thumb: bytes | None = None,
     ) -> None:
         """Sync managed Leaving Soon collections for movies and series.
 
@@ -290,7 +292,11 @@ class PlexService:
         re-applied to every collection this sync creates - Plex rebuilds these
         collections from scratch each run, so artwork does not survive on its
         own.
+
+        The thumbs are accepted and ignored: a Plex collection's thumb is its
+        poster, so there is no separate landscape image to set.
         """
+        del movie_thumb, series_thumb
         if movie_title := str(movie_title or "").strip():
             await self._sync_leaving_soon_collection_for_type(
                 section_type="movie",

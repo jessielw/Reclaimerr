@@ -223,11 +223,13 @@ class EmbyServiceBase:
         item_deadlines: Mapping[str, datetime] | None = None,
         movie_poster: bytes | None = None,
         series_poster: bytes | None = None,
+        movie_thumb: bytes | None = None,
+        series_thumb: bytes | None = None,
     ) -> None:
         """Sync managed Leaving Soon collections for movies and series.
 
         Titles are supplied by the caller; a blank title skips that half. The
-        posters, when given, are re-applied on every sync. A BoxSet keeps its
+        posters and thumbs, when given, are re-applied on every sync. A BoxSet keeps its
         artwork - unlike Plex, nothing here rebuilds the collection - but the
         re-push keeps all three servers behaving the same way, so the settings
         page can make one promise about what wins.
@@ -245,6 +247,7 @@ class EmbyServiceBase:
                 expected_item_ids=movie_item_ids,
                 include_item_types="Movie",
                 poster=movie_poster,
+                thumb=movie_thumb,
             )
         if series_title := str(series_title or "").strip():
             await self._sync_leaving_soon_collection(
@@ -252,6 +255,7 @@ class EmbyServiceBase:
                 expected_item_ids=series_item_ids,
                 include_item_types="Series",
                 poster=series_poster,
+                thumb=series_thumb,
             )
 
     async def delete_leaving_soon_collections(
@@ -335,6 +339,7 @@ class EmbyServiceBase:
         expected_item_ids: set[str],
         include_item_types: str,
         poster: bytes | None = None,
+        thumb: bytes | None = None,
     ) -> None:
         normalized_expected_ids = {
             str(item_id).strip()
@@ -361,18 +366,17 @@ class EmbyServiceBase:
             new_collection_id = await self._create_collection(
                 collection_title=collection_title,
                 item_ids=normalized_expected_ids,
-                resolve_id=poster is not None,
+                resolve_id=poster is not None or thumb is not None,
             )
-            if poster is not None and new_collection_id is not None:
-                await self._upload_collection_poster(
-                    collection_id=new_collection_id, poster=poster
+            if new_collection_id is not None:
+                await self._apply_collection_artwork(
+                    collection_id=new_collection_id, poster=poster, thumb=thumb
                 )
             return
         collection_id = existing_collection_ids[0]
-        if poster is not None:
-            await self._upload_collection_poster(
-                collection_id=collection_id, poster=poster
-            )
+        await self._apply_collection_artwork(
+            collection_id=collection_id, poster=poster, thumb=thumb
+        )
 
         current_item_ids = await self._get_collection_item_ids(
             collection_id=collection_id,
@@ -644,10 +648,10 @@ class EmbyServiceBase:
         )
         return collection_id
 
-    async def _upload_collection_poster(
-        self, *, collection_id: str, poster: bytes
+    async def _upload_collection_image(
+        self, *, collection_id: str, image: bytes, image_type: str, label: str
     ) -> None:
-        """Set a collection's primary image.
+        """Set one of a collection's images (`Primary`, `Thumb`, ...).
 
         Emby and Jellyfin both take the image base64 encoded in the request
         body, not as multipart, with the content type naming the real format.
@@ -658,16 +662,54 @@ class EmbyServiceBase:
         """
         try:
             response = await self.session.post(
-                f"{self.service_url}/Items/{collection_id}/Images/Primary",
-                data=b64encode(poster),
+                f"{self.service_url}/Items/{collection_id}/Images/{image_type}",
+                data=b64encode(image),
                 headers={"Content-Type": "image/jpeg"},
                 timeout=60,
             )
             response.raise_for_status()
         except Exception as e:
             LOG.warning(
-                f"Failed uploading {self.service_type.value} collection poster "
+                f"Failed uploading {self.service_type.value} collection {label} "
                 f"to {collection_id}: {e}"
+            )
+
+    async def _upload_collection_poster(
+        self, *, collection_id: str, poster: bytes
+    ) -> None:
+        """Set a collection's primary image."""
+        await self._upload_collection_image(
+            collection_id=collection_id,
+            image=poster,
+            image_type="Primary",
+            label="poster",
+        )
+
+    async def _upload_collection_thumb(
+        self, *, collection_id: str, thumb: bytes
+    ) -> None:
+        """Set a collection's landscape thumb image."""
+        await self._upload_collection_image(
+            collection_id=collection_id,
+            image=thumb,
+            image_type="Thumb",
+            label="thumb",
+        )
+
+    async def _apply_collection_artwork(
+        self,
+        *,
+        collection_id: str,
+        poster: bytes | None,
+        thumb: bytes | None,
+    ) -> None:
+        if poster is not None:
+            await self._upload_collection_poster(
+                collection_id=collection_id, poster=poster
+            )
+        if thumb is not None:
+            await self._upload_collection_thumb(
+                collection_id=collection_id, thumb=thumb
             )
 
     async def apply_leaving_soon_collection_posters(
@@ -694,6 +736,32 @@ class EmbyServiceBase:
             for collection_id in await self._find_collection_ids_by_title(title):
                 await self._upload_collection_poster(
                     collection_id=collection_id, poster=poster
+                )
+
+    async def apply_leaving_soon_collection_thumbs(
+        self,
+        *,
+        movie_title: str | None,
+        series_title: str | None,
+        movie_thumb: bytes | None,
+        series_thumb: bytes | None,
+    ) -> None:
+        """Push thumbs onto the managed collections without touching membership.
+
+        Used for the immediate write when an admin uploads a thumb, so it shows
+        up without waiting for the next scan.
+        """
+        for collection_title, thumb in (
+            (movie_title, movie_thumb),
+            (series_title, series_thumb),
+        ):
+            if thumb is None:
+                continue
+            if not (title := str(collection_title or "").strip()):
+                continue
+            for collection_id in await self._find_collection_ids_by_title(title):
+                await self._upload_collection_thumb(
+                    collection_id=collection_id, thumb=thumb
                 )
 
     async def _add_items_to_collection(

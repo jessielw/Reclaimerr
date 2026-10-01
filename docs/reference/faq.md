@@ -29,6 +29,8 @@ Renaming a collection in Reclaimerr moves it: on the next scan the collection un
 
 Reclaimerr re-applies the poster on **every sync**, because Plex deletes and rebuilds these collections on each run and artwork would otherwise vanish. That means Reclaimerr wins against any other tool that manages the same collection's artwork, such as Kometa or Posterizarr. Removing a poster only stops Reclaimerr pushing it: on Plex it disappears at the next sync, while on Jellyfin and Emby the last poster pushed stays until you change it on the server.
 
+**Custom collection thumbs** work the same way for the landscape (16:9) thumb image that Jellyfin and Emby show in thumb views. Thumbs are bounded to 1920x1080 instead of the poster's 1000x1500, stored next to the posters, and re-applied on every sync. They are **Jellyfin and Emby only**: a Plex collection's thumb is its poster, so there is nothing separate to set there. Removing a thumb only stops Reclaimerr pushing it; the last thumb pushed stays until you change it on the server.
+
 **Collection Sort** decides the order of items inside the collection. `Server default` leaves whatever ordering the collection already has alone, `Alphabetical` sorts by title, and `Leaving soonest first` puts whatever disappears next at the front. This is **Plex only**: Plex stores a collection's order on the server, while Jellyfin and Emby have no equivalent - a collection there is ordered by whatever each client decides - so the setting is ignored on those servers.
 
 ## How do I troubleshoot task failures?

@@ -258,6 +258,7 @@ class TestEmbyPosterUpload(unittest.IsolatedAsyncioTestCase):
         class FakeEmby:
             service_url = "http://emby"
             service_type = Service.EMBY
+            _upload_collection_image = EmbyServiceBase._upload_collection_image
 
             def __init__(self) -> None:
                 self.session = _FakeSession()
@@ -288,6 +289,7 @@ class TestEmbyPosterUpload(unittest.IsolatedAsyncioTestCase):
         class FakeEmby:
             service_url = "http://emby"
             service_type = Service.JELLYFIN
+            _upload_collection_image = EmbyServiceBase._upload_collection_image
 
             def __init__(self) -> None:
                 self.session = _FakeSession(error=RuntimeError("nope"))
