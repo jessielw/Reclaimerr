@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Sonarr season rules can now unmonitor and delete or move files, enabling new-season monitoring only when the latest known regular season is removed.
 
+### Changed
+
+- Updated apprise and platformdirs.
+
 ## [0.5.4] - 2026-10-01
 
 ### Added
