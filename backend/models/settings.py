@@ -351,6 +351,7 @@ class GeneralSettingsResponse(BaseModel):
     move_destination_series: str | None = None
 
     # deletion routing
+    active_playback_protection_enabled: bool = True
     media_server_fallback_enabled: bool = True
     default_arr_delete_behavior: Literal[
         "unmonitor", "unmonitor_only", "remove_if_empty"

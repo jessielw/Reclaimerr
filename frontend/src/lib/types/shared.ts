@@ -1,4 +1,12 @@
-﻿export enum UserRole {
+export interface PlaybackDeferral {
+  code: "currently_playing" | "playback_unavailable";
+  message: string;
+  checked_at: string;
+  server_config_ids: number[];
+  completed_steps?: string[];
+}
+
+export enum UserRole {
   Admin = "admin",
   User = "user",
 }
@@ -303,6 +311,7 @@ export interface GeneralSettings {
   path_mappings: PathMapping[];
   move_destination_movies: string | null;
   move_destination_series: string | null;
+  active_playback_protection_enabled?: boolean;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior:
     | "unmonitor"
@@ -698,6 +707,7 @@ export interface CandidateFileOpJobProgress {
   total_items: number;
   completed_items: number;
   failed_items: number;
+  deferred_items?: number;
   current_item_label: string | null;
   percent: number;
 }
@@ -708,6 +718,8 @@ export interface CandidateFileOpJobResult {
   succeeded: number;
   failed: number;
   errors?: string[];
+  deferred?: number;
+  deferrals?: string[];
 }
 
 export interface CandidateFileOpJobPayload {
@@ -1160,6 +1172,7 @@ export interface DeleteRequest {
   admin_notes: string | null;
   executed_at: string | null;
   execution_error: string | null;
+  playback_deferral?: PlaybackDeferral | null;
   season_id: number | null;
   season_number: number | null;
   episode_id: number | null;
@@ -1367,6 +1380,7 @@ export interface ReclaimCandidateEntry {
   delete_attempts: number;
   last_delete_attempt_at: string | null;
   last_delete_error: string | null;
+  playback_deferral?: PlaybackDeferral | null;
   // populated for season level candidates
   season_id: number | null;
   season_number: number | null;

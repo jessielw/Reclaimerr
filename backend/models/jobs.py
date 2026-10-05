@@ -64,6 +64,7 @@ class CandidateFileOpJobProgress(BaseModel):
     total_items: int
     completed_items: int = 0
     failed_items: int = 0
+    deferred_items: int = 0
     current_item_label: str | None = None
     percent: int = 0
 
@@ -73,6 +74,8 @@ class CandidateFileOpJobResult(BaseModel):
     processed: int
     succeeded: int
     failed: int
+    deferred: int = 0
+    deferrals: list[str] = Field(default_factory=list)
     # per item "<label>: <reason>" for each failure, so the UI can say why
     errors: list[str] = Field(default_factory=list)
 
@@ -107,5 +110,7 @@ class DuplicateDeleteJobResult(BaseModel):
     processed: int
     succeeded: int
     failed: int
+    deferred: int = 0
+    deferrals: list[str] = Field(default_factory=list)
     freed_bytes: int = 0
     errors: list[str] = Field(default_factory=list)

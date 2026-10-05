@@ -31,6 +31,7 @@ from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import LeavingSoonCollectionSort, MediaType, Service
+from backend.models.live_playback import PlaybackSnapshot
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -44,6 +45,11 @@ from backend.models.media import (
 )
 from backend.models.services.health import HealthResult
 from backend.models.services.plex import PlexMovie, PlexSeries
+from backend.services.live_sessions import plex_sessions, resolve_session_paths
+from backend.services.playback_guard import (
+    guard_native_removal,
+    playback_step_completed,
+)
 from backend.utils.helpers import order_leaving_soon_item_ids
 
 # history tuple (total_view_count, max_last_viewed_at, distinct_user_count)
@@ -210,6 +216,16 @@ class PlexService:
         except (OSError, OverflowError, ValueError):
             return None
 
+    async def get_live_sessions(self) -> PlaybackSnapshot:
+        """Fetch live playback under the guard's total 10-second timeout."""
+        response = await self.session.get(
+            f"{self.plex_url}/status/sessions", timeout=10
+        )
+        response.raise_for_status()
+        return await resolve_session_paths(
+            self, Service.PLEX, plex_sessions(response.json())
+        )
+
     async def health(self) -> HealthResult:
         """Check server health and API key, reporting why it failed."""
         try:
@@ -236,11 +252,13 @@ class PlexService:
         Args:
             rating_key: Plex rating key (item ID)
         """
+        await guard_native_removal(self, Service.PLEX, rating_key)
         try:
             response = await self.session.delete(
                 f"{self.plex_url}/library/metadata/{rating_key}"
             )
             response.raise_for_status()
+            playback_step_completed("Media-server deletion completed")
             LOG.debug(f"Deleted Plex item {rating_key}")
         except Exception as e:
             raise ValueError(
@@ -252,11 +270,13 @@ class PlexService:
 
     async def delete_movie_version(self, rating_key: str, media_item_id: str) -> None:
         """Deletes one media version from a Plex metadata item."""
+        await guard_native_removal(self, Service.PLEX, rating_key, media_item_id)
         try:
             response = await self.session.delete(
                 f"{self.plex_url}/library/metadata/{rating_key}/media/{media_item_id}"
             )
             response.raise_for_status()
+            playback_step_completed("Media-server deletion completed")
             LOG.debug(f"Deleted Plex media item {media_item_id} from {rating_key}")
         except Exception as e:
             raise ValueError(

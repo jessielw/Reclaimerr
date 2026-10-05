@@ -62,6 +62,8 @@
     succeeded?: number;
     failed?: number;
     errors?: string[];
+    deferred?: number;
+    deferrals?: string[];
   }
 
   const sortByOptions = [
@@ -507,6 +509,11 @@
     if (result && (result.succeeded ?? 0) > 0) {
       toast.success(
         `${actionPast} ${result.succeeded} item${result.succeeded === 1 ? "" : "s"}.`,
+      );
+    }
+    if (result && (result.deferred ?? 0) > 0) {
+      toast.info(
+        `${result.deferred} deferred by playback protection. ${(result.deferrals ?? []).slice(0, 3).join("\n")}`,
       );
     }
     if (result && (result.failed ?? 0) > 0) {

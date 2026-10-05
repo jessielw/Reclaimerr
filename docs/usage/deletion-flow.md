@@ -10,6 +10,18 @@ Move operations also honor the rule's Arr action. **Delete** removes a complete 
 
 When Leaving Soon collections are enabled, Reclaimerr first removes the affected movie or series from its managed Plex, Jellyfin, and Emby collections. This prevents media-server collections from retaining links to files that are about to disappear. If an affected collection cannot be updated, the delete or move is blocked and retried later. After the operation, Reclaimerr reconciles the collections so failed or partially completed actions remain represented.
 
+## Active Playback Protection
+
+**Settings → General → Protect Active Playback** is enabled for new and existing installations. Reclaimerr checks native Plex, Jellyfin, and Emby sessions before deletion or movement, including manual actions, approved deletion requests, duplicate files, and upgrade leftovers. Paused sessions remain protected while the server reports them. Standalone unmonitor and quality-profile changes are allowed.
+
+Affected candidates display **Deferred: currently playing**. If a relevant server cannot report valid playback data, they display **Deferred: playback status unavailable**. Deferral does not restart the review period, count as a failed deletion, or remove the candidate. Initial deferrals happen before collection pruning or monitoring changes. Unrelated cleanup can continue.
+
+Scheduled candidates retry on the next eligible cleanup run. Manual actions require another explicit attempt. Approved requests keep their approval and expose **Retry deletion** to request managers. Disabling protection does not automatically execute a deferred request; its last deferral stays visible until retry.
+
+Reclaimerr matches server-qualified media identities and physical paths, including playing episodes beneath a season or series. Configure path mappings when servers expose shared files under different prefixes. Supplemental media associations help identify relevant servers; unavailable servers block associated files. If a file-only operation has no known server association, an unavailable configured server is treated conservatively as potentially relevant.
+
+Session snapshots are reused for up to 30 seconds within a job and refreshed before later destructive steps. Playback can still start after a check. If a later check defers an operation after earlier steps completed, its deferral details identify the completed steps; those changes are not undone. Protection covers playback reported by configured media servers, without requiring Tautulli or Tracearr.
+
 ## Deletion Modes
 
 | Mode | Behavior |

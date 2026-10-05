@@ -218,6 +218,7 @@ async def candidate_status_payload(
         "delete_attempts": candidate.delete_attempts or 0,
         "last_delete_attempt_at": candidate.last_delete_attempt_at,
         "last_delete_error": candidate.last_delete_error,
+        "playback_deferral": candidate.playback_deferral,
         "blockers": await candidate_deletion_blockers(db, candidate),
     }
 

@@ -165,6 +165,7 @@ def test_delete_candidates_queues_background_job(monkeypatch) -> None:
                 "total_items": 1,
                 "completed_items": 0,
                 "failed_items": 0,
+                "deferred_items": 0,
                 "current_item_label": None,
                 "percent": 0,
             }
@@ -492,6 +493,7 @@ def test_run_candidate_file_op_job_marks_delete_request_executed(monkeypatch) ->
                 "total_items": 1,
                 "completed_items": 1,
                 "failed_items": 0,
+                "deferred_items": 0,
                 "current_item_label": None,
                 "percent": 100,
             }

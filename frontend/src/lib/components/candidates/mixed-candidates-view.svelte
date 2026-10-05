@@ -160,6 +160,9 @@
           last_delete_attempt_at:
             groupWorstFailure?.last_delete_attempt_at ?? null,
           last_delete_error: groupWorstFailure?.last_delete_error ?? null,
+          playback_deferral:
+            row.versions.find((entry) => entry.playback_deferral)
+              ?.playback_deferral ?? null,
         },
         formatDate,
         true,
@@ -395,6 +398,9 @@
           last_delete_attempt_at:
             seriesGroupWorstFailure?.last_delete_attempt_at ?? null,
           last_delete_error: seriesGroupWorstFailure?.last_delete_error ?? null,
+          playback_deferral:
+            groupEntries.find((entry) => entry.playback_deferral)
+              ?.playback_deferral ?? null,
         },
         formatDate,
         true,

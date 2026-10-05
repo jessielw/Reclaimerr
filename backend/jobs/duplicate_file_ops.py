@@ -44,6 +44,7 @@ from backend.database.models import (
     Movie,
     MovieArrRef,
     MovieVersion,
+    ReclaimCandidate,
     ReclaimHistory,
     Season,
     Series,
@@ -59,11 +60,21 @@ from backend.models.jobs import (
     DuplicateDeleteJobResult,
     LeftoverDeleteJobItem,
 )
+from backend.models.live_playback import PlaybackDeferred
 from backend.services.duplicates import (
     DuplicateActionError,
     DuplicateFile,
     DuplicateGroup,
     plan_duplicate_delete,
+)
+from backend.services.playback_guard import (
+    PlaybackGuard,
+    PlaybackOperation,
+    PlaybackTarget,
+    candidate_playback_target,
+    current_playback_operation,
+    playback_checkpoint,
+    playback_step_completed,
 )
 from backend.services.radarr import RadarrClient
 from backend.services.sonarr import SonarrClient
@@ -120,6 +131,10 @@ async def _run_unlocked(
     total = len(payload.items) + len(payload.leftovers)
     succeeded = 0
     failed = 0
+    deferred = 0
+    deferrals: list[str] = []
+    async with async_db() as db:
+        guard = await PlaybackGuard.load(db)
     freed = 0
     errors: list[str] = []
 
@@ -129,6 +144,7 @@ async def _run_unlocked(
             total_items=total,
             completed_items=completed,
             failed_items=failed,
+            deferred_items=deferred,
             current_item_label=label,
             percent=min(100, max(0, percent)),
         )
@@ -140,13 +156,20 @@ async def _run_unlocked(
     work: Sequence[tuple[str, Callable[[], Awaitable[int]]]] = [
         (
             item.display_label,
-            partial(delete_duplicate_files, item, approved_by=approved_by),
+            partial(
+                delete_duplicate_files,
+                item,
+                approved_by=approved_by,
+                playback_guard=guard,
+            ),
         )
         for item in payload.items
     ] + [
         (
             leftover.display_label,
-            partial(delete_leftover, leftover, approved_by=approved_by),
+            partial(
+                delete_leftover, leftover, approved_by=approved_by, playback_guard=guard
+            ),
         )
         for leftover in payload.leftovers
     ]
@@ -155,6 +178,10 @@ async def _run_unlocked(
         try:
             freed += await run()
             succeeded += 1
+        except PlaybackDeferred as e:
+            deferred += 1
+            freed += e.freed_bytes
+            deferrals.append(f"{label}: {e}")
         except DuplicateActionError as e:
             failed += 1
             errors.append(f"{label}: {e}")
@@ -170,11 +197,13 @@ async def _run_unlocked(
         succeeded=succeeded,
         failed=failed,
         freed_bytes=freed,
+        deferred=deferred,
+        deferrals=deferrals,
         errors=errors,
     ).model_dump(mode="json")
 
 
-async def delete_duplicate_files(
+async def _delete_duplicate_files_impl(
     item: DuplicateDeleteJobItem, *, approved_by: str
 ) -> int:
     """Delete the picked files of one group. Returns bytes freed.
@@ -200,24 +229,29 @@ async def delete_duplicate_files(
     kept = [f for f in group.files if f not in selected]
     freed = 0
     for f in selected:
-        if group.media_type is MediaType.MOVIE:
-            await _delete_movie_file(
-                group,
-                f,
-                kept,
-                approved_by=approved_by,
-                mappings=mappings,
-                fallback_enabled=fallback_enabled,
-            )
-        else:
-            await _delete_episode_file(
-                group,
-                f,
-                kept,
-                approved_by=approved_by,
-                mappings=mappings,
-                fallback_enabled=fallback_enabled,
-            )
+        try:
+            await playback_checkpoint()
+            if group.media_type is MediaType.MOVIE:
+                await _delete_movie_file(
+                    group,
+                    f,
+                    kept,
+                    approved_by=approved_by,
+                    mappings=mappings,
+                    fallback_enabled=fallback_enabled,
+                )
+            else:
+                await _delete_episode_file(
+                    group,
+                    f,
+                    kept,
+                    approved_by=approved_by,
+                    mappings=mappings,
+                    fallback_enabled=fallback_enabled,
+                )
+        except PlaybackDeferred as exc:
+            exc.freed_bytes = freed
+            raise
         freed += f.size
     return freed
 
@@ -278,9 +312,7 @@ def _require_kept_in_arr_folder(
     arr: Service,
     config_id: int,
 ) -> None:
-    if not _kept_in_arr_folder(
-        kept, folder, mappings, arr=arr, config_id=config_id
-    ):
+    if not _kept_in_arr_folder(kept, folder, mappings, arr=arr, config_id=config_id):
         name = arr.value.capitalize()
         raise DuplicateActionError(
             f"{name} tracks this file and the kept copy is outside its folder, "
@@ -289,7 +321,7 @@ def _require_kept_in_arr_folder(
         )
 
 
-def _cleanup_sidecars(
+async def _cleanup_sidecars(
     f: DuplicateFile, kept: Sequence[DuplicateFile], mappings: list[dict[str, Any]]
 ) -> Path | None:
     """Remove subtitle/nfo leftovers after a media-server delete.
@@ -314,7 +346,11 @@ def _cleanup_sidecars(
             )
             return local
     try:
+        await playback_checkpoint(path=str(local), siblings=True)
         sibling_cleanup(local)
+        playback_step_completed("Cleaned up matching files at " + str(local))
+    except PlaybackDeferred:
+        raise
     except Exception as e:
         LOG.warning(f"sibling_cleanup failed for '{f.path}': {e}")
     return local
@@ -346,7 +382,7 @@ async def _media_server_delete(
     # manual-review check guarantees holds only this file.
     for item_id, media_id in sorted(pairs):
         await main.delete_movie_version(item_id, media_id)
-    return main_type, _cleanup_sidecars(f, kept, mappings)
+    return main_type, await _cleanup_sidecars(f, kept, mappings)
 
 
 async def _delete_movie_file(
@@ -614,7 +650,9 @@ async def _delete_episode_file(
     )
 
 
-async def delete_leftover(item: LeftoverDeleteJobItem, *, approved_by: str) -> int:
+async def _delete_leftover_impl(
+    item: LeftoverDeleteJobItem, *, approved_by: str
+) -> int:
     """Delete one upgrade leftover from disk. Returns bytes freed.
 
     Hardlinked leftovers free nothing, since another link keeps the data.
@@ -636,7 +674,9 @@ async def delete_leftover(item: LeftoverDeleteJobItem, *, approved_by: str) -> i
     st = check_before_delete(row, movie, mappings)
 
     local = Path(row.local_path)
+    await playback_checkpoint(path=str(local))
     local.unlink()
+    playback_step_completed("Removed file " + str(local))
     remove_release_folder(local.parent, [row.source_title or "", local.stem])
     freed = st.st_size if st.st_nlink <= 1 else 0
     LOG.info(f"Upgrade leftover deleted: {local} ({item.display_label})")
@@ -666,3 +706,106 @@ async def delete_leftover(item: LeftoverDeleteJobItem, *, approved_by: str) -> i
         service_config_id=row.service_config_id,
     )
     return freed
+
+
+async def delete_duplicate_files(
+    item: DuplicateDeleteJobItem,
+    *,
+    approved_by: str,
+    playback_guard: PlaybackGuard | None = None,
+) -> int:
+    async with async_db() as db:
+        guard = playback_guard or await PlaybackGuard.load(db)
+        group, selected = await plan_duplicate_delete(
+            db,
+            media_type=item.media_type,
+            item_id=item.item_id,
+            version_ids=item.version_ids,
+        )
+        target = PlaybackTarget()
+        if item.media_type is MediaType.MOVIE:
+            for version_id in item.version_ids:
+                candidate = ReclaimCandidate(
+                    media_type=item.media_type,
+                    movie_id=item.item_id,
+                    movie_version_id=version_id,
+                    matched_rule_ids=[],
+                    matched_criteria={},
+                    reason="Duplicate deletion",
+                )
+                target.extend(await candidate_playback_target(db, candidate))
+        else:
+            candidate = ReclaimCandidate(
+                media_type=item.media_type,
+                series_id=group.series_id,
+                season_id=group.season_id,
+                episode_id=item.item_id,
+                matched_rule_ids=[],
+                matched_criteria={},
+                reason="Duplicate deletion",
+            )
+            target = await candidate_playback_target(db, candidate)
+            # Only the selected physical versions are removed, not every file of the episode.
+            from backend.database.models import EpisodeVersion
+            from backend.services.media_identity import load_media_identity_ownership
+
+            ownership = await load_media_identity_ownership(db)
+            main = ownership.main_config_id
+            rows = (
+                await db.scalars(
+                    select(EpisodeVersion).where(
+                        EpisodeVersion.id.in_(item.version_ids)
+                    )
+                )
+            ).all()
+            target.paths = [(r.path, r.service, main, False) for r in rows if r.path]
+            target.identities = {
+                identity for identity in target.identities if identity[0] != main
+            }
+            if main is not None:
+                target.identities.update(
+                    (main, r.service_item_id, r.service_media_id) for r in rows
+                )
+    await guard.check(target)
+    token = current_playback_operation.set(PlaybackOperation(guard, target))
+    try:
+        return await _delete_duplicate_files_impl(item, approved_by=approved_by)
+    finally:
+        current_playback_operation.reset(token)
+
+
+async def delete_leftover(
+    item: LeftoverDeleteJobItem,
+    *,
+    approved_by: str,
+    playback_guard: PlaybackGuard | None = None,
+) -> int:
+    async with async_db() as db:
+        guard = playback_guard or await PlaybackGuard.load(db)
+        row = await db.get(UpgradeLeftover, item.id)
+        if row is None:
+            raise DuplicateActionError("No longer listed - rescan")
+        target = PlaybackTarget(
+            paths=[
+                (row.local_path, None, None, False),
+                (row.dropped_path, Service.RADARR, row.service_config_id, False),
+            ]
+        )
+        if row.movie_id is not None:
+            associated = await candidate_playback_target(
+                db,
+                ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=row.movie_id,
+                    matched_rule_ids=[],
+                    matched_criteria={},
+                    reason="Upgrade leftover",
+                ),
+            )
+            target.relevant_configs.update(associated.relevant_configs)
+    await guard.check(target)
+    token = current_playback_operation.set(PlaybackOperation(guard, target))
+    try:
+        return await _delete_leftover_impl(item, approved_by=approved_by)
+    finally:
+        current_playback_operation.reset(token)

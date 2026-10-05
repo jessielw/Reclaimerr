@@ -270,6 +270,15 @@
     }, 300);
   };
 
+  const playbackDeferrals = (job: BackgroundJobRecord): string[] => {
+    const result = job.payload?.result as { deferrals?: unknown } | undefined;
+    return Array.isArray(result?.deferrals)
+      ? result.deferrals.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [];
+  };
+
   const candidatePayload = (
     job: BackgroundJobRecord,
   ): CandidateFileOpJobPayload | null => {
@@ -321,6 +330,8 @@
   const activityOperationLabel = (job: BackgroundJobRecord): string | null => {
     const payload = candidatePayload(job);
     if (!payload) return null;
+    if (payload.result?.deferred && !payload.result.succeeded)
+      return "deferred";
     return payload.operation === "move" ? "moved" : "deleted";
   };
 
@@ -344,6 +355,11 @@
         : `${total} items are being ${pastTense}`;
     }
     if (job.status === BackgroundJobStatus.Completed) {
+      if (payload.result?.deferred) {
+        return primaryLabel && total === 1
+          ? `${primaryLabel}: ${operation} deferred`
+          : `${payload.result.succeeded} ${pastTense}, ${payload.result.deferred} deferred${payload.result.failed ? `, ${payload.result.failed} failed` : ""}`;
+      }
       return primaryLabel && total === 1
         ? `${primaryLabel} was ${pastTense}`
         : `${total} items were ${pastTense}`;
@@ -379,12 +395,12 @@
       progress.total_items > 0
     ) {
       pieces.push(
-        `${progress.completed_items} of ${progress.total_items} complete${progress.failed_items ? `, ${progress.failed_items} failed` : ""}`,
+        `${progress.completed_items} of ${progress.total_items} complete${progress.failed_items ? `, ${progress.failed_items} failed` : ""}${progress.deferred_items ? `, ${progress.deferred_items} deferred` : ""}`,
       );
     }
     if (result && job.status === BackgroundJobStatus.Completed) {
       pieces.push(
-        `${result.succeeded} succeeded${result.failed ? `, ${result.failed} failed` : ""}`,
+        `${result.succeeded} succeeded${result.failed ? `, ${result.failed} failed` : ""}${result.deferred ? `, ${result.deferred} deferred` : ""}`,
       );
     }
     return pieces.join(" · ");
@@ -402,7 +418,7 @@
   const progressSummary = (job: BackgroundJobRecord): string | null => {
     const progress = candidateProgress(job);
     if (!progress) return null;
-    const summary = `${progress.completed_items} / ${progress.total_items} complete`;
+    const summary = `${progress.completed_items} / ${progress.total_items} complete${progress.deferred_items ? ` ? ${progress.deferred_items} deferred` : ""}`;
     return progress.failed_items
       ? `${summary} · ${progress.failed_items} failed`
       : summary;
@@ -710,6 +726,15 @@
                             >
                           {/if}
                         </div>
+                      {/if}
+                      {#if playbackDeferrals(job).length > 0}
+                        {#each playbackDeferrals(job) as reason}
+                          <p
+                            class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm"
+                          >
+                            {String(reason)}
+                          </p>
+                        {/each}
                       {/if}
                       {#if job.error_message}
                         <p

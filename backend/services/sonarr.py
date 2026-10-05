@@ -17,9 +17,15 @@ from tenacity import (
 
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
+from backend.enums import Service
 from backend.models.media import ArrQualityProfile, ArrTag
 from backend.models.services.health import HealthResult
 from backend.models.services.sonarr import SonarrSeason, SonarrSeries
+from backend.services.playback_guard import (
+    guard_arr_removal,
+    playback_checkpoint,
+    playback_step_completed,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -168,6 +174,8 @@ class SonarrClient:
         Returns:
             Tuple of (status_code, response_data)
         """
+        if method.upper() != "GET":
+            await playback_checkpoint()
         url = f"{self.base_url}/api/v3/{endpoint}"
         response = await self.session.request(method, url, **kwargs)
         try:
@@ -189,6 +197,12 @@ class SonarrClient:
         if not status_code:
             raise ValueError("Status code should not be None")
 
+        if method.upper() != "GET":
+            playback_step_completed(
+                "Sonarr deletion completed"
+                if method.upper() == "DELETE"
+                else "Sonarr update completed"
+            )
         if response.content:
             return status_code, response.json()
         return status_code, None
@@ -423,6 +437,8 @@ class SonarrClient:
             delete_files: Whether to delete series files from disk
             add_import_exclusion: Whether to add to import exclusion list
         """
+        if delete_files:
+            await guard_arr_removal(self, Service.SONARR, [series_id])
         params = {
             "deleteFiles": str(delete_files).lower(),
             "addImportListExclusion": str(add_import_exclusion).lower(),
@@ -446,6 +462,8 @@ class SonarrClient:
         add_import_exclusion: bool = False,
     ) -> None:
         """Delete multiple series at once."""
+        if delete_files:
+            await guard_arr_removal(self, Service.SONARR, series_ids)
         status_code, _ = await self._make_request(
             "DELETE",
             "series/editor",
@@ -691,6 +709,7 @@ class SonarrClient:
         if not episode_file_ids:
             return
 
+        await guard_arr_removal(self, Service.SONARR, episode_file_ids, files=True)
         # delete the episode files in bulk
         status_code, _ = await self._make_request(
             "DELETE",
@@ -816,6 +835,7 @@ class SonarrClient:
         Args:
             episode_file_id: Sonarr episode file ID
         """
+        await guard_arr_removal(self, Service.SONARR, [episode_file_id], files=True)
         status_code, _ = await self._make_request(
             "DELETE",
             f"episodefile/{episode_file_id}",

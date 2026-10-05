@@ -52,6 +52,8 @@
     failed?: number;
     freed_bytes?: number;
     errors?: string[];
+    deferred?: number;
+    deferrals?: string[];
   }
 
   const CRITERION_LABELS: Record<string, string> = {
@@ -341,6 +343,11 @@
     if ((result.succeeded ?? 0) > 0) {
       toast.success(
         `Cleaned up ${result.succeeded} item${result.succeeded === 1 ? "" : "s"}, freed ${formatFileSize(result.freed_bytes ?? 0)}.`,
+      );
+    }
+    if ((result.deferred ?? 0) > 0) {
+      toast.info(
+        `${result.deferred} deferred by playback protection. ${(result.deferrals ?? []).slice(0, 3).join("\n")}`,
       );
     }
     if ((result.failed ?? 0) > 0) {

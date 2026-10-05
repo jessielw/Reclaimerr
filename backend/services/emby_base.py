@@ -30,6 +30,7 @@ from backend.core.utils.misc import as_float, as_int, normalize_name_list
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.core.utils.resolution import guesstimate_resolution
 from backend.enums import LeavingSoonCollectionSort, MediaType, Service
+from backend.models.live_playback import PlaybackSnapshot
 from backend.models.media import (
     AggregatedEpisodeData,
     AggregatedMovieData,
@@ -48,6 +49,11 @@ from backend.models.services.emby_base import (
     EmbyUserDataBase,
 )
 from backend.models.services.health import HealthResult
+from backend.services.live_sessions import emby_sessions, resolve_session_paths
+from backend.services.playback_guard import (
+    guard_native_removal,
+    playback_step_completed,
+)
 
 RawSQL: TypeAlias = str
 JsonDict: TypeAlias = dict[str, Any]
@@ -172,6 +178,14 @@ class EmbyServiceBase:
         resp: JsonPayload = response.json()
         return resp
 
+    async def get_live_sessions(self) -> PlaybackSnapshot:
+        """Fetch live playback under the guard's total 10-second timeout."""
+        response = await self.session.get(f"{self.service_url}/Sessions", timeout=10)
+        response.raise_for_status()
+        return await resolve_session_paths(
+            self, self.service_type, emby_sessions(response.json())
+        )
+
     async def health(self) -> HealthResult:
         """Check server health and API key, reporting why it failed."""
         try:
@@ -190,9 +204,11 @@ class EmbyServiceBase:
         Args:
             item_id: Emby/Jellyfin item ID
         """
+        await guard_native_removal(self, self.service_type, item_id)
         try:
             response = await self.session.delete(f"{self.service_url}/Items/{item_id}")
             response.raise_for_status()
+            playback_step_completed("Media-server deletion completed")
             LOG.debug(f"Deleted {self.service_type} item {item_id}")
         except Exception as e:
             raise ValueError(
@@ -208,6 +224,7 @@ class EmbyServiceBase:
         Emby/Jellyfin libraries represented as separate items per version can delete
         a single version by deleting that specific item id.
         """
+        await guard_native_removal(self, self.service_type, item_id)
         await self.delete_item(item_id)
 
     async def sync_leaving_soon_collections(

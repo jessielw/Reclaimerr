@@ -370,6 +370,9 @@ class GeneralSettings(Base):
     )
 
     # deletion routing
+    active_playback_protection_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True
+    )
     media_server_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_arr_delete_behavior: Mapped[str] = mapped_column(
         String(32), default="unmonitor"
@@ -1876,6 +1879,10 @@ class ReclaimCandidate(Base):
         DateTime, default=None
     )
     last_delete_error: Mapped[str | None] = mapped_column(Text, default=None)
+    playback_deferral: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    delete_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("delete_requests.id", ondelete="SET NULL"), default=None, index=True
+    )
 
     # timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -2121,6 +2128,7 @@ class DeleteRequest(Base):
     admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     execution_error: Mapped[str | None] = mapped_column(Text, default=None)
+    playback_deferral: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False

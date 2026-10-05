@@ -16,9 +16,15 @@ from tenacity import (
 
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
+from backend.enums import Service
 from backend.models.media import ArrQualityProfile, ArrTag
 from backend.models.services.health import HealthResult
 from backend.models.services.radarr import RadarrMovie
+from backend.services.playback_guard import (
+    guard_arr_removal,
+    playback_checkpoint,
+    playback_step_completed,
+)
 
 
 def _as_bool(value: object, default: bool = False) -> bool:
@@ -150,6 +156,8 @@ class RadarrClient:
         Returns:
             Tuple of (status_code, response_data)
         """
+        if method.upper() != "GET":
+            await playback_checkpoint()
         url = f"{self.base_url}/api/v3/{endpoint}"
         response = await self.session.request(method, url, **kwargs)
         try:
@@ -171,6 +179,12 @@ class RadarrClient:
         if not status_code:
             raise ValueError("Status code should not be None")
 
+        if method.upper() != "GET":
+            playback_step_completed(
+                "Radarr deletion completed"
+                if method.upper() == "DELETE"
+                else "Radarr update completed"
+            )
         if response.content:
             return status_code, response.json()
         return status_code, None
@@ -473,6 +487,8 @@ class RadarrClient:
         add_import_exclusion: bool = False,
     ) -> None:
         """Delete multiple movies at once."""
+        if delete_files:
+            await guard_arr_removal(self, Service.RADARR, movie_ids)
         status_code, _ = await self._make_request(
             "DELETE",
             "movie/editor",
@@ -559,6 +575,7 @@ class RadarrClient:
         qualities under one Radarr entry can give up one of them while Radarr
         keeps the entry and its remaining file.
         """
+        await guard_arr_removal(self, Service.RADARR, movie_file_ids, files=True)
         if not movie_file_ids:
             return
         status_code, _ = await self._make_request(

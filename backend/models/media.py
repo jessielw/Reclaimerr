@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -788,6 +788,7 @@ class CandidateEntry(CandidateEntryBase):
     delete_attempts: int = 0
     last_delete_attempt_at: str | None = None
     last_delete_error: str | None = None
+    playback_deferral: dict[str, Any] | None = None
 
 
 class RulePreviewEntry(CandidateEntryBase):
