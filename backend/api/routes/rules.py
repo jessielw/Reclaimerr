@@ -86,6 +86,7 @@ from backend.models.rules import (
     ValidateRegexResponse,
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
+from backend.services.rule_presets import RulePreset, rule_presets
 from backend.services.seerr_cache import seerr_snapshot_cache
 from backend.tasks.cleanup import (
     collect_rule_preview_matches_with_metadata,
@@ -1241,6 +1242,14 @@ async def get_media_server_collections(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.get("/rules/presets", response_model=list[RulePreset])
+async def get_rule_presets(
+    _admin: Annotated[User, Depends(require_admin)],
+) -> list[RulePreset]:
+    """Read the bundled catalog without saving a rule or scheduling work."""
+    return rule_presets()
 
 
 @router.get("/rules", response_model=list[CleanupRuleResponse])

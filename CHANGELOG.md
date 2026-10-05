@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Eight bundled rule presets, including favorites/watchlist protection, finished ended shows, and watched Seerr requests, with required setup, editable unsaved drafts, preview, and disabled defaults.
 - Active-playback protection for Plex, Jellyfin, and Emby, enabled by default for deletions, moves, duplicates, and upgrade leftovers. Deferred items retain their deadlines, and approved deletion requests can be retried explicitly.
 - Sonarr season rules can now unmonitor and delete or move files, enabling new-season monitoring only when the latest known regular season is removed.
 

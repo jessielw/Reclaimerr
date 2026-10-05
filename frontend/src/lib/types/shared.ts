@@ -539,6 +539,20 @@ export interface ReclaimRule {
   updated_at: string;
 }
 
+export type RuleDraft = Omit<ReclaimRule, "id" | "created_at" | "updated_at">;
+
+export interface RulePreset {
+  id: string;
+  version: number;
+  title: string;
+  description: string;
+  prerequisites: string[];
+  required_services: ("sonarr" | "seerr")[];
+  target_scopes: NonNullable<RuleDraft["target_scope"]>[];
+  required_inputs: ("library.id" | "playback.fully_watched_usernames")[];
+  rule: RuleDraft;
+}
+
 export type RuleGroupOperator = "and" | "or";
 export type RuleConditionOperator =
   | "equals"
