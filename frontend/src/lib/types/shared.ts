@@ -1014,6 +1014,7 @@ export interface DuplicateFile {
 }
 
 export interface DuplicateGroup {
+  fully_protected: boolean;
   key: string;
   media_type: MediaType;
   item_id: number;
@@ -1037,6 +1038,7 @@ export interface PaginatedDuplicatesResponse extends PaginatedResponse<Duplicate
 }
 
 export interface UpgradeLeftover {
+  protected: boolean;
   id: number;
   movie_id: number | null;
   title: string;

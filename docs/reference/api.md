@@ -84,9 +84,11 @@ Media lists support title search, canonical provider IDs, status, pagination, so
 - `POST /api/v1/protections`
 - `DELETE /api/v1/protections/{protection_id}`
 
-Protections can target a movie, movie version, series, season, or episode. The root media item may be selected by its Reclaimerr ID or TMDB ID. Omitting `expires_at` creates a permanent protection; providing a future timestamp creates a temporary one.
+Protections can target a movie, movie version, series, season, or episode. Select a synced root title using exactly one of `media_id` (Reclaimerr), `tmdb_id`, `imdb_id` (for example, `tt0137523`), `tvdb_id` (series only, a numeric string), or `anilist_id`. The provider ID must already exist in the synced metadata. Ambiguous provider IDs return HTTP 409; use TMDB or Reclaimerr ID to select the intended title. Omitting `expires_at` creates a permanent protection; providing a future timestamp creates a temporary one.
 
 `POST /api/v1/protections` reuses an active protection whose scope already covers the target rather than creating a second one, and reports `created: false` when it does. A whole-movie protection covers every version of that movie, so protecting one version of an already-protected movie returns the existing protection. An existing protection is only ever widened -- permanent wins, and an expiry only moves later.
+
+Omit `movie_version_id`, `season_id`, and `episode_id` to protect the entire title across all libraries, including future files and episodes. Whole-title protection survives file replacement, hides fully protected duplicates by default, and blocks cleanup of associated upgrade leftovers.
 
 A protection scoped to a movie version is removed when that file leaves the library, since it no longer protects anything. Replacing a file on disk gives it a new version ID, so re-protect the replacement if you want it kept.
 

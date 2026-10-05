@@ -301,7 +301,7 @@ def _format_cleanup_candidate_line(
                 if str(reason).strip()
             ]
             if tokens:
-                line += f" — {', '.join(tokens)}"
+                line += f" - {', '.join(tokens)}"
     return line
 
 

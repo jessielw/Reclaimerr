@@ -80,6 +80,7 @@ from backend.services.radarr import RadarrClient
 from backend.services.sonarr import SonarrClient
 from backend.services.upgrade_leftovers import (
     check_before_delete,
+    load_leftovers,
     remove_release_folder,
 )
 from backend.tasks.cleanup import (
@@ -675,6 +676,12 @@ async def _delete_leftover_impl(
 
     local = Path(row.local_path)
     await playback_checkpoint(path=str(local))
+    async with async_db() as db:
+        views = await load_leftovers(db, ids=[item.id])
+        if not views or views[0].protected:
+            raise DuplicateActionError(
+                "Title is protected or leftover no longer exists"
+            )
     local.unlink()
     playback_step_completed("Removed file " + str(local))
     remove_release_folder(local.parent, [row.source_title or "", local.stem])

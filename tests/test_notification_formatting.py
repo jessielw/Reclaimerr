@@ -214,7 +214,7 @@ def test_cleanup_body_appends_reasons_when_requested() -> None:
             }
         },
     )
-    assert "— Watched 90+ days ago, Not requested" in body
+    assert "- Watched 90+ days ago, Not requested" in body
 
 
 def test_cleanup_body_reports_the_remainder() -> None:

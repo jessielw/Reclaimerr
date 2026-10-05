@@ -188,7 +188,7 @@
   };
 
   const canDelete = (item: UpgradeLeftover) =>
-    canManage && !item.manual_reason && !item.ignored;
+    canManage && !item.manual_reason && !item.ignored && !item.protected;
 
   const freedBy = (list: UpgradeLeftover[]) =>
     list.reduce((sum, i) => sum + (i.frees_space ? i.size : 0), 0);
@@ -501,7 +501,7 @@
     </label>
     <label class="flex items-center gap-2 cursor-pointer">
       <Switch bind:checked={includeIgnored} />
-      Show ignored
+      Show ignored and protected
     </label>
   </div>
 
@@ -616,6 +616,11 @@
                   </span>
                 {/if}
               </div>
+              {#if item.protected}
+                <a href="#/protected" class="text-sm underline"
+                  >Title protected - manage protection</a
+                >
+              {/if}
               {#if item.manual_reason}
                 <p
                   class="mt-1.5 flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400"

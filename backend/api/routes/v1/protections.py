@@ -17,6 +17,7 @@ from backend.core.api_tokens import (
     ApiPrincipal,
     require_api_scope,
 )
+from backend.core.media_locator import resolve_media_locator
 from backend.core.protection_scope import (
     active_protection_clause,
     movie_scope_overlap_clause,
@@ -128,16 +129,9 @@ async def _protection_response(
 async def _resolve_target(
     db: AsyncSession, request: ProtectionCreateRequest
 ) -> tuple[Movie | Series, MovieVersion | None, Season | None, Episode | None]:
-    if request.media_type is MediaType.MOVIE:
-        movie = (
-            await db.get(Movie, request.media_id)
-            if request.media_id is not None
-            else (
-                await db.execute(select(Movie).where(Movie.tmdb_id == request.tmdb_id))
-            ).scalar_one_or_none()
-        )
-        if movie is None or movie.removed_at is not None:
-            raise HTTPException(status_code=404, detail="Movie not found")
+    media = await resolve_media_locator(db, request)
+    if isinstance(media, Movie):
+        movie = media
         version = (
             await db.get(MovieVersion, request.movie_version_id)
             if request.movie_version_id is not None
@@ -151,15 +145,7 @@ async def _resolve_target(
             raise HTTPException(status_code=404, detail="Movie version not found")
         return movie, version, None, None
 
-    series = (
-        await db.get(Series, request.media_id)
-        if request.media_id is not None
-        else (
-            await db.execute(select(Series).where(Series.tmdb_id == request.tmdb_id))
-        ).scalar_one_or_none()
-    )
-    if series is None or series.removed_at is not None:
-        raise HTTPException(status_code=404, detail="Series not found")
+    series = media
     season = await db.get(Season, request.season_id) if request.season_id else None
     if request.season_id is not None and season is None:
         raise HTTPException(status_code=404, detail="Season not found")

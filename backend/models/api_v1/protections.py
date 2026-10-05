@@ -6,12 +6,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from backend.enums import MediaType
+from backend.models.media_locator import MediaLocator
 
 
-class ProtectionCreateRequest(BaseModel):
-    media_type: MediaType
-    media_id: int | None = Field(default=None, ge=1)
-    tmdb_id: int | None = Field(default=None, ge=1)
+class ProtectionCreateRequest(MediaLocator):
     movie_version_id: int | None = Field(default=None, ge=1)
     season_id: int | None = Field(default=None, ge=1)
     episode_id: int | None = Field(default=None, ge=1)
@@ -20,8 +18,6 @@ class ProtectionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_locator(self) -> ProtectionCreateRequest:
-        if (self.media_id is None) == (self.tmdb_id is None):
-            raise ValueError("Provide exactly one of media_id or tmdb_id")
         if self.media_type is MediaType.MOVIE and (
             self.season_id is not None or self.episode_id is not None
         ):

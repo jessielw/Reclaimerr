@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from backend.enums import MediaType
+from backend.models.media_locator import MediaLocator
 
 
 class ProtectedEntryResponse(BaseModel):
@@ -61,9 +62,7 @@ class ProtectedEntryResponse(BaseModel):
     updated_at: str
 
 
-class CreateProtectedEntryRequest(BaseModel):
-    media_type: MediaType
-    media_id: int
+class CreateProtectedEntryRequest(MediaLocator):
     movie_version_id: int | None = None
     season_id: int | None = None
     episode_id: int | None = None

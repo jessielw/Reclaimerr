@@ -42,6 +42,7 @@ class DuplicateGroupResponse(BaseModel):
     manual_reason: str | None
     cross_library: bool
     ignored: bool
+    fully_protected: bool = False
     reclaimable_size: int
 
 
@@ -86,6 +87,7 @@ class DuplicateSettings(BaseModel):
 
 
 class UpgradeLeftoverResponse(BaseModel):
+    protected: bool = False
     id: int
     movie_id: int | None
     title: str

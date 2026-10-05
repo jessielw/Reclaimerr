@@ -80,10 +80,8 @@
     mediaType === MediaType.Series && seasonId == null && episodeId == null,
   );
 
-  // show version picker for movies with 2+ versions
-  const showVersionPicker = $derived(
-    mediaType === MediaType.Movie && (media?.versions?.length ?? 0) >= 2,
-  );
+  // Always offer title protection, including movies with a single version.
+  const showVersionPicker = $derived(mediaType === MediaType.Movie);
 
   // form state
   let reason = $state("");
@@ -117,9 +115,7 @@
       versionPickerExpanded = true;
       seasons = [];
       episodes = [];
-      // auto-pick when there's exactly one version; otherwise default to whole-movie (null)
-      const vers = media?.versions ?? [];
-      selectedVersionId = vers.length === 1 ? vers[0].id : null;
+      selectedVersionId = null;
       if (showScopePicker && media) {
         fetchSeasons(media.id);
         fetchEpisodes(media.id);
@@ -445,7 +441,7 @@
           </div>
         </div>
 
-        <!-- version picker (movie with 2+ versions) -->
+        <!-- title or individual file protection -->
         {#if showVersionPicker}
           <div class="border border-border rounded-md overflow-hidden">
             <button
@@ -455,7 +451,7 @@
                 text-sm font-medium text-foreground"
               onclick={() => (versionPickerExpanded = !versionPickerExpanded)}
             >
-              <span>Version</span>
+              <span>Protection scope</span>
               <ChevronRight
                 class="size-4 text-muted-foreground transition-transform duration-200
                   {versionPickerExpanded ? 'rotate-90' : ''}"
@@ -477,10 +473,14 @@
                     class="accent-primary cursor-pointer"
                   />
                   <span class="text-sm text-foreground font-medium flex-1"
-                    >Whole Movie</span
+                    >Entire title - all libraries and versions</span
                   >
                 </label>
 
+                <p class="px-1 pb-2 text-xs text-muted-foreground">
+                  Includes future versions and replacement files, regardless of
+                  their fingerprint.
+                </p>
                 <div class="border-t border-border pt-1 space-y-0.5">
                   {#each media.versions ?? [] as version (version.id)}
                     <label

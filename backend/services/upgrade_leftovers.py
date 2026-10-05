@@ -28,6 +28,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
+from backend.core.protection_scope import active_protection_clause
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import (
     mapped_path_variants,
@@ -40,8 +41,10 @@ from backend.database.models import (
     GeneralSettings,
     Movie,
     MovieArrRef,
+    ProtectedMedia,
     UpgradeLeftover,
 )
+from backend.enums import MediaType
 from backend.models.services.radarr import RadarrMovie
 from backend.services.duplicates import DuplicateActionError
 from backend.services.radarr import RadarrClient
@@ -454,6 +457,7 @@ async def _finish_scan(config_ids: list[int], unmapped: list[str]) -> None:
 class LeftoverView:
     row: UpgradeLeftover
     poster_url: str | None
+    protected: bool = False
 
     @property
     def frees_space(self) -> bool:
@@ -461,7 +465,11 @@ class LeftoverView:
 
     @property
     def actionable(self) -> bool:
-        return self.row.manual_reason is None and not self.row.ignored
+        return (
+            self.row.manual_reason is None
+            and not self.row.ignored
+            and not self.protected
+        )
 
     @property
     def reclaimable_size(self) -> int:
@@ -475,7 +483,17 @@ async def load_leftovers(
     ids: Sequence[int] | None = None,
 ) -> list[LeftoverView]:
     """Stored leftovers sorted by title, then oldest import first."""
-    query = select(UpgradeLeftover, Movie.poster_url).outerjoin(
+    protected = (
+        select(ProtectedMedia.id)
+        .where(
+            ProtectedMedia.media_type == MediaType.MOVIE,
+            ProtectedMedia.movie_id == UpgradeLeftover.movie_id,
+            ProtectedMedia.movie_version_id.is_(None),
+            active_protection_clause(datetime.now(UTC)),
+        )
+        .exists()
+    )
+    query = select(UpgradeLeftover, Movie.poster_url, protected).outerjoin(
         Movie, Movie.id == UpgradeLeftover.movie_id
     )
     search = (search or "").strip()
@@ -483,7 +501,10 @@ async def load_leftovers(
         query = query.where(UpgradeLeftover.title.ilike(f"%{search}%"))
     if ids is not None:
         query = query.where(UpgradeLeftover.id.in_(ids))
-    views = [LeftoverView(row, poster) for row, poster in (await db.execute(query))]
+    views = [
+        LeftoverView(row, poster, protected)
+        for row, poster, protected in (await db.execute(query))
+    ]
     views.sort(
         key=lambda v: (
             v.row.title.casefold(),
