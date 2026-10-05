@@ -902,6 +902,24 @@
                     <p class="text-sm text-muted-foreground">
                       {historyActorLabel(entry) ?? "Recorded reclaim activity"}
                     </p>
+                    {#if entry.attributes?.sonarr_monitor_new_seasons === "failed"}
+                      <p class="text-sm text-amber-600 dark:text-amber-400">
+                        Files removed; new-season monitoring could not be
+                        enabled.
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {entry.attributes.sonarr_monitor_new_seasons_error}
+                      </p>
+                    {:else if entry.attributes?.sonarr_monitor_new_seasons === "enabled"}
+                      <p class="text-sm text-muted-foreground">
+                        New-season monitoring enabled
+                      </p>
+                    {:else if entry.attributes?.sonarr_monitor_new_seasons === "skipped"}
+                      <p class="text-sm text-muted-foreground">
+                        New-season monitoring unchanged (not the latest regular
+                        season)
+                      </p>
+                    {/if}
                   </div>
                   <div class="text-sm text-muted-foreground md:text-right">
                     <p>{formatDistanceToNow(entry.created_at)}</p>

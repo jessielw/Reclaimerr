@@ -36,6 +36,7 @@ A cleanup-candidate rule chooses what its Radarr or Sonarr instance does once th
 | --- | --- |
 | Delete | The Arr entry and its files are removed |
 | Unmonitor + Delete File | Files are deleted, the Arr entry stays as unmonitored |
+| Unmonitor + Delete Files + Monitor New Seasons (only if latest season deleted) | Sonarr season rules only: unmonitor and remove the season, retaining the show; enable series and new-season monitoring when the latest known regular season is removed |
 | Unmonitor Only (Keep File) | The Arr entry is unmonitored and nothing is deleted |
 | Change Quality Profile | Nothing is removed. The Arr entry moves onto a different quality profile, optionally with a search queued |
 
@@ -45,7 +46,11 @@ An item already sitting on the target profile is cleared from the candidate list
 
 A profile change frees no space, so those candidates are left out of the reclaimable totals on the Dashboard and Storage pages. They are recorded in reclaim history as `profile_changed`.
 
-If several matched rules disagree, the most conservative action wins: Change Quality Profile, then Unmonitor Only, then Unmonitor, then Delete.
+The conditional Sonarr action counts the highest known regular season, including announced seasons without files; specials (season 0) do not qualify. Successfully moving the season has the same effect as deleting it. Older seasons leave series and new-season monitoring unchanged. Other seasons retain their monitoring flags, so enabling series monitoring also activates any other seasons already marked monitored. No search is queued.
+
+This action requires a reachable Sonarr instance and successful season unmonitoring before files are removed. If removal succeeds but enabling new-season monitoring fails, History shows a warning with Sonarr details. The completed removal is not retried; enable monitoring in Sonarr to resolve the warning. Whole-series and episode rules do not offer this action.
+
+If several matched rules disagree, the most conservative action wins: Change Quality Profile, then Unmonitor Only, then Unmonitor, then the conditional Monitor New Seasons action, then Delete. Ordinary Unmonitor takes precedence so another matched rule cannot unexpectedly enable monitoring.
 
 Cleanup-candidate rules can target one or more Radarr or Sonarr instances. Reclaimerr applies the rule's managed tag to every selected instance where the item exists and limits ARR deletion or unmonitor actions to those selections. For movie versions, the synchronized Radarr movie folder must match the media-server file path before an explicitly selected instance is used. Configure instance-scoped Path Mappings in General Settings when the services report different container path prefixes. Leaving every instance unselected preserves automatic path-based routing across all matching active instances.
 

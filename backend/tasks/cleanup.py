@@ -22,7 +22,10 @@ from sqlalchemy.orm import selectinload
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
 from backend.core.protection_scope import detach_movie_version_references
-from backend.core.rule_actions import get_arr_service_config_ids
+from backend.core.rule_actions import (
+    ARR_ACTION_MONITOR_NEW_SEASONS,
+    get_arr_service_config_ids,
+)
 from backend.core.rule_engine import (
     ARR_ID_RULE_FIELDS,
     COLLECTION_RULE_FIELDS,
@@ -190,10 +193,13 @@ ArrDeleteAction: TypeAlias = Literal[
     "unmonitor_only",
     "remove_if_empty",
     "change_quality_profile",
+    "unmonitor_delete_monitor_new_seasons",
 ]
 # actions that unmonitor the arr entry rather than deleting it outright.
 # "unmonitor_only" additionally skips touching the underlying files.
-UNMONITOR_LIKE_ARR_ACTIONS: frozenset[str] = frozenset({"unmonitor", "unmonitor_only"})
+UNMONITOR_LIKE_ARR_ACTIONS: frozenset[str] = frozenset(
+    {"unmonitor", "unmonitor_only", ARR_ACTION_MONITOR_NEW_SEASONS}
+)
 # Not a removal at all: the entry keeps its files and moves to another quality
 # profile, so it is routed away from the delete pipeline entirely.
 ARR_ACTION_CHANGE_QUALITY_PROFILE = "change_quality_profile"
@@ -271,6 +277,7 @@ def _build_reclaim_history_attributes(
     *,
     movie_version: MovieVersion | None = None,
     season: Season | None = None,
+    sonarr_monitoring: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Attributes relevant for reclaim history from the given media items."""
     resolution: str | None = None
@@ -291,12 +298,13 @@ def _build_reclaim_history_attributes(
         dolby_vision = season.has_dolby_vision
 
     if resolution is None and hdr is None and dolby_vision is None:
-        return None
+        return dict(sonarr_monitoring) if sonarr_monitoring else None
 
     return {
         "resolution": resolution,
         "hdr": hdr,
         "dolby_vision": dolby_vision,
+        **(sonarr_monitoring or {}),
     }
 
 
@@ -7394,11 +7402,9 @@ def _get_arr_action(
 ) -> ArrDeleteAction:
     """Resolve ARR behavior for a candidate.
 
-    Matched rules remain authoritative: if any matched rule requests
-    ``unmonitor_only`` we honor that first (it is the most conservative -
-    files are never touched), then ``unmonitor``, otherwise any matched rule
-    implies ``delete``. Synthetic/no-rule candidates fall back to the global
-    delete behavior.
+    Matched rules remain authoritative: profile changes and keeping files win,
+    followed by ordinary unmonitor, conditional new-season monitoring, and delete.
+    Synthetic/no-rule candidates fall back to the global delete behavior.
     """
     matched_rules = [
         (rule_id, rules[rule_id])
@@ -7415,6 +7421,8 @@ def _get_arr_action(
         resolved_action = "unmonitor_only"
     elif "unmonitor" in matched_arr_actions:
         resolved_action = "unmonitor"
+    elif ARR_ACTION_MONITOR_NEW_SEASONS in matched_arr_actions:
+        resolved_action = ARR_ACTION_MONITOR_NEW_SEASONS
     else:
         resolved_action = "delete" if matched_rule_ids else default_behavior
 
@@ -7487,9 +7495,9 @@ def _merge_arr_action(
     Precedence is strict, most conservative (files kept) to least:
     1. ``change_quality_profile`` wins - nothing is removed or unmonitored
     2. ``unmonitor_only`` wins - files are never touched
-    3. ``unmonitor`` wins over delete
-    4. explicit rule ``delete`` beats fallback ``remove_if_empty``
-    5. ``remove_if_empty`` applies only if nothing stronger exists
+    3. ``unmonitor`` wins over conditional new-season monitoring
+    4. conditional new-season monitoring wins over delete
+    5. explicit rule ``delete`` beats fallback ``remove_if_empty``
     """
     if (
         current == ARR_ACTION_CHANGE_QUALITY_PROFILE
@@ -7500,6 +7508,8 @@ def _merge_arr_action(
         return "unmonitor_only"
     if current == "unmonitor" or candidate_action == "unmonitor":
         return "unmonitor"
+    if ARR_ACTION_MONITOR_NEW_SEASONS in (current, candidate_action):
+        return ARR_ACTION_MONITOR_NEW_SEASONS
     if current == "delete" or candidate_action == "delete":
         return "delete"
     return "remove_if_empty"
@@ -8269,6 +8279,8 @@ async def _season_held_by_another_sonarr(
     refs: Sequence[SeriesArrRef],
     acted_config_id: int | None,
     season_number: int,
+    *,
+    preserve_unavailable: bool = False,
 ) -> bool:
     """True when a Sonarr instance other than the one just acted on still has files.
 
@@ -8290,6 +8302,8 @@ async def _season_held_by_another_sonarr(
             continue
         client = service_manager.get_sonarr(ref.service_config_id)
         if client is None:
+            if preserve_unavailable:
+                return True
             continue
         try:
             episodes = await client.get_episodes(ref.arr_series_id, season_number)
@@ -8351,6 +8365,71 @@ async def _best_effort_radarr_rescan(
             )
         except Exception as e:
             LOG.warning(f"{context}: Radarr refresh failed for config {config_id}: {e}")
+
+
+async def _prepare_new_season_move(
+    candidate: ReclaimCandidate,
+    rules: dict[int, ReclaimRule],
+    season_number: int,
+    source_path: Path,
+    path_mappings: Sequence[Mapping[str, Any]] | None,
+) -> tuple[SonarrClient, SeriesArrRef, list[SeriesArrRef]]:
+    """Prove which Sonarr owns the local files before a season move starts."""
+    async with async_db() as db:
+        refs = list(
+            (
+                await db.execute(
+                    select(SeriesArrRef).where(
+                        SeriesArrRef.series_id == candidate.series_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    ordered, proven = _order_series_arr_refs(
+        refs,
+        [str(source_path)],
+        path_mappings,
+        media_service_type=_main_media_server_type(),
+    )
+    allowed = _candidate_arr_config_ids(candidate, rules, "sonarr")
+    matching = [
+        ref
+        for ref in ordered
+        if ref.id in proven and (allowed is None or ref.service_config_id in allowed)
+    ]
+    if not matching:
+        raise ValueError(
+            "Could not match the season move source to a selected Sonarr instance; check path mappings"
+        )
+    ref = matching[0]
+    client = service_manager.get_sonarr(ref.service_config_id)
+    if client is None or ref.arr_series_id is None:
+        raise ValueError("Sonarr is unavailable; season files left untouched")
+    await client.prepare_season_removal(ref.arr_series_id, season_number)
+    return client, ref, refs
+
+
+async def _finalize_new_season_monitoring(
+    client: SonarrClient, series_id: int, season_number: int, config_id: int | None
+) -> dict[str, str]:
+    """Record finalization separately: files have already been removed."""
+    try:
+        enabled = await client.enable_new_seasons_if_latest(series_id, season_number)
+        return {"sonarr_monitor_new_seasons": "enabled" if enabled else "skipped"}
+    except Exception as exc:
+        error = (
+            f"Sonarr config {config_id}, series {series_id}, season {season_number}: "
+            f"{summarize_error_message(str(exc))}"
+        )
+        LOG.warning(
+            f"Files removed; new-season monitoring could not be enabled: {error}"
+        )
+        return {
+            "sonarr_monitor_new_seasons": "failed",
+            "sonarr_monitor_new_seasons_error": error,
+        }
 
 
 async def _best_effort_sonarr_refresh(
@@ -10672,6 +10751,9 @@ async def _delete_season_candidates(
             candidate, season_rules_by_id, default_arr_delete_behavior
         )
 
+        monitor_new_seasons = cand_arr_action == ARR_ACTION_MONITOR_NEW_SEASONS
+        monitoring_attributes: dict[str, str] = {}
+
         # try Sonarr first, preferring refs whose Sonarr path matches the media path
         sonarr_ref_id: int | None = None
         sonarr_ref_config_id: int | None = None
@@ -10713,11 +10795,13 @@ async def _delete_season_candidates(
                 "is removed",
             )
             continue
+        if monitor_new_seasons and proven_ref_ids:
+            ordered_refs = [ref for ref in ordered_refs if ref.id in proven_ref_ids]
         last_sonarr_error: str | None = None
 
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
-            if ref_client is None:
+            if ref_client is None and not monitor_new_seasons:
                 ref_client = service_manager.sonarr
             if ref_client is None or ref.arr_series_id is None:
                 continue
@@ -10737,7 +10821,8 @@ async def _delete_season_candidates(
                 ep.get("episodeFileId")
                 for ep in sonarr_episodes
                 if ep.get("seasonNumber") == season_number
-                and ep.get("episodeFileId") is not None
+                and isinstance(file_id := ep.get("episodeFileId"), int)
+                and file_id > 0
             ]
             if not season_file_ids:
                 last_sonarr_error = (
@@ -10751,9 +10836,14 @@ async def _delete_season_candidates(
                 continue
 
             try:
-                await ref_client.update_season_monitoring(
-                    ref.arr_series_id, season_number, monitored=False
-                )
+                if monitor_new_seasons:
+                    await ref_client.prepare_season_removal(
+                        ref.arr_series_id, season_number
+                    )
+                else:
+                    await ref_client.update_season_monitoring(
+                        ref.arr_series_id, season_number, monitored=False
+                    )
                 LOG.debug(
                     f"Unmonitored '{series_obj.title}' S{season_number:02d} in Sonarr"
                 )
@@ -10832,7 +10922,8 @@ async def _delete_season_candidates(
                         f"S{season_number:02d}: {e} - will attempt media server fallback"
                     )
 
-            if deleted_via_sonarr:
+            if deleted_via_sonarr or monitor_new_seasons:
+                # Once removal starts, never switch to a different physical copy.
                 break
 
         # A surviving copy in another Sonarr changes what is safe to do next:
@@ -10841,7 +10932,10 @@ async def _delete_season_candidates(
         season_kept_by_other_copy = False
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
             season_kept_by_other_copy = await _season_held_by_another_sonarr(
-                refs, sonarr_ref_config_id, season_number
+                refs,
+                sonarr_ref_config_id,
+                season_number,
+                preserve_unavailable=monitor_new_seasons,
             )
             if season_kept_by_other_copy:
                 LOG.info(
@@ -10901,6 +10995,13 @@ async def _delete_season_candidates(
 
         # fall back to media server if Sonarr failed or unavailable
         if not deleted_via_sonarr:
+            if monitor_new_seasons and sonarr_client is None:
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    last_sonarr_error
+                    or "No Sonarr instance could prepare this season for removal; files left untouched",
+                )
+                continue
             if cand_arr_action == "unmonitor_only":
                 # never delete files for "unmonitor_only" - no Sonarr instance
                 # could unmonitor this season, so there's nothing safe to do.
@@ -10935,6 +11036,14 @@ async def _delete_season_candidates(
             season_service_id = _season_media_server_id(
                 season, _main_media_server_type()
             )
+            if monitor_new_seasons and await _season_held_by_another_sonarr(
+                refs, sonarr_ref_config_id, season_number, preserve_unavailable=True
+            ):
+                await _mark_candidate_delete_failure(
+                    candidate.id,
+                    "Sonarr removal failed; media-server fallback would risk another season copy",
+                )
+                continue
             if media_service and season_service_id:
                 try:
                     await media_service.delete_item(season_service_id)
@@ -10962,6 +11071,15 @@ async def _delete_season_candidates(
                 )
                 continue
 
+        if (
+            monitor_new_seasons
+            and sonarr_client is not None
+            and sonarr_ref_id is not None
+        ):
+            monitoring_attributes = await _finalize_new_season_monitoring(
+                sonarr_client, sonarr_ref_id, season_number, sonarr_ref_config_id
+            )
+
         # remove candidate and update series size in DB
         async with async_db() as db:
             if cand_arr_action == "unmonitor_only":
@@ -10982,7 +11100,9 @@ async def _delete_season_candidates(
                     await db.delete(cand)
 
                 # reduce series stored size by the season's size
-                if season.size:
+                if season.size and not (
+                    monitor_new_seasons and season_kept_by_other_copy
+                ):
                     series_result = await db.execute(
                         select(Series).where(Series.id == candidate.series_id)
                     )
@@ -11050,11 +11170,13 @@ async def _delete_season_candidates(
                     tmdb_id=series_obj.tmdb_id,
                     name=f"{series_obj.title} S{season_number:02d}",
                     size=season.size,
-                    attributes=_build_reclaim_history_attributes(season=season),
+                    attributes=_build_reclaim_history_attributes(
+                        season=season, sonarr_monitoring=monitoring_attributes
+                    ),
                     action="unmonitored_only"
                     if cand_arr_action == "unmonitor_only"
                     else "unmonitored"
-                    if cand_arr_action == "unmonitor"
+                    if cand_arr_action in {"unmonitor", ARR_ACTION_MONITOR_NEW_SEASONS}
                     else "deleted",
                 )
             )
@@ -11066,7 +11188,7 @@ async def _delete_season_candidates(
             action="unmonitored_only"
             if cand_arr_action == "unmonitor_only"
             else "unmonitored"
-            if cand_arr_action == "unmonitor"
+            if cand_arr_action in {"unmonitor", ARR_ACTION_MONITOR_NEW_SEASONS}
             else "deleted",
             media_type=MediaType.SERIES,
             title=series_obj.title,
@@ -12793,6 +12915,12 @@ async def _move_specific_candidates_impl(
                 )
 
         for candidate in series_candidates:
+            monitoring_attributes: dict[str, str] = {}
+            new_season_move: (
+                tuple[SonarrClient, SeriesArrRef, list[SeriesArrRef]] | None
+            ) = None
+            season_move_source_files: list[Path] = []
+            season_kept_by_other_copy = False
             try:
                 series_obj = (
                     series_map.get(candidate.series_id) if candidate.series_id else None
@@ -12909,6 +13037,39 @@ async def _move_specific_candidates_impl(
                         failed += 1
                         continue
 
+                    if (
+                        _get_arr_action(
+                            candidate, rules_by_id, default_arr_delete_behavior
+                        )
+                        == ARR_ACTION_MONITOR_NEW_SEASONS
+                    ):
+                        try:
+                            season_move_source_files = [
+                                resolve_path(
+                                    path,
+                                    path_mappings,
+                                    service_type=series_ref.service.value,
+                                )
+                                or season_folder / Path(path).name
+                                for path in season.episode_paths or []
+                            ]
+                            if not any(
+                                path.is_file() for path in season_move_source_files
+                            ):
+                                raise ValueError(
+                                    "No season episode files found at the move source; monitoring left unchanged"
+                                )
+                            new_season_move = await _prepare_new_season_move(
+                                candidate,
+                                rules_by_id,
+                                season.season_number,
+                                season_folder,
+                                path_mappings,
+                            )
+                        except Exception as exc:
+                            await _mark_candidate_delete_failure(candidate.id, str(exc))
+                            raise
+
                     # flat series: episodes live directly in the series root with
                     # no season sub folders (move only this season's files so
                     # other seasons are left intact)
@@ -12941,6 +13102,16 @@ async def _move_specific_candidates_impl(
                     )
                     candidate_source_paths.add(local_series_path)
 
+                if new_season_move is not None and any(
+                    path.exists() for path in season_move_source_files
+                ):
+                    await _mark_candidate_delete_failure(
+                        candidate.id,
+                        "Season move was incomplete; some episode files remain at the source. New-season monitoring was not enabled",
+                    )
+                    failed += 1
+                    continue
+
                 _cleanup_moved_source_directories(
                     candidate_source_paths,
                     context="move local cleanup",
@@ -12959,6 +13130,9 @@ async def _move_specific_candidates_impl(
                             candidate, rules_by_id, "sonarr"
                         )
                         for config_id, arr_s_id, _arr_s_path in refs:
+                            if new_season_move is not None:
+                                # Prepared before moving; finalize only that physical copy below.
+                                continue
                             if config_id not in sonarr_clients or arr_s_id is None:
                                 continue
                             if (
@@ -13035,6 +13209,25 @@ async def _move_specific_candidates_impl(
                             f"fallback will be attempted: {arr_err}"
                         )
 
+                if new_season_move is not None and season is not None:
+                    prepared_client, prepared_ref, all_refs = new_season_move
+                    assert prepared_ref.arr_series_id is not None
+                    monitoring_attributes = await _finalize_new_season_monitoring(
+                        prepared_client,
+                        prepared_ref.arr_series_id,
+                        season.season_number,
+                        prepared_ref.service_config_id,
+                    )
+                    move_sonarr_refresh.setdefault(
+                        prepared_ref.service_config_id, set()
+                    ).add(prepared_ref.arr_series_id)
+                    season_kept_by_other_copy = await _season_held_by_another_sonarr(
+                        all_refs,
+                        prepared_ref.service_config_id,
+                        season.season_number,
+                        preserve_unavailable=True,
+                    )
+
                 # Remove from the media server after the local files have
                 # already been moved. This is intentionally best-effort and
                 # never falls back to the normal destructive delete path.
@@ -13042,7 +13235,9 @@ async def _move_specific_candidates_impl(
                     main_service = service_manager.main_media_server
                     main_service_type = service_manager.main_media_server_type
                     if main_service and series_ref:
-                        if is_episode and episode:
+                        if season_kept_by_other_copy:
+                            await main_service.scan_item_path(str(season_folder))
+                        elif is_episode and episode:
                             if main_service_type is Service.JELLYFIN:
                                 episode_service_id = episode.jellyfin_episode_id
                             elif main_service_type is Service.EMBY:
@@ -13138,7 +13333,12 @@ async def _move_specific_candidates_impl(
                                 select(Series).where(Series.id == candidate.series_id)
                             )
                         ).scalar_one_or_none()
-                        if series_db and series_db.size and season.size:
+                        if (
+                            series_db
+                            and series_db.size
+                            and season.size
+                            and not season_kept_by_other_copy
+                        ):
                             series_db.size = max(0, series_db.size - season.size)
 
                         season_db = (
@@ -13146,7 +13346,7 @@ async def _move_specific_candidates_impl(
                                 select(Season).where(Season.id == candidate.season_id)
                             )
                         ).scalar_one_or_none()
-                        if season_db:
+                        if season_db and not season_kept_by_other_copy:
                             await db.execute(
                                 delete(ReclaimCandidate).where(
                                     ReclaimCandidate.season_id == season_db.id
@@ -13220,7 +13420,8 @@ async def _move_specific_candidates_impl(
                             else series_ref.path,
                             size=history_size,
                             attributes=_build_reclaim_history_attributes(
-                                season=season if is_season else None
+                                season=season if is_season else None,
+                                sonarr_monitoring=monitoring_attributes,
                             ),
                             action="moved",
                             destination_path=str(dest),

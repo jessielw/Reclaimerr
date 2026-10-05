@@ -121,11 +121,13 @@
   type ArrAction =
     | "delete"
     | "unmonitor"
+    | "unmonitor_delete_monitor_new_seasons"
     | "unmonitor_only"
     | "change_quality_profile";
   const ARR_ACTIONS: ArrAction[] = [
     "delete",
     "unmonitor",
+    "unmonitor_delete_monitor_new_seasons",
     "unmonitor_only",
     "change_quality_profile",
   ];
@@ -270,6 +272,8 @@
     switch (value) {
       case "unmonitor":
         return "Unmonitor + Delete File";
+      case "unmonitor_delete_monitor_new_seasons":
+        return "Unmonitor + Delete Files + Monitor New Seasons (only if latest season deleted)";
       case "unmonitor_only":
         return "Unmonitor Only (Keep File)";
       case "change_quality_profile":
@@ -312,6 +316,12 @@
   };
 
   $effect(() => {
+    if (
+      targetScope !== "season" &&
+      sonarrArrAction === "unmonitor_delete_monitor_new_seasons"
+    ) {
+      sonarrArrAction = "unmonitor";
+    }
     // the option stops being valid when the scope or instance choice changes
     if (arrAction === "change_quality_profile" && !profileChangeSelectable) {
       setArrAction("delete");
@@ -1439,15 +1449,25 @@
               }}
             >
               <Select.Trigger
-                class="w-full bg-card text-card-foreground cursor-pointer"
+                class="w-full min-h-9 data-[size=default]:h-auto whitespace-normal text-left bg-card text-card-foreground cursor-pointer"
               >
                 {arrActionLabel(arrAction)}
               </Select.Trigger>
-              <Select.Content>
+              <Select.Content class="max-w-[calc(100vw-2rem)]">
                 <Select.Item value="delete" label="Delete">Delete</Select.Item>
                 <Select.Item value="unmonitor" label="Unmonitor + Delete File">
                   Unmonitor + Delete File
                 </Select.Item>
+                {#if targetScope === "season"}
+                  <Select.Item
+                    value="unmonitor_delete_monitor_new_seasons"
+                    label={arrActionLabel(
+                      "unmonitor_delete_monitor_new_seasons",
+                    )}
+                  >
+                    {arrActionLabel("unmonitor_delete_monitor_new_seasons")}
+                  </Select.Item>
+                {/if}
                 <Select.Item
                   value="unmonitor_only"
                   label="Unmonitor Only (Keep File)"
@@ -1542,6 +1562,14 @@
             <p class="text-xs text-muted-foreground">
               Files are deleted from disk but the entry remains in {selectedArrName}
               as unmonitored. Requires filesystem access on the Reclaimerr host.
+            </p>
+          {:else if arrAction === "unmonitor_delete_monitor_new_seasons"}
+            <p class="text-xs text-muted-foreground">
+              Unmonitors the removed season and keeps the show in Sonarr. When
+              the latest known regular season is deleted or moved, enables
+              series monitoring and Monitor New Seasons. Announced seasons
+              count; specials do not. Other seasons keep their monitoring
+              settings. Requires an available Sonarr instance.
             </p>
           {:else if arrAction === "unmonitor_only"}
             <p class="text-xs text-muted-foreground">

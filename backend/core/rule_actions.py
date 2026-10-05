@@ -11,6 +11,8 @@ from backend.core.seerr_identity import (
 
 ArrServiceName = Literal["radarr", "sonarr"]
 
+ARR_ACTION_MONITOR_NEW_SEASONS = "unmonitor_delete_monitor_new_seasons"
+
 SEERR_REQUESTER_FIELD = "seerr.requested_by_user_ids"
 
 

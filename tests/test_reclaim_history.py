@@ -34,6 +34,8 @@ def test_get_reclaim_history_includes_optional_attributes() -> None:
                             "resolution": "2160p",
                             "hdr": True,
                             "dolby_vision": True,
+                            "sonarr_monitor_new_seasons": "failed",
+                            "sonarr_monitor_new_seasons_error": "Sonarr config 1: unavailable",
                         },
                     ),
                     ReclaimHistory(
@@ -67,6 +69,11 @@ def test_get_reclaim_history_includes_optional_attributes() -> None:
             assert modern.attributes.resolution == "2160p"
             assert modern.attributes.hdr is True
             assert modern.attributes.dolby_vision is True
+            assert modern.attributes.sonarr_monitor_new_seasons == "failed"
+            assert (
+                modern.attributes.sonarr_monitor_new_seasons_error
+                == "Sonarr config 1: unavailable"
+            )
             assert legacy.attributes is None
 
         await engine.dispose()

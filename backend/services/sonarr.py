@@ -593,6 +593,70 @@ class SonarrClient:
 
         return build_sonarr_series_from_dict(updated_data)
 
+    async def prepare_season_removal(self, series_id: int, season_number: int) -> None:
+        """Require live season metadata before unmonitoring and removing files."""
+        series = await self.get_series(series_id)
+        if not any(s.season_number == season_number for s in series.seasons):
+            raise ValueError(
+                f"Season {season_number} missing from Sonarr series {series_id}"
+            )
+        updated = await self.update_season_monitoring(series_id, season_number, False)
+        if not any(
+            s.season_number == season_number and not s.monitored
+            for s in updated.seasons
+        ):
+            raise ValueError(
+                f"Sonarr did not unmonitor season {season_number} of series {series_id}"
+            )
+
+    async def enable_new_seasons_if_latest(
+        self, series_id: int, season_number: int
+    ) -> bool:
+        """Enable future seasons after removal, preserving all other season flags."""
+        series = await self.get_series(series_id)
+        regular_seasons = [
+            s.season_number for s in series.seasons if s.season_number > 0
+        ]
+        if not any(s.season_number == season_number for s in series.seasons):
+            raise ValueError(
+                f"Season {season_number} missing from Sonarr series {series_id}"
+            )
+        if (
+            season_number <= 0
+            or not regular_seasons
+            or season_number != max(regular_seasons)
+        ):
+            return False
+        payload = dict(series.raw or {})
+        payload["monitored"] = True
+        payload["monitorNewItems"] = "all"
+        payload["seasons"] = [
+            {**season, "monitored": False}
+            if as_int(season.get("seasonNumber")) == season_number
+            else dict(season)
+            for season in _mapping_list(payload.get("seasons"))
+        ]
+        _, updated = await self._make_request(
+            "PUT",
+            f"series/{series_id}",
+            json=payload,
+            error_context=f"Failed to enable new-season monitoring for series {series_id}",
+        )
+        if (
+            not isinstance(updated, Mapping)
+            or updated.get("monitored") is not True
+            or updated.get("monitorNewItems") != "all"
+            or not any(
+                as_int(season.get("seasonNumber")) == season_number
+                and season.get("monitored") is False
+                for season in _mapping_list(updated.get("seasons"))
+            )
+        ):
+            raise ValueError(
+                f"Sonarr did not confirm new-season monitoring for series {series_id}"
+            )
+        return True
+
     async def delete_season_files(
         self,
         series_id: int,
@@ -621,7 +685,7 @@ class SonarrClient:
             if as_int(episode.get("seasonNumber")) != season_number:
                 continue
             episode_file_id = as_int(episode.get("episodeFileId"))
-            if episode_file_id is not None:
+            if episode_file_id is not None and episode_file_id > 0:
                 episode_file_ids.append(episode_file_id)
 
         if not episode_file_ids:
@@ -631,7 +695,7 @@ class SonarrClient:
         status_code, _ = await self._make_request(
             "DELETE",
             "episodefile/bulk",
-            json={"episodeFileIds": episode_file_ids},
+            json={"episodeFileIds": list(dict.fromkeys(episode_file_ids))},
             timeout=120,
             error_context=(
                 f"Failed to delete season {season_number} files for series {series_id} "
