@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -12,6 +13,7 @@ from backend.database.models import (
     Episode,
     GeneralSettings,
     ReclaimCandidate,
+    ReclaimHistory,
     ReclaimRule,
     Season,
     Series,
@@ -853,6 +855,311 @@ def test_whole_series_delete_scans_media_server_paths(monkeypatch) -> None:
             assert sonarr.deleted_series == [arr_ids[0]]
             assert media.deleted_items == []
             assert media.scanned_paths == ["/data/Show"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+class MonitoringSonarr(FakeSonarr):
+    def __init__(self, series_id=11, *, failure=None, latest=1):
+        super().__init__(
+            {
+                series_id: [
+                    {
+                        "id": 700,
+                        "seasonNumber": 1,
+                        "episodeNumber": 1,
+                        "episodeFileId": 900,
+                        "hasFile": True,
+                    }
+                ]
+            }
+        )
+        self.failure = failure
+        self.latest = latest
+        self.events = []
+
+    async def prepare_season_removal(self, series_id, season_number):
+        self.events.append("prepare")
+        if self.failure == "prepare":
+            raise RuntimeError("preparation unavailable")
+        await self.update_season_monitoring(series_id, season_number, False)
+
+    async def delete_season_files(self, series_id, season_number):
+        self.events.append("delete")
+        if self.failure == "delete":
+            raise RuntimeError("file removal failed")
+        await super().delete_season_files(series_id, season_number)
+        self.episodes_by_series[series_id] = []
+
+    async def enable_new_seasons_if_latest(self, series_id, season_number):
+        self.events.append("finalize")
+        if self.failure == "finalize":
+            raise RuntimeError("monitoring update unavailable")
+        return season_number == self.latest
+
+
+@pytest.mark.parametrize(
+    "failure,fallback,latest,expected,status",
+    [
+        (None, True, 1, 1, "enabled"),
+        (None, True, 2, 1, "skipped"),
+        ("prepare", True, 1, 0, None),
+        ("delete", False, 1, 0, None),
+        ("delete", True, 1, 1, "enabled"),
+        ("finalize", True, 1, 1, "failed"),
+    ],
+)
+def test_conditional_monitoring_season_delete(
+    monkeypatch, failure, fallback, latest, expected, status
+):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action=cleanup.ARR_ACTION_MONITOR_NEW_SEASONS,
+                    media_server_fallback_enabled=fallback,
+                )
+            sonarr = MonitoringSonarr(ids[0], failure=failure, latest=latest)
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, {configs[0]: sonarr}, media)
+            deleted = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]), approved_by="tester"
+            )
+            assert deleted == expected
+            assert sonarr.deleted_series == []
+            if expected:
+                assert sonarr.events == ["prepare", "delete", "finalize"]
+                # Reconciliation is allowed once; finalization failures never retry it.
+                assert len(media.deleted_items) == 1
+            else:
+                assert "finalize" not in sonarr.events
+                assert media.deleted_items == []
+            async with sessions() as db:
+                history = (await db.execute(select(ReclaimHistory))).scalars().all()
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                if expected:
+                    assert candidate is None
+                    assert len(history) == 1
+                    assert history[0].action == "unmonitored"
+                    assert history[0].attributes["sonarr_monitor_new_seasons"] == status
+                    if status == "failed":
+                        assert (
+                            "monitoring update unavailable"
+                            in history[0].attributes["sonarr_monitor_new_seasons_error"]
+                        )
+                else:
+                    assert candidate.last_delete_error
+                    assert history == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", [None, "delete"])
+@pytest.mark.parametrize("other_available", [True, False])
+def test_conditional_monitoring_preserves_other_sonarr_copy(
+    monkeypatch, failure, other_available
+):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action=cleanup.ARR_ACTION_MONITOR_NEW_SEASONS,
+                    arr_series_paths=["/data1/Show", "/data2/Show"],
+                    arr_series_ids=[11, 22],
+                    season_path="/data2/Show/Season 01",
+                    episode_path="/data2/Show/Season 01/Show - S01E01.mkv",
+                )
+            other = MonitoringSonarr(ids[0])
+            selected = MonitoringSonarr(ids[1], failure=failure)
+            media = FakeMediaServer()
+            _patch_services(
+                monkeypatch,
+                {configs[0]: other, configs[1]: selected}
+                if other_available
+                else {configs[1]: selected},
+                media,
+            )
+            count = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]), approved_by="tester"
+            )
+            assert count == (0 if failure else 1)
+            assert other.events == []
+            assert media.deleted_items == []
+            assert selected.events == (
+                ["prepare", "delete"] if failure else ["prepare", "delete", "finalize"]
+            )
+            async with sessions() as db:
+                assert len((await db.execute(select(Season))).scalars().all()) == 1
+                assert (await db.execute(select(Series))).scalar_one().size == 100
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "failure,latest,other_copy",
+    [
+        (None, 1, False),
+        (None, 2, False),
+        (None, 1, True),
+        ("prepare", 1, False),
+        ("finalize", 1, False),
+        ("move", 1, False),
+        ("route", 1, False),
+        ("partial", 1, False),
+        ("flat", 1, False),
+        ("unavailable", 1, False),
+    ],
+)
+def test_conditional_monitoring_season_move(
+    monkeypatch, tmp_path, failure, latest, other_copy
+):
+    async def run():
+        series_dir = tmp_path / "Show"
+        season_dir = (
+            series_dir if failure in {"partial", "flat"} else series_dir / "Season 01"
+        )
+        season_dir.mkdir(parents=True)
+        episode_file = season_dir / "Show - S01E01.mkv"
+        episode_file.write_bytes(b"episode")
+        archive = tmp_path / "archive"
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action=cleanup.ARR_ACTION_MONITOR_NEW_SEASONS,
+                    arr_series_paths=[str(series_dir)]
+                    + ([str(tmp_path / "OtherShow")] if other_copy else []),
+                    arr_series_ids=[11, 22] if other_copy else [11],
+                    season_path=str(season_dir),
+                    episode_path=str(episode_file),
+                    series_service_path=str(series_dir),
+                    move_destination_series=str(archive),
+                )
+            async with sessions() as db:
+                if failure == "route":
+                    ref = (await db.execute(select(SeriesArrRef))).scalar_one()
+                    ref.arr_series_path = "/unmatched/Show"
+                    await db.commit()
+            sonarr = MonitoringSonarr(ids[0], failure=failure, latest=latest)
+            media = FakeMediaServer()
+            clients = {configs[0]: sonarr}
+            other = MonitoringSonarr(22)
+            if other_copy:
+                clients[configs[1]] = other
+            _patch_services(
+                monkeypatch, {} if failure == "unavailable" else clients, media
+            )
+            if failure == "partial":
+                monkeypatch.setattr(
+                    cleanup, "move_season_files", lambda *args, **kwargs: archive
+                )
+            if failure == "move":
+
+                def fail_move(*args, **kwargs):
+                    raise OSError("archive unavailable")
+
+                monkeypatch.setattr(cleanup, "move_directory", fail_move)
+            result = await cleanup._move_specific_candidates_impl(
+                [candidate_id], approved_by="tester"
+            )
+            success = failure not in {
+                "prepare",
+                "move",
+                "route",
+                "unavailable",
+                "partial",
+            }
+            assert result == ((1, 0) if success else (0, 1))
+            assert sonarr.events == (
+                ["prepare", "finalize"]
+                if success
+                else []
+                if failure in {"route", "unavailable"}
+                else ["prepare"]
+            )
+            assert other.events == []
+            if other_copy:
+                assert media.deleted_items == []
+            assert sonarr.deleted_series == [] and sonarr.deleted_seasons == []
+            assert episode_file.exists() is not success
+            if success:
+                assert list(archive.rglob("*.mkv"))[0].read_bytes() == b"episode"
+            async with sessions() as db:
+                history = (await db.execute(select(ReclaimHistory))).scalars().all()
+                assert len(history) == int(success)
+                if success:
+                    assert history[0].action == "moved"
+                    assert history[0].attributes["sonarr_monitor_new_seasons"] == (
+                        "failed"
+                        if failure == "finalize"
+                        else "enabled"
+                        if latest == 1
+                        else "skipped"
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("route", ["unavailable", "ambiguous", "selected", "no_files"])
+def test_conditional_monitoring_requires_usable_sonarr_route(monkeypatch, route):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action=cleanup.ARR_ACTION_MONITOR_NEW_SEASONS,
+                    arr_series_paths=["/sonarr1/Show", "/sonarr2/Show"],
+                    arr_series_ids=[11, 22],
+                )
+                if route != "ambiguous":
+                    rule = (await db.execute(select(ReclaimRule))).scalar_one()
+                    rule.action = {
+                        **rule.action,
+                        "sonarr_service_config_ids": [configs[1]],
+                    }
+                    await db.commit()
+            first = MonitoringSonarr(ids[0])
+            second = MonitoringSonarr(ids[1])
+            if route == "no_files":
+                second.episodes_by_series[ids[1]][0]["episodeFileId"] = 0
+            clients = (
+                {configs[0]: first, configs[1]: second}
+                if route != "unavailable"
+                else {}
+            )
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, clients, media)
+            count = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]), approved_by="tester"
+            )
+            assert count == int(route == "selected")
+            assert first.events == []
+            assert second.events == (
+                ["prepare", "delete", "finalize"] if route == "selected" else []
+            )
+            assert media.deleted_items == []
+            async with sessions() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                if route != "selected":
+                    assert candidate.last_delete_error
         finally:
             await engine.dispose()
 

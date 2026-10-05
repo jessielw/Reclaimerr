@@ -12,6 +12,7 @@ from backend.api.candidate_views import build_rule_preview_items
 from backend.core.auth import require_admin
 from backend.core.logger import LOG
 from backend.core.rule_actions import (
+    ARR_ACTION_MONITOR_NEW_SEASONS,
     collect_seerr_config_ids,
     has_unqualified_seerr_requesters,
     normalize_arr_service_config_ids,
@@ -85,6 +86,7 @@ from backend.models.rules import (
     ValidateRegexResponse,
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
+from backend.services.rule_presets import RulePreset, rule_presets
 from backend.services.seerr_cache import seerr_snapshot_cache
 from backend.tasks.cleanup import (
     collect_rule_preview_matches_with_metadata,
@@ -126,7 +128,13 @@ def _media_type_for_target(target_scope: str | None, fallback: MediaType) -> Med
 # What a rule may ask the Arr to do once a candidate's review period is up.
 ARR_ACTION_CHANGE_QUALITY_PROFILE = "change_quality_profile"
 VALID_ARR_ACTIONS = frozenset(
-    {"delete", "unmonitor", "unmonitor_only", ARR_ACTION_CHANGE_QUALITY_PROFILE}
+    {
+        "delete",
+        "unmonitor",
+        "unmonitor_only",
+        ARR_ACTION_CHANGE_QUALITY_PROFILE,
+        ARR_ACTION_MONITOR_NEW_SEASONS,
+    }
 )
 # A Sonarr quality profile belongs to the series, so a season or episode rule
 # asking for one would silently re-profile the whole show.
@@ -206,6 +214,10 @@ def _normalize_rule_action(
             f"arr_action must be one of {', '.join(sorted(VALID_ARR_ACTIONS))}"
         )
     normalized["arr_action"] = arr_action
+    if arr_action == ARR_ACTION_MONITOR_NEW_SEASONS and target_scope != TARGET_SEASON:
+        raise ValueError(
+            "Monitoring new seasons after removal is only available on season rules"
+        )
     if arr_action == ARR_ACTION_CHANGE_QUALITY_PROFILE:
         if target_scope not in QUALITY_PROFILE_SCOPES:
             raise ValueError(
@@ -1230,6 +1242,14 @@ async def get_media_server_collections(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+@router.get("/rules/presets", response_model=list[RulePreset])
+async def get_rule_presets(
+    _admin: Annotated[User, Depends(require_admin)],
+) -> list[RulePreset]:
+    """Read the bundled catalog without saving a rule or scheduling work."""
+    return rule_presets()
 
 
 @router.get("/rules", response_model=list[CleanupRuleResponse])

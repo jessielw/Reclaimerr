@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import get_current_user, has_permission, require_page_access
+from backend.core.media_locator import resolve_media_locator
 from backend.core.protection_scope import (
     active_protection_clause,
     movie_scope_overlap_clause,
@@ -505,6 +506,8 @@ async def create_protection_entry(
             detail="Duration must be a positive number of days",
         )
 
+    target = await resolve_media_locator(db, request_data)
+    media_id = target.id
     media = None
     season: Season | None = None
     episode: Episode | None = None
@@ -514,7 +517,7 @@ async def create_protection_entry(
             version_result = await db.execute(
                 select(MovieVersion).where(
                     MovieVersion.id == request_data.movie_version_id,
-                    MovieVersion.movie_id == request_data.media_id,
+                    MovieVersion.movie_id == media_id,
                 )
             )
             version = version_result.scalar_one_or_none()
@@ -530,7 +533,7 @@ async def create_protection_entry(
             )
         media_result = await db.execute(
             select(Movie).where(
-                Movie.id == request_data.media_id,
+                Movie.id == media_id,
                 Movie.removed_at.is_(None),
             )
         )
@@ -538,7 +541,7 @@ async def create_protection_entry(
         existing_query = select(ProtectedMedia).where(
             ProtectedMedia.source != "rule",
             ProtectedMedia.media_type == MediaType.MOVIE,
-            ProtectedMedia.movie_id == request_data.media_id,
+            ProtectedMedia.movie_id == media_id,
             movie_scope_overlap_clause(
                 ProtectedMedia, movie_version_id=request_data.movie_version_id
             ),
@@ -552,13 +555,13 @@ async def create_protection_entry(
             )
         season, episode = await _resolve_series_scope(
             db,
-            media_id=request_data.media_id,
+            media_id=media_id,
             season_id=request_data.season_id,
             episode_id=request_data.episode_id,
         )
         media_result = await db.execute(
             select(Series).where(
-                Series.id == request_data.media_id,
+                Series.id == media_id,
                 Series.removed_at.is_(None),
             )
         )
@@ -566,7 +569,7 @@ async def create_protection_entry(
         existing_query = select(ProtectedMedia).where(
             ProtectedMedia.source != "rule",
             ProtectedMedia.media_type == MediaType.SERIES,
-            ProtectedMedia.series_id == request_data.media_id,
+            ProtectedMedia.series_id == media_id,
             series_scope_overlap_clause(
                 ProtectedMedia,
                 season_id=season.id if season else None,
@@ -595,13 +598,9 @@ async def create_protection_entry(
 
     new_entry = ProtectedMedia(
         media_type=request_data.media_type,
-        movie_id=request_data.media_id
-        if request_data.media_type is MediaType.MOVIE
-        else None,
+        movie_id=media_id if request_data.media_type is MediaType.MOVIE else None,
         movie_version_id=request_data.movie_version_id,
-        series_id=request_data.media_id
-        if request_data.media_type is MediaType.SERIES
-        else None,
+        series_id=media_id if request_data.media_type is MediaType.SERIES else None,
         season_id=season.id if season else None,
         episode_id=episode.id if episode else None,
         reason=request_data.reason,
@@ -617,7 +616,7 @@ async def create_protection_entry(
     return ProtectedEntryResponse(
         id=new_entry.id,
         media_type=new_entry.media_type,
-        media_id=request_data.media_id,
+        media_id=media_id,
         movie_version_id=new_entry.movie_version_id,
         season_id=new_entry.season_id,
         season_number=season.season_number if season else None,

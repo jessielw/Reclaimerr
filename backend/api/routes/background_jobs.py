@@ -78,6 +78,8 @@ def _candidate_file_op_summary(payload: dict[str, Any]) -> str:
             details = [f"{succeeded} succeeded"]
             if failed > 0:
                 details.append(f"{failed} failed")
+            if result.get("deferred"):
+                details.append(f"{result['deferred']} deferred")
             preview = _candidate_file_op_label_preview(payload)
             suffix = f" - {preview}" if preview else ""
             return f"{label}: {', '.join(details)}{suffix}"
@@ -100,6 +102,8 @@ def _duplicate_delete_summary(payload: dict[str, Any]) -> str:
             details = [f"{succeeded} succeeded"]
             if failed > 0:
                 details.append(f"{failed} failed")
+            if result.get("deferred"):
+                details.append(f"{result['deferred']} deferred")
             return f"Delete duplicates: {', '.join(details)}{suffix}"
     count = sum(
         len(value)
@@ -150,6 +154,9 @@ def _serialize_background_job(job: BackgroundJob) -> dict[str, Any]:
     if job.job_type is BackgroundJobType.TASK_RUN:
         task_name = payload.get("task")
         summary = f"Task run: {task_name}" if task_name else "Task run"
+        result = payload.get("result")
+        if isinstance(result, dict) and result.get("deferred"):
+            summary += f" ({result['deferred']} deferred)"
     elif job.job_type is BackgroundJobType.SERVICE_TOGGLE:
         service_type = payload.get("service_type")
         enabled = payload.get("enabled")

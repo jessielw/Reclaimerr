@@ -137,6 +137,10 @@ class DuplicateGroup:
     fingerprint: str = ""
 
     @property
+    def fully_protected(self) -> bool:
+        return bool(self.files) and all(file.protected for file in self.files)
+
+    @property
     def key(self) -> str:
         kind = "movie" if self.media_type is MediaType.MOVIE else "episode"
         return f"{kind}:{self.item_id}"

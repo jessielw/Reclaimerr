@@ -1,4 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -124,6 +126,7 @@ class DeleteRequestResponse(BaseModel):
     admin_notes: str | None
 
     executed_at: str | None = None
+    playback_deferral: dict[str, Any] | None = None
     execution_error: str | None = None
 
     created_at: str

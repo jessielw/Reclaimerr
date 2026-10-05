@@ -52,6 +52,8 @@
     failed?: number;
     freed_bytes?: number;
     errors?: string[];
+    deferred?: number;
+    deferrals?: string[];
   }
 
   const CRITERION_LABELS: Record<string, string> = {
@@ -134,6 +136,31 @@
   let abortController: AbortController | null = null;
 
   const isAdmin = $derived($auth.user?.role === UserRole.Admin);
+  const canProtect = $derived(
+    isAdmin ||
+      ($auth.user?.permissions ?? []).includes(Permission.ManageProtection),
+  );
+  let protectingTitle = $state(false);
+
+  const protectTitle = async (group: DuplicateGroup) => {
+    protectingTitle = true;
+    try {
+      await post_api("/api/protected", {
+        media_type: group.media_type,
+        media_id:
+          group.media_type === MediaType.Movie
+            ? group.item_id
+            : group.series_id,
+        reason: "Protect entire title from duplicate cleanup and deletion",
+      });
+      toast.success(`"${group.title}" protected in all libraries`);
+      await load();
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to protect title");
+    } finally {
+      protectingTitle = false;
+    }
+  };
   const canManage = $derived(
     isAdmin ||
       ($auth.user?.permissions ?? []).includes(Permission.ManageReclaim),
@@ -218,7 +245,7 @@
   const keeperIndex = (group: DuplicateGroup) => keepers[group.key] ?? 0;
 
   const isActionable = (group: DuplicateGroup) =>
-    !group.manual_reason && !group.ignored;
+    !group.manual_reason && !group.ignored && !group.fully_protected;
 
   /** Files removed if this group is cleaned up: everything but the keeper, minus protected files. */
   const filesToDelete = (group: DuplicateGroup): DuplicateFile[] =>
@@ -341,6 +368,11 @@
     if ((result.succeeded ?? 0) > 0) {
       toast.success(
         `Cleaned up ${result.succeeded} item${result.succeeded === 1 ? "" : "s"}, freed ${formatFileSize(result.freed_bytes ?? 0)}.`,
+      );
+    }
+    if ((result.deferred ?? 0) > 0) {
+      toast.info(
+        `${result.deferred} deferred by playback protection. ${(result.deferrals ?? []).slice(0, 3).join("\n")}`,
       );
     }
     if ((result.failed ?? 0) > 0) {
@@ -746,7 +778,7 @@
         </label>
         <label class="flex items-center gap-2 cursor-pointer">
           <Switch bind:checked={includeIgnored} />
-          Show "not a duplicate"
+          Show ignored and protected
         </label>
       </div>
 
@@ -863,6 +895,13 @@
                           Not a duplicate
                         </span>
                       {/if}
+                      {#if group.fully_protected}
+                        <a
+                          href="#/protected"
+                          class="underline text-muted-foreground"
+                          >Protected - manage protection</a
+                        >
+                      {/if}
                     </div>
                     {#if group.manual_reason}
                       <p
@@ -873,7 +912,17 @@
                       </p>
                     {/if}
                   </div>
-                  {#if canManage}
+                  {#if canProtect && !group.fully_protected}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={protectingTitle}
+                      onclick={() => protectTitle(group)}
+                    >
+                      <Lock class="size-4" /> Protect entire title
+                    </Button>
+                  {/if}
+                  {#if canManage && !group.fully_protected}
                     <div class="flex flex-wrap justify-end gap-2">
                       {#if group.ignored}
                         <Button

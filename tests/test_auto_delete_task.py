@@ -557,6 +557,7 @@ def test_delete_cleanup_candidates_skips_overlapping_entries(monkeypatch):
                 "playback_unavailable": 0,
                 "deleted": 1,
                 "failed": 0,
+                "deferred": 0,
             }
 
         await engine.dispose()
@@ -982,6 +983,7 @@ def test_delete_cleanup_candidates_waits_for_review_period(monkeypatch):
             "playback_unavailable": 0,
             "deleted": 1,
             "failed": 0,
+            "deferred": 0,
         }
 
         await engine.dispose()

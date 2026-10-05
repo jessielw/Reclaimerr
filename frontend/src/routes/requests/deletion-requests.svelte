@@ -102,12 +102,27 @@
     }
   };
 
+  let retrySubmitting = $state(false);
+  const retryRequest = async (request: DeleteRequest) => {
+    retrySubmitting = true;
+    try {
+      await post_api(`/api/delete-requests/${request.id}/retry`, {});
+      toast.success("Deletion retry queued");
+      await loadRequests(false);
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to queue retry");
+    } finally {
+      retrySubmitting = false;
+    }
+  };
+
   const hasQueuedExecution = $derived(
     requests.some(
       (request) =>
         request.status === ProtectionRequestStatus.Approved &&
         request.executed_at == null &&
-        request.execution_error == null,
+        request.execution_error == null &&
+        !request.playback_deferral,
     ),
   );
 
@@ -303,6 +318,11 @@
                     <MediaTypeBadge mediaType={req.media_type} />
                     <span>@{req.requested_by_username}</span>
                   </div>
+                  {#if req.playback_deferral}
+                    <p class="text-xs text-amber-500">
+                      {req.playback_deferral.message}
+                    </p>
+                  {/if}
                   {#if req.execution_error}
                     <p class="mt-2 line-clamp-2 text-sm text-red-500">
                       {req.execution_error}
@@ -435,7 +455,7 @@
                 </p>
               </div>
 
-              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error}
+              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error && !selectedRequest.playback_deferral}
                 <div>
                   <p class="mb-2 text-sm font-medium text-amber-500">
                     Execution Status
@@ -459,6 +479,30 @@
                   >
                     {selectedRequest.admin_notes}
                   </p>
+                </div>
+              {/if}
+
+              {#if selectedRequest.playback_deferral}
+                <div
+                  class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
+                >
+                  <p>{selectedRequest.playback_deferral.message}</p>
+                  {#each selectedRequest.playback_deferral.completed_steps ?? [] as step}
+                    <p class="text-muted-foreground">{step}</p>
+                  {/each}
+                  <p class="text-muted-foreground">
+                    Checked {formatDate(
+                      selectedRequest.playback_deferral.checked_at,
+                    )}. Retry when playback has ended.
+                  </p>
+                  {#if canManageRequests}
+                    <Button
+                      class="mt-3"
+                      disabled={retrySubmitting}
+                      onclick={() => retryRequest(selectedRequest)}
+                      >Retry deletion</Button
+                    >
+                  {/if}
                 </div>
               {/if}
 

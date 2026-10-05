@@ -152,8 +152,8 @@
             <p class="text-xs text-muted-foreground">
               You can still type requester IDs manually in the rule value field
               (comma-separated). Each one is written
-              <code class="font-mono">instanceId:userId</code> — for example
-              <code class="font-mono">7:3</code> — because a Seerr user ID only identifies
+              <code class="font-mono">instanceId:userId</code> - for example
+              <code class="font-mono">7:3</code> - because a Seerr user ID only identifies
               a person within the Seerr that issued it.
             </p>
           </div>

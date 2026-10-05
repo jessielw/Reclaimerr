@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-10-05
+
+### Added
+
+- Eight bundled rule presets, including favorites/watchlist protection, finished ended shows, and watched Seerr requests, with required setup, editable unsaved drafts, preview, and disabled defaults.
+- Active-playback protection for Plex, Jellyfin, and Emby, enabled by default for deletions, moves, duplicates, and upgrade leftovers. Deferred items retain their deadlines, and approved deletion requests can be retried explicitly.
+- Sonarr season rules can now unmonitor and delete or move files, enabling new-season monitoring only when the latest known regular season is removed.
+- **Protect title by ID** on the Protected page accepts TMDB, IMDb, AniList, or TVDB (series only) IDs already present in synced metadata. **Protect entire title** is also available on Duplicates. Title protection covers every library, future versions, replacement files, and future seasons and episodes, regardless of file fingerprints.
+
+### Fixed
+
+- Upgrade leftover cleanup now respects whole-title protection, including protection added after a deletion was queued. Protection is checked again before removing the file.
+
+### Changed
+
+- Updated apprise and platformdirs.
+- The movie protection dialog now defaults to **Entire title — all libraries and versions**, including movies with only one file. Individual versions can still be selected.
+- Fully protected duplicate groups and associated upgrade leftovers are hidden by default. Enable **Show ignored and protected** to view them and manage their protection from the Protected page.
+
 ## [0.5.4] - 2026-10-01
 
 ### Added

@@ -930,6 +930,12 @@ def _plan_media_move(src: Path) -> _MediaMovePlan:
     return _MediaMovePlan(True, "item-scoped source directory")
 
 
+def media_move_source_scope(src: Path) -> tuple[Path, bool]:
+    """Expose the same file/folder scope used by move_media for preflight guards."""
+    directory = _plan_media_move(src).move_parent_directory
+    return (src.parent if directory else src), directory
+
+
 def move_media(
     src: Path,
     destination_root: Path,

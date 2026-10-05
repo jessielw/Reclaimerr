@@ -1,4 +1,12 @@
-﻿export enum UserRole {
+export interface PlaybackDeferral {
+  code: "currently_playing" | "playback_unavailable";
+  message: string;
+  checked_at: string;
+  server_config_ids: number[];
+  completed_steps?: string[];
+}
+
+export enum UserRole {
   Admin = "admin",
   User = "user",
 }
@@ -303,6 +311,7 @@ export interface GeneralSettings {
   path_mappings: PathMapping[];
   move_destination_movies: string | null;
   move_destination_series: string | null;
+  active_playback_protection_enabled?: boolean;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior:
     | "unmonitor"
@@ -530,6 +539,20 @@ export interface ReclaimRule {
   updated_at: string;
 }
 
+export type RuleDraft = Omit<ReclaimRule, "id" | "created_at" | "updated_at">;
+
+export interface RulePreset {
+  id: string;
+  version: number;
+  title: string;
+  description: string;
+  prerequisites: string[];
+  required_services: ("sonarr" | "seerr")[];
+  target_scopes: NonNullable<RuleDraft["target_scope"]>[];
+  required_inputs: ("library.id" | "playback.fully_watched_usernames")[];
+  rule: RuleDraft;
+}
+
 export type RuleGroupOperator = "and" | "or";
 export type RuleConditionOperator =
   | "equals"
@@ -601,6 +624,7 @@ export interface RuleAction {
   arr_action:
     | "delete"
     | "unmonitor"
+    | "unmonitor_delete_monitor_new_seasons"
     | "unmonitor_only"
     | "change_quality_profile";
   media_server_action: "delete" | null;
@@ -697,6 +721,7 @@ export interface CandidateFileOpJobProgress {
   total_items: number;
   completed_items: number;
   failed_items: number;
+  deferred_items?: number;
   current_item_label: string | null;
   percent: number;
 }
@@ -707,6 +732,8 @@ export interface CandidateFileOpJobResult {
   succeeded: number;
   failed: number;
   errors?: string[];
+  deferred?: number;
+  deferrals?: string[];
 }
 
 export interface CandidateFileOpJobPayload {
@@ -987,6 +1014,7 @@ export interface DuplicateFile {
 }
 
 export interface DuplicateGroup {
+  fully_protected: boolean;
   key: string;
   media_type: MediaType;
   item_id: number;
@@ -1010,6 +1038,7 @@ export interface PaginatedDuplicatesResponse extends PaginatedResponse<Duplicate
 }
 
 export interface UpgradeLeftover {
+  protected: boolean;
   id: number;
   movie_id: number | null;
   title: string;
@@ -1159,6 +1188,7 @@ export interface DeleteRequest {
   admin_notes: string | null;
   executed_at: string | null;
   execution_error: string | null;
+  playback_deferral?: PlaybackDeferral | null;
   season_id: number | null;
   season_number: number | null;
   episode_id: number | null;
@@ -1366,6 +1396,7 @@ export interface ReclaimCandidateEntry {
   delete_attempts: number;
   last_delete_attempt_at: string | null;
   last_delete_error: string | null;
+  playback_deferral?: PlaybackDeferral | null;
   // populated for season level candidates
   season_id: number | null;
   season_number: number | null;
@@ -1494,6 +1525,8 @@ export interface ReclaimHistoryEntry {
     resolution: string | null;
     hdr: boolean | null;
     dolby_vision: boolean | null;
+    sonarr_monitor_new_seasons?: "enabled" | "skipped" | "failed" | null;
+    sonarr_monitor_new_seasons_error?: string | null;
   } | null;
   action: string;
   destination_path: string | null;

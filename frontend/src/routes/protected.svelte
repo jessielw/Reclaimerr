@@ -30,6 +30,8 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import MetadataSources from "$lib/components/media/metadata-sources.svelte";
+  import ProtectTitleDialog from "$lib/components/media/protect-title-dialog.svelte";
+  let addTitleOpen = $state(false);
 
   // state
   let data = $state<PaginatedResponse<ProtectedEntry> | null>(null);
@@ -220,9 +222,7 @@
     if (entry.season_number != null) return `Season ${entry.season_number}`;
     if (entry.movie_version_id != null)
       return entry.version_file_name ?? "Specific version";
-    return entry.media_type === MediaType.Movie
-      ? "Whole movie"
-      : "Whole series";
+    return "Entire title - all libraries and versions";
   };
 
   // remove the entry from protection list via API and update local data accordingly
@@ -276,6 +276,11 @@
     if (abortController) abortController.abort();
   });
 </script>
+
+<ProtectTitleDialog
+  bind:open={addTitleOpen}
+  onSuccess={() => loadProtectedEntries(1)}
+/>
 
 <!-- edit duration dialog -->
 <Dialog.Root bind:open={editDialogOpen}>
@@ -389,6 +394,11 @@
   <div class="max-w-7xl mx-auto space-y-4">
     <div>
       <h1 class="text-3xl font-bold text-foreground">Protected</h1>
+      {#if canManageProtection}
+        <Button class="mt-2" onclick={() => (addTitleOpen = true)}
+          >Protect title by ID</Button
+        >
+      {/if}
       <p class="text-muted-foreground">
         Media items protected from cleanup and deletion.
         {#if canManageProtection}

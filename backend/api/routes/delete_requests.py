@@ -20,8 +20,10 @@ from backend.core.protection_scope import (
 )
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
+from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import get_db
 from backend.database.models import (
+    BackgroundJob,
     DeleteRequest,
     Episode,
     Movie,
@@ -33,6 +35,8 @@ from backend.database.models import (
     User,
 )
 from backend.enums import (
+    BackgroundJobStatus,
+    BackgroundJobType,
     CandidateFileOpOperation,
     MediaType,
     NotificationType,
@@ -54,6 +58,91 @@ from backend.services.notifications import (
 )
 
 router = APIRouter(prefix="/api", tags=["delete-requests"])
+
+
+@router.post(
+    "/delete-requests/{request_id}/retry", response_model=DeleteRequestResponse
+)
+async def retry_delete_request(
+    request_id: int,
+    manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
+    db: AsyncSession = Depends(get_db),
+) -> DeleteRequestResponse:
+    """Explicitly retry a deferred approved request without creating another candidate."""
+    if candidate_workflow_lock.locked():
+        raise HTTPException(status_code=409, detail="A cleanup operation is running")
+    async with candidate_workflow_lock:
+        request = await db.get(DeleteRequest, request_id)
+        if request is None:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if (
+            request.status != ProtectionRequestStatus.APPROVED
+            or request.executed_at
+            or not request.playback_deferral
+        ):
+            raise HTTPException(
+                status_code=409, detail="Only deferred approved requests can be retried"
+            )
+        jobs = (
+            await db.scalars(
+                select(BackgroundJob).where(
+                    BackgroundJob.job_type == BackgroundJobType.CANDIDATE_FILE_OP,
+                    BackgroundJob.status.in_(
+                        [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]
+                    ),
+                )
+            )
+        ).all()
+        if any(
+            (job.payload or {}).get("delete_request_id") == request_id for job in jobs
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This request already has a queued or running job",
+            )
+        candidate = (
+            await db.scalars(
+                select(ReclaimCandidate).where(
+                    ReclaimCandidate.delete_request_id == request_id
+                )
+            )
+        ).first()
+        if candidate is None:
+            raise HTTPException(
+                status_code=409, detail="The deferred target is no longer available"
+            )
+        media, _ = await _get_delete_request_media(db, request)
+        from backend.services.candidate_lifecycle import candidate_deletion_blockers
+
+        if await candidate_deletion_blockers(db, candidate):
+            raise HTTPException(
+                status_code=409,
+                detail="The target is protected or has a pending request",
+            )
+        item = await _build_delete_request_job_item(
+            db,
+            request,
+            media_title=media.title,
+            media_year=media.year,
+            media_tmdb_id=media.tmdb_id,
+            candidate_id=candidate.id,
+        )
+        # Queue before clearing the visible deferral, so a failed enqueue is retryable.
+        await queue_candidate_file_op_job(
+            operation=CandidateFileOpOperation.DELETE,
+            candidate_ids=[candidate.id],
+            requested_by_user_id=manager.id,
+            requested_by_username=manager.username,
+            delete_request_id=request.id,
+            item_labels=[item.display_label],
+            item_label_total=1,
+            item_details=[item],
+        )
+        request.playback_deferral = None
+        request.execution_error = None
+        await db.commit()
+        await db.refresh(request)
+        return await _build_delete_request_response(db, request)
 
 
 async def _resolve_series_scope(
@@ -434,6 +523,7 @@ async def _build_delete_request_response(
         admin_notes=request.admin_notes,
         executed_at=to_utc_isoformat(request.executed_at),
         execution_error=request.execution_error,
+        playback_deferral=request.playback_deferral,
         created_at=to_utc_isoformat(request.created_at) or "",
         updated_at=to_utc_isoformat(request.updated_at) or "",
         poster_url=media.poster_url,
@@ -843,6 +933,7 @@ async def approve_delete_request(
         media_type=request.media_type,
         matched_rule_ids=[],
         matched_criteria={},
+        delete_request_id=request.id,
         reason=f"Approved delete request: {request.reason or 'No reason provided'}",
         reason_data=None,
         movie_id=request.movie_id,

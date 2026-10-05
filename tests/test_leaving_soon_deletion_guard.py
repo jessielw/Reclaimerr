@@ -450,7 +450,7 @@ class LeavingSoonActionGuardTests(unittest.IsolatedAsyncioTestCase):
                 reconcile,
             ),
         ):
-            result = await cleanup.delete_specific_candidates([4, 4, 7])
+            result = await cleanup._delete_candidates_prepared([4, 4, 7])
 
         self.assertEqual(result, (0, 2))
         implementation.assert_not_awaited()
@@ -486,7 +486,7 @@ class LeavingSoonActionGuardTests(unittest.IsolatedAsyncioTestCase):
                 reconcile,
             ),
         ):
-            result = await cleanup.delete_specific_candidates(
+            result = await cleanup._delete_candidates_prepared(
                 [9],
                 approved_by="tester",
             )
@@ -512,7 +512,7 @@ class LeavingSoonActionGuardTests(unittest.IsolatedAsyncioTestCase):
                 reconcile,
             ),
         ):
-            result = await cleanup.move_specific_candidates([11])
+            result = await cleanup._move_candidates_prepared([11])
 
         self.assertEqual(result, (1, 0))
         prune.assert_awaited_once_with([11])
@@ -642,10 +642,7 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
         # the legacy base titles expand into the suffixed pair the clients
         # used to build themselves, so a pre-upgrade rename stays prunable
         self.assertEqual(
-            {
-                (call["movie_title"], call["series_title"])
-                for call in fake_plex.calls
-            },
+            {(call["movie_title"], call["series_title"]) for call in fake_plex.calls},
             {
                 ("Leaving Soon [Movies]", "Leaving Soon [Series]"),
                 ("Old Soon [Movies]", "Old Soon [Series]"),
@@ -659,6 +656,7 @@ class LeavingSoonPruneResolutionTests(unittest.IsolatedAsyncioTestCase):
             fake_jellyfin.calls[0]["movie_item_ids"],
             {"jellyfin-item"},
         )
+
 
 class LeavingSoonPlexCollectionSortTests(unittest.IsolatedAsyncioTestCase):
     """Adapter-level coverage for the Plex-only collection sort."""
@@ -908,6 +906,7 @@ class LeavingSoonEmbySortIsIgnoredTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
 
 class LeavingSoonDeadlineResolutionTests(unittest.IsolatedAsyncioTestCase):
     """The deadline map that feeds the `leaving_soonest` collection sort."""

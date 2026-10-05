@@ -386,6 +386,12 @@ export const candidateMediaMetaFields = (
       : "",
     // : "font-medium text-muted-foreground",
   });
+  if (entry.playback_deferral) {
+    fields.push({
+      label: "Playback protection",
+      value: `${entry.playback_deferral.message} ? checked ${formatDate(entry.playback_deferral.checked_at)}`,
+    });
+  }
   const deleteFailure = candidateDeleteFailureLabel(entry, formatDate);
   if (deleteFailure) {
     fields.push({

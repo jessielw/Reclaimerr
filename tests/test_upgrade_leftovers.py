@@ -633,3 +633,59 @@ def test_delete_job_removes_file_folder_row_and_records_history(
 )
 def test_download_root_is_stable_across_depths(path: str, root: str) -> None:
     assert upgrade_leftovers.download_root(path) == root
+
+
+def test_queued_leftover_delete_rechecks_title_protection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend.database.models import ProtectedMedia
+    from backend.enums import MediaType
+    from backend.jobs import duplicate_file_ops
+    from backend.models.jobs import LeftoverDeleteJobItem
+
+    old, _current, mappings = _delete_setup(tmp_path)
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            sm = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(duplicate_file_ops, "async_db", sm)
+            monkeypatch.setattr(duplicate_file_ops, "playback_checkpoint", AsyncMock())
+            async with sm() as db:
+                movie = Movie(title="Movie 1", tmdb_id=101)
+                db.add_all([movie, GeneralSettings(path_mappings=mappings)])
+                await db.flush()
+                row = _row(old, movie_id=movie.id)
+                db.add(row)
+                await db.commit()
+                row_id = row.id
+                movie_id = movie.id
+
+            class ProtectDuringRadarrLookup:
+                async def get_movie(self, _id):
+                    async with sm() as db:
+                        db.add(
+                            ProtectedMedia(
+                                media_type=MediaType.MOVIE, movie_id=movie_id
+                            )
+                        )
+                        await db.commit()
+                    return _radarr_movie(1, "/movies/one.mkv")
+
+            monkeypatch.setattr(
+                service_manager, "_radarr_clients", {1: ProtectDuringRadarrLookup()}
+            )
+            with pytest.raises(DuplicateActionError, match="protected"):
+                await duplicate_file_ops._delete_leftover_impl(
+                    LeftoverDeleteJobItem(id=row_id, display_label="Movie 1"),
+                    approved_by="admin",
+                )
+            assert old.exists()
+            async with sm() as db:
+                assert await db.get(UpgradeLeftover, row_id) is not None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

@@ -2244,6 +2244,7 @@ async def get_candidates(
                 delete_attempts=c.delete_attempts or 0,
                 last_delete_attempt_at=to_utc_isoformat(c.last_delete_attempt_at),
                 last_delete_error=c.last_delete_error,
+                playback_deferral=c.playback_deferral,
                 season_id=c.season_id,
                 season_number=row.season_number,
                 series_title=row.series_title if c.season_id is not None else None,

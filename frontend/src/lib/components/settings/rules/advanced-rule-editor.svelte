@@ -38,6 +38,7 @@
     type QualityProfileLookup,
     type QualityProfileLookupItem,
     type ReclaimRule,
+    type RuleDraft,
     type RuleCondition,
     type RuleConditionOperator,
     type RuleDefinition,
@@ -48,13 +49,22 @@
   import { formatFileSize } from "$lib/utils/formatters";
 
   interface Props {
-    rule: ReclaimRule | null;
+    rule: RuleDraft | null;
+    mode?: "create" | "edit";
+    presetTitle?: string;
     libraries: LibraryType[];
     onSave: (rule: Partial<ReclaimRule>) => Promise<void>;
     onCancel: () => void;
   }
 
-  let { rule: initialRule, libraries, onSave, onCancel }: Props = $props();
+  let {
+    rule: initialRule,
+    mode,
+    presetTitle = "",
+    libraries,
+    onSave,
+    onCancel,
+  }: Props = $props();
 
   type ArrInstance = {
     id: number;
@@ -121,11 +131,13 @@
   type ArrAction =
     | "delete"
     | "unmonitor"
+    | "unmonitor_delete_monitor_new_seasons"
     | "unmonitor_only"
     | "change_quality_profile";
   const ARR_ACTIONS: ArrAction[] = [
     "delete",
     "unmonitor",
+    "unmonitor_delete_monitor_new_seasons",
     "unmonitor_only",
     "change_quality_profile",
   ];
@@ -270,6 +282,8 @@
     switch (value) {
       case "unmonitor":
         return "Unmonitor + Delete File";
+      case "unmonitor_delete_monitor_new_seasons":
+        return "Unmonitor + Delete Files + Monitor New Seasons (only if latest season deleted)";
       case "unmonitor_only":
         return "Unmonitor Only (Keep File)";
       case "change_quality_profile":
@@ -312,6 +326,12 @@
   };
 
   $effect(() => {
+    if (
+      targetScope !== "season" &&
+      sonarrArrAction === "unmonitor_delete_monitor_new_seasons"
+    ) {
+      sonarrArrAction = "unmonitor";
+    }
     // the option stops being valid when the scope or instance choice changes
     if (arrAction === "change_quality_profile" && !profileChangeSelectable) {
       setArrAction("delete");
@@ -1043,7 +1063,9 @@
       </Button>
       <div>
         <h2 class="text-xl font-semibold text-foreground">
-          {initialRule ? "Edit Rule" : "New Rule"}
+          {(mode ?? (initialRule ? "edit" : "create")) === "edit"
+            ? "Edit Rule"
+            : "New Rule"}
         </h2>
         <p class="text-sm text-muted-foreground">
           Build nested AND/OR rules for cleanup candidates or automated
@@ -1075,6 +1097,20 @@
       </Button>
     </div>
   </div>
+
+  {#if presetTitle}
+    <Notice type="info" title={`Draft from ${presetTitle}`}>
+      Edit the conditions and outcome, then preview matches before saving.
+      {#if outcome === "protect"}
+        Enabling the rule creates protections for matching media on the next
+        scan.
+      {:else}
+        Enabling the rule generates candidates; automatic deletion is a separate
+        setting.
+      {/if}
+      Saving creates an independent rule that future preset updates will not change.
+    </Notice>
+  {/if}
 
   <div class="flex flex-col gap-4 rounded-lg border border-border bg-card p-5">
     <!-- toggle -->
@@ -1439,15 +1475,25 @@
               }}
             >
               <Select.Trigger
-                class="w-full bg-card text-card-foreground cursor-pointer"
+                class="w-full min-h-9 data-[size=default]:h-auto whitespace-normal text-left bg-card text-card-foreground cursor-pointer"
               >
                 {arrActionLabel(arrAction)}
               </Select.Trigger>
-              <Select.Content>
+              <Select.Content class="max-w-[calc(100vw-2rem)]">
                 <Select.Item value="delete" label="Delete">Delete</Select.Item>
                 <Select.Item value="unmonitor" label="Unmonitor + Delete File">
                   Unmonitor + Delete File
                 </Select.Item>
+                {#if targetScope === "season"}
+                  <Select.Item
+                    value="unmonitor_delete_monitor_new_seasons"
+                    label={arrActionLabel(
+                      "unmonitor_delete_monitor_new_seasons",
+                    )}
+                  >
+                    {arrActionLabel("unmonitor_delete_monitor_new_seasons")}
+                  </Select.Item>
+                {/if}
                 <Select.Item
                   value="unmonitor_only"
                   label="Unmonitor Only (Keep File)"
@@ -1542,6 +1588,14 @@
             <p class="text-xs text-muted-foreground">
               Files are deleted from disk but the entry remains in {selectedArrName}
               as unmonitored. Requires filesystem access on the Reclaimerr host.
+            </p>
+          {:else if arrAction === "unmonitor_delete_monitor_new_seasons"}
+            <p class="text-xs text-muted-foreground">
+              Unmonitors the removed season and keeps the show in Sonarr. When
+              the latest known regular season is deleted or moved, enables
+              series monitoring and Monitor New Seasons. Announced seasons
+              count; specials do not. Other seasons keep their monitoring
+              settings. Requires an available Sonarr instance.
             </p>
           {:else if arrAction === "unmonitor_only"}
             <p class="text-xs text-muted-foreground">

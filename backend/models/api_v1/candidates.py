@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
 
-AutoDeleteState = Literal[
-    "disabled", "scheduled", "eligible", "postponed", "canceled"
-]
+AutoDeleteState = Literal["disabled", "scheduled", "eligible", "postponed", "canceled"]
 
 
 class CandidateStatusResponse(BaseModel):
@@ -43,6 +41,7 @@ class CandidateStatusResponse(BaseModel):
     delete_attempts: int = 0
     last_delete_attempt_at: datetime | None = None
     last_delete_error: str | None = None
+    playback_deferral: dict[str, Any] | None = None
     blockers: list[str] = Field(default_factory=list)
 
 

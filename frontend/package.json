@@ -1,8 +1,9 @@
 {
   "name": "reclaimerr-web",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "type": "module",
   "scripts": {
+    "test:rule-presets": "node --test src/lib/components/settings/rules/rule-presets.test.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

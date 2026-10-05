@@ -116,6 +116,7 @@ def _serialize(group: DuplicateGroup) -> DuplicateGroupResponse:
         manual_reason=group.manual_reason,
         cross_library=group.cross_library,
         ignored=group.ignored,
+        fully_protected=group.fully_protected,
         reclaimable_size=group.reclaimable_size,
     )
 
@@ -139,12 +140,16 @@ async def list_duplicates(
         for g in groups
         if (include_cross_library or not g.cross_library)
         and (include_manual or g.manual_reason is None)
-        and (include_ignored or not g.ignored)
+        and (include_ignored or not (g.ignored or g.fully_protected))
     ]
     if sort_by == "size":
         groups.sort(key=lambda g: g.reclaimable_size, reverse=True)
 
-    actionable = [g for g in groups if g.manual_reason is None and not g.ignored]
+    actionable = [
+        g
+        for g in groups
+        if g.manual_reason is None and not g.ignored and not g.fully_protected
+    ]
     total = len(groups)
     start = (page - 1) * per_page
     return PaginatedDuplicatesResponse(
@@ -291,6 +296,7 @@ def _serialize_leftover(view: LeftoverView) -> UpgradeLeftoverResponse:
         imported_at=row.imported_at,
         manual_reason=row.manual_reason,
         ignored=row.ignored,
+        protected=view.protected,
     )
 
 
@@ -309,7 +315,7 @@ async def list_leftovers(
         v
         for v in await load_leftovers(db, search=search)
         if (include_manual or v.row.manual_reason is None)
-        and (include_ignored or not v.row.ignored)
+        and (include_ignored or not (v.row.ignored or v.protected))
     ]
     if sort_by == "size":
         views.sort(key=lambda v: v.row.size, reverse=True)
@@ -350,6 +356,9 @@ async def delete_leftovers(
     views = {v.row.id: v for v in await load_leftovers(db, ids=ids)}
     problems = [
         f"leftover {i}: no longer listed - rescan" for i in ids if i not in views
+    ]
+    problems += [
+        f"{v.row.title}: title is protected" for v in views.values() if v.protected
     ]
     problems += [
         f"{v.row.title}: needs manual review: {v.row.manual_reason}"

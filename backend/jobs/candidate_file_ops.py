@@ -35,6 +35,7 @@ from backend.services.notifications import (
     notify_user,
     request_scope_label,
 )
+from backend.services.playback_guard import PlaybackGuard
 from backend.tasks.cleanup import (
     delete_specific_candidates,
     move_specific_candidates,
@@ -92,6 +93,7 @@ async def _finalize_delete_request_job(
     succeeded: int,
     failed: int,
     fallback_error: str | None = None,
+    deferred: int = 0,
 ) -> None:
     """Finalizes the delete request based on the results of the candidate file operation job."""
     candidate_id = candidate_ids[0] if candidate_ids else None
@@ -108,6 +110,13 @@ async def _finalize_delete_request_job(
             )
             candidate_after = candidate_result.scalar_one_or_none()
 
+        if deferred and candidate_after is not None:
+            delete_request.playback_deferral = candidate_after.playback_deferral
+            delete_request.execution_error = None
+            await db.commit()
+            return
+
+        delete_request.playback_deferral = None
         successful = succeeded > 0 and failed == 0
         if successful:
             delete_request.executed_at = datetime.now(UTC)
@@ -204,6 +213,10 @@ async def _run_candidate_file_op_job_unlocked(
     }
     succeeded = 0
     failed = 0
+    deferred = 0
+    deferrals: list[str] = []
+    async with async_db() as db:
+        playback_guard = await PlaybackGuard.load(db)
     completed_items = 0
     total_items = len(payload.candidate_ids)
     errors: list[str] = []
@@ -224,6 +237,7 @@ async def _run_candidate_file_op_job_unlocked(
             total_items=total_items,
             completed_items=completed,
             failed_items=failed_count,
+            deferred_items=deferred,
             current_item_label=current_item_label,
             percent=min(100, max(0, percent)),
         )
@@ -246,6 +260,11 @@ async def _run_candidate_file_op_job_unlocked(
 
             async with async_db() as db:
                 candidate = await db.get(ReclaimCandidate, candidate_id)
+                # Jobs queued before the migration carry this link in their payload.
+                if candidate is not None and payload.delete_request_id is not None:
+                    candidate.delete_request_id = payload.delete_request_id
+                    await db.commit()
+                linked_request_id = candidate.delete_request_id if candidate else None
                 blockers = (
                     await candidate_deletion_blockers(db, candidate)
                     if candidate is not None
@@ -269,21 +288,31 @@ async def _run_candidate_file_op_job_unlocked(
                 continue
 
             if payload.operation is CandidateFileOpOperation.DELETE:
-                item_succeeded, item_failed = await delete_specific_candidates(
+                item_result = await delete_specific_candidates(
                     [candidate_id],
                     approved_by=payload.requested_by_username,
+                    playback_guard=playback_guard,
                 )
             elif payload.operation is CandidateFileOpOperation.MOVE:
-                item_succeeded, item_failed = await move_specific_candidates(
+                item_result = await move_specific_candidates(
                     [candidate_id],
                     approved_by=payload.requested_by_username,
+                    playback_guard=playback_guard,
                 )
             else:
                 raise ValueError(
                     f"Unsupported candidate file operation: {payload.operation}"
                 )
 
-            if item_succeeded == 0 and item_failed == 0:
+            item_succeeded, item_failed = item_result
+            item_deferred = getattr(item_result, "deferred", 0)
+            if item_deferred:
+                deferred += item_deferred
+                deferrals.extend(
+                    f"{current_item_label}: {detail['message']}"
+                    for detail in item_result.deferrals.values()
+                )
+            if item_succeeded == 0 and item_failed == 0 and not item_deferred:
                 # a prior cascading delete/move may already have removed this candidate.
                 item_succeeded = 1
 
@@ -291,6 +320,15 @@ async def _run_candidate_file_op_job_unlocked(
                 _record_error(
                     current_item_label,
                     await _candidate_failure_reason(candidate_id),
+                )
+
+            if linked_request_id is not None and payload.delete_request_id is None:
+                await _finalize_delete_request_job(
+                    delete_request_id=linked_request_id,
+                    candidate_ids=[candidate_id],
+                    succeeded=item_succeeded,
+                    failed=item_failed,
+                    deferred=item_deferred,
                 )
 
             succeeded += item_succeeded
@@ -336,6 +374,8 @@ async def _run_candidate_file_op_job_unlocked(
         succeeded=succeeded,
         failed=failed,
         errors=errors,
+        deferred=deferred,
+        deferrals=deferrals,
     )
 
     if payload.delete_request_id is not None:
@@ -344,6 +384,7 @@ async def _run_candidate_file_op_job_unlocked(
             candidate_ids=payload.candidate_ids,
             succeeded=succeeded,
             failed=failed,
+            deferred=deferred,
         )
 
     return result.model_dump(mode="json")

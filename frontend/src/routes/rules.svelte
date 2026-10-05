@@ -25,9 +25,11 @@
     type ReclaimRule,
     type LibraryType,
     type RuleNode,
+    type RuleDraft,
     TaskStatus,
   } from "$lib/types/shared";
   import AdvancedRuleEditor from "$lib/components/settings/rules/advanced-rule-editor.svelte";
+  import RulePresetPicker from "$lib/components/settings/rules/rule-preset-picker.svelte";
   import Notice from "$lib/components/notice.svelte";
   import { auth } from "$lib/stores/auth";
   import { getTaskStatusText } from "$lib/utils/tasks";
@@ -37,6 +39,9 @@
   let editingRule = $state<ReclaimRule | null>(null);
   let ruleFormMode = $state<"create" | "edit">("create");
   let showRuleForm = $state(false);
+  let showPresetPicker = $state(false);
+  let presetDraft = $state<RuleDraft | null>(null);
+  let presetTitle = $state("");
   let availableLibraries = $state<LibraryType[]>([]);
   let outcomeFilter = $state<"all" | "candidate" | "protect">("all");
 
@@ -216,7 +221,18 @@
   const closeRuleForm = () => {
     showRuleForm = false;
     editingRule = null;
+    presetDraft = null;
+    presetTitle = "";
     ruleFormMode = "create";
+  };
+
+  const openPresetDraft = (draft: RuleDraft, title: string) => {
+    editingRule = null;
+    presetDraft = draft;
+    presetTitle = title;
+    ruleFormMode = "create";
+    showPresetPicker = false;
+    showRuleForm = true;
   };
 
   const getRuleSummary = (rule: ReclaimRule): string => {
@@ -494,7 +510,9 @@
       </div>
     {:else if showRuleForm}
       <AdvancedRuleEditor
-        rule={editingRule}
+        rule={presetDraft ?? editingRule}
+        mode={ruleFormMode}
+        {presetTitle}
         libraries={availableLibraries}
         onSave={handleSaveRule}
         onCancel={closeRuleForm}
@@ -582,6 +600,14 @@
             >
               <Plus class="size-4" />
               New Rule
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onclick={() => (showPresetPicker = true)}
+              class="cursor-pointer gap-2"
+            >
+              <ListChecks class="size-4" /> Add from preset
             </Button>
           </div>
         </div>
@@ -741,6 +767,14 @@
     {/if}
   </div>
 </div>
+
+{#if showPresetPicker}
+  <RulePresetPicker
+    libraries={availableLibraries}
+    onSelect={openPresetDraft}
+    onCancel={() => (showPresetPicker = false)}
+  />
+{/if}
 
 {#if showImportDialog}
   <AlertDialog.Root

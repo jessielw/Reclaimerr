@@ -186,6 +186,15 @@ async def update_general_settings(
     settings.path_mappings = [m.model_dump() for m in request.path_mappings]
     settings.move_destination_movies = request.move_destination_movies or None
     settings.move_destination_series = request.move_destination_series or None
+    settings.active_playback_protection_enabled = (
+        request.active_playback_protection_enabled
+    )
+    if not request.active_playback_protection_enabled:
+        from sqlalchemy import update
+
+        from backend.database.models import ReclaimCandidate
+
+        await db.execute(update(ReclaimCandidate).values(playback_deferral=None))
     settings.media_server_fallback_enabled = request.media_server_fallback_enabled
     settings.default_arr_delete_behavior = request.default_arr_delete_behavior
     settings.add_arr_import_exclusions_on_delete = (

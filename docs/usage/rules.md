@@ -11,6 +11,36 @@ Rules determine which media becomes a reclaim candidate or receives an automated
 
 Use rule preview before saving or running a cleanup scan. Preview shows the items that match and the actual values used for each matching condition.
 
+## Start from a preset
+
+1. Open **Rules → Add from preset** and choose a starter.
+2. Select the applicable libraries. Favorites protection offers a Movies/Whole shows choice; save separate rules to cover both. Fully watched seasons and finished ended shows require selected users and enabled Sonarr; watched requests requires enabled Seerr.
+3. Choose **Open in editor**, adjust the conditions and action, and use **Preview Matches**.
+4. Save the rule. It starts disabled, with automatic deletion, moves, and Arr tagging off unless you explicitly change those settings.
+
+| Preset | Starting conditions |
+| --- | --- |
+| Old unwatched movies | Current movie copies added more than 180 days ago with no recorded viewing |
+| Watched movies not revisited | Recorded viewing with a last watched date more than 90 days ago |
+| Fully watched seasons | Every selected user completed the regular season; last recorded playback activity across all users was more than 30 days ago |
+| Keep the newest two seasons | Regular seasons with at least two newer known regular seasons, ordered by season number |
+| Large movies for review | Imported movie file size greater than 40 GiB |
+| Protect favorites and watchlists | Protect movies or whole shows favorited/watchlisted by any user in the imported data |
+| Finished, ended shows | Sonarr status is ended; every selected user completed all regular seasons; last playback activity across all users was more than 90 days ago |
+| Requested movies already watched | An active request exists; at least one requester completed the movie; last playback activity across all users was more than 30 days ago |
+
+These are editable starting values. Watch-based presets rely on imported data: missing history does not prove nobody watched a movie. The watched-movie preset requires a watch date for the current copy. Fully watched seasons uses Sonarr's full episode inventory for each user's completion; unknown completion or activity does not match. The newest-two preset excludes specials, and known seasons without files can count toward the two retained seasons.
+
+Selecting a preset opens an unsaved draft. Canceling creates no rule and schedules no work. Enabling a saved cleanup rule lets scans generate candidates; **automatic deletion is a separate setting**. Review the deletion action even when automatic deletion is off, since manual candidate actions still use it. Enabling a protection rule instead lets scans create managed protections.
+
+Favorites protection creates managed protections when the enabled rule runs. These take precedence over cleanup rules while the protection rule matches. The source is Jellyfin/Emby favorites or linked Plex users' watchlists. Removing the favorite/watchlist entry can remove the managed protection on a later scan.
+
+Finished ended shows uses Sonarr's full regular-episode inventory for completion. Specials do not count toward completion, but whole-show cleanup also removes specials. Unknown status, completion, or dated playback activity does not match.
+
+Watched requests uses **Seerr requester has watched**: one requester's completion is enough, and it need not occur after the request. Other requesters may still be waiting to watch. Configure requester/watch-user identities under **Settings → User Signals** and preview before enabling. Unknown request, completion, or activity does not match.
+
+Saved rules are independent copies. Edit and import/export them normally; future bundled preset updates never overwrite them.
+
 ## Rule Outcomes
 
 | Outcome | Behavior |
@@ -36,6 +66,7 @@ A cleanup-candidate rule chooses what its Radarr or Sonarr instance does once th
 | --- | --- |
 | Delete | The Arr entry and its files are removed |
 | Unmonitor + Delete File | Files are deleted, the Arr entry stays as unmonitored |
+| Unmonitor + Delete Files + Monitor New Seasons (only if latest season deleted) | Sonarr season rules only: unmonitor and remove the season, retaining the show; enable series and new-season monitoring when the latest known regular season is removed |
 | Unmonitor Only (Keep File) | The Arr entry is unmonitored and nothing is deleted |
 | Change Quality Profile | Nothing is removed. The Arr entry moves onto a different quality profile, optionally with a search queued |
 
@@ -45,7 +76,11 @@ An item already sitting on the target profile is cleared from the candidate list
 
 A profile change frees no space, so those candidates are left out of the reclaimable totals on the Dashboard and Storage pages. They are recorded in reclaim history as `profile_changed`.
 
-If several matched rules disagree, the most conservative action wins: Change Quality Profile, then Unmonitor Only, then Unmonitor, then Delete.
+The conditional Sonarr action counts the highest known regular season, including announced seasons without files; specials (season 0) do not qualify. Successfully moving the season has the same effect as deleting it. Older seasons leave series and new-season monitoring unchanged. Other seasons retain their monitoring flags, so enabling series monitoring also activates any other seasons already marked monitored. No search is queued.
+
+This action requires a reachable Sonarr instance and successful season unmonitoring before files are removed. If removal succeeds but enabling new-season monitoring fails, History shows a warning with Sonarr details. The completed removal is not retried; enable monitoring in Sonarr to resolve the warning. Whole-series and episode rules do not offer this action.
+
+If several matched rules disagree, the most conservative action wins: Change Quality Profile, then Unmonitor Only, then Unmonitor, then the conditional Monitor New Seasons action, then Delete. Ordinary Unmonitor takes precedence so another matched rule cannot unexpectedly enable monitoring.
 
 Cleanup-candidate rules can target one or more Radarr or Sonarr instances. Reclaimerr applies the rule's managed tag to every selected instance where the item exists and limits ARR deletion or unmonitor actions to those selections. For movie versions, the synchronized Radarr movie folder must match the media-server file path before an explicitly selected instance is used. Configure instance-scoped Path Mappings in General Settings when the services report different container path prefixes. Leaving every instance unselected preserves automatic path-based routing across all matching active instances.
 
