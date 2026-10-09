@@ -208,6 +208,7 @@ async def update_general_settings(
     settings.application_url = request.application_url
     settings.playback_movie_min_seconds = request.playback_movie_min_seconds
     settings.playback_episode_min_seconds = request.playback_episode_min_seconds
+    settings.database_backup_retention = request.database_backup_retention
     settings.favorites_ignore_enabled = request.favorites_ignore_enabled
     settings.favorites_protect_all_users = request.favorites_protect_all_users
     settings.favorites_usernames = request.favorites_usernames

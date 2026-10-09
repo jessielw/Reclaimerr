@@ -45,6 +45,7 @@
     application_url: null,
     playback_movie_min_seconds: 15,
     playback_episode_min_seconds: 7,
+    database_backup_retention: 4,
     favorites_ignore_enabled: false,
     favorites_protect_all_users: false,
     favorites_usernames: [],

@@ -323,6 +323,7 @@ export interface GeneralSettings {
   application_url: string | null;
   playback_movie_min_seconds: number;
   playback_episode_min_seconds: number;
+  database_backup_retention: number;
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];

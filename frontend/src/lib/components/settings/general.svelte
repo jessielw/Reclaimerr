@@ -23,6 +23,7 @@
     type RequesterWatchUserMapping,
   } from "$lib/types/shared";
   import Notice from "$lib/components/notice.svelte";
+  import DatabaseBackups from "$lib/components/settings/general/database-backups.svelte";
   import { auth } from "$lib/stores/auth";
   import {
     DEFAULT_NEW_USER_ALLOWED_PAGES,
@@ -73,6 +74,7 @@
   let applicationUrl = $state("");
   let playbackMovieMinSeconds = $state(15);
   let playbackEpisodeMinSeconds = $state(7);
+  let databaseBackupRetention = $state(4);
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
@@ -197,6 +199,13 @@
           "Minimum playback durations must be whole numbers from 0 to 3600 seconds",
         );
       }
+      if (
+        !Number.isInteger(databaseBackupRetention) ||
+        databaseBackupRetention < 1 ||
+        databaseBackupRetention > 100
+      ) {
+        throw new Error("Backups to keep must be a whole number from 1 to 100");
+      }
 
       // save settings to backend
       await put_api("/api/settings/general", {
@@ -220,6 +229,7 @@
         application_url: applicationUrl.trim() || null,
         playback_movie_min_seconds: playbackMovieMinSeconds,
         playback_episode_min_seconds: playbackEpisodeMinSeconds,
+        database_backup_retention: databaseBackupRetention,
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
@@ -454,6 +464,7 @@
         applicationUrl = settings.application_url ?? "";
         playbackMovieMinSeconds = settings.playback_movie_min_seconds ?? 15;
         playbackEpisodeMinSeconds = settings.playback_episode_min_seconds ?? 7;
+        databaseBackupRetention = settings.database_backup_retention ?? 4;
         favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
         favoritesProtectAllUsers =
           settings.favorites_protect_all_users ?? false;
@@ -1341,6 +1352,8 @@
         file for that movie or series is gone.
       </p>
     </div>
+
+    <DatabaseBackups bind:retention={databaseBackupRetention} />
 
     <!-- shutdown (desktop mode / admin only) -->
     {#if isAdmin}

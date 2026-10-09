@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Database backups.** A new weekly **Back Up Database** task saves a copy of the database to `backups/` in the data folder and keeps the newest 4 (adjustable under **Settings → General → Database Backups**). The same card has a **Download backup now** button and lists earlier backups. Backups contain API keys and tokens, so only admins can download them. Restore steps are in the Backups docs.
 - Optional **External URL** for Radarr, Sonarr, and Seerr. Links on media pages use it instead of the Base URL, so instances reached by an internal hostname (e.g. a Docker container name) still open correctly in the browser.
 - Candidate groups with only one flagged item now show **Protect** and **Delete** (and **Move**, when enabled) on the main row, so the group no longer has to be expanded first. This covers a movie with one flagged version and a series with one flagged season or episode. These buttons act on that one item only. Groups with several flagged items still use the buttons on each item.
 

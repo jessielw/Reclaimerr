@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from .backups import router as backups_router
 from .general import router as general_router
 from .integrations import router as integrations_router
 from .logs import router as logs_router
@@ -10,6 +11,7 @@ from .smtp import router as smtp_router
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 router.include_router(general_router)
+router.include_router(backups_router)
 router.include_router(integrations_router)
 router.include_router(logs_router)
 router.include_router(services_router)

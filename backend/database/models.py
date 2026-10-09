@@ -388,6 +388,8 @@ class GeneralSettings(Base):
     # shorter events (accidental scrubs) are dropped during playback history ingestion
     playback_movie_min_seconds: Mapped[int] = mapped_column(Integer, default=15)
     playback_episode_min_seconds: Mapped[int] = mapped_column(Integer, default=7)
+    # how many scheduled database backups to keep in <data_dir>/backups
+    database_backup_retention: Mapped[int] = mapped_column(Integer, default=4)
 
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

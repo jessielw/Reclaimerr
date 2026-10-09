@@ -51,6 +51,7 @@ INLINE_TASKS: frozenset[Task] = frozenset(
         Task.SYNC_MEDIA_LIBRARIES,
         Task.TAG_CLEANUP_CANDIDATES,
         Task.WEEKLY_HOUSE_KEEPING,
+        Task.BACKUP_DATABASE,
         Task.CHECK_APP_UPDATES,
         Task.MDBLIST_RATINGS_REFRESH,
         Task.OMDB_RATINGS_REFRESH,

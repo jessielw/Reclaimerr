@@ -374,6 +374,9 @@ class GeneralSettingsResponse(BaseModel):
     playback_movie_min_seconds: int = Field(default=15, ge=0, le=3600)
     playback_episode_min_seconds: int = Field(default=7, ge=0, le=3600)
 
+    # scheduled database backups kept in <data_dir>/backups
+    database_backup_retention: int = Field(default=4, ge=1, le=100)
+
     # favorites
     favorites_ignore_enabled: bool = False
     favorites_protect_all_users: bool = False
@@ -702,3 +705,9 @@ class NotificationEmailStatus(BaseModel):
     available: bool = False
     account_email: str | None = None
     already_configured: bool = False
+
+
+class DatabaseBackupInfo(BaseModel):
+    name: str
+    size_bytes: int
+    created_at: datetime

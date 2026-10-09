@@ -125,6 +125,19 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "enabled": True,
     },
     {
+        "task": Task.BACKUP_DATABASE,
+        "description": (
+            "Saves a copy of the Reclaimerr database to the backups folder in "
+            "the data directory and keeps the newest few"
+        ),
+        "schedule_type": ScheduleType.CRON,
+        # weekly on Sunday at 1 AM, ahead of the 2 AM automatic deletion
+        "schedule_value": "0 1 * * 0",
+        "default_schedule_type": ScheduleType.CRON,
+        "default_schedule_value": "0 1 * * 0",
+        "enabled": True,
+    },
+    {
         "task": Task.CHECK_APP_UPDATES,
         "description": "Checks GitHub for new Reclaimerr releases",
         "schedule_type": ScheduleType.INTERVAL,

@@ -13,6 +13,7 @@ Tasks are scheduled jobs that keep Reclaimerr running on its own.
 - **Refresh AniList Ratings** - refreshes AniBridge mappings and AniList metadata
 - **Refresh MDBList Ratings** - refreshes Rotten Tomatoes, Metacritic, Trakt, and Letterboxd values supplied by MDBList
 - **Refresh OMDb Ratings** - refreshes Tomatometer and Metacritic fallback values without replacing values available from MDBList
+- **Back Up Database** - saves a copy of the database to `DATA_DIR/backups` weekly and keeps the newest few (see [Backups](../deployment/backups.md#built-in-database-backups))
 
 The Tasks page groups these four jobs under **External Ratings**. MDBList and OMDb have independent schedules and refresh state; their default schedules are 6 AM and 7 AM respectively.
 

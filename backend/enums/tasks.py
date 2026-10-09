@@ -98,6 +98,7 @@ class Task(StrEnum):
 
     # housekeeping
     WEEKLY_HOUSE_KEEPING = auto()
+    BACKUP_DATABASE = auto()
 
     # misc
     CHECK_APP_UPDATES = auto()
@@ -115,6 +116,7 @@ class Task(StrEnum):
             Task.MDBLIST_RATINGS_REFRESH: "Refresh MDBList Ratings",
             Task.OMDB_RATINGS_REFRESH: "Refresh OMDb Ratings",
             Task.REFRESH_PLAYBACK_HISTORY: "Refresh Playback Data",
+            Task.BACKUP_DATABASE: "Back Up Database",
         }
         if self in branded_names:
             return branded_names[self]
