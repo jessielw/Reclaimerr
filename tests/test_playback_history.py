@@ -23,6 +23,7 @@ from backend.core.rule_engine import (
 from backend.database import Base
 from backend.database.models import (
     Episode,
+    MediaWatchUser,
     Movie,
     MovieVersion,
     NativePlaybackAggregate,
@@ -35,6 +36,7 @@ from backend.database.models import (
     ServiceConfig,
     SupplementalMediaMatch,
     User,
+    WatchUserAlias,
 )
 from backend.enums import MediaType, Service, UserRole
 from backend.services import playback_history
@@ -2694,6 +2696,81 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(users), 1)
         self.assertEqual(users[0].username, "Alice")
         self.assertEqual(users[0].source_services, ["jellyfin", "tautulli"])
+
+    async def test_playback_user_lookup_groups_plex_account_ids_into_names(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+            )
+            tautulli = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+            )
+            db.add_all([plex, tautulli])
+            await db.flush()
+            # Tautulli names the account Plex history only stores by number.
+            for alias in ("176142613", "bobby", "Bob Smith"):
+                db.add(
+                    WatchUserAlias(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=tautulli.id,
+                        observed_service=Service.PLEX,
+                        provider_user_id="176142613",
+                        alias=alias,
+                        alias_normalized=alias.lower(),
+                    )
+                )
+            for key in ("176142613", "999"):
+                db.add(
+                    MediaWatchUser(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=1,
+                        watch_user_key=key,
+                        watch_user_key_normalized=key,
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=datetime(2026, 2, 1),
+                    )
+                )
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TAUTULLI,
+                    source_service_config_id=tautulli.id,
+                    source_event_key="tautulli-bob",
+                    source_item_id="movie-1",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 2, 1),
+                    duration_seconds=180,
+                    source_user_id="176142613",
+                    source_username="Bob Smith",
+                )
+            )
+            await db.commit()
+
+            admin = User(
+                username="admin",
+                password_hash="hash",
+                role=UserRole.ADMIN,
+                permissions=[],
+            )
+            users = await get_playback_users(admin, db, q="", limit=100)
+
+        self.assertEqual(
+            [(user.username, user.display_name) for user in users],
+            [
+                ("Bob Smith", None),
+                ("999", "Plex account 999 (name unknown)"),
+            ],
+        )
+        self.assertEqual(users[0].source_services, ["plex", "tautulli"])
+        self.assertEqual(users[0].aliases, ["176142613"])
 
     async def test_database_write_failure_is_not_reported_as_provider_failure(
         self,

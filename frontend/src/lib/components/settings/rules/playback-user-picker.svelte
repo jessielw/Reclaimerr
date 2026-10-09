@@ -6,7 +6,11 @@
 
   interface PlaybackUserOption {
     username: string;
+    /** Set only for accounts no provider could name. */
+    display_name?: string | null;
     source_services: string[];
+    /** Other keys this person's playback is recorded under. */
+    aliases?: string[];
   }
 
   interface Props {
@@ -28,8 +32,14 @@
   let selectedUsernames = $state<string[]>([]);
 
   const normalize = (value: string) => value.trim().toLowerCase();
-  const isSelected = (username: string) =>
-    selectedUsernames.some((item) => normalize(item) === normalize(username));
+  // rules saved before names were resolved may hold one of the person's
+  // aliases instead (a Plex account number); those still match, so show them
+  const userKeys = (user: PlaybackUserOption) =>
+    new Set([user.username, ...(user.aliases ?? [])].map(normalize));
+  const isSelected = (user: PlaybackUserOption) => {
+    const keys = userKeys(user);
+    return selectedUsernames.some((item) => keys.has(normalize(item)));
+  };
 
   const loadUsers = async () => {
     if (!open) return;
@@ -52,22 +62,24 @@
     if (!needle) return users;
     return users.filter(
       (user) =>
-        normalize(user.username).includes(needle) ||
+        [user.username, user.display_name ?? "", ...(user.aliases ?? [])].some(
+          (name) => normalize(name).includes(needle),
+        ) ||
         user.source_services.some((service) =>
           normalize(service).includes(needle),
         ),
     );
   });
 
-  const toggleSelected = (username: string) => {
-    const normalized = normalize(username);
-    if (isSelected(username)) {
+  const toggleSelected = (user: PlaybackUserOption) => {
+    if (isSelected(user)) {
+      const keys = userKeys(user);
       selectedUsernames = selectedUsernames.filter(
-        (item) => normalize(item) !== normalized,
+        (item) => !keys.has(normalize(item)),
       );
       return;
     }
-    selectedUsernames = [...selectedUsernames, username];
+    selectedUsernames = [...selectedUsernames, user.username];
   };
 
   const applySelection = () => {
@@ -110,7 +122,7 @@
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0">
       <Input
         type="text"
-        placeholder="Search by username or source service..."
+        placeholder="Search by name, account or source service..."
         value={query}
         oninput={(event) => (query = event.currentTarget.value)}
       />
@@ -138,17 +150,25 @@
                 <input
                   type="checkbox"
                   class="size-4"
-                  checked={isSelected(user.username)}
-                  oninput={() => toggleSelected(user.username)}
+                  checked={isSelected(user)}
+                  oninput={() => toggleSelected(user)}
                 />
                 <button
                   type="button"
                   class="flex-1 text-left"
-                  onclick={() => toggleSelected(user.username)}
+                  onclick={() => toggleSelected(user)}
                 >
-                  <p class="text-sm">{user.username}</p>
+                  <p
+                    class="text-sm"
+                    class:text-muted-foreground={user.display_name}
+                  >
+                    {user.display_name ?? user.username}
+                  </p>
                   <p class="text-xs text-muted-foreground">
                     {user.source_services.join(", ")}
+                    {#if user.aliases?.length}
+                      · also recorded as {user.aliases.join(", ")}
+                    {/if}
                   </p>
                 </button>
               </li>

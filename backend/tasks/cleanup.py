@@ -32,6 +32,7 @@ from backend.core.rule_engine import (
     EPISODE_WATCH_PROGRESS_FIELDS,
     FAVORITES_RULE_FIELDS,
     PLAYBACK_RULE_FIELDS,
+    PLAYBACK_USERNAME_FIELDS,
     RANK_RULE_FIELDS,
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
@@ -56,6 +57,7 @@ from backend.core.rule_engine import (
     SonarrRuleDataResolver,
     SonarrRuleValue,
     WatchCompletionResolver,
+    WatchUserAliasResolver,
     collect_rule_conditions,
     evaluate_advanced_rule,
     evaluate_advanced_rule_state,
@@ -171,6 +173,7 @@ from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_ca
 from backend.services.sonarr import SonarrClient
 from backend.services.watch_identity import (
     AliasIndex,
+    aliases_by_name,
     expand_watch_keys,
     load_watch_user_alias_index,
 )
@@ -1183,6 +1186,7 @@ async def collect_rule_preview_matches_with_metadata(
     metadata.seerr_unavailable = not seerr_ready
     metadata.seerr_error = seerr_error
 
+    await _activate_watch_user_aliases_for_rules(db, list(rules))
     await _activate_watch_completion_for_rules(
         db,
         list(rules),
@@ -4224,6 +4228,22 @@ def _completed_watchers(
     }
 
 
+async def _activate_watch_user_aliases_for_rules(
+    db: AsyncSession, rules: list[ReclaimRule]
+) -> None:
+    """Let playback username conditions match every name a person is stored under.
+
+    Loaded once per evaluation run; the per-item comparison only reads it.
+    """
+    if not _rules_use_any_field(
+        rules, PLAYBACK_USERNAME_FIELDS | USER_SCOPED_PLAYBACK_FIELDS
+    ):
+        WatchUserAliasResolver({}).activate()
+        return
+    alias_index = await load_watch_user_alias_index(db)
+    WatchUserAliasResolver(aliases_by_name(alias_index)).activate()
+
+
 async def _activate_watch_completion_for_rules(
     db: AsyncSession,
     rules: list[ReclaimRule],
@@ -5648,6 +5668,7 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
                     f"this run: {seerr_skip_reason}"
                 )
 
+        await _activate_watch_user_aliases_for_rules(db, list(rules))
         await _activate_watch_completion_for_rules(
             db,
             list(rules),

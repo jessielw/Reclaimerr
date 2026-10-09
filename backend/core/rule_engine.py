@@ -81,6 +81,13 @@ USER_SCOPED_PLAYBACK_FIELDS = {
 # (USER_SCOPED_PLAYBACK_FIELDS). Served by its own resolver because completion
 # comes from the per-user watch tables, not the playback aggregates.
 WATCH_COMPLETION_RULE_FIELDS = {"playback.fully_watched_usernames"}
+# Fields whose values name playback users. One person is often recorded under
+# several keys -- Plex history keys an unshared account by its number while
+# Tautulli has the name -- so these compare through WatchUserAliasResolver.
+PLAYBACK_USERNAME_FIELDS = {
+    "playback.usernames",
+    "playback.fully_watched_usernames",
+}
 # Episode-level watch progress rolled up to a season or a whole series. Both
 # read Sonarr's canonical episode inventory, so both need the same eager-loaded
 # episodes and the same "no inventory means unknown" handling.
@@ -1710,6 +1717,45 @@ class WatchCompletionResolver:
         return list(usernames)
 
 
+class WatchUserAliasResolver:
+    """Expands a playback username to every name its account is recorded under.
+
+    Built from the watch identity alias registry, so a rule that names "bob"
+    also matches the plays Plex stored under Bob's account number, and a rule
+    still holding that number keeps matching the plays stored under the name.
+    """
+
+    _ctx: ContextVar[WatchUserAliasResolver | None] = ContextVar(
+        "watch_user_alias_resolver", default=None
+    )
+
+    __slots__ = ("_aliases_by_name",)
+
+    def __init__(
+        self, aliases_by_name: Mapping[str, Iterable[str]] | None = None
+    ) -> None:
+        self._aliases_by_name = {
+            _normalize(name): frozenset(_normalize(alias) for alias in aliases)
+            for name, aliases in (aliases_by_name or {}).items()
+        }
+
+    def activate(self) -> None:
+        WatchUserAliasResolver._ctx.set(self)
+
+    @classmethod
+    def current(cls) -> WatchUserAliasResolver | None:
+        return cls._ctx.get()
+
+    def expand(self, name: object) -> set[str]:
+        normalized = _normalize(name)
+        return {normalized, *self._aliases_by_name.get(normalized, ())}
+
+
+def _expand_playback_username(name: object) -> set[str]:
+    resolver = WatchUserAliasResolver.current()
+    return resolver.expand(name) if resolver else {_normalize(name)}
+
+
 def _watch_completion_context(
     resolver: WatchCompletionResolver | None,
     target_scope: str,
@@ -2031,7 +2077,10 @@ def _evaluate_user_scoped_condition(
         return None, RULE_VALUE_UNAVAILABLE
     amount = condition_value.get("amount")
     for username in usernames:
-        value = context_value.get(username, 0)
+        value = max(
+            context_value.get(alias, 0)
+            for alias in {username, *_expand_playback_username(username)}
+        )
         if _matches_operator(value, operator, amount, field=field):
             return True, value
     return False, None
@@ -3489,6 +3538,23 @@ def _matches_list_operator(
             return not has_all
         return False
 
+    if field in PLAYBACK_USERNAME_FIELDS:
+        actual_names = {
+            _normalize(value) for value in _as_list(actual) if _exists(value)
+        }
+        expected_groups = [
+            _expand_playback_username(value)
+            for value in _as_list(expected)
+            if _exists(value)
+        ]
+        if not expected_groups:
+            return False
+        return _list_operator_result(
+            operator,
+            has_any=any(group & actual_names for group in expected_groups),
+            has_all=all(group & actual_names for group in expected_groups),
+        )
+
     if field in LANGUAGE_FIELDS:
         actual_values = _normalized_language_values(actual)
         expected_values = _normalized_language_values(expected)
@@ -3506,8 +3572,14 @@ def _matches_list_operator(
         return False
     if not expected_values:
         return False
-    has_any = bool(actual_values & expected_values)
-    has_all = expected_values.issubset(actual_values)
+    return _list_operator_result(
+        operator,
+        has_any=bool(actual_values & expected_values),
+        has_all=expected_values.issubset(actual_values),
+    )
+
+
+def _list_operator_result(operator: str, *, has_any: bool, has_all: bool) -> bool:
     if operator in {"in", "contains_any"}:
         return has_any
     if operator in {"not_in", "not_contains_any"}:

@@ -51,7 +51,10 @@ from backend.models.settings import (
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
-from backend.services.watch_identity import merge_directory_accounts
+from backend.services.watch_identity import (
+    merge_directory_accounts,
+    pick_person_label,
+)
 from backend.tasks.cleanup import (
     LEAVING_SOON_MEDIA_SERVICES,
     normalize_leaving_soon_last_success_titles,
@@ -526,7 +529,7 @@ async def get_watch_users(
     for observed_service, accounts in aliases_by_account.items():
         provider_ids = {user_id.strip().lower() for _, user_id in accounts}
         for person in merge_directory_accounts(accounts):
-            label = _pick_watch_user_label(person, provider_ids, display_by_normalized)
+            label = pick_person_label(person, provider_ids)
             services: set[Service] = {observed_service}
             for alias in person:
                 services |= services_by_normalized.get(alias, set())
@@ -561,42 +564,6 @@ async def get_watch_users(
 
     result.sort(key=lambda item: item.user_key.lower())
     return result
-
-
-# Long enough that a real word like "beaded" cannot be mistaken for a uuid.
-_OPAQUE_ID_MIN_LENGTH = 8
-_HEXISH = set("0123456789abcdef-")
-
-
-def _pick_watch_user_label(
-    aliases: frozenset[str],
-    provider_ids: set[str],
-    _display_by_normalized: dict[str, str],
-) -> str:
-    """Choose the name a person should be listed under.
-
-    Provider ids, opaque uuids and email addresses identify an account but do
-    not name it, so they are the last resort rather than the first.
-    """
-
-    def rank(alias: str) -> tuple[int, int, str]:
-        is_id = (
-            alias in provider_ids
-            or alias.isdigit()
-            or (
-                len(alias) >= _OPAQUE_ID_MIN_LENGTH
-                and all(char in _HEXISH for char in alias)
-            )
-        )
-        is_email = "@" in alias
-        # A display name with a space reads better than a login handle.
-        return (
-            2 if is_id else 1 if is_email else 0,
-            0 if " " in alias else 1,
-            alias,
-        )
-
-    return min(aliases, key=rank)
 
 
 @router.get("/general/favorites-media", response_model=PaginatedFavoritesMediaResponse)

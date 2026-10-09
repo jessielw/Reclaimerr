@@ -50,6 +50,7 @@ from backend.database.models import (
     ServiceConfig,
     ServiceMediaLibrary,
     User,
+    WatchUserAlias,
 )
 from backend.enums import MediaType, Service
 from backend.models.cleanup import (
@@ -88,6 +89,12 @@ from backend.models.rules import (
 from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.rule_presets import RulePreset, rule_presets
 from backend.services.seerr_cache import seerr_snapshot_cache
+from backend.services.watch_identity import (
+    aliases_by_name,
+    load_watch_user_alias_index,
+    looks_like_account_id,
+    pick_person_label,
+)
 from backend.tasks.cleanup import (
     collect_rule_preview_matches_with_metadata,
     explain_requester_watch,
@@ -856,31 +863,70 @@ async def get_playback_users(
     ):
         rows.extend((await db.execute(statement)).tuples().all())
 
-    by_username: dict[str, PlaybackUserLookupResponse] = {}
+    # One row per person, not per stored key: Plex history keys an account it
+    # no longer shares by its number while Tautulli has the name, so listing raw
+    # keys showed most people twice, once as a meaningless number. The stored
+    # rule value is the person's label; rule matching expands it back through
+    # the same alias registry, so it still reaches every key listed here.
+    names = aliases_by_name(await load_watch_user_alias_index(db))
+    alias_rows = (
+        await db.execute(
+            select(
+                WatchUserAlias.provider_user_id,
+                WatchUserAlias.alias,
+                WatchUserAlias.alias_normalized,
+            )
+        )
+    ).all()
+    provider_ids = {str(user_id).strip().lower() for user_id, _, _ in alias_rows}
+    display_by_normalized: dict[str, str] = {}
+    for _, alias, alias_normalized in alias_rows:
+        display_by_normalized.setdefault(str(alias_normalized), str(alias).strip())
+
+    by_person: dict[str, PlaybackUserLookupResponse] = {}
     for raw_username, source_service in rows:
         username = str(raw_username or "").strip()
-        normalized = username.casefold()
+        normalized = username.lower()
         if not normalized:
             continue
-        existing = by_username.get(normalized)
-        source = source_service.value
+        person = names.get(normalized)
+        label = pick_person_label(person, provider_ids) if person else normalized
+        existing = by_person.get(label)
         if existing is None:
-            by_username[normalized] = PlaybackUserLookupResponse(
-                username=username,
-                source_services=[source],
+            value = display_by_normalized.get(label) or username
+            existing = by_person[label] = PlaybackUserLookupResponse(
+                username=value,
+                display_name=(
+                    f"{source_service.value.title()} account {value} (name unknown)"
+                    if looks_like_account_id(label, provider_ids)
+                    else None
+                ),
             )
-        elif source not in existing.source_services:
-            existing.source_services.append(source)
+        if source_service.value not in existing.source_services:
+            existing.source_services.append(source_service.value)
+        if normalized != existing.username.lower() and username not in existing.aliases:
+            existing.aliases.append(username)
 
-    needle = q.strip().casefold()
+    needle = q.strip().lower()
     users = [
         user
-        for normalized, user in by_username.items()
-        if not needle or needle in normalized
+        for user in by_person.values()
+        if not needle
+        or any(
+            needle in text.lower()
+            for text in (user.username, user.display_name or "", *user.aliases)
+        )
     ]
-    users.sort(key=lambda user: user.username.casefold())
+    # unnamed accounts last: they still work in rules but mean nothing at a glance
+    users.sort(
+        key=lambda user: (
+            user.display_name is not None,
+            (user.display_name or user.username).casefold(),
+        )
+    )
     for user in users:
         user.source_services.sort()
+        user.aliases.sort(key=str.casefold)
     return users[:limit]
 
 

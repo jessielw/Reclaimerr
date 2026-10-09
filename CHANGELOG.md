@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Select Playback Users** in rules listed Plex users who are no longer shared, and the server owner, as bare account numbers, often next to the same person's name from Tautulli. It now lists each person once, by name. Rules that name a person also match plays Plex stored under their account number, and rules that already hold an account number keep working. Accounts no service can name are listed last as "Plex account … (name unknown)".
 - A series flagged as a whole while some of its seasons or episodes were also flagged had no **Protect** or **Delete** button for the whole-series entry. It could only be acted on through the group checkbox. The buttons now appear on the series row.
 
 ## [0.5.5] - 2026-10-05

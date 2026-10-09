@@ -29,7 +29,7 @@
   let selected = $state<RulePreset | null>(null);
   let libraryIds = $state<string[]>([]);
   let usernames = $state<string[]>([]);
-  let users = $state<{ username: string }[]>([]);
+  let users = $state<{ username: string; display_name?: string | null }[]>([]);
   let usersError = $state("");
   let availableServices = $state<string[]>([]);
   let servicesError = $state("");
@@ -87,7 +87,9 @@
   onMount(async () => {
     const results = await Promise.allSettled([
       get_api<RulePreset[]>("/api/rules/presets"),
-      get_api<{ username: string }[]>("/api/rules/playback-users?limit=500"),
+      get_api<{ username: string; display_name?: string | null }[]>(
+        "/api/rules/playback-users?limit=500",
+      ),
       get_api<Record<string, { instances?: { enabled: boolean }[] }>>(
         "/api/settings/services",
       ),
@@ -247,7 +249,7 @@
                               );
                         }}
                       />
-                      {user.username}
+                      {user.display_name ?? user.username}
                     </label>
                   {/each}
                 </div>

@@ -82,8 +82,13 @@ class SeerrUserLookupResponse(BaseModel):
 
 
 class PlaybackUserLookupResponse(BaseModel):
+    # The value a rule stores; rule matching expands it to every alias below.
     username: str
+    # Set only for accounts no provider could name.
+    display_name: str | None = None
     source_services: list[str] = Field(default_factory=list)
+    # Other keys this person's playback is recorded under.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class MovieCollectionLookupResponse(BaseModel):
