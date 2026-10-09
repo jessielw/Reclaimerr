@@ -49,6 +49,7 @@
     MovieGroupRow,
     SeriesGroupRow,
   } from "$lib/components/candidates/view-types";
+  import { groupEntries } from "$lib/components/candidates/view-utils";
 
   interface CandidateOperationQueuedResponse {
     job_id: number | null;
@@ -565,13 +566,7 @@
 
   // toggle all seasons in a group
   const toggleGroupSelect = (row: GroupRow) => {
-    const groupIds =
-      row.group_type === "series_seasons"
-        ? [
-            ...row.seasons.map((s) => s.id),
-            ...(row.seriesEntry ? [row.seriesEntry.id] : []),
-          ]
-        : row.versions.map((v) => v.id);
+    const groupIds = groupEntries(row).map((e) => e.id);
     const allSelected = groupIds.every((id) => selectedIds.has(id));
     const next = new Set(selectedIds);
     if (allSelected) groupIds.forEach((id) => next.delete(id));
@@ -581,25 +576,13 @@
 
   // a group is fully selected if all season entries + the series entry (if exists) are selected
   const isGroupAllSelected = (row: GroupRow): boolean => {
-    const groupIds =
-      row.group_type === "series_seasons"
-        ? [
-            ...row.seasons.map((s) => s.id),
-            ...(row.seriesEntry ? [row.seriesEntry.id] : []),
-          ]
-        : row.versions.map((v) => v.id);
+    const groupIds = groupEntries(row).map((e) => e.id);
     return groupIds.length > 0 && groupIds.every((id) => selectedIds.has(id));
   };
 
   // a group is partially selected if some (but not all) season entries or the series entry are selected
   const isGroupPartialSelected = (row: GroupRow): boolean => {
-    const groupIds =
-      row.group_type === "series_seasons"
-        ? [
-            ...row.seasons.map((s) => s.id),
-            ...(row.seriesEntry ? [row.seriesEntry.id] : []),
-          ]
-        : row.versions.map((v) => v.id);
+    const groupIds = groupEntries(row).map((e) => e.id);
     const someSelected = groupIds.some((id) => selectedIds.has(id));
     return someSelected && !isGroupAllSelected(row);
   };
@@ -1004,15 +987,10 @@
   });
 
   const groupTotalBytes = (row: GroupRow): number =>
-    row.group_type === "series_seasons"
-      ? row.seasons.reduce(
-          (acc, s) => acc + (s.estimated_space_bytes ?? 0),
-          0,
-        ) + (row.seriesEntry?.estimated_space_bytes ?? 0)
-      : row.versions.reduce(
-          (acc, v) => acc + (v.estimated_space_bytes ?? 0),
-          0,
-        );
+    groupEntries(row).reduce(
+      (acc, e) => acc + (e.estimated_space_bytes ?? 0),
+      0,
+    );
 
   const toggleMovieGroupSelect = (row: MovieGroupRow) => toggleGroupSelect(row);
   const toggleSeriesGroupSelect = (row: SeriesGroupRow) =>

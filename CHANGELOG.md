@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Optional **External URL** for Radarr, Sonarr, and Seerr. Links on media pages use it instead of the Base URL, so instances reached by an internal hostname (e.g. a Docker container name) still open correctly in the browser.
+- Candidate groups with only one flagged item now show **Protect** and **Delete** (and **Move**, when enabled) on the main row, so the group no longer has to be expanded first. This covers a movie with one flagged version and a series with one flagged season or episode. These buttons act on that one item only. Groups with several flagged items still use the buttons on each item.
+
+### Changed
+
+- Candidate action buttons now show tooltips for movies and series that name what each button acts on, for example **Protect version**, **Delete season**, or **Move episode to destination**.
+
+### Fixed
+
+- A series flagged as a whole while some of its seasons or episodes were also flagged had no **Protect** or **Delete** button for the whole-series entry. It could only be acted on through the group checkbox. The buttons now appear on the series row.
 
 ## [0.5.5] - 2026-10-05
 

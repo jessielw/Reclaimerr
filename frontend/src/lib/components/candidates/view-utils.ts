@@ -9,6 +9,7 @@ import type {
   SeerrLink,
   SeerrRequester,
 } from "$lib/types/shared";
+import type { GroupRow } from "$lib/components/candidates/view-types";
 
 export const UNKNOWN_VALUE = "Unknown";
 
@@ -156,6 +157,27 @@ const candidateCreatedAtEpoch = (createdAt: string): number => {
   const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(createdAt);
   const parsed = Date.parse(hasTimezone ? createdAt : `${createdAt}Z`);
   return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+};
+
+/** Every candidate entry in a group, including the whole-series entry. */
+export const groupEntries = (row: GroupRow): ReclaimCandidateEntry[] =>
+  row.group_type === "series_seasons"
+    ? row.seriesEntry
+      ? [row.seriesEntry, ...row.seasons]
+      : row.seasons
+    : row.versions;
+
+/**
+ * The entry the group header's action buttons act on: the whole-series entry
+ * when one exists, otherwise the group's only entry. Groups with several
+ * scoped entries return null and keep their actions on each sub row.
+ */
+export const groupHeaderEntry = (
+  row: GroupRow,
+): ReclaimCandidateEntry | null => {
+  if (row.seriesEntry) return row.seriesEntry;
+  const entries = groupEntries(row);
+  return entries.length === 1 ? entries[0] : null;
 };
 
 const candidateDateEpoch = (value: string): number => {

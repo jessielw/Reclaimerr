@@ -22,6 +22,7 @@
     movieSummaryChips,
     newestCandidateCreatedAt,
     worstDeleteFailureEntry,
+    groupHeaderEntry,
   } from "$lib/components/candidates/view-utils";
   import type {
     FlatRow,
@@ -111,6 +112,7 @@
       </CandidateFlatCard>
     {:else}
       {@const expanded = expandedGroups.has(row.media_id)}
+      {@const headerEntry = groupHeaderEntry(row)}
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.versions)}
@@ -234,6 +236,19 @@
           compact
           class={canBulkSelect ? "ml-7" : ""}
         />
+        <!-- whole-series or single-entry groups act from the header -->
+        {#if headerEntry}
+          <div class="flex justify-end gap-2">
+            <CandidateActionButtons
+              entry={headerEntry}
+              {canDelete}
+              {moveEnabled}
+              {openSingleRequest}
+              {openSingleDelete}
+              {openSingleMove}
+            />
+          </div>
+        {/if}
         {#if expanded}
           <div class="pl-7 space-y-2">
             <h2>Versions</h2>

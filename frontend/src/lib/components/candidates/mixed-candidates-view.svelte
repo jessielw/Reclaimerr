@@ -27,6 +27,8 @@
     seriesGroupCountLabel,
     seriesGroupSeasonLabel,
     worstDeleteFailureEntry,
+    groupEntries,
+    groupHeaderEntry,
   } from "$lib/components/candidates/view-utils";
   import type {
     DisplayRow,
@@ -141,6 +143,7 @@
       </CandidateFlatCard>
     {:else if row.group_type === "movie_versions"}
       {@const expanded = expandedGroups.has(row.media_id)}
+      {@const headerEntry = groupHeaderEntry(row)}
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
       {@const allRules = groupRuleNames(row.versions)}
@@ -258,6 +261,19 @@
           compact
           class={canBulkSelect ? "ml-7" : ""}
         />
+        <!-- whole-series or single-entry groups act from the header -->
+        {#if headerEntry}
+          <div class="flex justify-end gap-2">
+            <CandidateActionButtons
+              entry={headerEntry}
+              {canDelete}
+              {moveEnabled}
+              {openSingleRequest}
+              {openSingleDelete}
+              {openSingleMove}
+            />
+          </div>
+        {/if}
         {#if expanded}
           <div class="pl-7 space-y-2">
             <h2>Versions</h2>
@@ -369,24 +385,19 @@
       </div>
     {:else}
       {@const expanded = expandedGroups.has(row.media_id)}
+      {@const headerEntry = groupHeaderEntry(row)}
       {@const allSel = isGroupAllSelected(row)}
       {@const partSel = isGroupPartialSelected(row)}
-      {@const allRules = groupRuleNames(
-        row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
-      )}
+      {@const entries = groupEntries(row)}
+      {@const allRules = groupRuleNames(entries)}
       {@const groupCountLabel = seriesGroupCountLabel(row.seasons)}
       {@const seasonSummary = seriesGroupSeasonLabel(row.seasons)}
-      {@const groupDateAdded = newestCandidateCreatedAt(
-        row.seriesEntry ? [row.seriesEntry, ...row.seasons] : row.seasons,
-      )}
+      {@const groupDateAdded = newestCandidateCreatedAt(entries)}
       {@const groupMetaSource = row.seriesEntry ?? row.seasons[0]}
-      {@const groupEntries = row.seriesEntry
-        ? [row.seriesEntry, ...row.seasons]
-        : row.seasons}
       {@const groupAutoDelete =
-        earliestAutoDeleteEntry(groupEntries) ?? groupMetaSource}
-      {@const seriesGroupWorstFailure = worstDeleteFailureEntry(groupEntries)}
-      {@const groupOrigin = candidateOriginMetadata(groupEntries)}
+        earliestAutoDeleteEntry(entries) ?? groupMetaSource}
+      {@const seriesGroupWorstFailure = worstDeleteFailureEntry(entries)}
+      {@const groupOrigin = candidateOriginMetadata(entries)}
       {@const seriesGroupMetaFields = candidateMediaMetaFields(
         {
           ...groupMetaSource,
@@ -399,7 +410,7 @@
             seriesGroupWorstFailure?.last_delete_attempt_at ?? null,
           last_delete_error: seriesGroupWorstFailure?.last_delete_error ?? null,
           playback_deferral:
-            groupEntries.find((entry) => entry.playback_deferral)
+            entries.find((entry) => entry.playback_deferral)
               ?.playback_deferral ?? null,
         },
         formatDate,
@@ -489,6 +500,19 @@
           compact
           class={canBulkSelect ? "ml-7" : ""}
         />
+        <!-- whole-series or single-entry groups act from the header -->
+        {#if headerEntry}
+          <div class="flex justify-end gap-2">
+            <CandidateActionButtons
+              entry={headerEntry}
+              {canDelete}
+              {moveEnabled}
+              {openSingleRequest}
+              {openSingleDelete}
+              {openSingleMove}
+            />
+          </div>
+        {/if}
         {#if expanded}
           {@const seasonItems = row.seasons.filter(
             (s) => s.episode_number == null,

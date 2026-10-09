@@ -141,9 +141,9 @@
         class="input-hover-el text-foreground placeholder:text-muted-foreground"
       />
       <p class="mt-1 text-xs text-muted-foreground">
-        Optional. Used for links to {tabLabel} on media pages when the Base URL
-        isn't reachable from your browser (e.g. a Docker container name). Leave
-        blank to use the Base URL.
+        Optional. Used for links to {tabLabel} on media pages when the Base URL isn't
+        reachable from your browser (e.g. a Docker container name). Leave blank to
+        use the Base URL.
       </p>
     </div>
   {/if}
