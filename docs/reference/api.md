@@ -16,7 +16,7 @@ Authorization: Bearer rcl_prefix_secret
 
 Available scopes are:
 
-- `system:read` for version, capabilities, and latest successful sync times.
+- `system:read` for version, capabilities, latest successful sync times, and the totals in `/api/v1/stats`.
 - `media:read` for movie and series catalog lookup.
 - `candidates:read` for candidate lookup and status queries.
 - `candidates:manage` for cancellation, postponement, timer resets, and candidate protection. This also grants `candidates:read`.
@@ -103,10 +103,13 @@ curl -X POST \
 ### Tasks and System
 
 - `GET /api/v1/system`
+- `GET /api/v1/stats`
 - `GET /api/v1/tasks`
 - `GET /api/v1/tasks/{task_id}`
 - `GET /api/v1/tasks/{task_id}/runs`
 - `POST /api/v1/tasks/{task_id}/run`
+
+`/api/v1/stats` returns flat totals for dashboard tiles. See [Dashboard Widgets](../usage/dashboard-widgets.md) for the fields and a Homepage example.
 
 Task schedule mutation is intentionally not part of v1. External integrations can observe schedules and trigger tasks that are already enabled, while schedule configuration remains an administrator action in Reclaimerr.
 

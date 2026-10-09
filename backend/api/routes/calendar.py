@@ -13,11 +13,9 @@ from backend.core.utils.datetime_utils import ensure_utc
 from backend.database import get_db
 from backend.database.models import (
     Episode,
-    GeneralSettings,
     Movie,
     MovieVersion,
     ReclaimCandidate,
-    ReclaimRule,
     Season,
     Series,
     User,
@@ -30,16 +28,16 @@ from backend.models.calendar import (
     CandidateOperation,
     CandidateScope,
 )
+from backend.services.reclaim_stats import (
+    SCHEDULED_AUTO_DELETE_STATES,
+    load_auto_delete_inputs,
+)
 
 router = APIRouter(prefix="/api", tags=["calendar"])
 
 # A year of days is more than any view needs, and it bounds the work a single
 # request can ask for.
 MAX_WINDOW_DAYS = 366
-
-# Only these states have a meaningful date to plot: a disabled or cancelled
-# candidate is never going to be acted on.
-PLOTTED_STATES = frozenset({"scheduled", "eligible", "postponed"})
 
 
 def _scope_of(candidate: ReclaimCandidate) -> CandidateScope:
@@ -120,14 +118,6 @@ async def get_calendar(
 
     offset = timedelta(minutes=tz_offset_minutes)
 
-    settings_row = (await db.execute(select(GeneralSettings))).scalars().first()
-    movie_delay_days = (
-        settings_row.auto_delete_movie_delay_days if settings_row is not None else 14
-    )
-    series_delay_days = (
-        settings_row.auto_delete_series_delay_days if settings_row is not None else 7
-    )
-
     rows = (
         await db.execute(
             select(
@@ -154,25 +144,15 @@ async def get_calendar(
         )
     ).all()
 
-    rule_ids = {
-        rule_id
-        for row in rows
-        for rule_id in (row.ReclaimCandidate.matched_rule_ids or [])
-    }
-    rule_actions_by_id: dict[int, dict[str, Any] | None] = {}
-    if rule_ids:
-        rule_actions_by_id = {
-            rule.id: rule.action
-            for rule in (
-                (
-                    await db.execute(
-                        select(ReclaimRule).where(ReclaimRule.id.in_(rule_ids))
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        }
+    inputs = await load_auto_delete_inputs(
+        db,
+        (
+            rule_id
+            for row in rows
+            for rule_id in (row.ReclaimCandidate.matched_rule_ids or [])
+        ),
+    )
+    rule_actions_by_id = inputs.rule_actions_by_id
 
     now = datetime.now(UTC)
     buckets: dict[date, list[CalendarItem]] = {}
@@ -186,11 +166,11 @@ async def get_calendar(
             postponed_until=candidate.auto_delete_postponed_until,
             cancelled_at=candidate.auto_delete_cancelled_at,
             rule_actions_by_id=rule_actions_by_id,
-            movie_delay_days=movie_delay_days,
-            series_delay_days=series_delay_days,
+            movie_delay_days=inputs.movie_delay_days,
+            series_delay_days=inputs.series_delay_days,
             now=now,
         )
-        if not policy.is_enabled or policy.state not in PLOTTED_STATES:
+        if not policy.is_enabled or policy.state not in SCHEDULED_AUTO_DELETE_STATES:
             continue
 
         eligible_at = ensure_utc(policy.eligible_at)

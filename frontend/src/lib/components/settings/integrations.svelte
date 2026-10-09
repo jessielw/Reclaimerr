@@ -51,7 +51,7 @@
     {
       value: "system:read",
       label: "System",
-      description: "Version and sync health",
+      description: "Version, sync health, and dashboard stats",
     },
     {
       value: "media:read",

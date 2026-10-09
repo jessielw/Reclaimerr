@@ -10,6 +10,7 @@ from backend.api.routes.v1 import (
     events,
     media,
     protections,
+    stats,
     system,
     tasks,
 )
@@ -32,6 +33,7 @@ async def discover_api(
             "movies": "/api/v1/movies",
             "openapi": "/api/v1/openapi.json",
             "series": "/api/v1/series",
+            "stats": "/api/v1/stats",
             "protections": "/api/v1/protections",
             "system": "/api/v1/system",
             "tasks": "/api/v1/tasks",
@@ -44,6 +46,7 @@ router.include_router(candidates.router)
 router.include_router(events.router)
 router.include_router(media.router)
 router.include_router(protections.router)
+router.include_router(stats.router)
 router.include_router(system.router)
 router.include_router(tasks.router)
 router.include_router(docs.router)

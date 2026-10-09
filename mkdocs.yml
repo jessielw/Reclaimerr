@@ -71,6 +71,7 @@ nav:
       - Duplicates: usage/duplicates.md
       - Rules: usage/rules.md
       - Tasks: usage/tasks.md
+      - Dashboard Widgets: usage/dashboard-widgets.md
   - Deployment:
       - Docker: deployment/docker.md
       - Production: deployment/production.md

@@ -35,7 +35,7 @@ from backend.models.dashboard import (
     DashboardServiceSummary,
     DashboardViewer,
 )
-from backend.services.reclaimable import non_reclaiming_candidate_totals
+from backend.services.reclaim_stats import load_reclaim_totals
 from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -64,20 +64,6 @@ async def get_dashboard(
                 .where(Series.removed_at.is_(None))
                 .scalar_subquery()
                 .label("series_count"),
-                select(
-                    func.coalesce(func.sum(ReclaimCandidate.estimated_space_bytes), 0)
-                )
-                .select_from(ReclaimCandidate)
-                .where(ReclaimCandidate.media_type == MediaType.MOVIE)
-                .scalar_subquery()
-                .label("movie_size_total"),
-                select(
-                    func.coalesce(func.sum(ReclaimCandidate.estimated_space_bytes), 0)
-                )
-                .select_from(ReclaimCandidate)
-                .where(ReclaimCandidate.media_type == MediaType.SERIES)
-                .scalar_subquery()
-                .label("series_size_total"),
                 select(func.coalesce(func.sum(Movie.size), 0))
                 .select_from(Movie)
                 .where(Movie.removed_at.is_(None))
@@ -139,37 +125,13 @@ async def get_dashboard(
                 )
                 .scalar_subquery()
                 .label("media_server_count"),
-                select(func.count())
-                .select_from(ReclaimHistory)
-                .where(ReclaimHistory.media_type == MediaType.MOVIE)
-                .scalar_subquery()
-                .label("reclaimed_movies"),
-                select(func.count())
-                .select_from(ReclaimHistory)
-                .where(ReclaimHistory.media_type == MediaType.SERIES)
-                .scalar_subquery()
-                .label("reclaimed_series"),
-                select(func.coalesce(func.sum(ReclaimHistory.size), 0))
-                .select_from(ReclaimHistory)
-                .scalar_subquery()
-                .label("reclaimed_total_size"),
             )
         )
     ).one()
 
     movie_count = summary_row.movie_count or 0
     series_count = summary_row.series_count or 0
-    movie_size_total = summary_row.movie_size_total or 0
-    series_size_total = summary_row.series_size_total or 0
-    # a profile-change candidate leaves its files in place, so its bytes are
-    # not space anyone is going to get back
-    non_reclaiming = await non_reclaiming_candidate_totals(db)
-    movie_size_total = max(
-        0, movie_size_total - non_reclaiming.get(MediaType.MOVIE, (0, 0))[1]
-    )
-    series_size_total = max(
-        0, series_size_total - non_reclaiming.get(MediaType.SERIES, (0, 0))[1]
-    )
+    totals = await load_reclaim_totals(db)
     all_movies_size = summary_row.all_movies_size or 0
     all_series_size = summary_row.all_series_size or 0
     pending_requests = summary_row.pending_requests or 0
@@ -178,9 +140,6 @@ async def get_dashboard(
     mine_pending = summary_row.mine_pending or 0
     mine_active = summary_row.mine_active or 0
     media_server_configured = (summary_row.media_server_count or 0) > 0
-    reclaimed_movies = summary_row.reclaimed_movies or 0
-    reclaimed_series = summary_row.reclaimed_series or 0
-    reclaimed_total_size = summary_row.reclaimed_total_size or 0
 
     services: list[DashboardServiceSummary] = []
     if is_admin:
@@ -346,12 +305,14 @@ async def get_dashboard(
         total_series=series_count,
         total_movies_size_bytes=int(all_movies_size),
         total_series_size_bytes=int(all_series_size),
-        reclaimable_movies_bytes=int(movie_size_total),
-        reclaimable_series_bytes=int(series_size_total),
-        reclaimable_total_bytes=int(movie_size_total + series_size_total),
-        reclaimed_movies=reclaimed_movies,
-        reclaimed_series=reclaimed_series,
-        reclaimed_total_bytes=int(reclaimed_total_size),
+        reclaimable_movies_bytes=totals.reclaimable_movies_bytes,
+        reclaimable_series_bytes=totals.reclaimable_series_bytes,
+        reclaimable_total_bytes=(
+            totals.reclaimable_movies_bytes + totals.reclaimable_series_bytes
+        ),
+        reclaimed_movies=totals.reclaimed_movies,
+        reclaimed_series=totals.reclaimed_series,
+        reclaimed_total_bytes=totals.reclaimed_bytes,
     )
     request_summary = DashboardRequestsSummary(
         pending_count=pending_requests,
