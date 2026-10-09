@@ -23,6 +23,7 @@ Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect
 | Scheduled tasks | Automated sync, scanning, and optional deletion workflows |
 | Protection flow | Keep items out of deletion while a request is pending or approved |
 | Reclaim history | Audit what happened, when it happened, and who approved it |
+| CSV export | Download the Candidates list or the reclaim history as a spreadsheet, with the filters currently applied |
 | Fallback deletion | Delete locally when a media server cannot handle the action |
 
 ## Safety Controls

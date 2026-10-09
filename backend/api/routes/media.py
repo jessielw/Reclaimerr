@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,6 +13,7 @@ from backend.api.candidate_views import normalize_reason_parts, reason_tokens
 from backend.core.auth import get_current_user, has_permission, require_page_access
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.rule_engine import RULE_OUTCOME_CANDIDATE, normalize_rule_outcome
+from backend.core.utils.csv_export import csv_datetime, csv_gigabytes, csv_response
 from backend.core.utils.datetime_utils import ensure_utc, to_utc_isoformat
 from backend.core.utils.misc import normalize_genre_names
 from backend.core.utils.resolution import guesstimate_resolution
@@ -1485,19 +1487,19 @@ async def get_series_episodes(
     return items
 
 
+_CANDIDATE_SORT_PATTERN = (
+    "^(created_at|auto_delete_eligible_at|media_title|estimated_space_bytes"
+    "|tmdb_rating|imdb_rating|year|added_at|last_viewed_at|view_count)$"
+)
+
+
 @router.get("/candidates", response_model=PaginatedCandidatesResponse)
 async def get_candidates(
     _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=200),
-    sort_by: str = Query(
-        "created_at",
-        pattern=(
-            "^(created_at|auto_delete_eligible_at|media_title|estimated_space_bytes"
-            "|tmdb_rating|imdb_rating|year|added_at|last_viewed_at|view_count)$"
-        ),
-    ),
+    sort_by: str = Query("created_at", pattern=_CANDIDATE_SORT_PATTERN),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     search: str | None = Query(None, max_length=200),
     media_type: MediaType | None = Query(None),
@@ -2316,6 +2318,86 @@ async def get_candidate_rule_filter_options(
     ]
 
 
+def _candidate_scope_label(entry: CandidateEntry) -> str:
+    if entry.episode_number is not None:
+        return f"Episode S{entry.season_number or 0:02d}E{entry.episode_number:02d}"
+    if entry.season_number is not None:
+        return f"Season {entry.season_number}"
+    if entry.media_type == MediaType.MOVIE.value:
+        return "Version" if entry.movie_version_id is not None else "Movie"
+    return "Series"
+
+
+@router.get("/candidates/export")
+async def export_candidates(
+    user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
+    db: AsyncSession = Depends(get_db),
+    sort_by: str = Query("created_at", pattern=_CANDIDATE_SORT_PATTERN),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+    search: str | None = Query(None, max_length=200),
+    media_type: MediaType | None = Query(None),
+    rule_id: Annotated[int | None, Query(ge=1)] = None,
+) -> Response:
+    """Download every candidate matching the list filters as CSV, not just one page.
+
+    Pages through the list endpoint itself so the export can never disagree
+    with what the Candidates page shows for the same filters.
+    """
+    entries: list[CandidateEntry] = []
+    page = 1
+    while True:
+        result = await get_candidates(
+            user,
+            db,
+            page=page,
+            per_page=200,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            search=search,
+            media_type=media_type,
+            rule_id=rule_id,
+        )
+        entries.extend(result.items)
+        if page >= result.total_pages:
+            break
+        page += 1
+
+    rule_names = dict(
+        (await db.execute(select(ReclaimRule.id, ReclaimRule.name))).tuples().all()
+    )
+    return csv_response(
+        f"reclaimerr-candidates-{datetime.now(UTC):%Y%m%d}.csv",
+        [
+            "Title",
+            "Year",
+            "Type",
+            "Scope",
+            "Size (GB)",
+            "Matched rules",
+            "Flagged (UTC)",
+            "Auto-delete (UTC)",
+        ],
+        (
+            [
+                entry.media_title,
+                entry.media_year or "",
+                entry.media_type,
+                _candidate_scope_label(entry),
+                csv_gigabytes(entry.estimated_space_bytes),
+                "; ".join(
+                    rule_names.get(rule_id, f"Rule {rule_id}")
+                    for rule_id in entry.matched_rule_ids
+                ),
+                csv_datetime(entry.created_at),
+                csv_datetime(entry.auto_delete_eligible_at)
+                if entry.auto_delete_is_active
+                else "",
+            ]
+            for entry in entries
+        ),
+    )
+
+
 @router.get("/candidates/presence", response_model=CandidatesPresenceResponse)
 async def get_candidates_presence(
     _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
@@ -2430,6 +2512,67 @@ async def move_candidates(
     )
 
 
+def _reclaim_history_query(media_type: MediaType | None, search: str | None) -> Any:
+    query = select(ReclaimHistory)
+    if media_type is not None:
+        query = query.where(ReclaimHistory.media_type == media_type)
+    if search and search.strip():
+        query = query.where(ReclaimHistory.name.ilike(f"%{search.strip()}%"))
+    return query
+
+
+@router.get("/reclaim-history/export")
+async def export_reclaim_history(
+    _user: Annotated[User, Depends(require_page_access(PageAccess.HISTORY))],
+    db: AsyncSession = Depends(get_db),
+    media_type: MediaType | None = Query(None),
+    search: str | None = Query(None, max_length=200),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+) -> Response:
+    """Download every history record matching the list filters as CSV."""
+    order = ReclaimHistory.created_at
+    rows = (
+        (
+            await db.execute(
+                _reclaim_history_query(media_type, search).order_by(
+                    order.asc() if sort_order == "asc" else order.desc(),
+                    ReclaimHistory.id.asc()
+                    if sort_order == "asc"
+                    else ReclaimHistory.id.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return csv_response(
+        f"reclaimerr-history-{datetime.now(UTC):%Y%m%d}.csv",
+        [
+            "Date (UTC)",
+            "Title",
+            "Type",
+            "Action",
+            "Size (GB)",
+            "Approved by",
+            "Path",
+            "Destination",
+        ],
+        (
+            [
+                csv_datetime(row.created_at),
+                row.name or "",
+                row.media_type.value,
+                row.action or "deleted",
+                csv_gigabytes(row.size),
+                row.approved_by,
+                row.path or "",
+                row.destination_path or "",
+            ]
+            for row in rows
+        ),
+    )
+
+
 @router.get("/reclaim-history", response_model=PaginatedReclaimHistoryResponse)
 async def get_reclaim_history(
     _user: Annotated[User, Depends(require_page_access(PageAccess.HISTORY))],
@@ -2441,12 +2584,7 @@ async def get_reclaim_history(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> PaginatedReclaimHistoryResponse:
     """Get paginated reclaim history records."""
-    base = select(ReclaimHistory)
-
-    if media_type is not None:
-        base = base.where(ReclaimHistory.media_type == media_type)
-    if search and search.strip():
-        base = base.where(ReclaimHistory.name.ilike(f"%{search.strip()}%"))
+    base = _reclaim_history_query(media_type, search)
 
     count_result = await db.execute(select(func.count()).select_from(base.subquery()))
     total: int = count_result.scalar_one()

@@ -33,6 +33,7 @@
   import { toast } from "svelte-sonner";
   import { uiIndicators } from "$lib/stores/ui-indicators";
   import Search from "@lucide/svelte/icons/search";
+  import Download from "@lucide/svelte/icons/download";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
@@ -392,6 +393,18 @@
     ruleFilter;
     perPage;
     if (mounted) loadCandidates(1);
+  });
+
+  // same filters and order as the list, every page
+  const candidatesExportUrl = $derived.by(() => {
+    const params = new URLSearchParams({
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    });
+    if (searchQuery.trim()) params.append("search", searchQuery.trim());
+    if (mediaFilter !== "all") params.append("media_type", mediaFilter);
+    if (ruleFilter !== "all") params.append("rule_id", ruleFilter);
+    return `/api/media/candidates/export?${params.toString()}`;
   });
 
   const loadCandidates = async (page: number = currentPage) => {
@@ -1302,14 +1315,28 @@
 
 <div class="p-2.5 md:p-8">
   <div class="max-w-7xl mx-auto space-y-4">
-    <div>
-      <h1 class="text-3xl font-bold text-foreground">Reclaim Candidates</h1>
-      <p class="text-muted-foreground">
-        Media flagged for deletion based on your configured rules.
-        {#if canBulkSelect}
-          Select multiple items for bulk actions.
-        {/if}
-      </p>
+    <div
+      class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
+    >
+      <div>
+        <h1 class="text-3xl font-bold text-foreground">Reclaim Candidates</h1>
+        <p class="text-muted-foreground">
+          Media flagged for deletion based on your configured rules.
+          {#if canBulkSelect}
+            Select multiple items for bulk actions.
+          {/if}
+        </p>
+      </div>
+      <Button
+        variant="outline"
+        class="gap-2 self-start md:self-auto"
+        href={candidatesExportUrl}
+        download
+        title="Download every candidate matching the current filters"
+      >
+        <Download class="size-4" />
+        Export CSV
+      </Button>
     </div>
 
     <!-- filters -->

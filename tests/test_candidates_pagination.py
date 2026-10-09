@@ -1107,3 +1107,61 @@ def test_get_candidates_surfaces_repeated_delete_failures() -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def _csv_rows(response) -> list[list[str]]:
+    import csv
+    import io
+
+    return list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
+
+
+def test_candidate_export_includes_every_page_with_the_list_filters() -> None:
+    from backend.api.routes.media import export_candidates
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+        async with session_maker() as db_session:
+            ids = await _seed_candidates(db_session)
+            everything = _csv_rows(
+                await export_candidates(
+                    _admin_user(),
+                    db_session,
+                    sort_by="created_at",
+                    sort_order="desc",
+                    search=None,
+                    media_type=None,
+                    rule_id=None,
+                )
+            )
+            movies = _csv_rows(
+                await export_candidates(
+                    _admin_user(),
+                    db_session,
+                    sort_by="created_at",
+                    sort_order="desc",
+                    search=None,
+                    media_type=MediaType.MOVIE,
+                    rule_id=None,
+                )
+            )
+
+        await engine.dispose()
+
+        header, *rows = everything
+        assert header[:4] == ["Title", "Year", "Type", "Scope"]
+        expected = (
+            2 + len(ids["bravo_candidate_ids"]) + len(ids["charlie_candidate_ids"])
+        )
+        assert len(rows) == expected
+        assert {row[0] for row in movies[1:]} == {"Alpha Movie", "Bravo Movie"}
+        charlie_scopes = {row[3] for row in rows if row[0] == "Charlie Show"}
+        assert charlie_scopes == {"Series", "Season 1", "Episode S01E01"}
+        assert all(row[5] == "Auto-delete rule" for row in rows)
+
+    asyncio.run(run())
