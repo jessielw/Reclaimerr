@@ -57,6 +57,7 @@
     adminOnly?: boolean;
     lockName?: boolean;
     hideBaseUrl?: boolean;
+    showExternalUrl?: boolean;
   };
 
   type TabGroup = {
@@ -149,6 +150,7 @@
           desc: "Enable this to integrate with Radarr for movie management and automated cleanup",
           baseUrlPlaceholder: "e.g. http://localhost:7878",
           adminOnly: true,
+          showExternalUrl: true,
         },
         {
           id: SettingsTab.Sonarr,
@@ -157,6 +159,7 @@
           desc: "Enable this to integrate with Sonarr for series management and automated cleanup",
           baseUrlPlaceholder: "e.g. http://localhost:8989",
           adminOnly: true,
+          showExternalUrl: true,
         },
         {
           id: SettingsTab.Seerr,
@@ -165,6 +168,7 @@
           desc: "Enable this to use Seerr request data for cleanup rules and to synchronize media deletions",
           baseUrlPlaceholder: "e.g. http://localhost:5055",
           adminOnly: true,
+          showExternalUrl: true,
         },
         {
           id: SettingsTab.Tautulli,
@@ -1108,6 +1112,8 @@
               hideBaseUrl={tabs.find((t) => t.id === activeTab)?.hideBaseUrl ??
                 false}
               fixedBaseUrl={DEFAULT_SERVICE_BASE_URLS[activeTab]}
+              showExternalUrl={tabs.find((t) => t.id === activeTab)
+                ?.showExternalUrl ?? false}
               extraSettings={serviceState[activeTab].config.extraSettings ?? {}}
               onchange={handleServiceChange}
             />

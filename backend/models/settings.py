@@ -102,6 +102,15 @@ class ServiceConfigUpdate(BaseModel):
         self.base_url = self.base_url.strip()
         if self.api_key is not None:
             self.api_key = self.api_key.strip() or None  # treat empty string as None
+        if self.extra_settings and "external_url" in self.extra_settings:
+            external_url = str(self.extra_settings["external_url"] or "").strip()
+            # without a scheme the browser treats it as a path on Reclaimerr itself
+            if external_url and "://" not in external_url:
+                raise PydanticCustomError(
+                    "external_url_invalid",
+                    "External URL must include a scheme (e.g. http://192.168.1.2:8989)",
+                )
+            self.extra_settings["external_url"] = external_url.rstrip("/")
         if self.is_main and self.service_type not in MEDIA_SERVERS:
             raise PydanticCustomError(
                 "is_main_invalid",

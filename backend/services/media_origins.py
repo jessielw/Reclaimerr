@@ -26,6 +26,17 @@ from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_ca
 from backend.user_types import MEDIA_SERVERS
 
 
+def _link_base_url(config: ServiceConfig) -> str:
+    """The URL a browser should open, which may differ from the one Reclaimerr calls.
+
+    Reclaimerr often reaches a service by a container name (http://sonarr:8989)
+    that means nothing outside its network, so an optional external URL wins.
+    """
+    settings = config.extra_settings if isinstance(config.extra_settings, dict) else {}
+    external_url = str(settings.get("external_url") or "").strip()
+    return external_url or config.base_url
+
+
 def _item_url(base_url: str, route: str, identifier: str | None) -> str | None:
     normalized = str(identifier or "").strip()
     if not normalized:
@@ -37,7 +48,7 @@ def _item_url(base_url: str, route: str, identifier: str | None) -> str | None:
 class MediaOriginLookup:
     movie_arr_refs: dict[int, list[ArrRefResponse]] = field(default_factory=dict)
     series_arr_refs: dict[int, list[ArrRefResponse]] = field(default_factory=dict)
-    # config_id -> (display name, base url). Every enabled Seerr, because a
+    # config_id -> (display name, link base url). Every enabled Seerr, because a
     # title is reachable in each of them regardless of who requested it.
     seerr_configs: dict[int, tuple[str, str]] = field(default_factory=dict)
     seerr_snapshot: SeerrRequestSnapshot | None = None
@@ -185,7 +196,9 @@ async def load_media_origin_lookup(
                     service_config_id=ref.service_config_id,
                     arr_id=ref.arr_movie_id,
                     service_name=config.name or "Radarr",
-                    item_url=_item_url(config.base_url, "movie", ref.arr_title_slug),
+                    item_url=_item_url(
+                        _link_base_url(config), "movie", ref.arr_title_slug
+                    ),
                 )
             )
 
@@ -211,7 +224,9 @@ async def load_media_origin_lookup(
                     service_config_id=ref.service_config_id,
                     arr_id=ref.arr_series_id,
                     service_name=config.name or "Sonarr",
-                    item_url=_item_url(config.base_url, "series", ref.arr_title_slug),
+                    item_url=_item_url(
+                        _link_base_url(config), "series", ref.arr_title_slug
+                    ),
                 )
             )
 
@@ -225,7 +240,7 @@ async def load_media_origin_lookup(
             )
 
     lookup.seerr_configs = {
-        config.id: (config.name or "Seerr", config.base_url)
+        config.id: (config.name or "Seerr", _link_base_url(config))
         for config in config_rows
         if config.service_type is Service.SEERR
     }

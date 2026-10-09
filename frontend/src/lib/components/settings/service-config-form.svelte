@@ -17,6 +17,7 @@
     baseUrlPlaceholder?: string;
     hideBaseUrl?: boolean;
     fixedBaseUrl?: string;
+    showExternalUrl?: boolean;
     disableToggle?: boolean;
     extraSettings?: Record<string, any>;
     onchange?: (event: CustomEvent) => void;
@@ -36,6 +37,7 @@
     baseUrlPlaceholder,
     hideBaseUrl = false,
     fixedBaseUrl,
+    showExternalUrl = false,
     disableToggle = false,
     extraSettings = {},
     onchange,
@@ -118,6 +120,30 @@
       />
       <p class="mt-1 text-xs text-muted-foreground">
         The URL where your {tabLabel} instance is running
+      </p>
+    </div>
+  {/if}
+
+  {#if showExternalUrl}
+    <div>
+      <label
+        for="externalUrl"
+        class="block text-sm font-medium text-foreground mb-2"
+        >External URL</label
+      >
+      <Input
+        type="url"
+        name="externalUrl"
+        value={extraSettings.external_url ?? ""}
+        oninput={(e) =>
+          dispatchChange("extraSettings.external_url", e.currentTarget.value)}
+        placeholder="e.g. http://192.168.1.2:port"
+        class="input-hover-el text-foreground placeholder:text-muted-foreground"
+      />
+      <p class="mt-1 text-xs text-muted-foreground">
+        Optional. Used for links to {tabLabel} on media pages when the Base URL
+        isn't reachable from your browser (e.g. a Docker container name). Leave
+        blank to use the Base URL.
       </p>
     </div>
   {/if}

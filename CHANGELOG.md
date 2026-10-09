@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Optional **External URL** for Radarr, Sonarr, and Seerr. Links on media pages use it instead of the Base URL, so instances reached by an internal hostname (e.g. a Docker container name) still open correctly in the browser.
+
 ## [0.5.5] - 2026-10-05
 
 ### Added
