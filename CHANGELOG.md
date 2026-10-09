@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Candidate action buttons now show tooltips for movies and series that name what each button acts on, for example **Protect version**, **Delete season**, or **Move episode to destination**.
+- Bumped a few dependencies.
 
 ### Fixed
 
