@@ -45,6 +45,7 @@ _DEFAULT_USER_TYPES: tuple[str, ...] = (
     "admin_message",
     "delete_request_execution_succeeded",
     "delete_request_execution_failed",
+    "requester_leaving_soon",
 )
 _DEFAULT_ADMIN_TYPES: tuple[str, ...] = (
     "task_failure",

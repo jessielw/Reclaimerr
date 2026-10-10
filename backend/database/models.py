@@ -197,6 +197,7 @@ class NotificationSetting(Base):
     delete_request_execution_failed: Mapped[bool] = mapped_column(
         Boolean, default=False
     )
+    requester_leaving_soon: Mapped[bool] = mapped_column(Boolean, default=True)
     # admin notification types
     task_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     admin_new_delete_request: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -390,6 +391,8 @@ class GeneralSettings(Base):
     playback_episode_min_seconds: Mapped[int] = mapped_column(Integer, default=7)
     # how many scheduled database backups to keep in <data_dir>/backups
     database_backup_retention: Mapped[int] = mapped_column(Integer, default=4)
+    # warn Seerr requesters this many days before automatic deletion; 0 is off
+    requester_warning_days: Mapped[int] = mapped_column(Integer, default=7)
 
     # favorites
     favorites_ignore_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1871,6 +1874,10 @@ class ReclaimCandidate(Base):
         ForeignKey("api_tokens.id", ondelete="SET NULL"), default=None, index=True
     )
     auto_delete_announced_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None
+    )
+    # when its Seerr requesters were warned it is leaving; once per candidate
+    requester_warned_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None
     )
 

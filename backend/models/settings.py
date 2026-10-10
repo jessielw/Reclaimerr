@@ -162,6 +162,7 @@ def default_notification_preferences() -> dict[str, dict[str, Any]]:
             "detail": "standard"
         },
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED.value: {"detail": "standard"},
+        NotificationType.REQUESTER_LEAVING_SOON.value: {"detail": "standard"},
         NotificationType.UPDATE_AVAILABLE.value: {"detail": "standard"},
     }
 
@@ -202,6 +203,7 @@ def normalize_notification_preferences(
         NotificationType.ADMIN_DELETE_EXECUTION_FAILED,
         NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED,
+        NotificationType.REQUESTER_LEAVING_SOON,
         NotificationType.UPDATE_AVAILABLE,
     ):
         key = notif_type.value
@@ -238,6 +240,7 @@ class NotificationSettingItem(BaseModel):
     update_available: bool = False
     delete_request_execution_succeeded: bool = False
     delete_request_execution_failed: bool = False
+    requester_leaving_soon: bool = True
     preferences: dict[str, dict[str, Any]] = Field(
         default_factory=default_notification_preferences
     )
@@ -376,6 +379,8 @@ class GeneralSettingsResponse(BaseModel):
 
     # scheduled database backups kept in <data_dir>/backups
     database_backup_retention: int = Field(default=4, ge=1, le=100)
+    # warn Seerr requesters this many days before automatic deletion; 0 is off
+    requester_warning_days: int = Field(default=7, ge=0, le=90)
 
     # favorites
     favorites_ignore_enabled: bool = False

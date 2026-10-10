@@ -56,6 +56,7 @@ async def get_notification_settings(
             update_available=n.update_available,
             delete_request_execution_succeeded=n.delete_request_execution_succeeded,
             delete_request_execution_failed=n.delete_request_execution_failed,
+            requester_leaving_soon=n.requester_leaving_soon,
             preferences=normalize_notification_preferences(n.preferences),
         )
         for n in notifications
@@ -199,6 +200,7 @@ async def create_or_update_notification(
         notification.delete_request_execution_failed = (
             data.delete_request_execution_failed
         )
+        notification.requester_leaving_soon = data.requester_leaving_soon
         notification.preferences = normalize_notification_preferences(data.preferences)
 
         await db.commit()
@@ -244,6 +246,7 @@ async def create_or_update_notification(
             update_available=data.update_available,
             delete_request_execution_succeeded=data.delete_request_execution_succeeded,
             delete_request_execution_failed=data.delete_request_execution_failed,
+            requester_leaving_soon=data.requester_leaving_soon,
             preferences=normalize_notification_preferences(data.preferences),
         )
         db.add(notification)
@@ -276,6 +279,7 @@ async def create_or_update_notification(
             update_available=notification.update_available,
             delete_request_execution_succeeded=notification.delete_request_execution_succeeded,
             delete_request_execution_failed=notification.delete_request_execution_failed,
+            requester_leaving_soon=notification.requester_leaving_soon,
             preferences=normalize_notification_preferences(notification.preferences),
         ),
     }

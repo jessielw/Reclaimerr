@@ -152,6 +152,7 @@ The Settings page reports when dependent rules or path mappings were changed. Re
 - `Default ARR Delete Behavior`
 - `Add Arr Import List Exclusions on Delete`
 - `Default Auto-Delete Review Periods`
+- `Warn requesters before deletion`
 - `Move Destination Folders`
 
 ## Resetting The Admin Password

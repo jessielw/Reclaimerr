@@ -19,6 +19,7 @@ from backend.core.api_tokens import (
     ApiPrincipal,
     require_api_scope,
 )
+from backend.core.logger import LOG
 from backend.core.protection_scope import (
     movie_scope_overlap_clause,
     series_scope_overlap_clause,
@@ -248,6 +249,11 @@ async def postpone_candidate_deletion(
         now = datetime.now(UTC)
         candidate.auto_delete_cancelled_at = None
         candidate.auto_delete_postponed_until = until
+        if candidate.requester_warned_at is not None:
+            LOG.info(
+                f"Candidate {candidate.id} was postponed after its requesters "
+                "were warned; they won't be warned again for the new date"
+            )
         candidate.lifecycle_reason = request.reason
         candidate.lifecycle_updated_at = now
         candidate.lifecycle_updated_by_api_token_id = principal.token_id

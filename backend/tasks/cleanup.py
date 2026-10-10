@@ -169,6 +169,7 @@ from backend.services.playback_history import (
     refresh_playback_history,
 )
 from backend.services.radarr import RadarrClient
+from backend.services.requester_warnings import warn_requesters_before_deletion
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 from backend.services.sonarr import SonarrClient
 from backend.services.watch_identity import (
@@ -1408,6 +1409,11 @@ async def scan_cleanup_candidates() -> None:
                             )
                         except Exception as e:
                             LOG.error(f"Error sending cleanup scan notification: {e}")
+                try:
+                    async with async_db() as session:
+                        await warn_requesters_before_deletion(session)
+                except Exception as e:
+                    LOG.error(f"Error sending requester leaving-soon warnings: {e}")
                 # candidates that dropped out of this scan must not keep their
                 # managed tag until the next scheduled tag sync
                 await reconcile_candidate_arr_tags("cleanup scan")

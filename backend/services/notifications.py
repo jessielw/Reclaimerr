@@ -73,6 +73,7 @@ _NOTIFY_TYPES: dict[NotificationType, apprise.NotifyType] = {
     NotificationType.ADMIN_DELETE_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
     NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: apprise.NotifyType.SUCCESS,
     NotificationType.DELETE_REQUEST_EXECUTION_FAILED: apprise.NotifyType.FAILURE,
+    NotificationType.REQUESTER_LEAVING_SOON: apprise.NotifyType.WARNING,
     NotificationType.UPDATE_AVAILABLE: apprise.NotifyType.INFO,
 }
 
@@ -89,6 +90,7 @@ _NOTIFICATION_LINKS: dict[NotificationType, tuple[str, str]] = {
     NotificationType.ADMIN_DELETE_EXECUTION_FAILED: ("/requests", "View requests"),
     NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: ("/requests", "View requests"),
     NotificationType.DELETE_REQUEST_EXECUTION_FAILED: ("/requests", "View requests"),
+    NotificationType.REQUESTER_LEAVING_SOON: ("/candidates", "Request protection"),
     NotificationType.ADMIN_MESSAGE: ("/", "Open Reclaimerr"),
     NotificationType.TASK_FAILURE: ("/", "Open Reclaimerr"),
 }
@@ -444,6 +446,21 @@ def _compose_body(
             )
         )
         return title, _body(lead, fields, context.get("error")), _DEFAULT_BODY_FORMAT
+
+    if notification_type is NotificationType.REQUESTER_LEAVING_SOON:
+        titles = context.get("titles")
+        titles = (
+            [t for t in titles if isinstance(t, dict)]
+            if isinstance(titles, list)
+            else []
+        )
+        if len(titles) < 2:
+            return title, lead, _DEFAULT_BODY_FORMAT
+        lines = [lead, ""]
+        lines.extend(
+            f"- **{t.get('label')}**{_SEPARATOR}{t.get('when')}" for t in titles
+        )
+        return title, "\n".join(lines), _DEFAULT_BODY_FORMAT
 
     if notification_type is NotificationType.ADMIN_MESSAGE:
         fields = _field_lines(
@@ -973,6 +990,7 @@ def _notification_type_to_field(notification_type: NotificationType) -> str:
         NotificationType.ADMIN_DELETE_EXECUTION_FAILED: "admin_delete_execution_failed",
         NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED: "delete_request_execution_succeeded",
         NotificationType.DELETE_REQUEST_EXECUTION_FAILED: "delete_request_execution_failed",
+        NotificationType.REQUESTER_LEAVING_SOON: "requester_leaving_soon",
         NotificationType.UPDATE_AVAILABLE: "update_available",
     }
 

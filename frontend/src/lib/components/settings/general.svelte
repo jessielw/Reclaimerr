@@ -75,6 +75,7 @@
   let playbackMovieMinSeconds = $state(15);
   let playbackEpisodeMinSeconds = $state(7);
   let databaseBackupRetention = $state(4);
+  let requesterWarningDays = $state(7);
   let favoritesIgnoreEnabled = $state(false);
   let favoritesProtectAllUsers = $state(false);
   let favoritesUsernamesInput = $state("");
@@ -206,6 +207,15 @@
       ) {
         throw new Error("Backups to keep must be a whole number from 1 to 100");
       }
+      if (
+        !Number.isInteger(requesterWarningDays) ||
+        requesterWarningDays < 0 ||
+        requesterWarningDays > 90
+      ) {
+        throw new Error(
+          "Requester warning days must be a whole number from 0 to 90",
+        );
+      }
 
       // save settings to backend
       await put_api("/api/settings/general", {
@@ -230,6 +240,7 @@
         playback_movie_min_seconds: playbackMovieMinSeconds,
         playback_episode_min_seconds: playbackEpisodeMinSeconds,
         database_backup_retention: databaseBackupRetention,
+        requester_warning_days: requesterWarningDays,
         favorites_ignore_enabled: favoritesIgnoreEnabled,
         favorites_protect_all_users: favoritesProtectAllUsers,
         favorites_usernames: parseFavoritesUsernames(favoritesUsernamesInput),
@@ -465,6 +476,7 @@
         playbackMovieMinSeconds = settings.playback_movie_min_seconds ?? 15;
         playbackEpisodeMinSeconds = settings.playback_episode_min_seconds ?? 7;
         databaseBackupRetention = settings.database_backup_retention ?? 4;
+        requesterWarningDays = settings.requester_warning_days ?? 7;
         favoritesIgnoreEnabled = settings.favorites_ignore_enabled ?? false;
         favoritesProtectAllUsers =
           settings.favorites_protect_all_users ?? false;
@@ -1245,6 +1257,25 @@
         The countdown starts when an item first becomes a candidate. Rule-level
         overrides can replace these defaults; when multiple auto-delete-enabled
         rules match, the longest delay wins. Use 0 for immediate eligibility.
+      </p>
+      <div class="space-y-2 mb-3 sm:max-w-xs">
+        <Label for="requesterWarningDays" class="text-sm text-foreground">
+          Warn requesters before deletion (days)
+        </Label>
+        <Input
+          id="requesterWarningDays"
+          type="number"
+          min="0"
+          max="90"
+          step="1"
+          bind:value={requesterWarningDays}
+        />
+      </div>
+      <p class="text-xs text-muted-foreground mb-3">
+        After each cleanup scan, Seerr requesters get one notification when
+        something they requested will be auto-deleted within this many days.
+        Only requesters linked to a Reclaimerr account through Plex, Jellyfin,
+        Emby, or email can be notified. Use 0 to turn warnings off.
       </p>
       <div
         class="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-foreground"

@@ -208,6 +208,7 @@ export enum NotificationType {
   AdminDeleteExecutionFailed = "admin_delete_execution_failed",
   DeleteRequestExecutionSucceeded = "delete_request_execution_succeeded",
   DeleteRequestExecutionFailed = "delete_request_execution_failed",
+  RequesterLeavingSoon = "requester_leaving_soon",
   UpdateAvailable = "update_available",
 }
 
@@ -324,6 +325,7 @@ export interface GeneralSettings {
   playback_movie_min_seconds: number;
   playback_episode_min_seconds: number;
   database_backup_retention: number;
+  requester_warning_days: number;
   favorites_ignore_enabled: boolean;
   favorites_protect_all_users: boolean;
   favorites_usernames: string[];

@@ -53,6 +53,8 @@ class NotificationType(StrEnum):
     ADMIN_MESSAGE = auto()
     DELETE_REQUEST_EXECUTION_SUCCEEDED = auto()
     DELETE_REQUEST_EXECUTION_FAILED = auto()
+    # a Seerr requester's title is about to be deleted automatically
+    REQUESTER_LEAVING_SOON = auto()
 
     # admin exclusive notifications
     TASK_FAILURE = auto()
