@@ -432,6 +432,83 @@ class RadarrClient:
             profiles.append(ArrQualityProfile(id=profile_id, name=name))
         return profiles
 
+    async def get_root_folders(self) -> list[str]:
+        """Get the root folder paths new movies can be added to."""
+        _, data = await self._make_request("GET", "rootfolder")
+        if not isinstance(data, list):
+            return []
+        return [
+            path
+            for entry in data
+            if isinstance(entry, Mapping)
+            and (path := _as_optional_str(entry.get("path")))
+        ]
+
+    async def lookup_movie(self, tmdb_id: int) -> Mapping[str, object] | None:
+        """Look a movie up by TMDB ID, whether or not it is in Radarr.
+
+        The result carries a non-zero ``id`` when the movie is already added.
+        Radarr's lookup leaves ``id`` out even for added movies, so the library
+        is checked first.
+        """
+        _, existing = await self._make_request(
+            "GET", "movie", params={"tmdbId": tmdb_id}
+        )
+        if isinstance(existing, list) and existing:
+            first = existing[0]
+            if isinstance(first, Mapping) and as_int(first.get("tmdbId")) == tmdb_id:
+                return first
+        _, data = await self._make_request(
+            "GET",
+            "movie/lookup/tmdb",
+            params={"tmdbId": tmdb_id},
+            error_context=f"Radarr lookup for TMDB {tmdb_id}",
+        )
+        return data if isinstance(data, Mapping) else None
+
+    async def add_movie(
+        self,
+        lookup: Mapping[str, object],
+        *,
+        root_folder_path: str,
+        quality_profile_id: int,
+        search: bool,
+    ) -> None:
+        """Add a movie from a `lookup_movie` result, monitored."""
+        payload = {
+            **lookup,
+            "qualityProfileId": quality_profile_id,
+            "rootFolderPath": root_folder_path,
+            "monitored": True,
+            "minimumAvailability": lookup.get("minimumAvailability") or "released",
+            "addOptions": {"searchForMovie": search, "monitor": "movieOnly"},
+        }
+        payload.pop("id", None)
+        payload.pop("path", None)
+        await self._make_request(
+            "POST", "movie", json=payload, error_context="Radarr add movie"
+        )
+
+    async def remove_import_exclusion(self, tmdb_id: int) -> bool:
+        """Remove the import exclusion for a TMDB ID. Returns whether one existed."""
+        _, data = await self._make_request("GET", "exclusions")
+        if not isinstance(data, list):
+            return False
+        removed = False
+        for entry in data:
+            if not isinstance(entry, Mapping) or as_int(entry.get("tmdbId")) != tmdb_id:
+                continue
+            exclusion_id = as_int(entry.get("id"))
+            if exclusion_id is None:
+                continue
+            await self._make_request(
+                "DELETE",
+                f"exclusions/{exclusion_id}",
+                error_context="Radarr remove import exclusion",
+            )
+            removed = True
+        return removed
+
     async def set_movies_quality_profile(
         self, movie_ids: list[int], quality_profile_id: int
     ) -> list[RadarrMovie]:

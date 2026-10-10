@@ -508,6 +508,87 @@ class SonarrClient:
             profiles.append(ArrQualityProfile(id=profile_id, name=name))
         return profiles
 
+    async def get_root_folders(self) -> list[str]:
+        """Get the root folder paths new series can be added to."""
+        _, data = await self._make_request("GET", "rootfolder")
+        if not isinstance(data, list):
+            return []
+        return [
+            path
+            for entry in data
+            if isinstance(entry, Mapping)
+            and (path := _as_optional_str(entry.get("path")))
+        ]
+
+    async def lookup_series(self, tvdb_id: int) -> Mapping[str, object] | None:
+        """Look a series up by TVDB ID, whether or not it is in Sonarr.
+
+        The result carries a non-zero ``id`` when the series is already added.
+        """
+        _, data = await self._make_request(
+            "GET",
+            "series/lookup",
+            params={"term": f"tvdb:{tvdb_id}"},
+            error_context=f"Sonarr lookup for TVDB {tvdb_id}",
+        )
+        if not isinstance(data, list):
+            return None
+        return next(
+            (
+                entry
+                for entry in data
+                if isinstance(entry, Mapping) and as_int(entry.get("tvdbId")) == tvdb_id
+            ),
+            None,
+        )
+
+    async def add_series(
+        self,
+        lookup: Mapping[str, object],
+        *,
+        root_folder_path: str,
+        quality_profile_id: int,
+        search: bool,
+    ) -> None:
+        """Add a series from a `lookup_series` result, monitoring every season."""
+        payload = {
+            **lookup,
+            "qualityProfileId": quality_profile_id,
+            "rootFolderPath": root_folder_path,
+            "monitored": True,
+            "seasonFolder": True,
+            "addOptions": {
+                "monitor": "all",
+                "searchForMissingEpisodes": search,
+                "searchForCutoffUnmetEpisodes": False,
+            },
+        }
+        payload.pop("id", None)
+        payload.pop("path", None)
+        await self._make_request(
+            "POST", "series", json=payload, error_context="Sonarr add series"
+        )
+
+    async def remove_import_exclusion(self, tvdb_id: int) -> bool:
+        """Remove the import list exclusion for a TVDB ID. Returns whether one existed."""
+        _, data = await self._make_request("GET", "importlistexclusion")
+        if not isinstance(data, list):
+            return False
+        removed = False
+        for entry in data:
+            if not isinstance(entry, Mapping) or as_int(entry.get("tvdbId")) != tvdb_id:
+                continue
+            exclusion_id = as_int(entry.get("id"))
+            if exclusion_id is None:
+                continue
+            await self._make_request(
+                "DELETE",
+                f"importlistexclusion/{exclusion_id}",
+                error_context="Sonarr remove import list exclusion",
+            )
+            removed = True
+        return removed
+
     async def set_series_quality_profile(
         self, series_ids: list[int], quality_profile_id: int
     ) -> None:

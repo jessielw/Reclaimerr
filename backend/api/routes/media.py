@@ -10,8 +10,14 @@ from sqlalchemy.orm import selectinload
 
 from backend.api.candidate_filters import candidate_matches_rule_clause
 from backend.api.candidate_views import normalize_reason_parts, reason_tokens
-from backend.core.auth import get_current_user, has_permission, require_page_access
+from backend.core.auth import (
+    get_current_user,
+    has_permission,
+    require_page_access,
+    require_permission,
+)
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.logger import LOG
 from backend.core.rule_engine import RULE_OUTCOME_CANDIDATE, normalize_rule_outcome
 from backend.core.utils.csv_export import csv_datetime, csv_gigabytes, csv_response
 from backend.core.utils.datetime_utils import ensure_utc, to_utc_isoformat
@@ -63,12 +69,16 @@ from backend.models.media import (
     PaginatedCandidatesResponse,
     PaginatedMediaResponse,
     PaginatedReclaimHistoryResponse,
+    ReAddOptions,
+    ReAddRequest,
+    ReAddResponse,
     ReclaimHistoryAttributes,
     ReclaimHistoryEntry,
     SeasonWithStatus,
     SeriesServiceRefResponse,
     SeriesWithStatus,
 )
+from backend.services.arr_readd import ReAddError, get_readd_options, readd_title
 from backend.services.media_origins import (
     load_library_origins,
     load_media_origin_lookup,
@@ -2626,3 +2636,38 @@ async def get_reclaim_history(
         per_page=per_page,
         total_pages=total_pages,
     )
+
+
+async def _get_history_row(db: AsyncSession, history_id: int) -> ReclaimHistory:
+    row = await db.get(ReclaimHistory, history_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "History record not found")
+    return row
+
+
+@router.get("/reclaim-history/{history_id}/re-add-options", response_model=ReAddOptions)
+async def get_reclaim_history_readd_options(
+    history_id: int,
+    _user: Annotated[User, Depends(require_permission(Permission.MANAGE_RECLAIM))],
+    db: AsyncSession = Depends(get_db),
+) -> ReAddOptions:
+    """Instances, root folders, and profiles a deleted title can be re-added with."""
+    return await get_readd_options(db, await _get_history_row(db, history_id))
+
+
+@router.post("/reclaim-history/{history_id}/re-add", response_model=ReAddResponse)
+async def readd_reclaim_history_title(
+    history_id: int,
+    request: ReAddRequest,
+    user: Annotated[User, Depends(require_permission(Permission.MANAGE_RECLAIM))],
+    db: AsyncSession = Depends(get_db),
+) -> ReAddResponse:
+    """Add a deleted movie or series back to Radarr or Sonarr."""
+    row = await _get_history_row(db, history_id)
+    try:
+        return await readd_title(db, row, request, username=user.username)
+    except ReAddError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except Exception as exc:
+        LOG.warning(f"Re-add of history record {history_id} failed: {exc}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc

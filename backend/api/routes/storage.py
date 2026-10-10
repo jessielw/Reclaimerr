@@ -27,6 +27,7 @@ from backend.models.storage import (
     StorageResponse,
 )
 from backend.services.arr_disk import load_arr_disk_space
+from backend.services.arr_readd import READD_ACTION
 from backend.services.reclaimable import non_reclaiming_candidate_totals
 
 router = APIRouter(prefix="/api", tags=["storage"])
@@ -217,7 +218,9 @@ async def get_storage(
                 ReclaimHistory.action,
                 func.count().label("item_count"),
                 func.coalesce(func.sum(ReclaimHistory.size), 0).label("total_bytes"),
-            ).group_by(ReclaimHistory.media_type, ReclaimHistory.action)
+            )
+            .where(ReclaimHistory.action != READD_ACTION)
+            .group_by(ReclaimHistory.media_type, ReclaimHistory.action)
         )
     ).all()
     reclaimed = [

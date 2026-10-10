@@ -71,6 +71,8 @@ These generated documents include internal UI routes as well as the mounted exte
 - `POST /api/media/candidates/delete`
 - `POST /api/media/candidates/move`
 - `GET /api/media/reclaim-history`
+- `GET /api/media/reclaim-history/{history_id}/re-add-options`
+- `POST /api/media/reclaim-history/{history_id}/re-add`
 
 The candidate list accepts `rule_id` to match exact membership in a candidate's `matched_rule_ids` array. The candidate rule-options endpoint returns enabled and disabled cleanup-candidate rules available to users with Candidates-page access; protection-only rules are omitted.
 

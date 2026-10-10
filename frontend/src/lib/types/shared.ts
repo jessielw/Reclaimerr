@@ -1534,6 +1534,30 @@ export interface ReclaimHistoryEntry {
   created_at: string;
 }
 
+export interface ReAddInstance {
+  service_config_id: number;
+  service_name: string;
+  root_folders: string[];
+  quality_profiles: { id: number; name: string }[];
+  already_added: boolean;
+  error: string | null;
+}
+
+export interface ReAddOptions {
+  history_id: number;
+  media_type: string;
+  service: "radarr" | "sonarr";
+  title: string | null;
+  unavailable_reason: string | null;
+  instances: ReAddInstance[];
+}
+
+export interface ReAddResponse {
+  message: string;
+  title: string;
+  exclusion_removed: boolean;
+}
+
 export interface DashboardRequestsSummary {
   pending_count: number;
   approved_7d: number;

@@ -23,6 +23,7 @@ from backend.database.models import (
     ReclaimRule,
 )
 from backend.enums import MediaType
+from backend.services.arr_readd import READD_ACTION
 from backend.services.reclaimable import non_reclaiming_candidate_totals
 
 # Auto-delete states that end in a deletion or move without anyone acting.
@@ -60,19 +61,21 @@ async def load_reclaim_totals(db: AsyncSession) -> ReclaimTotals:
         total = int(reclaimable.get(media_type) or 0)
         return max(0, total - non_reclaiming.get(media_type, (0, 0))[1])
 
+    # a re-added title is History, not reclaimed space
+    reclaimed = ReclaimHistory.action != READD_ACTION
     reclaimed_counts = dict(
         (
             await db.execute(
-                select(ReclaimHistory.media_type, func.count()).group_by(
-                    ReclaimHistory.media_type
-                )
+                select(ReclaimHistory.media_type, func.count())
+                .where(reclaimed)
+                .group_by(ReclaimHistory.media_type)
             )
         )
         .tuples()
         .all()
     )
     reclaimed_bytes = await db.scalar(
-        select(func.coalesce(func.sum(ReclaimHistory.size), 0))
+        select(func.coalesce(func.sum(ReclaimHistory.size), 0)).where(reclaimed)
     )
     return ReclaimTotals(
         reclaimable_movies_bytes=reclaimable_bytes(MediaType.MOVIE),

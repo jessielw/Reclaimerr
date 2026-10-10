@@ -22,7 +22,7 @@ Reclaimerr is built around a predictable reclaim pipeline: scan, review, protect
 | Database backups | Weekly database backups with retention, plus an on-demand download from Settings |
 | Scheduled tasks | Automated sync, scanning, and optional deletion workflows |
 | Protection flow | Keep items out of deletion while a request is pending or approved |
-| Reclaim history | Audit what happened, when it happened, and who approved it |
+| Reclaim history | Audit what happened, when it happened, and who approved it. Deleted movies and series can be re-added to Radarr or Sonarr in one click |
 | Dashboard widgets | A `/api/v1/stats` endpoint for Homepage and similar dashboards. See [Dashboard Widgets](usage/dashboard-widgets.md) |
 | CSV export | Download the Candidates list or the reclaim history as a spreadsheet, with the filters currently applied |
 | Fallback deletion | Delete locally when a media server cannot handle the action |

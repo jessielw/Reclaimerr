@@ -4,9 +4,11 @@
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Search from "@lucide/svelte/icons/search";
   import Download from "@lucide/svelte/icons/download";
+  import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
   import { get_api } from "$lib/api";
   import { auth } from "$lib/stores/auth";
   import ErrorBox from "$lib/components/error-box.svelte";
+  import ReAddDialog from "$lib/components/history/re-add-dialog.svelte";
   import CompactPagination from "$lib/components/compact-pagination.svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -47,6 +49,17 @@
       ($auth.user?.permissions ?? []).includes(Permission.ManageReclaim) ||
       ($auth.user?.permissions ?? []).includes(Permission.ManageRequests),
   );
+  const canReAdd = $derived(
+    isAdmin ||
+      ($auth.user?.permissions ?? []).includes(Permission.ManageReclaim),
+  );
+
+  let reAddOpen = $state(false);
+  let reAddEntry = $state<ReclaimHistoryEntry | null>(null);
+  const openReAdd = (entry: ReclaimHistoryEntry) => {
+    reAddEntry = entry;
+    reAddOpen = true;
+  };
 
   const _historySearchStore = createFilterState("history_search", "");
   const _historyMediaTypeStore = createFilterState("history_media_type", "all");
@@ -449,6 +462,7 @@
   };
 
   const historyActionLabel = (entry: ReclaimHistoryEntry) => {
+    if (entry.action === "re-added") return "Re-added";
     if (!canViewDetailedHistory) return "Reclaimed";
     switch (entry.action) {
       case "moved":
@@ -974,6 +988,21 @@
                     <p class="text-xs">
                       {formatDateTimeToLocaleString(entry.created_at)}
                     </p>
+                    {#if canReAdd && entry.action === "deleted" && entry.tmdb_id != null}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        class="mt-2 gap-2"
+                        title="Add this title back to {entry.media_type ===
+                        MediaType.Movie
+                          ? 'Radarr'
+                          : 'Sonarr'}"
+                        onclick={() => openReAdd(entry)}
+                      >
+                        <ArchiveRestore class="size-4" />
+                        Re-add
+                      </Button>
+                    {/if}
                   </div>
                 </div>
               </article>
@@ -1003,3 +1032,9 @@
     </section>
   </div>
 </div>
+
+<ReAddDialog
+  bind:open={reAddOpen}
+  entry={reAddEntry}
+  onSuccess={() => loadHistory(historyPage)}
+/>

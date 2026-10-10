@@ -955,3 +955,43 @@ class PaginatedReclaimHistoryResponse(BaseModel):
     page: int
     per_page: int
     total_pages: int
+
+
+class ReAddQualityProfile(BaseModel):
+    id: int
+    name: str
+
+
+class ReAddInstance(BaseModel):
+    """One Radarr or Sonarr instance a deleted title can be added back to."""
+
+    service_config_id: int
+    service_name: str
+    root_folders: list[str] = []
+    quality_profiles: list[ReAddQualityProfile] = []
+    already_added: bool = False
+    error: str | None = None
+
+
+class ReAddOptions(BaseModel):
+    history_id: int
+    media_type: str
+    service: Literal["radarr", "sonarr"]
+    # the title as the Arr knows it; None when no instance could look it up
+    title: str | None = None
+    # set when the title can't be re-added at all; the instances are then empty
+    unavailable_reason: str | None = None
+    instances: list[ReAddInstance] = []
+
+
+class ReAddRequest(BaseModel):
+    service_config_id: int
+    root_folder_path: str = Field(min_length=1)
+    quality_profile_id: int
+    search: bool = True
+
+
+class ReAddResponse(BaseModel):
+    message: str
+    title: str
+    exclusion_removed: bool = False
