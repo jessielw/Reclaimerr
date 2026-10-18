@@ -49,6 +49,24 @@ Deleting from the Candidates page ends in `Manual deletion complete: 0 processed
 - **`Stale candidate: ... is tombstoned in Reclaimerr`** - the movie or series behind the candidate is marked removed, so no handler will act on it. Run a library sync followed by a reclaim scan to clear the leftover candidate.
 - **`Stale candidate: ... no longer exists`** - the candidate points at a media row that is gone. A reclaim scan rebuilds candidates and clears it.
 
+## Radarr Test Passes but Movie Deletion Cannot Find a Route
+
+The Radarr Test button checks connectivity and authentication. Deletion also needs a synced link to that movie, an initialized Radarr client, and a route allowed by the rule. Changing the Radarr hostname or IP does not repair movie links or path mappings.
+
+1. Save the Radarr settings and run **Sync Media** to refresh movie links.
+2. Retry one affected movie and find `No Radarr deletion route` in the log. If media-server fallback deletion is disabled, the candidate's failure details include the reason too.
+3. Follow the reason in that message:
+
+| Reason | Action |
+| --- | --- |
+| No initialized runtime client | Check service initialization errors; re-save the enabled Radarr configuration to reconnect. |
+| No synced Radarr movie link | Confirm the movie exists in Radarr with the same TMDB ID, then run Sync Media. |
+| Movie links refer to unavailable configs | Enable or reconnect the linked Radarr instance, then sync again. |
+| Rule excludes the linked instance | Review the rule's selected Radarr targets. |
+| No unambiguous path match | Compare the media-server file path with the linked Radarr folder paths in the message; correct **Settings → General → Path Mappings** for those instances. |
+
+Containers in the same stack can still see different paths to the same file. For example, Jellyfin might report `/media/movies/Title/movie.mkv` while Radarr reports `/movies/Title`. Map both prefixes to the same actual movie directory mounted in Reclaimerr. Only use a shared mapping when the paths describe the same physical files; a different copy needs its own mapping.
+
 ## A Configured Service Is Offline
 
 You can disable or delete an existing service configuration even when the external service is unreachable. The Test action and enabling a service still require connectivity.

@@ -178,13 +178,17 @@ def paths_equivalent(
     path_mappings: Sequence[Mapping[str, Any]] | None,
     *,
     left_service_type: str | None = None,
+    left_service_config_id: int | None = None,
     right_service_type: str | None = None,
     right_service_config_id: int | None = None,
 ) -> bool:
     """Return whether two source paths resolve to the same normalized path."""
 
     left_variants = mapped_path_variants(
-        left, path_mappings, service_type=left_service_type
+        left,
+        path_mappings,
+        service_type=left_service_type,
+        service_config_id=left_service_config_id,
     )
     right_variants = mapped_path_variants(
         right,

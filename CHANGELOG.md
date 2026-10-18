@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Movie deletion now honors path mappings scoped to the main media-server instance when selecting a Radarr instance, matching individual movie files, and removing local files after unmonitoring. A valid mapping could previously be ignored, causing deletion to fail or fall back to the media server despite a working Radarr connection.
+- Missing Radarr deletion routes now report whether the runtime client is unavailable, the movie has no synced Radarr link, the rule excludes the linked instance, or the file paths cannot be matched. The reason is included in candidate failure details when fallback deletion is disabled.
 - Jellyfin API-key item lookups now work when checking active playback, resolving deletion paths, and verifying episode ordering, instead of returning HTTP 400 because no user was attached.
 - **Defer When Playback Status Is Unavailable** now applies to final media-server and Radarr/Sonarr deletion-path checks as well as the initial session check. Known playing or paused media remains protected when the setting is off.
 - Unmonitor-and-delete actions no longer report success or mark movies and series removed when file removal was deferred, failed, or could not be confirmed. Affected candidates remain available to retry, and confirmed local removals use a media-server path scan.
