@@ -1723,7 +1723,7 @@ wheels = [
 
 [[package]]
 name = "reclaimerr"
-version = "0.5.9b2"
+version = "0.5.9"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
