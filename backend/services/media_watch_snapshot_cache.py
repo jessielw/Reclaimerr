@@ -924,7 +924,16 @@ class MediaWatchSnapshotCache:
             if snapshot.source_item_id
         }
         coordinates: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
-        if source_ids:
+        ownership = await load_media_identity_ownership(session)
+        # A linked server's ids must never be resolved against another server's
+        # shared id column. Legacy installs without configs retain their lookup.
+        owns_ids = (
+            not ownership.services_by_config_id
+            or ownership.owns_service_id_columns(
+                source_service, source_service_config_id
+            )
+        )
+        if source_ids and owns_ids:
             result = await session.execute(
                 select(
                     id_column,
@@ -941,8 +950,9 @@ class MediaWatchSnapshotCache:
                     coordinates[str(source_id)].append(
                         (int(tmdb_id), int(season_number), int(episode_number))
                     )
-            # The id column holds one server's ids. A linked server of the same
-            # type records its own only as supplemental matches.
+        if source_ids:
+            # Config-scoped matches are authoritative when shared columns can
+            # also be written by another linked server of the same type.
             supplemental = await session.execute(
                 select(
                     SupplementalMediaMatch.source_item_id,
@@ -962,17 +972,19 @@ class MediaWatchSnapshotCache:
                     Series.tmdb_id.is_not(None),
                 )
             )
-            direct_ids = set(coordinates)
+            supplemental_coordinates: dict[str, list[tuple[int, int, int]]] = (
+                defaultdict(list)
+            )
             for source_id, tmdb_id, season_number, episode_number in supplemental.all():
                 if source_id is None or tmdb_id is None:
                     continue
-                if str(source_id) not in direct_ids:
-                    coordinates[str(source_id)].append(
-                        (int(tmdb_id), int(season_number), int(episode_number))
-                    )
+                supplemental_coordinates[str(source_id)].append(
+                    (int(tmdb_id), int(season_number), int(episode_number))
+                )
+            if ownership.main_config_id != source_service_config_id:
+                coordinates.update(supplemental_coordinates)
 
         blocked_tmdb: set[int] = set()
-        ownership = await load_media_identity_ownership(session)
         if (
             ownership.main_config_id is not None
             and ownership.main_config_id != source_service_config_id

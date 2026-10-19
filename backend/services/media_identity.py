@@ -64,12 +64,13 @@ class MediaIdentityOwnership:
 
         The main server writes its own type's columns; a linked server writes
         them for a type the main server does not provide (``sync_linked_data``'s
-        ``backfill_episode_ids``). Two linked servers of one type both write
-        them, which this can no more disambiguate than the sync that wrote them.
+        ``backfill_episode_ids``). With multiple writers, only config-scoped
+        supplemental matches can identify which server supplied an item id.
         """
 
         if self.main_service is None or service is not self.main_service:
-            return self._configs_of(service)
+            configs = self._configs_of(service)
+            return configs if len(configs) == 1 else set()
         return {self.main_config_id} if self.main_config_id is not None else set()
 
     def owns_media_rows(self, service: Service, config_id: int) -> bool:
