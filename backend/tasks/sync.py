@@ -37,6 +37,7 @@ from backend.database.models import (
     ServiceConfig,
     ServiceMediaLibrary,
     SupplementalMediaMatch,
+    SyncDeletionProposal,
 )
 from backend.enums import MediaType, ProtectionRequestStatus, Service, Task
 from backend.models.media import (
@@ -121,14 +122,9 @@ def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
     return delete_count > live_count * MAX_SOFT_DELETE_RATIO
 
 
-# A delete set larger than the ratio allows is usually a partial media-server
-# response, but it is also what a legitimate main-server switch looks like. A
-# flapping server proposes a DIFFERENT set each time; a real reduction proposes
-# the same one. So skip the first time and act if the same set comes back.
-_previous_large_delete_sets: dict[MediaType, frozenset[int]] = {}
-
-
-def _soft_delete_blocked(
+async def _soft_delete_blocked(
+    session: AsyncSession,
+    service_config_id: int,
     media_type: MediaType,
     rows_to_delete: Sequence[_RowT],
     live_count: int,
@@ -141,17 +137,22 @@ def _soft_delete_blocked(
     Remembering the previous over-ratio set turns the guard into one grace run
     rather than a permanent block.
 
-    The memory is process-local by design; a restart just costs one more grace
-    run, which is not worth persisting for.
+    Each scheduled sync normally runs in a fresh process. Persist the proposal
+    by server and media type; the caller commits it with any soft deletions.
     """
+    previous = await session.get(SyncDeletionProposal, (service_config_id, media_type))
     if not _soft_delete_guard_tripped(len(rows_to_delete), live_count):
-        _previous_large_delete_sets.pop(media_type, None)
+        if previous is not None:
+            await session.delete(previous)
         return False
-    signature = frozenset(row.id for row in rows_to_delete)
-    if _previous_large_delete_sets.get(media_type) == signature:
-        _previous_large_delete_sets.pop(media_type, None)
+    signature = sorted({row.id for row in rows_to_delete})
+    if previous is not None and previous.row_ids == signature:
+        await session.delete(previous)
         return False
-    _previous_large_delete_sets[media_type] = signature
+    if previous is None:
+        session.add(SyncDeletionProposal(service_config_id, media_type, signature))
+    else:
+        previous.row_ids = signature
     return True
 
 
@@ -2245,8 +2246,12 @@ async def sync_movies(
                 live_movie_count = sum(
                     1 for movie in existing_movies_list if not movie.removed_at
                 )
-                if _soft_delete_blocked(
-                    MediaType.MOVIE, movies_to_delete, live_movie_count
+                if await _soft_delete_blocked(
+                    session,
+                    effective_config.id,
+                    MediaType.MOVIE,
+                    movies_to_delete,
+                    live_movie_count,
                 ):
                     LOG.warning(
                         f"Skipping movie soft-delete this run: "
@@ -2265,7 +2270,7 @@ async def sync_movies(
                     await _apply_soft_deletes(
                         session, movies_to_delete, MediaType.MOVIE
                     )
-                    await session.commit()
+                await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
@@ -2910,8 +2915,12 @@ async def sync_series(
                 live_series_count = sum(
                     1 for s in existing_series_list if not s.removed_at
                 )
-                if _soft_delete_blocked(
-                    MediaType.SERIES, series_to_delete, live_series_count
+                if await _soft_delete_blocked(
+                    session,
+                    effective_config.id,
+                    MediaType.SERIES,
+                    series_to_delete,
+                    live_series_count,
                 ):
                     LOG.warning(
                         f"Skipping series soft-delete this run: "
@@ -2929,7 +2938,7 @@ async def sync_series(
                     await _apply_soft_deletes(
                         session, series_to_delete, MediaType.SERIES
                     )
-                    await session.commit()
+                await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(

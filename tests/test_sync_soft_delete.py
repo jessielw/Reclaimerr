@@ -18,26 +18,47 @@ from backend.database.models import (
     ProtectionRequest,
     ReclaimCandidate,
     Series,
+    ServiceConfig,
     User,
 )
-from backend.enums import MediaType, UserRole
+from backend.enums import MediaType, Service, UserRole
 from backend.tasks.sync import (
     MAX_SOFT_DELETE_RATIO,
     MIN_LIBRARY_FOR_RATIO_CHECK,
     _apply_soft_deletes,
-    _previous_large_delete_sets,
     _select_rows_to_soft_delete,
     _soft_delete_blocked,
     _soft_delete_guard_tripped,
 )
 
 
-@pytest.fixture(autouse=True)
-def _clear_remembered_delete_sets():
-    """The two-strikes memory is module state; do not leak it between tests."""
-    _previous_large_delete_sets.clear()
-    yield
-    _previous_large_delete_sets.clear()
+@pytest.fixture
+async def guard():
+    factory, engine = await _memory_session_maker()
+    async with factory() as db:
+        for name in ("main", "other"):
+            db.add(
+                ServiceConfig(
+                    service_type=Service.PLEX,
+                    name=name,
+                    base_url="http://unused",
+                    api_key="unused",
+                )
+            )
+        await db.commit()
+
+    async def check(media_type, rows, live_count, config_id=1):
+        async with factory() as db:
+            blocked = await _soft_delete_blocked(
+                db, config_id, media_type, rows, live_count
+            )
+            await db.commit()
+            return blocked
+
+    try:
+        yield check
+    finally:
+        await engine.dispose()
 
 
 def _series(row_id: int, tmdb_id: int, removed: bool = False) -> Series:
@@ -127,7 +148,8 @@ def _large_delete_set(first_id: int = 1) -> list[Series]:
     return [_series(row_id, 1000 + row_id) for row_id in range(first_id, first_id + 60)]
 
 
-def test_the_same_large_delete_set_is_allowed_on_the_second_run() -> None:
+@pytest.mark.anyio
+async def test_the_same_large_delete_set_is_allowed_on_the_second_run(guard) -> None:
     """Blocking on the ratio alone never relents after a main-server switch.
 
     The phantom rows the pass wants gone are themselves counted as live, so the
@@ -136,56 +158,47 @@ def test_the_same_large_delete_set_is_allowed_on_the_second_run() -> None:
     """
     rows = _large_delete_set()
 
-    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
-    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is False
+    assert await guard(MediaType.SERIES, rows, live_count=100) is True
+    assert await guard(MediaType.SERIES, rows, live_count=100) is False
 
 
-def test_a_different_large_delete_set_each_run_stays_blocked() -> None:
+@pytest.mark.anyio
+async def test_a_different_large_delete_set_each_run_stays_blocked(guard) -> None:
     """The case the guard is actually for: a server answering inconsistently."""
-    assert (
-        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(1), live_count=100)
-        is True
-    )
-    assert (
-        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(500), live_count=100)
-        is True
-    )
-    assert (
-        _soft_delete_blocked(MediaType.SERIES, _large_delete_set(900), live_count=100)
-        is True
-    )
+    assert await guard(MediaType.SERIES, _large_delete_set(1), live_count=100) is True
+    assert await guard(MediaType.SERIES, _large_delete_set(500), live_count=100) is True
+    assert await guard(MediaType.SERIES, _large_delete_set(900), live_count=100) is True
 
 
-def test_a_healthy_run_clears_the_remembered_set() -> None:
+@pytest.mark.anyio
+async def test_a_healthy_run_clears_the_remembered_set(guard) -> None:
     """A sub-threshold run means the earlier set was never confirmed."""
     rows = _large_delete_set()
 
-    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
-    assert _soft_delete_blocked(MediaType.SERIES, rows[:1], live_count=100) is False
-    assert _previous_large_delete_sets == {}
-    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
+    assert await guard(MediaType.SERIES, rows, live_count=100) is True
+    assert await guard(MediaType.SERIES, rows[:1], live_count=100) is False
+    assert await guard(MediaType.SERIES, rows, live_count=100) is True
 
 
-def test_the_two_media_types_are_remembered_separately() -> None:
+@pytest.mark.anyio
+async def test_the_two_media_types_are_remembered_separately(guard) -> None:
     """A movie pass must not confirm a series pass, or vice versa."""
     series_rows = _large_delete_set()
     movie_rows = [_movie(row_id, 2000 + row_id) for row_id in range(1, 61)]
 
-    assert _soft_delete_blocked(MediaType.SERIES, series_rows, live_count=100) is True
-    assert _soft_delete_blocked(MediaType.MOVIE, movie_rows, live_count=100) is True
-    assert _soft_delete_blocked(MediaType.SERIES, series_rows, live_count=100) is False
-    assert _soft_delete_blocked(MediaType.MOVIE, movie_rows, live_count=100) is False
+    assert await guard(MediaType.SERIES, series_rows, live_count=100) is True
+    assert await guard(MediaType.MOVIE, movie_rows, live_count=100) is True
+    assert await guard(MediaType.SERIES, series_rows, live_count=100) is False
+    assert await guard(MediaType.MOVIE, movie_rows, live_count=100) is False
 
 
-def test_set_membership_not_ordering_decides_the_repeat() -> None:
+@pytest.mark.anyio
+async def test_set_membership_not_ordering_decides_the_repeat(guard) -> None:
     """Row order comes from the media server and carries no meaning."""
     rows = _large_delete_set()
 
-    assert _soft_delete_blocked(MediaType.SERIES, rows, live_count=100) is True
-    assert (
-        _soft_delete_blocked(MediaType.SERIES, list(reversed(rows)), live_count=100)
-        is False
-    )
+    assert await guard(MediaType.SERIES, rows, live_count=100) is True
+    assert await guard(MediaType.SERIES, list(reversed(rows)), live_count=100) is False
 
 
 async def _memory_session_maker() -> tuple[
@@ -204,6 +217,112 @@ async def _memory_session_maker() -> tuple[
         engine, expire_on_commit=False, class_=AsyncSession
     )
     return session_maker, engine
+
+
+@pytest.mark.anyio
+async def test_servers_cannot_confirm_each_others_proposal(guard):
+    rows = _large_delete_set()
+    assert await guard(MediaType.MOVIE, rows, 100, config_id=1)
+    assert await guard(MediaType.MOVIE, rows, 100, config_id=2)
+    assert not await guard(MediaType.MOVIE, rows, 100, config_id=1)
+    assert not await guard(MediaType.MOVIE, rows, 100, config_id=2)
+
+
+def test_proposal_survives_a_fresh_sync_process(tmp_path):
+    import asyncio
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    db_path = tmp_path / "proposal.db"
+
+    async def seed():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with async_sessionmaker(engine)() as db:
+            db.add(
+                ServiceConfig(
+                    service_type=Service.PLEX,
+                    name="main",
+                    base_url="http://unused",
+                    api_key="unused",
+                )
+            )
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(seed())
+    code = """
+import asyncio, sys
+from types import SimpleNamespace
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from backend.tasks.sync import _soft_delete_blocked
+from backend.enums import MediaType
+async def run():
+    engine = create_async_engine('sqlite+aiosqlite:///' + sys.argv[1])
+    async with async_sessionmaker(engine)() as db:
+        blocked = await _soft_delete_blocked(db, 1, MediaType.MOVIE,
+                                            [SimpleNamespace(id=i) for i in range(15)], 20)
+        await db.commit()
+        print(blocked)
+    await engine.dispose()
+asyncio.run(run())
+"""
+    answers = []
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(db_path)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        answers.append(result.stdout.strip().splitlines()[-1])
+    assert answers == ["True", "False"]
+
+
+def test_proposal_migration_preserves_services_and_cascades_on_delete(monkeypatch):
+    import importlib
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect, text
+
+    migration = importlib.import_module(
+        "backend.alembic.versions.a2c7e9f4b106_persist_sync_deletion_proposals"
+    )
+    engine = create_engine("sqlite:///:memory:")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+            connection.execute(
+                text("CREATE TABLE service_configs (id INTEGER PRIMARY KEY)")
+            )
+            connection.execute(text("INSERT INTO service_configs VALUES (1)"))
+            monkeypatch.setattr(
+                migration, "op", Operations(MigrationContext.configure(connection))
+            )
+            migration.upgrade()
+            connection.execute(
+                text("INSERT INTO sync_deletion_proposals VALUES (1, 'MOVIE', '[1,2]')")
+            )
+            assert (
+                connection.execute(text("SELECT id FROM service_configs")).scalar() == 1
+            )
+            connection.execute(text("DELETE FROM service_configs WHERE id=1"))
+            assert (
+                connection.execute(
+                    text("SELECT COUNT(*) FROM sync_deletion_proposals")
+                ).scalar()
+                == 0
+            )
+            migration.downgrade()
+            assert (
+                "sync_deletion_proposals" not in inspect(connection).get_table_names()
+            )
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.anyio

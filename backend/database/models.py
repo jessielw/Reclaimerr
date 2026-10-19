@@ -274,6 +274,18 @@ class EmbyHomeSection(Base):
     collection_id: Mapped[str] = mapped_column(String(64))
 
 
+class SyncDeletionProposal(Base):
+    """Last large inventory reduction awaiting confirmation by a later sync."""
+
+    __tablename__ = "sync_deletion_proposals"
+
+    service_config_id: Mapped[int] = mapped_column(
+        ForeignKey("service_configs.id", ondelete="CASCADE"), primary_key=True
+    )
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), primary_key=True)
+    row_ids: Mapped[list[int]] = mapped_column(JSON)
+
+
 class ServiceMediaLibrary(Base):
     """Media libraries available from the main media server.
 
