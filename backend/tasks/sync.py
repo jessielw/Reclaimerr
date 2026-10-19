@@ -3255,6 +3255,43 @@ async def sync_linked_data(
         await _mark_service_config_synced(config.id)
 
 
+async def _rebuilt_movie_versions_by_path(
+    session: AsyncSession, movie_ids: set[int]
+) -> dict[tuple[int, str], int]:
+    rows = (
+        await session.execute(
+            select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path).where(
+                MovieVersion.movie_id.in_(movie_ids)
+            )
+        )
+    ).all()
+    versions: dict[tuple[int, str], int] = {}
+    for version_id, movie_id, path in rows:
+        if path:
+            key = (movie_id, normalize_fpath(path, strip_ending_slash=True))
+            versions.setdefault(key, version_id)
+    return versions
+
+
+async def _restore_version_scoped_delete_requests(
+    request_paths: dict[int, tuple[int, str]],
+) -> None:
+    """Restore exact file targets; missing files stay explicitly version-scoped."""
+    if not request_paths:
+        return
+    async with async_db() as session:
+        versions = await _rebuilt_movie_versions_by_path(
+            session, {movie_id for movie_id, _ in request_paths.values()}
+        )
+        for request_id, key in request_paths.items():
+            await session.execute(
+                sql_update(DeleteRequest)
+                .where(DeleteRequest.id == request_id)
+                .values(movie_version_id=versions.get(key))
+            )
+        await session.commit()
+
+
 async def _restore_version_scoped_candidates(
     candidate_paths: dict[int, tuple[int, str]],
 ) -> None:
@@ -3361,6 +3398,32 @@ async def resync_media() -> None:
                     if movie_id is not None and path
                 }
 
+                request_version_rows = (
+                    await session.execute(
+                        select(
+                            DeleteRequest.id, DeleteRequest.movie_id, MovieVersion.path
+                        ).join(
+                            MovieVersion,
+                            DeleteRequest.movie_version_id == MovieVersion.id,
+                        )
+                    )
+                ).all()
+                resync_request_paths = {
+                    request_id: (
+                        movie_id,
+                        normalize_fpath(path, strip_ending_slash=True),
+                    )
+                    for request_id, movie_id, path in request_version_rows
+                    if movie_id is not None and path
+                }
+                # Preserve the scope even for legacy requests without a snapshot,
+                # and when a failed resync never reaches the reattachment step.
+                await session.execute(
+                    sql_update(DeleteRequest)
+                    .where(DeleteRequest.movie_version_id.is_not(None))
+                    .values(target_scope="movie_version", movie_version_id=None)
+                )
+
                 # movie_version scoped rows must be detached before deleting versions
                 # when switching main media server, old version IDs are invalid anyway
                 await session.execute(
@@ -3392,6 +3455,7 @@ async def resync_media() -> None:
             # before the movie/series sync restores version data
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
+            await _restore_version_scoped_delete_requests(resync_request_paths)
             await _restore_version_scoped_candidates(resync_candidate_paths)
             await sync_series(allow_soft_delete=False)
             async with async_db() as session:
