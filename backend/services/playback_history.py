@@ -39,6 +39,7 @@ from backend.services.jellyfin import JellyfinService
 from backend.services.media_identity import (
     MediaIdentityOwnership,
     load_media_identity_ownership,
+    supplemental_episode_join,
 )
 from backend.services.playback_selection import (
     ActivePlaybackSources,
@@ -1053,7 +1054,7 @@ async def _identity_maps(
     ownership: MediaIdentityOwnership | None = None,
 ) -> tuple[
     dict[str, tuple[int, int]],
-    dict[str, tuple[int, int, int, int, int, int]],
+    dict[str, list[tuple[int, int, int, int, int, int]]],
 ]:
     """Load local media ID maps for one media server's playback events.
 
@@ -1126,7 +1127,9 @@ async def _identity_maps(
         or ownership.owns_service_id_columns(service, cast(int, config_id))
         else None
     )
-    episode_map: dict[str, tuple[int, int, int, int, int, int]] = {}
+    episode_map: dict[str, list[tuple[int, int, int, int, int, int]]] = defaultdict(
+        list
+    )
     if episode_column is not None:
         rows = (
             await session.execute(
@@ -1147,25 +1150,25 @@ async def _identity_maps(
                 )
             )
         ).all()
-        episode_map = {
-            str(item_id): (
-                episode_id,
-                season_id,
-                series_id,
-                tmdb_id,
-                season_number,
-                episode_number,
+        for (
+            item_id,
+            episode_id,
+            season_id,
+            series_id,
+            tmdb_id,
+            season_number,
+            episode_number,
+        ) in rows:
+            episode_map[str(item_id)].append(
+                (
+                    episode_id,
+                    season_id,
+                    series_id,
+                    tmdb_id,
+                    season_number,
+                    episode_number,
+                )
             )
-            for (
-                item_id,
-                episode_id,
-                season_id,
-                series_id,
-                tmdb_id,
-                season_number,
-                episode_number,
-            ) in rows
-        }
 
     supplemental_episode_query = (
         select(
@@ -1177,7 +1180,7 @@ async def _identity_maps(
             Season.season_number,
             Episode.episode_number,
         )
-        .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+        .join_from(SupplementalMediaMatch, Episode, supplemental_episode_join())
         .join(Season, Episode.season_id == Season.id)
         .join(Series, Season.series_id == Series.id)
         .where(
@@ -1191,6 +1194,7 @@ async def _identity_maps(
         if unattributed
         else SupplementalMediaMatch.source_service_config_id == config_id
     )
+    direct_ids = set(episode_map)
     for (
         item_id,
         episode_id,
@@ -1200,9 +1204,21 @@ async def _identity_maps(
         season_number,
         episode_number,
     ) in (await session.execute(supplemental_episode_query)).all():
-        episode_map.setdefault(
-            str(item_id),
-            (episode_id, season_id, series_id, tmdb_id, season_number, episode_number),
+        if str(item_id) not in direct_ids:
+            episode_map[str(item_id)].append(
+                (
+                    episode_id,
+                    season_id,
+                    series_id,
+                    tmdb_id,
+                    season_number,
+                    episode_number,
+                )
+            )
+    for item_id, identities in episode_map.items():
+        episode_map[item_id] = sorted(
+            set(identities),
+            key=lambda identity: (identity[4], identity[5], identity[0]),
         )
     return movie_map, episode_map
 
@@ -1270,7 +1286,7 @@ async def _upsert_events(
                     tmdb_id,
                     season_number,
                     episode_number,
-                ) = episode_identity
+                ) = episode_identity[0]
 
         existing = existing_by_key.get(event.source_event_key)
         if existing is None:
@@ -2142,7 +2158,7 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                     resolved += 1
                     continue
                 episode_identity = episode_map.get(event.source_item_id)
-                if episode_identity is None:
+                if not episode_identity:
                     continue
                 (
                     event.episode_id,
@@ -2151,7 +2167,7 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                     event.tmdb_id,
                     event.season_number,
                     event.episode_number,
-                ) = episode_identity
+                ) = episode_identity[0]
                 resolved += 1
         if resolved:
             await session.commit()
@@ -2537,7 +2553,7 @@ async def rebuild_playback_history_aggregates() -> None:
             tuple[Service, int | None],
             tuple[
                 dict[str, tuple[int, int]],
-                dict[str, tuple[int, int, int, int, int, int]],
+                dict[str, list[tuple[int, int, int, int, int, int]]],
             ],
         ] = {}
         for identity_key in {
@@ -2594,8 +2610,8 @@ async def rebuild_playback_history_aggregates() -> None:
             elif event.provider_media_type == "episode":
                 episode_id = season_id = series_id = None
                 series_added_at = season_added_at = None
-                direct_episode = episode_map.get(event.source_item_id)
-                if direct_episode is not None:
+                direct_episodes = episode_map.get(event.source_item_id, [])
+                if direct_episodes:
                     (
                         episode_id,
                         season_id,
@@ -2603,7 +2619,7 @@ async def rebuild_playback_history_aggregates() -> None:
                         tmdb_id,
                         season_number,
                         episode_number,
-                    ) = direct_episode
+                    ) = direct_episodes[0]
                     event.tmdb_id = tmdb_id
                     event.season_number = season_number
                     event.episode_number = episode_number
@@ -2654,6 +2670,27 @@ async def rebuild_playback_history_aggregates() -> None:
                             episode_id, _Aggregate(media_type=MediaType.SERIES)
                         ).add(event)
 
+                    # Keep one stored event per file, but credit all of its episodes.
+                    for (
+                        extra_episode_id,
+                        extra_season_id,
+                        extra_series_id,
+                        *_,
+                    ) in direct_episodes[1:]:
+                        target_keys.extend(
+                            [
+                                ("series", extra_series_id),
+                                ("season", extra_season_id),
+                                ("episode", extra_episode_id),
+                            ]
+                        )
+                        extra_added_at = season_added_by_id.get(extra_season_id)
+                        if extra_added_at is None or event.played_at >= extra_added_at:
+                            episode_watch.setdefault(
+                                extra_episode_id,
+                                _Aggregate(media_type=MediaType.SERIES),
+                            ).add(event)
+
             current_ids = (
                 event.movie_id,
                 event.series_id,
@@ -2665,7 +2702,7 @@ async def rebuild_playback_history_aggregates() -> None:
             if not target_keys:
                 unmatched_events += 1
 
-            for key in target_keys:
+            for key in set(target_keys):
                 media_type = (
                     MediaType.MOVIE if key[0] == "movie_version" else MediaType.SERIES
                 )

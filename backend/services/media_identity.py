@@ -15,12 +15,27 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from backend.database.models import ServiceConfig
+from backend.database.models import Episode, ServiceConfig, SupplementalMediaMatch
 from backend.enums import Service
 from backend.user_types import MEDIA_SERVERS
+
+
+def supplemental_episode_join() -> ColumnElement[bool]:
+    """Resolve linked combined files while retaining legacy single-episode matches."""
+    numbers = func.json_each(
+        SupplementalMediaMatch.signals["episode_numbers"]
+    ).table_valued("value")
+    return or_(
+        Episode.id == SupplementalMediaMatch.episode_id,
+        and_(
+            Episode.season_id == SupplementalMediaMatch.season_id,
+            Episode.episode_number.in_(select(numbers.c.value)),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)

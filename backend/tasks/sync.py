@@ -710,6 +710,20 @@ async def _build_series_supplemental_matches(
                 )
                 if not source_episode_id or local_episode_id is None:
                     continue
+                existing_match = matches_by_item.get(source_episode_id)
+                if (
+                    existing_match is not None
+                    and existing_match.episode_id is not None
+                    and existing_match.season_id == local_season.id
+                ):
+                    signals = dict(existing_match.signals or {})
+                    numbers = set(signals.get("episode_numbers", []))
+                    numbers.add(source_episode.episode_number)
+                    existing_match.signals = {
+                        **signals,
+                        "episode_numbers": sorted(numbers),
+                    }
+                    continue
                 matches_by_item[source_episode_id] = SupplementalMediaMatch(
                     source_service=source_service,
                     source_service_config_id=config.id,
@@ -724,6 +738,7 @@ async def _build_series_supplemental_matches(
                         "tmdb_id": tmdb_id,
                         "season_number": source_season.season_number,
                         "episode_number": source_episode.episode_number,
+                        "episode_numbers": [source_episode.episode_number],
                     },
                 )
 

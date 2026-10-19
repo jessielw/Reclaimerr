@@ -1390,6 +1390,7 @@ class EmbyServiceBase:
         # season accumulation
         season_sizes: dict[tuple[str, int], int] = {}
         season_episode_counts: dict[tuple[str, int], int] = {}
+        season_episode_numbers: dict[tuple[str, int], set[int]] = {}
         season_view_counts: dict[tuple[str, int], int] = {}
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
         season_ids: dict[tuple[str, int], str] = {}  # Emby/Jellyfin SeasonId
@@ -1421,7 +1422,7 @@ class EmbyServiceBase:
                 "enableTotalRecordCount": "true",
                 "Fields": (
                     "MediaSources,MediaStreams,SeriesId,DateCreated,PremiereDate,ParentIndexNumber,SeasonId,UserData,"
-                    "UserDataLastPlayedDate,UserDataPlayCount,LocationType,IsVirtualItem"
+                    "UserDataLastPlayedDate,UserDataPlayCount,LocationType,IsVirtualItem,IndexNumberEnd"
                 ),
                 "ParentId": library_id,
                 "StartIndex": str(start_index),
@@ -1486,7 +1487,24 @@ class EmbyServiceBase:
 
                 sk = (series_id, season_num)
                 season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
-                season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
+                first_number = as_int(episode.get("IndexNumber"))
+                last_number = as_int(episode.get("IndexNumberEnd"))
+                episode_numbers = (
+                    range(
+                        first_number,
+                        max(
+                            first_number,
+                            last_number if last_number is not None else first_number,
+                        )
+                        + 1,
+                    )
+                    if first_number is not None
+                    else range(0)
+                )
+                if episode_numbers:
+                    season_episode_numbers.setdefault(sk, set()).update(episode_numbers)
+                else:
+                    season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
 
                 # season air date = earliest episode premiere date
                 premiere_date = episode.get("PremiereDate")
@@ -1602,9 +1620,16 @@ class EmbyServiceBase:
                             except (TypeError, ValueError):
                                 pass
                         ep_item_id = str(episode.get("Id", ""))
-                        season_episode_data.setdefault(sk, []).append(
+                        versions = self._episode_versions(
+                            ep_item_id,
+                            media_sources,
+                            library_id,
+                            library_name,
+                            ep_added_at,
+                        )
+                        season_episode_data.setdefault(sk, []).extend(
                             AggregatedEpisodeData(
-                                episode_number=ep_num,
+                                episode_number=number,
                                 name=episode.get("Name") or None,
                                 view_count=play_count,
                                 air_date=ep_air_ep,
@@ -1620,14 +1645,9 @@ class EmbyServiceBase:
                                 media_server_user_rating=episode_user_rating,
                                 runtime_seconds=ep_runtime_seconds,
                                 added_at=ep_added_at,
-                                versions=self._episode_versions(
-                                    ep_item_id,
-                                    media_sources,
-                                    library_id,
-                                    library_name,
-                                    ep_added_at,
-                                ),
+                                versions=versions,
                             )
+                            for number in episode_numbers
                         )
 
                 # media aggregate signals per season
@@ -1723,7 +1743,8 @@ class EmbyServiceBase:
                 service_series_id=series_id,
                 season_number=season_num,
                 size=size,
-                episode_count=season_episode_counts.get(sk, 0),
+                episode_count=season_episode_counts.get(sk, 0)
+                + len(season_episode_numbers.get(sk, set())),
                 view_count=agg_view,
                 last_viewed_at=season_last_viewed_at,
                 added_at=season_added_at.get(sk),

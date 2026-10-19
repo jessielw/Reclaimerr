@@ -33,7 +33,10 @@ from backend.models.media import MediaWatchSnapshot, NativePlaybackSnapshot
 from backend.services.emby import EmbyService
 from backend.services.episode_ordering import EpisodeOrderingSnapshot, ordering_error
 from backend.services.jellyfin import JellyfinService
-from backend.services.media_identity import load_media_identity_ownership
+from backend.services.media_identity import (
+    load_media_identity_ownership,
+    supplemental_episode_join,
+)
 from backend.services.plex import PlexService
 from backend.user_types import MEDIA_SERVERS
 
@@ -107,9 +110,9 @@ class _NativePlaybackAggregate:
         )
 
 
-# (config id, native item id) -> movie version ids, and -> (episode, season, series)
+# A native item can cover several logical episodes in one physical file.
 _NativePlaybackTargets = tuple[
-    dict[tuple[int, str], set[int]], dict[tuple[int, str], tuple[int, int, int]]
+    dict[tuple[int, str], set[int]], dict[tuple[int, str], set[tuple[int, int, int]]]
 ]
 
 
@@ -534,7 +537,9 @@ class MediaWatchSnapshotCache:
             supplemental_episode_rows = (
                 await session.execute(
                     select(SupplementalMediaMatch.source_item_id, Series.tmdb_id)
-                    .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                    .join_from(
+                        SupplementalMediaMatch, Episode, supplemental_episode_join()
+                    )
                     .join(Season, Episode.season_id == Season.id)
                     .join(Series, Season.series_id == Series.id)
                     .where(
@@ -640,7 +645,9 @@ class MediaWatchSnapshotCache:
         for config_id, item_id, version_id in supplemental_movie_rows:
             movie_targets[(config_id, str(item_id))].add(version_id)
 
-        episode_targets: dict[tuple[int, str], tuple[int, int, int]] = {}
+        episode_targets: dict[tuple[int, str], set[tuple[int, int, int]]] = defaultdict(
+            set
+        )
         episode_id_owners = {
             service: ownership.configs_owning_service_id_columns(service)
             for service in (Service.JELLYFIN, Service.EMBY)
@@ -672,14 +679,17 @@ class MediaWatchSnapshotCache:
                 if not source_id:
                     continue
                 for config_id in episode_id_owners[service]:
-                    episode_targets[(config_id, str(source_id))] = (
-                        episode_id,
-                        season_id,
-                        series_id,
+                    episode_targets[(config_id, str(source_id))].add(
+                        (
+                            episode_id,
+                            season_id,
+                            series_id,
+                        )
                     )
 
         # A linked server of the main server's own type writes no id column, so
         # its episode ids only exist as supplemental matches.
+        direct_targets = set(episode_targets)
         for config_id, item_id, episode_id, season_id, series_id in (
             await session.execute(
                 select(
@@ -689,7 +699,7 @@ class MediaWatchSnapshotCache:
                     Season.id,
                     Series.id,
                 )
-                .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                .join_from(SupplementalMediaMatch, Episode, supplemental_episode_join())
                 .join(Season, Episode.season_id == Season.id)
                 .join(Series, Season.series_id == Series.id)
                 .where(
@@ -699,9 +709,9 @@ class MediaWatchSnapshotCache:
                 )
             )
         ).all():
-            episode_targets.setdefault(
-                (config_id, str(item_id)), (episode_id, season_id, series_id)
-            )
+            key = (config_id, str(item_id))
+            if key not in direct_targets:
+                episode_targets[key].add((episode_id, season_id, series_id))
         return movie_targets, episode_targets
 
     @classmethod
@@ -725,11 +735,9 @@ class MediaWatchSnapshotCache:
                     )
                 )
             elif row.provider_media_type == "episode":
-                target = episode_targets.get(
-                    (row.source_service_config_id, row.source_item_id)
-                )
-                if target is not None:
-                    episode_id, season_id, series_id = target
+                for episode_id, season_id, series_id in episode_targets.get(
+                    (row.source_service_config_id, row.source_item_id), set()
+                ):
                     target_keys.extend(
                         [
                             ("series", series_id),
@@ -751,7 +759,7 @@ class MediaWatchSnapshotCache:
                 completed=row.completed,
                 last_activity_at=cls._as_utc_datetime(row.last_activity_at),
             )
-            for scope, target_id in target_keys:
+            for scope, target_id in set(target_keys):
                 identity = (row.source_service_config_id, scope, target_id)
                 aggregate = aggregates.setdefault(
                     identity,
@@ -854,11 +862,11 @@ class MediaWatchSnapshotCache:
         ]
 
     @staticmethod
-    def _episode_coordinate(
+    def _episode_coordinates(
         snapshot: MediaWatchSnapshot,
-        coordinates: Mapping[str, tuple[int, int, int]],
-    ) -> tuple[int, int, int] | None:
-        """Resolve one episode play to (series tmdb, season, episode).
+        coordinates: Mapping[str, list[tuple[int, int, int]]],
+    ) -> list[tuple[int, int, int]]:
+        """Resolve one file play to every covered (series tmdb, season, episode).
 
         The item-id lookup only works for the media server the library was
         synced from - Episode.plex_rating_key holds a single server's rating
@@ -869,12 +877,14 @@ class MediaWatchSnapshotCache:
         id lookup as the fallback for sources that do not report them.
         """
         if snapshot.season_number is not None and snapshot.episode_number is not None:
-            return (
-                int(snapshot.tmdb_id),
-                int(snapshot.season_number),
-                int(snapshot.episode_number),
-            )
-        return coordinates.get(str(snapshot.source_item_id))
+            return [
+                (
+                    int(snapshot.tmdb_id),
+                    int(snapshot.season_number),
+                    int(snapshot.episode_number),
+                )
+            ]
+        return coordinates.get(str(snapshot.source_item_id), [])
 
     @classmethod
     async def _build_episode_watch_rows(
@@ -913,7 +923,7 @@ class MediaWatchSnapshotCache:
             for snapshot in detailed
             if snapshot.source_item_id
         }
-        coordinates: dict[str, tuple[int, int, int]] = {}
+        coordinates: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
         if source_ids:
             result = await session.execute(
                 select(
@@ -926,11 +936,11 @@ class MediaWatchSnapshotCache:
                 .join(Series, Season.series_id == Series.id)
                 .where(id_column.in_(source_ids), Series.tmdb_id.is_not(None))
             )
-            coordinates = {
-                str(source_id): (int(tmdb_id), int(season_number), int(episode_number))
-                for source_id, tmdb_id, season_number, episode_number in result.all()
-                if source_id is not None and tmdb_id is not None
-            }
+            for source_id, tmdb_id, season_number, episode_number in result.all():
+                if source_id is not None and tmdb_id is not None:
+                    coordinates[str(source_id)].append(
+                        (int(tmdb_id), int(season_number), int(episode_number))
+                    )
             # The id column holds one server's ids. A linked server of the same
             # type records its own only as supplemental matches.
             supplemental = await session.execute(
@@ -940,7 +950,7 @@ class MediaWatchSnapshotCache:
                     Season.season_number,
                     Episode.episode_number,
                 )
-                .join(Episode, SupplementalMediaMatch.episode_id == Episode.id)
+                .join_from(SupplementalMediaMatch, Episode, supplemental_episode_join())
                 .join(Season, Episode.season_id == Season.id)
                 .join(Series, Season.series_id == Series.id)
                 .where(
@@ -952,13 +962,14 @@ class MediaWatchSnapshotCache:
                     Series.tmdb_id.is_not(None),
                 )
             )
+            direct_ids = set(coordinates)
             for source_id, tmdb_id, season_number, episode_number in supplemental.all():
                 if source_id is None or tmdb_id is None:
                     continue
-                coordinates.setdefault(
-                    str(source_id),
-                    (int(tmdb_id), int(season_number), int(episode_number)),
-                )
+                if str(source_id) not in direct_ids:
+                    coordinates[str(source_id)].append(
+                        (int(tmdb_id), int(season_number), int(episode_number))
+                    )
 
         blocked_tmdb: set[int] = set()
         ownership = await load_media_identity_ownership(session)
@@ -989,22 +1000,23 @@ class MediaWatchSnapshotCache:
             if snapshot.tmdb_id in blocked_tmdb:
                 unmatched += 1
                 continue
-            coordinate = cls._episode_coordinate(snapshot, coordinates)
+            episode_coordinates = cls._episode_coordinates(snapshot, coordinates)
             watched_at = cls._as_utc_datetime(snapshot.last_watched_at)
             normalized = cls._normalize_user_key(snapshot.watch_user_key)
-            if coordinate is None:
+            if not episode_coordinates:
                 unmatched += 1
                 continue
             if watched_at is None or not normalized:
                 continue
-            identity = (*coordinate, normalized)
-            existing = merged.get(identity)
-            if existing is None or watched_at > existing[1]:
-                merged[identity] = (
-                    snapshot.watch_user_key.strip(),
-                    watched_at,
-                    snapshot.play_count,
-                )
+            for coordinate in episode_coordinates:
+                identity = (*coordinate, normalized)
+                existing = merged.get(identity)
+                if existing is None or watched_at > existing[1]:
+                    merged[identity] = (
+                        snapshot.watch_user_key.strip(),
+                        watched_at,
+                        snapshot.play_count,
+                    )
 
         return (
             [

@@ -113,11 +113,15 @@ async def load_selected_history_snapshot(
         }
         episode_targets = {
             item: [
-                ("episode", identity[0]),
-                ("season", identity[1]),
-                ("series", identity[2]),
+                key
+                for identity in identities
+                for key in (
+                    ("episode", identity[0]),
+                    ("season", identity[1]),
+                    ("series", identity[2]),
+                )
             ]
-            for item, identity in episodes.items()
+            for item, identities in episodes.items()
         }
         # Provider item ids may change after a library rebuild. Retained stable
         # identities may resolve only against titles this same server contains.
@@ -126,7 +130,8 @@ async def load_selected_history_snapshot(
         }
         stable_episodes = {
             (identity[3], identity[4], identity[5]): episode_targets[item]
-            for item, identity in episodes.items()
+            for item, identities in episodes.items()
+            for identity in identities
         }
         source_maps[server_id] = (
             movie_targets,
