@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
-from backend.core.auth import require_page_access
+from backend.core.auth import require_admin, require_page_access
 from backend.database import get_db
 from backend.database.models import (
+    GeneralSettings,
     Movie,
     ReclaimCandidate,
     ReclaimHistory,
@@ -22,6 +24,7 @@ from backend.models.storage import (
     StorageLibraryTotals,
     StorageMount,
     StorageMountSource,
+    StorageMountUpdate,
     StorageReclaimable,
     StorageReclaimed,
     StorageResponse,
@@ -31,6 +34,61 @@ from backend.services.arr_readd import READD_ACTION
 from backend.services.reclaimable import non_reclaiming_candidate_totals
 
 router = APIRouter(prefix="/api", tags=["storage"])
+
+
+def _override_key(service_type: str, config_id: int, path: str) -> str:
+    # Neither capacity nor free space is part of a saved choice: both can change.
+    return json.dumps([service_type, config_id, path])
+
+
+def _select_capacity_mounts(mounts: list[StorageMount]) -> list[StorageMount]:
+    """Prefer explicit includes, then count matching capacity/free snapshots once.
+
+    Arr supplies no filesystem identity. Equal snapshots are a heuristic; a user
+    can explicitly include independent disks that happen to have equal values.
+    Unknown totals/free values never establish an automatic duplicate.
+    """
+    seen: dict[tuple[int, int], str] = {}
+    selected = []
+    for mount in sorted(
+        mounts, key=lambda item: (item.capacity_mode != "include", item.path)
+    ):
+        mount.duplicate_of = None
+        mount.included_in_capacity = mount.capacity_mode != "exclude"
+        if not mount.included_in_capacity:
+            continue
+        if mount.total_bytes is not None and mount.free_bytes is not None:
+            key = (mount.total_bytes, mount.free_bytes)
+            if mount.capacity_mode == "auto" and key in seen:
+                mount.duplicate_of = seen[key]
+                mount.included_in_capacity = False
+                continue
+            seen.setdefault(key, mount.path)
+        selected.append(mount)
+    return selected
+
+
+@router.put("/storage/mounts")
+async def update_storage_mounts(
+    request: StorageMountUpdate,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Save instance-wide display choices without changing rule disk statistics."""
+    settings = (await db.scalars(select(GeneralSettings))).first()
+    if settings is None:
+        settings = GeneralSettings()
+        db.add(settings)
+    overrides = dict(settings.storage_mount_overrides)
+    for target in request.targets:
+        key = _override_key(target.service_type, target.service_config_id, target.path)
+        if request.mode == "auto":
+            overrides.pop(key, None)
+        else:
+            overrides[key] = request.mode == "include"
+    settings.storage_mount_overrides = overrides
+    await db.commit()
+    return {"message": "Storage capacity choice saved"}
 
 
 def _as_int(value: Any) -> int | None:
@@ -70,13 +128,17 @@ async def get_storage(
     """
     disk = await load_arr_disk_space()
     names = await _instance_names(db)
+    settings = (await db.scalars(select(GeneralSettings))).first()
+    overrides = settings.storage_mount_overrides if settings else {}
 
     # The same volume can be reported by several instances. Keying on path and
     # total size keeps genuinely different disks apart when two hosts happen to
     # expose the same container path.
     merged: dict[tuple[str, int | None], StorageMount] = {}
     per_instance: dict[tuple[str, int], StorageInstanceUsage] = {}
-    counted_for_instance: set[tuple[str, int, str]] = set()
+    instance_reports: dict[
+        tuple[str, int], dict[tuple[str, int | None], StorageMount]
+    ] = {}
 
     for entry in disk.entries:
         path = str(entry.get("path") or "")
@@ -116,6 +178,17 @@ async def get_storage(
             mount.sources.append(source)
 
         instance_key = (service_type, config_id)
+        report = StorageMount(
+            path=path,
+            total_bytes=total,
+            free_bytes=free,
+            used_bytes=used,
+            sources=[source],
+        )
+        choice = overrides.get(_override_key(service_type, config_id, path))
+        if choice is not None:
+            report.capacity_mode = "include" if choice else "exclude"
+        instance_reports.setdefault(instance_key, {}).setdefault(key, report)
         usage = per_instance.get(instance_key)
         if usage is None:
             usage = StorageInstanceUsage(
@@ -128,20 +201,35 @@ async def get_storage(
                 used_bytes=0,
             )
             per_instance[instance_key] = usage
-        # one instance can list the same path twice; count it once
-        dedupe = (service_type, config_id, path)
-        if dedupe not in counted_for_instance:
-            counted_for_instance.add(dedupe)
-            usage.mount_count += 1
-            usage.total_bytes += total or 0
-            usage.free_bytes += free or 0
-            usage.used_bytes += used or 0
-
     mounts = sorted(merged.values(), key=lambda item: item.path)
-    capacity_total = sum(mount.total_bytes or 0 for mount in mounts)
-    capacity_free = sum(mount.free_bytes or 0 for mount in mounts)
-    capacity_used = sum(mount.used_bytes or 0 for mount in mounts)
-    capacity_incomplete = any(mount.total_bytes is None for mount in mounts)
+    for mount in mounts:
+        choices = [
+            overrides.get(
+                _override_key(source.service_type, source.service_config_id, mount.path)
+            )
+            for source in mount.sources
+        ]
+        # A merged row represents one volume. Explicit inclusion takes precedence
+        # if previously separate rows have acquired conflicting saved choices.
+        if True in choices:
+            mount.capacity_mode = "include"
+        elif False in choices:
+            mount.capacity_mode = "exclude"
+
+    counted = _select_capacity_mounts(mounts)
+    capacity_total = sum(mount.total_bytes or 0 for mount in counted)
+    capacity_free = sum(mount.free_bytes or 0 for mount in counted)
+    capacity_used = sum(mount.used_bytes or 0 for mount in counted)
+    capacity_incomplete = any(mount.total_bytes is None for mount in counted)
+
+    for instance_key, usage in per_instance.items():
+        selected = _select_capacity_mounts(
+            list(instance_reports[instance_key].values())
+        )
+        usage.mount_count = len(selected)
+        usage.total_bytes = sum(mount.total_bytes or 0 for mount in selected)
+        usage.free_bytes = sum(mount.free_bytes or 0 for mount in selected)
+        usage.used_bytes = sum(mount.used_bytes or 0 for mount in selected)
 
     library_rows = (
         await db.execute(

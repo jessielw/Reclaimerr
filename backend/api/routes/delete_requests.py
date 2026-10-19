@@ -197,6 +197,20 @@ async def _get_delete_request_media(
 ) -> tuple[Movie | Series, int]:
     """Get the media (movie or series) associated with a delete request."""
     if request.media_type is MediaType.MOVIE:
+        if (
+            request.target_scope == "movie_version"
+            or request.movie_version_id is not None
+        ):
+            version = (
+                await db.get(MovieVersion, request.movie_version_id)
+                if request.movie_version_id is not None
+                else None
+            )
+            if version is None or version.movie_id != request.movie_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The requested movie version is no longer available; create a new request",
+                )
         result = await db.execute(select(Movie).where(Movie.id == request.movie_id))
         movie = result.scalar_one_or_none()
         if movie is None:

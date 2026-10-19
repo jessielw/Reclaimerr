@@ -2,19 +2,21 @@
   import { onMount } from "svelte";
   import Gauge from "@lucide/svelte/icons/gauge";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
-  import { get_api } from "$lib/api";
+  import { get_api, put_api } from "$lib/api";
+  import { auth } from "$lib/stores/auth";
   import ErrorBox from "$lib/components/error-box.svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { formatFileSize } from "$lib/utils/formatters";
   import { toTitleCase } from "$lib/utils/strings";
-  import type { StorageResponse } from "$lib/types/shared";
+  import type { StorageMount, StorageResponse } from "$lib/types/shared";
   import { formatDateTimeToLocaleString } from "$lib/utils/date";
 
   let data = $state<StorageResponse | null>(null);
   let loading = $state(true);
   let error = $state("");
   let lastUpdated = $state<string | null>(null);
+  let saving = $state(false);
 
   const usedPercent = (used: number, total: number) =>
     total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
@@ -40,6 +42,27 @@
       error = e instanceof Error ? e.message : "Failed to load storage metrics";
     } finally {
       loading = false;
+    }
+  }
+
+  async function saveMount(mount: StorageMount, mode: string) {
+    if (saving || loading) return;
+    saving = true;
+    error = "";
+    try {
+      await put_api("/api/storage/mounts", {
+        mode,
+        targets: mount.sources.map((source) => ({
+          service_type: source.service_type,
+          service_config_id: source.service_config_id,
+          path: mount.path,
+        })),
+      });
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Failed to save capacity choice";
+    } finally {
+      saving = false;
     }
   }
 
@@ -71,7 +94,12 @@
               · Showing previous metrics{/if}
           </p>
         {/if}
-        <Button variant="outline" size="sm" onclick={load} disabled={loading}>
+        <Button
+          variant="outline"
+          size="sm"
+          onclick={load}
+          disabled={loading || saving}
+        >
           <RotateCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
           Refresh
         </Button>
@@ -137,7 +165,9 @@
         <div class="border-b border-border p-3">
           <h2 class="font-semibold text-foreground">Mounts</h2>
           <p class="text-xs text-muted-foreground">
-            Reported by your Radarr and Sonarr instances
+            Matching total and free space are counted once automatically. For
+            pooled storage, exclude the branches or the pool to avoid counting
+            both. Include can also count separate disks with matching sizes.
           </p>
         </div>
         {#if data.mounts.length === 0}
@@ -169,6 +199,16 @@
                           {source.name}
                         </Badge>
                       {/each}
+                      <Badge
+                        variant={mount.included_in_capacity
+                          ? "outline"
+                          : "secondary"}
+                        class="text-[10px]"
+                      >
+                        {mount.included_in_capacity
+                          ? "Counted in capacity"
+                          : "Excluded from capacity"}
+                      </Badge>
                     </div>
                   </div>
                   <p class="text-sm text-muted-foreground">
@@ -180,6 +220,38 @@
                       {formatFileSize(mount.free_bytes)} free · total unknown
                     {/if}
                   </p>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <p class="text-xs text-muted-foreground">
+                    {#if mount.duplicate_of}
+                      Same reported capacity and free space as {mount.duplicate_of}
+                    {:else if mount.capacity_mode === "exclude"}
+                      Excluded by an administrator
+                    {/if}
+                  </p>
+                  {#if $auth.user?.role === "admin"}
+                    <label
+                      class="flex items-center gap-2 text-xs text-muted-foreground"
+                    >
+                      Capacity
+                      <select
+                        class="rounded-md border border-input bg-background px-2 py-1 text-foreground"
+                        aria-label={`Capacity for ${mount.path} (${mount.sources.map((source) => source.name).join(", ")})`}
+                        value={mount.capacity_mode}
+                        disabled={saving || loading}
+                        onchange={async (event) => {
+                          const select = event.currentTarget;
+                          const mode = select.value;
+                          select.value = mount.capacity_mode;
+                          await saveMount(mount, mode);
+                        }}
+                      >
+                        <option value="auto">Automatic</option>
+                        <option value="include">Include</option>
+                        <option value="exclude">Exclude</option>
+                      </select>
+                    </label>
+                  {/if}
                 </div>
                 {#if mount.total_bytes != null}
                   <div class="h-2 w-full rounded-full bg-secondary">
@@ -200,6 +272,9 @@
         <div class="bg-card rounded-lg border border-border">
           <div class="border-b border-border p-3">
             <h2 class="font-semibold text-foreground">By instance</h2>
+            <p class="text-xs text-muted-foreground">
+              Capacity after mount choices and duplicate detection
+            </p>
           </div>
           {#if data.instances.length === 0}
             <p class="p-4 text-sm text-muted-foreground">

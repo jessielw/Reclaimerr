@@ -4,6 +4,7 @@ from typing import Any
 
 from backend.enums import Service
 from backend.models.live_playback import LiveSession, PlaybackSnapshot
+from backend.services.emby_items import get_item_details
 
 
 def _id(value: Any) -> str | None:
@@ -141,7 +142,7 @@ async def native_item_paths(
                 (p["path"], True) for p in row.get("Location", []) if p.get("path")
             )
         return paths
-    row = await client._make_request(f"Items/{quote(item_id, safe='')}", timeout=10)
+    row = await get_item_details(client, service, item_id)
     sources = row.get("MediaSources", [])
     paths = [
         (s["Path"], False)
@@ -159,17 +160,33 @@ async def resolve_session_paths(
     if not snapshot.available:
         return snapshot
     sessions = []
+    unavailable_reason = None
     for session in snapshot.sessions:
         if session.paths:
             sessions.append(session)
             continue
         if session.item_id is None:
-            return PlaybackSnapshot(available=False)
-        paths = await native_item_paths(
-            client, service, session.item_id, session.media_id
-        )
+            sessions.append(session)
+            unavailable_reason = "session has no media identity"
+            continue
+        try:
+            paths = await native_item_paths(
+                client, service, session.item_id, session.media_id
+            )
+        except Exception as exc:
+            # Keep valid sessions and identities when one enrichment fails.
+            # Raw exception strings can contain credentials and are never kept.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            http = f"; HTTP {status}" if isinstance(status, int) else ""
+            unavailable_reason = (
+                f"session path lookup failed; {type(exc).__name__}{http}"
+            )
+            sessions.append(session)
+            continue
         if not paths:
-            return PlaybackSnapshot(available=False)
+            sessions.append(session)
+            unavailable_reason = "session path lookup returned no paths"
+            continue
         sessions.append(
             LiveSession(
                 session.item_id,
@@ -178,4 +195,6 @@ async def resolve_session_paths(
                 session.parent_ids,
             )
         )
-    return PlaybackSnapshot(tuple(sessions))
+    return PlaybackSnapshot(
+        tuple(sessions), unavailable_reason is None, unavailable_reason
+    )

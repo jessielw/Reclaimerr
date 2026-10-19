@@ -1,5 +1,5 @@
 export interface PlaybackDeferral {
-  code: "currently_playing" | "playback_unavailable";
+  code: "currently_playing" | "playback_unavailable" | "resync_pending";
   message: string;
   checked_at: string;
   server_config_ids: number[];
@@ -1697,6 +1697,9 @@ export interface StorageMount {
   free_bytes: number | null;
   used_bytes: number | null;
   sources: StorageMountSource[];
+  capacity_mode: "auto" | "include" | "exclude";
+  included_in_capacity: boolean;
+  duplicate_of: string | null;
 }
 
 export interface StorageInstanceUsage {

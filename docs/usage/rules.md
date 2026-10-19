@@ -190,11 +190,14 @@ The rule editor only displays fields valid for the selected scope. The following
 | Path / Filename | All scopes | Local media-server path information |
 | Days since added | All scopes | Age of the existing media-server added date |
 | Days since latest Arr file added | All scopes | Age of Radarr/Sonarr's latest file-import date |
+| Days since first Arr import | Movie version, Series | Age of the earliest successful Radarr movie import or Sonarr episode import for the parent title, across configured Arr instances |
 | Media server user rating | All scopes | User rating reported by Plex, Jellyfin, or Emby |
 
 Size and disk-free conditions use an amount and unit selector in the editor. Rules continue to store integer byte values, using 1024-based KB, MB, GB, and TB conversions for compatibility with existing rules.
 
 Arr file-added dates are populated during Radarr and Sonarr syncs. They remain empty when an item cannot be matched or an Arr service is not configured; the existing media-server added date is not replaced or backfilled.
+
+`arr.days_since_first_import` uses Radarr's movie import history or the earliest successful episode import in Sonarr's history, not the catalog addition date or Plex's added date. Later upgrades and new seasons do not reset it. Once observed, the earliest import date is retained even if Arr prunes its history or history fetching fails. If older history was already removed before the first sync, the true first import cannot be recovered; the field represents the earliest available successful import. Missing history remains unknown and does not match numeric comparisons. The date is shared by all versions of a movie or the whole series; it is not proof of when a particular copy reached Plex. Season and episode rules do not expose this field.
 
 Media-server user ratings are stored during media sync when the provider reports a user-specific rating for the item. Missing ratings do not match numeric comparisons; use `does not exist` to find unrated media.
 

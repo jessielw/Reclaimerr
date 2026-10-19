@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.logger import LOG
 from backend.core.utils.filesystem import (
     mapped_path_variants,
     media_move_source_scope,
@@ -42,6 +43,27 @@ from backend.user_types import MEDIA_SERVERS
 
 MAX_SNAPSHOT_AGE = 30.0
 FETCH_TIMEOUT = 10.0
+
+
+class _MissingDeletionPaths(ValueError):
+    pass
+
+
+def _log_unavailable(
+    service: Service,
+    config_id: int | None,
+    stage: str,
+    reason: str,
+    exception: Exception | None = None,
+) -> None:
+    # Never include raw exceptions, URLs, response bodies, paths, or credentials.
+    status = getattr(getattr(exception, "response", None), "status_code", None)
+    detail = f"; HTTP {status}" if isinstance(status, int) else ""
+    error_type = f"; {type(exception).__name__}" if exception is not None else ""
+    LOG.warning(
+        f"Playback check unavailable: {service.value} config {config_id}, "
+        f"{stage}: {reason}{detail}{error_type}"
+    )
 
 
 @dataclass
@@ -76,7 +98,8 @@ class PlaybackGuard:
         configs = (
             await db.execute(
                 select(ServiceConfig.id, ServiceConfig.service_type).where(
-                    ServiceConfig.service_type.in_(MEDIA_SERVERS)
+                    ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                    ServiceConfig.enabled.is_(True),
                 )
             )
         ).all()
@@ -98,6 +121,13 @@ class PlaybackGuard:
         started = monotonic()
         client = service_manager.get_media_server(self.configs[config_id], config_id)
         try:
+            if client is None:
+                _log_unavailable(
+                    self.configs[config_id],
+                    config_id,
+                    "live sessions",
+                    "runtime client is not initialized; re-save the server settings to reconnect",
+                )
             async with asyncio.timeout(FETCH_TIMEOUT):
                 snapshot = (
                     await client.get_live_sessions()
@@ -106,8 +136,22 @@ class PlaybackGuard:
                 )
             if not isinstance(snapshot, PlaybackSnapshot):
                 snapshot = PlaybackSnapshot(available=False)
-        except Exception:
-            # Details may contain tokens in URLs; expose only a sanitized reason.
+            if client is not None and not snapshot.available:
+                _log_unavailable(
+                    self.configs[config_id],
+                    config_id,
+                    "live sessions",
+                    snapshot.unavailable_reason
+                    or "invalid session data or missing media paths",
+                )
+        except Exception as exc:
+            _log_unavailable(
+                self.configs[config_id],
+                config_id,
+                "live sessions",
+                "request failed",
+                exc,
+            )
             snapshot = PlaybackSnapshot(available=False)
         self.snapshots[config_id] = (started, snapshot)
         return snapshot
@@ -149,7 +193,13 @@ class PlaybackGuard:
                         for p in local.parent.iterdir()
                         if p.is_file() and p.stem == local.stem
                     )
-        except OSError:
+        except OSError as exc:
+            LOG.warning(
+                f"Playback check unavailable: local target expansion failed; {type(exc).__name__}"
+            )
+            if not self.defer_when_unavailable:
+                target.paths.extend(additions)
+                return
             raise PlaybackDeferred(
                 PlaybackDeferral(
                     "playback_unavailable",
@@ -246,13 +296,13 @@ class PlaybackGuard:
         if not relevant:
             relevant = set(self.configs)
         for (cid, _), snapshot in zip(self.configs.items(), snapshots, strict=True):
-            if not snapshot.available:
-                if cid in relevant:
-                    unavailable.append(cid)
-            elif any(
+            if any(
                 self._matches(target, cid, session) for session in snapshot.sessions
             ):
                 playing.append(cid)
+            if not snapshot.available:
+                if cid in relevant:
+                    unavailable.append(cid)
             elif cid in relevant and any(
                 not s.paths and not s.item_id for s in snapshot.sessions
             ):
@@ -322,6 +372,34 @@ def playback_step_completed(description: str) -> None:
         operation.completed_steps.append(description)
 
 
+async def _unavailable_removal_scope(
+    operation: PlaybackOperation,
+    service: Service,
+    config_id: int | None,
+    exc: Exception,
+) -> None:
+    _log_unavailable(
+        service,
+        config_id,
+        "deletion paths",
+        "missing deletion paths"
+        if isinstance(exc, _MissingDeletionPaths)
+        else "request failed",
+        exc,
+    )
+    if not operation.guard.defer_when_unavailable:
+        await playback_checkpoint()
+        return
+    raise PlaybackDeferred(
+        PlaybackDeferral(
+            "playback_unavailable",
+            datetime.now(UTC).isoformat(),
+            tuple(sorted(operation.target.relevant_configs)),
+            tuple(operation.completed_steps),
+        )
+    ) from None
+
+
 async def guard_arr_removal(
     client: Any, service: Service, ids: list[int], *, files: bool = False
 ) -> None:
@@ -337,8 +415,8 @@ async def guard_arr_removal(
         else service_manager.sonarr_clients()
     )
     config_id = next((cid for cid, value in clients.items() if value is client), None)
-    try:
-        for item_id in set(ids):
+    for item_id in dict.fromkeys(ids):
+        try:
             if files:
                 endpoint = "moviefile" if service is Service.RADARR else "episodefile"
                 _, row = await client._make_request("GET", f"{endpoint}/{item_id}")
@@ -351,20 +429,14 @@ async def guard_arr_removal(
                 )
                 path = item.path
             if not isinstance(path, str) or not path:
-                raise ValueError("Missing deletion path")
+                raise _MissingDeletionPaths("Missing deletion path")
             await playback_checkpoint(
                 path=path, service=service, config_id=config_id, directory=not files
             )
-    except PlaybackDeferred:
-        raise
-    except Exception:
-        raise PlaybackDeferred(
-            PlaybackDeferral(
-                "playback_unavailable",
-                datetime.now(UTC).isoformat(),
-                tuple(sorted(operation.target.relevant_configs)),
-            )
-        ) from None
+        except PlaybackDeferred:
+            raise
+        except Exception as exc:
+            await _unavailable_removal_scope(operation, service, config_id, exc)
 
 
 async def guard_native_removal(
@@ -384,24 +456,23 @@ async def guard_native_removal(
         ),
         None,
     )
+    if cid is not None:
+        operation.target.relevant_configs.add(cid)
+        operation.target.identities.add((cid, item_id, media_id))
+        if media_id is None:
+            operation.target.parents.add((cid, item_id))
     try:
         paths = await native_item_paths(client, service, item_id, media_id)
         if not paths:
-            raise ValueError("Missing deletion paths")
+            raise _MissingDeletionPaths("Missing deletion paths")
         for path, directory in paths:
             await playback_checkpoint(
                 path=path, service=service, config_id=cid, directory=directory
             )
     except PlaybackDeferred:
         raise
-    except Exception:
-        raise PlaybackDeferred(
-            PlaybackDeferral(
-                "playback_unavailable",
-                datetime.now(UTC).isoformat(),
-                tuple(sorted(operation.target.relevant_configs)),
-            )
-        ) from None
+    except Exception as exc:
+        await _unavailable_removal_scope(operation, service, cid, exc)
 
 
 async def candidate_playback_target(

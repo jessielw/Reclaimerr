@@ -15,12 +15,27 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from backend.database.models import ServiceConfig
+from backend.database.models import Episode, ServiceConfig, SupplementalMediaMatch
 from backend.enums import Service
 from backend.user_types import MEDIA_SERVERS
+
+
+def supplemental_episode_join() -> ColumnElement[bool]:
+    """Resolve linked combined files while retaining legacy single-episode matches."""
+    numbers = func.json_each(
+        SupplementalMediaMatch.signals["episode_numbers"]
+    ).table_valued("value")
+    return or_(
+        Episode.id == SupplementalMediaMatch.episode_id,
+        and_(
+            Episode.season_id == SupplementalMediaMatch.season_id,
+            Episode.episode_number.in_(select(numbers.c.value)),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +64,13 @@ class MediaIdentityOwnership:
 
         The main server writes its own type's columns; a linked server writes
         them for a type the main server does not provide (``sync_linked_data``'s
-        ``backfill_episode_ids``). Two linked servers of one type both write
-        them, which this can no more disambiguate than the sync that wrote them.
+        ``backfill_episode_ids``). With multiple writers, only config-scoped
+        supplemental matches can identify which server supplied an item id.
         """
 
         if self.main_service is None or service is not self.main_service:
-            return self._configs_of(service)
+            configs = self._configs_of(service)
+            return configs if len(configs) == 1 else set()
         return {self.main_config_id} if self.main_config_id is not None else set()
 
     def owns_media_rows(self, service: Service, config_id: int) -> bool:

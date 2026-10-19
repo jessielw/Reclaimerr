@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -19,7 +20,9 @@ from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import normalize_fpath, paths_equivalent
 from backend.database import async_db
 from backend.database.models import (
+    CandidateResyncIdentity,
     DeleteRequest,
+    DeleteRequestResyncIdentity,
     Episode,
     EpisodeVersion,
     GeneralSettings,
@@ -36,6 +39,7 @@ from backend.database.models import (
     ServiceConfig,
     ServiceMediaLibrary,
     SupplementalMediaMatch,
+    SyncDeletionProposal,
 )
 from backend.enums import MediaType, ProtectionRequestStatus, Service, Task
 from backend.models.media import (
@@ -43,9 +47,12 @@ from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
+    ArrTag,
     EpisodeVersionData,
     MovieVersionData,
 )
+from backend.models.services.radarr import RadarrMovie
+from backend.models.services.sonarr import SonarrSeries
 from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.emby import EmbyService
 from backend.services.episode_ordering import EpisodeOrderingSnapshot, ordering_error
@@ -89,7 +96,7 @@ FINISHED_SERIES_METADATA_REFRESH_DAYS = 30
 # unknown status, is treated as still active so it can never get stuck stale
 FINISHED_SERIES_STATUSES = frozenset({"ended", "canceled", "cancelled"})
 
-_RowT = TypeVar("_RowT", Movie, Series)
+_RowT = TypeVar("_RowT", bound=Movie | Series)
 
 
 def _select_rows_to_soft_delete(
@@ -117,14 +124,9 @@ def _soft_delete_guard_tripped(delete_count: int, live_count: int) -> bool:
     return delete_count > live_count * MAX_SOFT_DELETE_RATIO
 
 
-# A delete set larger than the ratio allows is usually a partial media-server
-# response, but it is also what a legitimate main-server switch looks like. A
-# flapping server proposes a DIFFERENT set each time; a real reduction proposes
-# the same one. So skip the first time and act if the same set comes back.
-_previous_large_delete_sets: dict[MediaType, frozenset[int]] = {}
-
-
-def _soft_delete_blocked(
+async def _soft_delete_blocked(
+    session: AsyncSession,
+    service_config_id: int,
     media_type: MediaType,
     rows_to_delete: Sequence[_RowT],
     live_count: int,
@@ -137,17 +139,22 @@ def _soft_delete_blocked(
     Remembering the previous over-ratio set turns the guard into one grace run
     rather than a permanent block.
 
-    The memory is process-local by design; a restart just costs one more grace
-    run, which is not worth persisting for.
+    Each scheduled sync normally runs in a fresh process. Persist the proposal
+    by server and media type; the caller commits it with any soft deletions.
     """
+    previous = await session.get(SyncDeletionProposal, (service_config_id, media_type))
     if not _soft_delete_guard_tripped(len(rows_to_delete), live_count):
-        _previous_large_delete_sets.pop(media_type, None)
+        if previous is not None:
+            await session.delete(previous)
         return False
-    signature = frozenset(row.id for row in rows_to_delete)
-    if _previous_large_delete_sets.get(media_type) == signature:
-        _previous_large_delete_sets.pop(media_type, None)
+    signature = sorted({row.id for row in rows_to_delete})
+    if previous is not None and previous.row_ids == signature:
+        await session.delete(previous)
         return False
-    _previous_large_delete_sets[media_type] = signature
+    if previous is None:
+        session.add(SyncDeletionProposal(service_config_id, media_type, signature))
+    else:
+        previous.row_ids = signature
     return True
 
 
@@ -264,6 +271,27 @@ async def _purge_orphaned_arr_refs(
             f"Purged {removed} orphaned {service_type.value} ref(s) belonging to "
             "disabled or removed service configs"
         )
+
+
+async def _reconcile_empty_inventory(config_id: int, media_type: MediaType) -> None:
+    """A confirmed empty inventory still needs the normal soft-delete safeguard."""
+    model = Movie if media_type is MediaType.MOVIE else Series
+    async with async_db() as session:
+        rows = list((await session.scalars(select(model))).all())
+        missing = _select_rows_to_soft_delete(rows, set())
+        if await _soft_delete_blocked(
+            session, config_id, media_type, missing, len(missing)
+        ):
+            LOG.warning(
+                f"Empty {media_type.value} inventory requires confirmation on the next sync"
+            )
+        else:
+            await _apply_soft_deletes(session, missing, media_type)
+        if media_type is MediaType.MOVIE:
+            await _restore_pending_movie_scopes(
+                session, {row.id for row in rows if row.removed_at}
+            )
+        await session.commit()
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -710,6 +738,20 @@ async def _build_series_supplemental_matches(
                 )
                 if not source_episode_id or local_episode_id is None:
                     continue
+                existing_match = matches_by_item.get(source_episode_id)
+                if (
+                    existing_match is not None
+                    and existing_match.episode_id is not None
+                    and existing_match.season_id == local_season.id
+                ):
+                    signals = dict(existing_match.signals or {})
+                    numbers = set(signals.get("episode_numbers", []))
+                    numbers.add(source_episode.episode_number)
+                    existing_match.signals = {
+                        **signals,
+                        "episode_numbers": sorted(numbers),
+                    }
+                    continue
                 matches_by_item[source_episode_id] = SupplementalMediaMatch(
                     source_service=source_service,
                     source_service_config_id=config.id,
@@ -724,6 +766,7 @@ async def _build_series_supplemental_matches(
                         "tmdb_id": tmdb_id,
                         "season_number": source_season.season_number,
                         "episode_number": source_episode.episode_number,
+                        "episode_numbers": [source_episode.episode_number],
                     },
                 )
 
@@ -1367,8 +1410,27 @@ async def _upsert_movie_versions(
         (v.service, v.service_media_id): v for v in result.scalars().all()
     }
 
+    # Reserve direct matches before examining any rename, regardless of input
+    # order. A newly indexed identical copy must not consume a still-live row.
+    incoming_keys = {(ver.service, ver.service_media_id) for ver in versions}
+    incoming_fingerprints = Counter(
+        _make_fp(
+            ver.service,
+            ver.video_width,
+            ver.video_height,
+            ver.video_codec,
+            ver.video_hdr,
+            ver.video_dolby_vision,
+            ver.size,
+            ver.container,
+        )
+        for ver in versions
+        if (ver.service, ver.service_media_id) not in existing
+    )
     fp_map: dict[tuple[Any, ...], MovieVersion | None] = {}
-    for ev in existing.values():
+    for key, ev in existing.items():
+        if key in incoming_keys:
+            continue
         fp = _make_fp(
             ev.service,
             ev.video_width,
@@ -1384,7 +1446,6 @@ async def _upsert_movie_versions(
         # None = ambiguous, skip
         fp_map[fp] = None if fp in fp_map else ev
 
-    incoming_keys: set[tuple[Any, ...]] = set()
     for ver in versions:
         key = (ver.service, ver.service_media_id)
         incoming_keys.add(key)
@@ -1405,7 +1466,11 @@ async def _upsert_movie_versions(
                 ver.container,
             )
             matched_ev = fp_map.get(fp) if fp else None
-            if fp is not None and matched_ev is not None:
+            if (
+                fp is not None
+                and matched_ev is not None
+                and incoming_fingerprints[fp] == 1
+            ):
                 # rename detected: update service IDs in place so all FK references
                 # (protections, requests, candidates) pointing at this row are preserved.
                 old_key = (matched_ev.service, matched_ev.service_media_id)
@@ -1468,6 +1533,7 @@ async def _upsert_movie_versions(
                 continue
 
         # update all fields on ev (reached for both primary-key match and fingerprint match)
+        ev.service_item_id = ver.service_item_id
         ev.library_id = ver.library_id
         ev.library_name = ver.library_name
         ev.path = ver.path
@@ -1566,9 +1632,11 @@ async def gather_movies(
         if not service_instance:
             return None
         LOG.debug(f"Fetching movies from {target.service_type} at {target.base_url}")
-        aggregated_movies: list[AggregatedMovieData] = (
-            await service_instance.get_aggregated_movies(included_libraries=None) or []
-        )
+        aggregated_movies: list[
+            AggregatedMovieData
+        ] = await service_instance.get_aggregated_movies(included_libraries=None)
+        if aggregated_movies is None:
+            return None
         LOG.debug(f"Fetched {len(aggregated_movies)} movies from {target.service_type}")
 
     # group by TMDB ID (merges same movie from multiple libraries on the same server)
@@ -1638,6 +1706,13 @@ async def gather_movies(
     if skipped_count > 0:
         LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
 
+    if not unique_movies and not await service_instance.is_inventory_empty(
+        MediaType.MOVIE
+    ):
+        LOG.warning(
+            "Movie inventory returned no usable titles but emptiness could not be confirmed"
+        )
+        return None
     return unique_movies
 
 
@@ -1777,12 +1852,22 @@ async def gather_series(
         if not service_instance:
             return None
         LOG.debug(f"Fetching series from {target.service_type} at {target.base_url}")
-        aggregated_series = (
-            await service_instance.get_aggregated_series(included_libraries=None) or []
+        aggregated_series = await service_instance.get_aggregated_series(
+            included_libraries=None
         )
+        if aggregated_series is None:
+            return None
         LOG.debug(f"Fetched {len(aggregated_series)} series from {target.service_type}")
 
-    return _dedupe_aggregated_series(aggregated_series)
+    result = _dedupe_aggregated_series(aggregated_series)
+    if not result[0] and not await service_instance.is_inventory_empty(
+        MediaType.SERIES
+    ):
+        LOG.warning(
+            "Series inventory returned no usable titles but emptiness could not be confirmed"
+        )
+        return None
+    return result
 
 
 async def sync_movies(
@@ -1834,8 +1919,14 @@ async def sync_movies(
     start_time = datetime.now(UTC)
 
     aggregated_movies = await gather_movies(effective_config)
+    if aggregated_movies is None:
+        LOG.warning(
+            f"Movie inventory unavailable from {effective_service.value}; keeping stored inventory"
+        )
+        return set()
     if not aggregated_movies:
-        LOG.info(f"No movies to sync from {effective_service.value}")
+        if allow_soft_delete:
+            await _reconcile_empty_inventory(effective_config.id, MediaType.MOVIE)
         return set()
     LOG.info(
         f"Gathered {len(aggregated_movies)} unique movies from {effective_service.value}"
@@ -2047,11 +2138,28 @@ async def sync_movies(
                     f"lowered ({kept_watch_count} movie(s) kept their stored values)"
                 )
 
-            # refresh per instance Radarr refs for active movies
-            await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
+            # Fetch all history before any Arr ref writes acquire SQLite's write lock.
             radarr_clients = service_manager.radarr_clients()
             if not radarr_clients and service_manager.radarr:
                 radarr_clients = {0: service_manager.radarr}
+            snapshots: list[
+                tuple[int, list[RadarrMovie], list[ArrTag], dict[int, datetime]]
+            ] = []
+            for config_id, client in radarr_clients.items():
+                all_movies = await client.get_all_movies()
+                tag_list = await client.get_tags()
+                try:
+                    first_imports = await client.get_first_import_dates()
+                except Exception as exc:
+                    LOG.warning(
+                        f"Radarr import history unavailable (config {config_id}); "
+                        f"preserving known first import dates: {exc}"
+                    )
+                    first_imports = {}
+                snapshots.append((config_id, all_movies, tag_list, first_imports))
+
+            # refresh per instance Radarr refs for active movies
+            await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
             if radarr_clients:
                 # purge legacy rows written before multi-arr support (service_config_id=0)
                 await session.execute(
@@ -2086,14 +2194,13 @@ async def sync_movies(
                 # accumulate resolved tag labels per movie across all Radarr instances
                 movie_tags: dict[int, set[str]] = {}
                 movie_arr_files: dict[int, list[tuple[int, str | None, datetime]]] = {}
-                for config_id, client in radarr_clients.items():
+                movie_first_imports: dict[int, datetime] = {}
+                for config_id, all_movies, tag_list, first_imports in snapshots:
                     await session.execute(
                         sql_delete(MovieArrRef).where(
                             MovieArrRef.service_config_id == config_id
                         )
                     )
-                    all_movies = await client.get_all_movies()
-                    tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     for arr_movie in all_movies:
                         if not arr_movie.tmdb_id:
@@ -2101,6 +2208,12 @@ async def sync_movies(
                         movie_id = movie_id_by_tmdb.get(arr_movie.tmdb_id)
                         if movie_id is None:
                             continue
+                        imported_at = first_imports.get(arr_movie.id)
+                        if imported_at is not None:
+                            movie_first_imports[movie_id] = min(
+                                movie_first_imports.get(movie_id, imported_at),
+                                imported_at,
+                            )
                         arr_path = (
                             str(PurePosixPath(normalize_fpath(arr_movie.path)))
                             if arr_movie.path
@@ -2139,6 +2252,17 @@ async def sync_movies(
                         result_row.arr_added_at = max(
                             (added_at for _, _, added_at in arr_files), default=None
                         )
+                        imported_at = movie_first_imports.get(movie_id)
+                        if imported_at is not None:
+                            persisted = result_row.arr_first_import_at
+                            result_row.arr_first_import_at = (
+                                min(
+                                    ensure_utc(persisted).replace(tzinfo=None),
+                                    imported_at,
+                                )
+                                if persisted is not None
+                                else imported_at
+                            )
 
                         versions = versions_by_movie.get(movie_id, [])
                         for version in versions:
@@ -2170,8 +2294,12 @@ async def sync_movies(
                 live_movie_count = sum(
                     1 for movie in existing_movies_list if not movie.removed_at
                 )
-                if _soft_delete_blocked(
-                    MediaType.MOVIE, movies_to_delete, live_movie_count
+                if await _soft_delete_blocked(
+                    session,
+                    effective_config.id,
+                    MediaType.MOVIE,
+                    movies_to_delete,
+                    live_movie_count,
                 ):
                     LOG.warning(
                         f"Skipping movie soft-delete this run: "
@@ -2190,8 +2318,13 @@ async def sync_movies(
                     await _apply_soft_deletes(
                         session, movies_to_delete, MediaType.MOVIE
                     )
-                    await session.commit()
+                await session.commit()
 
+            await _restore_pending_movie_scopes(
+                session,
+                matched_row_ids | {m.id for m in existing_movies_list if m.removed_at},
+            )
+            await session.commit()
             duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
                 f"Movie sync ({effective_service.value}) completed successfully in {duration:.2f}s"
@@ -2313,12 +2446,15 @@ async def sync_series(
     LOG.info(f"Starting series sync ({source_label})...")
 
     gather_result = await gather_series(effective_config)
-    if not gather_result:
-        LOG.info(f"No series to sync from {source_label}")
+    if gather_result is None:
+        LOG.warning(
+            f"Series inventory unavailable from {source_label}; keeping stored inventory"
+        )
         return set()
     aggregated_series, supplemental_episode_data = gather_result
     if not aggregated_series:
-        LOG.info(f"No series to sync from {source_label}")
+        if allow_soft_delete:
+            await _reconcile_empty_inventory(effective_config.id, MediaType.SERIES)
         return set()
     LOG.info(f"Gathered {len(aggregated_series)} unique series from {source_label}")
 
@@ -2565,11 +2701,30 @@ async def sync_series(
             )
             await session.commit()
 
-            # refresh per instance Sonarr refs for active series
-            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
+            # Fetch all history before any Arr ref writes acquire SQLite's write lock.
             sonarr_clients = service_manager.sonarr_clients()
             if not sonarr_clients and service_manager.sonarr:
                 sonarr_clients = {0: service_manager.sonarr}
+            sonarr_snapshots: list[
+                tuple[int, list[SonarrSeries], list[ArrTag], dict[int, datetime]]
+            ] = []
+            for config_id, client in sonarr_clients.items():
+                all_series = await client.get_all_series()
+                tag_list = await client.get_tags()
+                try:
+                    first_imports = await client.get_first_import_dates()
+                except Exception as exc:
+                    LOG.warning(
+                        f"Sonarr import history unavailable (config {config_id}); "
+                        f"preserving known first import dates: {exc}"
+                    )
+                    first_imports = {}
+                sonarr_snapshots.append(
+                    (config_id, all_series, tag_list, first_imports)
+                )
+
+            # refresh per instance Sonarr refs for active series
+            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
             if sonarr_clients:
                 # purge legacy rows written before multi-arr support (service_config_id=0)
                 await session.execute(
@@ -2614,14 +2769,14 @@ async def sync_series(
                 inventory_fetched_series_ids: set[int] = set()
                 date_fetch_failed_series_ids: set[int] = set()
                 ordering = EpisodeOrderingSnapshot()
-                for config_id, client in sonarr_clients.items():
+                series_first_imports: dict[int, datetime] = {}
+                for config_id, all_series, tag_list, first_imports in sonarr_snapshots:
+                    client = sonarr_clients[config_id]
                     await session.execute(
                         sql_delete(SeriesArrRef).where(
                             SeriesArrRef.service_config_id == config_id
                         )
                     )
-                    all_series = await client.get_all_series()
-                    tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     matched_series = [
                         (arr_series, series_id)
@@ -2696,6 +2851,12 @@ async def sync_series(
                         series_id = _match_series_id(arr_series)
                         if series_id is None:
                             continue
+                        imported_at = first_imports.get(arr_series.id)
+                        if imported_at is not None:
+                            series_first_imports[series_id] = min(
+                                series_first_imports.get(series_id, imported_at),
+                                imported_at,
+                            )
                         arr_path = (
                             str(PurePosixPath(normalize_fpath(arr_series.path)))
                             if arr_series.path
@@ -2716,12 +2877,23 @@ async def sync_series(
                             if label:
                                 series_tags.setdefault(series_id, set()).add(label)
 
-                # write resolved tags back to Series rows
+                # write resolved tags and earliest import dates back to Series rows
                 for series_id in series_id_by_tmdb.values():
                     result_row = await session.get(Series, series_id)
                     if result_row is not None:
                         tags = series_tags.get(series_id)
                         result_row.arr_tags = sorted(tags) if tags else []
+                        imported_at = series_first_imports.get(series_id)
+                        if imported_at is not None:
+                            persisted = result_row.arr_first_import_at
+                            result_row.arr_first_import_at = (
+                                min(
+                                    ensure_utc(persisted).replace(tzinfo=None),
+                                    imported_at,
+                                )
+                                if persisted is not None
+                                else imported_at
+                            )
 
                 eligible_series_ids = set(series_id_by_tmdb.values()).difference(
                     date_fetch_failed_series_ids
@@ -2799,8 +2971,12 @@ async def sync_series(
                 live_series_count = sum(
                     1 for s in existing_series_list if not s.removed_at
                 )
-                if _soft_delete_blocked(
-                    MediaType.SERIES, series_to_delete, live_series_count
+                if await _soft_delete_blocked(
+                    session,
+                    effective_config.id,
+                    MediaType.SERIES,
+                    series_to_delete,
+                    live_series_count,
                 ):
                     LOG.warning(
                         f"Skipping series soft-delete this run: "
@@ -2818,7 +2994,7 @@ async def sync_series(
                     await _apply_soft_deletes(
                         session, series_to_delete, MediaType.SERIES
                     )
-                    await session.commit()
+                await session.commit()
 
             duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
@@ -3168,70 +3344,81 @@ async def sync_linked_data(
         await _mark_service_config_synced(config.id)
 
 
-async def _restore_version_scoped_candidates(
-    candidate_paths: dict[int, tuple[int, str]],
+async def _rebuilt_movie_versions_by_path(
+    session: AsyncSession, movie_ids: set[int]
+) -> dict[tuple[int, str], int]:
+    rows = (
+        await session.execute(
+            select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path)
+            .join(Movie, MovieVersion.movie_id == Movie.id)
+            .where(MovieVersion.movie_id.in_(movie_ids), Movie.removed_at.is_(None))
+        )
+    ).all()
+    versions: dict[tuple[int, str], int] = {}
+    for version_id, movie_id, path in rows:
+        if path:
+            key = (movie_id, normalize_fpath(path, strip_ending_slash=True))
+            versions.setdefault(key, version_id)
+    return versions
+
+
+async def _restore_pending_movie_scopes(
+    session: AsyncSession, reconciled_movie_ids: set[int]
 ) -> None:
-    """Reattach version-scoped candidates to the rebuilt MovieVersion rows.
+    """Restore durable targets only after their movie inventory synced successfully.
 
-    A resync drops and recreates every version row, so each one comes back with
-    a new id. A candidate left pointing at nothing is dropped by the next scan
-    as a legacy row and created again from scratch, and since the review period
-    runs from the candidate's `created_at`, that silently restarts the countdown
-    for every movie - a title a day away from automatic deletion goes back to
-    the full waiting period, every resync. Matching on the file path keeps the
-    original candidate, and its clock, alive instead.
-
-    A candidate whose file did not come back is removed rather than left
-    movie-scoped, because a movie-scoped candidate deletes every version of the
-    movie - far more than the rule selected.
+    Paths remain case-sensitive: two distinct files on Linux must never merge.
+    Unconfirmed missing titles keep their identities until a later sync. Missing
+    requests remain version-scoped and can recover if their original file returns.
     """
-    if not candidate_paths:
+    if not reconciled_movie_ids:
         return
-
-    movie_ids = {movie_id for movie_id, _path in candidate_paths.values()}
-    async with async_db() as session:
-        rows = (
+    await session.flush()
+    candidates = (
+        await session.scalars(
+            select(CandidateResyncIdentity).where(
+                CandidateResyncIdentity.movie_id.in_(reconciled_movie_ids)
+            )
+        )
+    ).all()
+    requests = (
+        await session.scalars(
+            select(DeleteRequestResyncIdentity).where(
+                DeleteRequestResyncIdentity.movie_id.in_(reconciled_movie_ids)
+            )
+        )
+    ).all()
+    if not candidates and not requests:
+        return
+    versions = await _rebuilt_movie_versions_by_path(session, reconciled_movie_ids)
+    for identity in candidates:
+        version_id = versions.get((identity.movie_id, identity.path))
+        if version_id is None:
             await session.execute(
-                select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path).where(
-                    MovieVersion.movie_id.in_(movie_ids)
+                sql_delete(ReclaimCandidate).where(
+                    ReclaimCandidate.id == identity.candidate_id
                 )
             )
-        ).all()
-        version_by_key: dict[tuple[int, str], int] = {}
-        for version_id, movie_id, path in rows:
-            if movie_id is None or not path:
-                continue
-            key = (
-                movie_id,
-                normalize_fpath(path, strip_ending_slash=True, lower=True),
-            )
-            # a file indexed in two libraries has a row each; either will do
-            version_by_key.setdefault(key, version_id)
-
-        restored = 0
-        dropped: list[int] = []
-        for candidate_id, key in candidate_paths.items():
-            version_id = version_by_key.get(key)
-            if version_id is None:
-                dropped.append(candidate_id)
-                continue
+        else:
             await session.execute(
                 sql_update(ReclaimCandidate)
-                .where(ReclaimCandidate.id == candidate_id)
+                .where(ReclaimCandidate.id == identity.candidate_id)
+                .values(movie_id=identity.movie_id, movie_version_id=version_id)
+            )
+        await session.execute(
+            sql_delete(CandidateResyncIdentity).where(
+                CandidateResyncIdentity.candidate_id == identity.candidate_id
+            )
+        )
+    for identity in requests:
+        version_id = versions.get((identity.movie_id, identity.path))
+        if version_id is not None:
+            await session.execute(
+                sql_update(DeleteRequest)
+                .where(DeleteRequest.id == identity.delete_request_id)
                 .values(movie_version_id=version_id)
             )
-            restored += 1
-        if dropped:
-            await session.execute(
-                sql_delete(ReclaimCandidate).where(ReclaimCandidate.id.in_(dropped))
-            )
-        await session.commit()
-
-    LOG.info(
-        f"Reattached {restored} movie version candidate(s) after resync, "
-        f"keeping their review periods; dropped {len(dropped)} whose file is "
-        "no longer present"
-    )
+            await session.delete(identity)
 
 
 async def resync_media() -> None:
@@ -3249,10 +3436,8 @@ async def resync_media() -> None:
     async with track_task_execution(Task.RESYNC_MEDIA):
         try:
             async with async_db() as session:
-                # Remember which file each version-scoped candidate stood for
-                # before the rows are dropped, so they can be reattached once
-                # the sync below rebuilds them. See
-                # _restore_version_scoped_candidates for why this matters.
+                # Persist exact targets in the same transaction as detaching them.
+                # Existing identities survive repeated failed resync attempts.
                 candidate_version_rows = (
                     await session.execute(
                         select(
@@ -3268,18 +3453,61 @@ async def resync_media() -> None:
                 resync_candidate_paths = {
                     candidate_id: (
                         movie_id,
-                        normalize_fpath(path, strip_ending_slash=True, lower=True),
+                        normalize_fpath(path, strip_ending_slash=True),
                     )
                     for candidate_id, movie_id, path in candidate_version_rows
                     if movie_id is not None and path
                 }
 
-                # movie_version scoped rows must be detached before deleting versions
-                # when switching main media server, old version IDs are invalid anyway
+                request_version_rows = (
+                    await session.execute(
+                        select(
+                            DeleteRequest.id, DeleteRequest.movie_id, MovieVersion.path
+                        ).join(
+                            MovieVersion,
+                            DeleteRequest.movie_version_id == MovieVersion.id,
+                        )
+                    )
+                ).all()
+                resync_request_paths = {
+                    request_id: (
+                        movie_id,
+                        normalize_fpath(path, strip_ending_slash=True),
+                    )
+                    for request_id, movie_id, path in request_version_rows
+                    if movie_id is not None and path
+                }
+                for candidate_id, (movie_id, path) in resync_candidate_paths.items():
+                    await session.merge(
+                        CandidateResyncIdentity(candidate_id, movie_id, path)
+                    )
+                for request_id, (movie_id, path) in resync_request_paths.items():
+                    await session.merge(
+                        DeleteRequestResyncIdentity(request_id, movie_id, path)
+                    )
+                await session.flush()
+                # Preserve the scope even for legacy requests without a snapshot,
+                # and when a failed resync never reaches the reattachment step.
+                await session.execute(
+                    sql_update(DeleteRequest)
+                    .where(DeleteRequest.movie_version_id.is_not(None))
+                    .values(target_scope="movie_version", movie_version_id=None)
+                )
+
+                # Nulling only the version promotes a candidate to a whole-movie
+                # delete. Remove its parent target too, in the same transaction,
+                # so errors or process termination cannot broaden its scope.
+                # Pathless candidates cannot be safely restored.
+                await session.execute(
+                    sql_delete(ReclaimCandidate).where(
+                        ReclaimCandidate.movie_version_id.is_not(None),
+                        ReclaimCandidate.id.notin_(resync_candidate_paths),
+                    )
+                )
                 await session.execute(
                     sql_update(ReclaimCandidate)
                     .where(ReclaimCandidate.movie_version_id.is_not(None))
-                    .values(movie_version_id=None)
+                    .values(movie_id=None, movie_version_id=None)
                 )
                 await session.execute(
                     sql_update(ProtectedMedia)
@@ -3305,7 +3533,6 @@ async def resync_media() -> None:
             # before the movie/series sync restores version data
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
-            await _restore_version_scoped_candidates(resync_candidate_paths)
             await sync_series(allow_soft_delete=False)
             async with async_db() as session:
                 resynced_main = await _get_main_media_server(session)

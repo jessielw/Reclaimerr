@@ -49,6 +49,7 @@ from backend.models.services.emby_base import (
     EmbyUserDataBase,
 )
 from backend.models.services.health import HealthResult
+from backend.services.emby_items import get_item_details
 from backend.services.live_sessions import emby_sessions, resolve_session_paths
 from backend.services.playback_guard import (
     guard_native_removal,
@@ -185,7 +186,7 @@ class EmbyServiceBase:
         """Read the series display order; the API's empty default is aired."""
         from backend.services.episode_ordering import normalize_episode_order
 
-        item = await self._make_request(f"Items/{item_id}", timeout=10)
+        item = await get_item_details(self, self.service_type, item_id)
         if not isinstance(item, dict) or item.get("Type") != "Series":
             return None
         return normalize_episode_order(item.get("DisplayOrder") or "aired")
@@ -1262,7 +1263,7 @@ class EmbyServiceBase:
 
     async def get_series_for_user(
         self,
-        user_id: str,
+        user_id: str | None,
         library_id: str,
         library_name: str,
         series_sizes: dict[str, int] | None = None,
@@ -1279,7 +1280,6 @@ class EmbyServiceBase:
             filters: Additional query filters
         """
         params = {
-            "userId": user_id,
             "includeItemTypes": "Series",
             "recursive": "true",
             "enableTotalRecordCount": "true",
@@ -1289,15 +1289,25 @@ class EmbyServiceBase:
             ),
             "ParentId": library_id,
         }
+        if user_id is not None:
+            params["userId"] = user_id
+        else:
+            params["EnableUserData"] = "false"
 
         if filters:
             params.update(filters)
         get_data = await self._make_request("Items", params=params, timeout=300)
         if not isinstance(get_data, dict):
-            return []
-        items_data = get_data.get("Items", [])
-        if not isinstance(items_data, list):
-            return []
+            raise RuntimeError(
+                "Media server returned an invalid series inventory response"
+            )
+        items_data = get_data.get("Items")
+        if not isinstance(items_data, list) or any(
+            not isinstance(item, dict) for item in items_data
+        ):
+            raise RuntimeError(
+                "Media server series inventory did not contain a valid item list"
+            )
 
         data = []
         for item in items_data:
@@ -1357,13 +1367,19 @@ class EmbyServiceBase:
         return data
 
     async def get_series_sizes_for_library(
-        self, library_id: str, user_id: str, library_name: str = ""
+        self,
+        library_id: str,
+        user_id: str | None = None,
+        library_name: str = "",
+        *,
+        episode_user_data: dict[str, JsonDict] | None = None,
     ) -> tuple[dict[str, int], dict[tuple[str, int], AggregatedSeasonData]]:
         """Get total sizes and season data for all series in a library.
 
         Args:
             library_id: The Emby/Jellyfin library ID
-            user_id: The Emby/Jellyfin user ID to fetch episodes for
+            user_id: Optional user scope; omit for authoritative physical inventory.
+            episode_user_data: Watch data aggregated across users, keyed by item ID.
 
         Returns:
             Tuple of (series_sizes, season_data) where:
@@ -1374,6 +1390,7 @@ class EmbyServiceBase:
         # season accumulation
         season_sizes: dict[tuple[str, int], int] = {}
         season_episode_counts: dict[tuple[str, int], int] = {}
+        season_episode_numbers: dict[tuple[str, int], set[int]] = {}
         season_view_counts: dict[tuple[str, int], int] = {}
         season_last_viewed: dict[tuple[str, int], datetime | None] = {}
         season_ids: dict[tuple[str, int], str] = {}  # Emby/Jellyfin SeasonId
@@ -1396,22 +1413,27 @@ class EmbyServiceBase:
 
         start_index = 0
         limit = 500
+        expected_total: int | None = None
+        seen_item_ids: set[str] = set()
 
         while True:
             params = {
-                "userId": user_id,
                 "includeItemTypes": "Episode",
                 "recursive": "true",
                 "ExcludeLocationTypes": "Virtual",
                 "enableTotalRecordCount": "true",
                 "Fields": (
                     "MediaSources,MediaStreams,SeriesId,DateCreated,PremiereDate,ParentIndexNumber,SeasonId,UserData,"
-                    "UserDataLastPlayedDate,UserDataPlayCount,LocationType,IsVirtualItem"
+                    "UserDataLastPlayedDate,UserDataPlayCount,LocationType,IsVirtualItem,IndexNumberEnd"
                 ),
                 "ParentId": library_id,
                 "StartIndex": str(start_index),
                 "Limit": str(limit),
             }
+            if user_id is not None:
+                params["userId"] = user_id
+            else:
+                params["EnableUserData"] = "false"
 
             get_data = await self._make_request("Items", params=params, timeout=60)
             if not isinstance(get_data, dict):
@@ -1424,7 +1446,14 @@ class EmbyServiceBase:
                 raise RuntimeError(
                     "Media server episode inventory response did not contain an item list"
                 )
+            reported_total = as_int(get_data.get("TotalRecordCount"))
+            if reported_total is not None:
+                expected_total = max(expected_total or 0, reported_total)
             if not raw_episodes:
+                if expected_total is not None and start_index < expected_total:
+                    raise RuntimeError(
+                        "Media server returned incomplete episode inventory"
+                    )
                 break
             if any(not isinstance(episode, dict) for episode in raw_episodes):
                 raise RuntimeError(
@@ -1433,6 +1462,15 @@ class EmbyServiceBase:
             episodes = [
                 episode for episode in raw_episodes if isinstance(episode, dict)
             ]
+            for episode in episodes:
+                item_id = episode.get("Id")
+                if item_id is not None:
+                    key = str(item_id)
+                    if key in seen_item_ids:
+                        raise RuntimeError(
+                            "Media server repeated an item in episode inventory"
+                        )
+                    seen_item_ids.add(key)
 
             LOG.debug(
                 f"Processing episodes {start_index} to {start_index + len(episodes)}"
@@ -1467,7 +1505,24 @@ class EmbyServiceBase:
 
                 sk = (series_id, season_num)
                 season_sizes[sk] = season_sizes.get(sk, 0) + episode_size
-                season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
+                first_number = as_int(episode.get("IndexNumber"))
+                last_number = as_int(episode.get("IndexNumberEnd"))
+                episode_numbers = (
+                    range(
+                        first_number,
+                        max(
+                            first_number,
+                            last_number if last_number is not None else first_number,
+                        )
+                        + 1,
+                    )
+                    if first_number is not None
+                    else range(0)
+                )
+                if episode_numbers:
+                    season_episode_numbers.setdefault(sk, set()).update(episode_numbers)
+                else:
+                    season_episode_counts[sk] = season_episode_counts.get(sk, 0) + 1
 
                 # season air date = earliest episode premiere date
                 premiere_date = episode.get("PremiereDate")
@@ -1521,7 +1576,11 @@ class EmbyServiceBase:
                         break
 
                 # watch data
-                user_data = episode.get("UserData", {})
+                user_data = (
+                    episode_user_data.get(str(episode.get("Id")), {})
+                    if episode_user_data is not None
+                    else episode.get("UserData", {})
+                )
                 episode_user_rating = as_float(
                     user_data.get("Rating")
                     or user_data.get("UserRating")
@@ -1579,9 +1638,16 @@ class EmbyServiceBase:
                             except (TypeError, ValueError):
                                 pass
                         ep_item_id = str(episode.get("Id", ""))
-                        season_episode_data.setdefault(sk, []).append(
+                        versions = self._episode_versions(
+                            ep_item_id,
+                            media_sources,
+                            library_id,
+                            library_name,
+                            ep_added_at,
+                        )
+                        season_episode_data.setdefault(sk, []).extend(
                             AggregatedEpisodeData(
-                                episode_number=ep_num,
+                                episode_number=number,
                                 name=episode.get("Name") or None,
                                 view_count=play_count,
                                 air_date=ep_air_ep,
@@ -1597,14 +1663,9 @@ class EmbyServiceBase:
                                 media_server_user_rating=episode_user_rating,
                                 runtime_seconds=ep_runtime_seconds,
                                 added_at=ep_added_at,
-                                versions=self._episode_versions(
-                                    ep_item_id,
-                                    media_sources,
-                                    library_id,
-                                    library_name,
-                                    ep_added_at,
-                                ),
+                                versions=versions,
                             )
+                            for number in episode_numbers
                         )
 
                 # media aggregate signals per season
@@ -1683,11 +1744,10 @@ class EmbyServiceBase:
                                     normalized_lang
                                 )
 
-            total_record_count = as_int(get_data.get("TotalRecordCount"))
             start_index += len(raw_episodes)
-            if total_record_count is not None and start_index >= total_record_count:
+            if expected_total is not None and start_index >= expected_total:
                 break
-            if total_record_count is None and len(raw_episodes) < limit:
+            if expected_total is None and len(raw_episodes) < limit:
                 break
 
         # build AggregatedSeasonData objects
@@ -1700,7 +1760,8 @@ class EmbyServiceBase:
                 service_series_id=series_id,
                 season_number=season_num,
                 size=size,
-                episode_count=season_episode_counts.get(sk, 0),
+                episode_count=season_episode_counts.get(sk, 0)
+                + len(season_episode_numbers.get(sk, set())),
                 view_count=agg_view,
                 last_viewed_at=season_last_viewed_at,
                 added_at=season_added_at.get(sk),
@@ -2107,6 +2168,25 @@ class EmbyServiceBase:
             ) in results.items()
         ]
 
+    async def is_inventory_empty(self, media_type: MediaType) -> bool:
+        """Confirm emptiness without user visibility or external-ID filtering."""
+        data = await self._make_request(
+            "Items",
+            params={
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie"
+                if media_type is MediaType.MOVIE
+                else "Series",
+                "Limit": 1,
+                "EnableTotalRecordCount": "true",
+            },
+        )
+        return (
+            isinstance(data, dict)
+            and data.get("Items") == []
+            and as_int(data.get("TotalRecordCount")) == 0
+        )
+
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
@@ -2204,6 +2284,83 @@ class EmbyServiceBase:
             for data in movie_data.values()
         ]
 
+    async def _get_aggregated_episode_user_data(
+        self, library_id: str, users: list[EmbyUserBase]
+    ) -> dict[str, JsonDict]:
+        """Merge user-scoped watch state without using it as physical inventory."""
+        aggregated: dict[str, JsonDict] = {}
+        for user in users:
+            start_index = 0
+            while True:
+                payload = await self._make_request(
+                    "Items",
+                    params={
+                        "userId": user.id,
+                        "ParentId": library_id,
+                        "IncludeItemTypes": "Episode",
+                        "Recursive": "true",
+                        "ExcludeLocationTypes": "Virtual",
+                        "Fields": "UserData,UserDataLastPlayedDate,UserDataPlayCount",
+                        "EnableUserData": "true",
+                        "EnableTotalRecordCount": "true",
+                        "EnableImages": "false",
+                        "StartIndex": start_index,
+                        "Limit": 500,
+                    },
+                    timeout=60,
+                )
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        "Media server returned invalid episode watch data"
+                    )
+                items = payload.get("Items")
+                if not isinstance(items, list) or any(
+                    not isinstance(item, dict) for item in items
+                ):
+                    raise RuntimeError(
+                        "Media server returned invalid episode watch data"
+                    )
+                if not items:
+                    if (as_int(payload.get("TotalRecordCount")) or 0) > start_index:
+                        raise RuntimeError(
+                            "Media server returned incomplete episode watch data"
+                        )
+                    break
+                for item in items:
+                    item_id = item.get("Id")
+                    data = item.get("UserData", {})
+                    if not item_id or not isinstance(data, dict):
+                        raise RuntimeError(
+                            "Media server returned invalid episode user data"
+                        )
+                    merged = aggregated.setdefault(str(item_id), {"PlayCount": 0})
+                    count = self._safe_play_count(data.get("PlayCount"))
+                    merged["PlayCount"] += count
+                    last_played = self._safe_iso_datetime(data.get("LastPlayedDate"))
+                    previous = self._safe_iso_datetime(merged.get("LastPlayedDate"))
+                    if (
+                        count > 0
+                        and last_played is not None
+                        and (previous is None or last_played > previous)
+                    ):
+                        merged["LastPlayedDate"] = last_played.isoformat()
+                    rating = as_float(
+                        data.get("Rating")
+                        or data.get("UserRating")
+                        or data.get("PersonalRating")
+                    )
+                    if rating is not None:
+                        merged["PersonalRating"] = max(
+                            merged.get("PersonalRating", rating), rating
+                        )
+                start_index += len(items)
+                total = as_int(payload.get("TotalRecordCount"))
+                if total is not None and start_index >= total:
+                    break
+                if total is None and len(items) < 500:
+                    break
+        return aggregated
+
     async def get_aggregated_series(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedSeriesData]:
@@ -2234,28 +2391,33 @@ class EmbyServiceBase:
             library_name = library["name"]
             LOG.debug(f"Processing series library: {library_name} (ID: {library_id})")
 
-            # get first user to fetch series sizes (sizes are same for all users)
             users = await self.get_users()
-            if not users:
-                continue
+            episode_user_data = await self._get_aggregated_episode_user_data(
+                library_id, users
+            )
 
-            # fetch series sizes once per library (not per user as this is expensive)
+            # Physical inventory must not depend on any user's library permissions.
             (
                 series_sizes,
                 season_data_map,
             ) = await self.get_series_sizes_for_library(
-                library_id, users[0].id, library_name
+                library_id,
+                library_name=library_name,
+                episode_user_data=episode_user_data,
             )
 
-            for user in users:
+            # Seed the catalog without user restrictions, then merge user watch data.
+            for user in [None, *users]:
                 # get all watched episodes for this user in one API call
-                user_series_watch_dates = await self.get_all_watched_episodes_for_user(
-                    user.id
+                user_series_watch_dates = (
+                    await self.get_all_watched_episodes_for_user(user.id)
+                    if user is not None
+                    else {}
                 )
 
                 # get series list for this user from this library
                 user_series = await self.get_series_for_user(
-                    user.id,
+                    user.id if user is not None else None,
                     library_id=library_id,
                     library_name=library_name,
                     series_sizes=series_sizes,

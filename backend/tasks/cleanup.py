@@ -79,6 +79,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    normalize_fpath,
     paths_equivalent,
     remove_empty_directory,
     resolve_path,
@@ -89,8 +90,10 @@ from backend.core.utils.resolution import guesstimate_resolution
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import (
+    CandidateResyncIdentity,
     DeleteRequest,
     Episode,
+    EpisodeVersion,
     GeneralSettings,
     MediaFavorite,
     MediaWatchUser,
@@ -147,6 +150,7 @@ from backend.services.lifecycle_webhooks import (
     enqueue_event_deliveries,
 )
 from backend.services.media_favorites_cache import media_favorites_snapshot_cache
+from backend.services.media_identity import load_media_identity_ownership
 from backend.services.media_watch_snapshot_cache import media_watch_snapshot_cache
 from backend.services.notifications import (
     build_cleanup_notification_context,
@@ -184,6 +188,7 @@ from backend.services.watch_identity import (
     expand_watch_keys,
     load_watch_user_alias_index,
 )
+from backend.user_types import MEDIA_SERVERS
 from backend.utils.helpers import (
     LeavingSoonPosters,
     LeavingSoonThumbs,
@@ -348,6 +353,67 @@ def _has_media_path(path: str | None) -> bool:
     return bool(path and path.strip())
 
 
+SHARED_EPISODE_FILE_ERROR = (
+    "This file contains more than one episode. Individual-episode deletion or "
+    "moving would also remove other episodes; use a season or series action "
+    "after checking its protections, or choose Unmonitor Only."
+)
+
+
+async def _episode_file_peers(
+    db: AsyncSession, series_ids: Collection[int]
+) -> dict[int, set[int]]:
+    """Find logical episodes affected by the same physical file or item deletion."""
+    if not series_ids:
+        return {}
+    episodes = (
+        await db.scalars(
+            select(Episode)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Season.series_id.in_(series_ids))
+        )
+    ).all()
+    groups: dict[tuple[str, ...], set[int]] = defaultdict(set)
+
+    def add_path(episode_id: int, path: str | None) -> None:
+        if path and path.strip():
+            groups[("path", str(normalize_fpath(path)))].add(episode_id)
+
+    for episode in episodes:
+        add_path(episode.id, episode.path)
+        for service, item_id in (
+            (Service.PLEX, episode.plex_rating_key),
+            (Service.JELLYFIN, episode.jellyfin_episode_id),
+            (Service.EMBY, episode.emby_episode_id),
+        ):
+            if item_id:
+                groups[("item", service.value, item_id)].add(episode.id)
+    versions = (
+        await db.scalars(
+            select(EpisodeVersion)
+            .join(Episode, EpisodeVersion.episode_id == Episode.id)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Season.series_id.in_(series_ids))
+        )
+    ).all()
+    for version in versions:
+        add_path(version.episode_id, version.path)
+        if version.service_item_id:
+            groups[("item", version.service.value, version.service_item_id)].add(
+                version.episode_id
+            )
+        if version.service_media_id:
+            groups[("file", version.service.value, version.service_media_id)].add(
+                version.episode_id
+            )
+    peers: dict[int, set[int]] = defaultdict(set)
+    for ids in groups.values():
+        if len(ids) > 1:
+            for episode_id in ids:
+                peers[episode_id].update(ids - {episode_id})
+    return peers
+
+
 def _season_holds_media(season: Season) -> bool:
     """Return whether a season still has something worth reclaiming.
 
@@ -405,7 +471,10 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             (
                 await db.execute(
                     select(ReclaimCandidate).where(
-                        ReclaimCandidate.delete_request_id.is_(None)
+                        ReclaimCandidate.delete_request_id.is_(None),
+                        ReclaimCandidate.id.notin_(
+                            select(CandidateResyncIdentity.candidate_id)
+                        ),
                     )
                 )
             )
@@ -872,6 +941,16 @@ async def _filter_movie_candidates_by_favorites(
     return filtered, len(candidates) - len(filtered)
 
 
+async def _movie_version_config_ids(db: AsyncSession) -> dict[Service, int]:
+    ownership = await load_media_identity_ownership(db)
+    config_ids: dict[Service, int] = {}
+    for service in MEDIA_SERVERS:
+        owners = ownership.configs_owning_media_rows(service)
+        if len(owners) == 1:
+            config_ids[service] = next(iter(owners))
+    return config_ids
+
+
 async def _filter_movie_candidates_by_sibling_protection(
     db: AsyncSession,
     candidates: Sequence[ReclaimCandidate],
@@ -942,12 +1021,16 @@ async def _filter_movie_candidates_by_sibling_protection(
             )
 
     # a protected row shields every row naming the same file
+    version_config_ids = await _movie_version_config_ids(db)
     shielded_by_movie: dict[int, set[int]] = {}
     for movie_id, version_info in info_by_movie.items():
         movie_protected = protected_version_ids & set(version_info)
         if movie_protected:
             shielded_by_movie[movie_id] = _expand_to_physical_siblings(
-                movie_protected, version_info, path_mappings
+                movie_protected,
+                version_info,
+                path_mappings,
+                service_config_ids=version_config_ids,
             )
 
     held_back: list[int] = []
@@ -6498,10 +6581,16 @@ async def _sync_movie_version_candidates(
     commit: bool = True,
 ) -> tuple[int, int, int]:
     """Synchronize movie version candidates with the database."""
+    pending = (await db.scalars(select(CandidateResyncIdentity))).all()
+    pending_movie_ids = {identity.movie_id for identity in pending}
+    records = [record for record in records if record.movie_id not in pending_movie_ids]
     existing_result = await db.execute(
         select(ReclaimCandidate)
         .where(ReclaimCandidate.delete_request_id.is_(None))
         .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+        .where(
+            ReclaimCandidate.id.notin_(identity.candidate_id for identity in pending)
+        )
     )
     existing_candidates = existing_result.scalars().all()
     version_candidate_lookup: dict[int, ReclaimCandidate] = {
@@ -6941,6 +7030,13 @@ async def _collect_episode_candidate_records(
         protected_episode_ids = {
             b.episode_id for b in protected_episode_result.scalars().all()
         }
+        file_peers = await _episode_file_peers(db, [s.id for s in all_series])
+        protected_episode_ids.update(
+            peer
+            for episode_id in list(protected_episode_ids)
+            if episode_id is not None
+            for peer in file_peers.get(episode_id, set())
+        )
 
     records: list[MatchedCandidateRecord] = []
 
@@ -8334,6 +8430,7 @@ def _path_matches_arr_folder(
     path_mappings: Sequence[Mapping[str, Any]] | None,
     *,
     path_service_type: str | None = None,
+    path_service_config_id: int | None = None,
     arr_service_type: str | None = None,
     arr_service_config_id: int | None = None,
 ) -> bool:
@@ -8341,6 +8438,7 @@ def _path_matches_arr_folder(
         path,
         path_mappings,
         service_type=path_service_type,
+        service_config_id=path_service_config_id,
     )
     arr_variants = mapped_path_variants(
         arr_folder,
@@ -8359,6 +8457,8 @@ def _expand_to_physical_siblings(
     version_ids: Iterable[int],
     version_info: Mapping[int, tuple[str | None, Service | None]],
     path_mappings: Sequence[Mapping[str, Any]] | None,
+    *,
+    service_config_ids: Mapping[Service, int] | None = None,
 ) -> set[int]:
     """Add every version row that describes the same physical file as a selected one.
 
@@ -8398,7 +8498,13 @@ def _expand_to_physical_siblings(
                 other_path,
                 path_mappings,
                 left_service_type=seed_service.value if seed_service else None,
+                left_service_config_id=(service_config_ids or {}).get(seed_service)
+                if seed_service
+                else None,
                 right_service_type=other_service.value if other_service else None,
+                right_service_config_id=(service_config_ids or {}).get(other_service)
+                if other_service
+                else None,
             ):
                 selected.add(other_id)
                 break
@@ -8664,6 +8770,7 @@ async def _reconcile_media_server_after_delete(
     paths: Iterable[str | None],
     allow_delete_item: bool,
     context: str,
+    require_removal: bool = False,
 ) -> None:
     """Keep the media server's library in step with files we already removed.
 
@@ -8672,18 +8779,33 @@ async def _reconcile_media_server_after_delete(
     server to re-check a path it already indexed, so it runs either way -
     without it the server keeps serving an entry whose files are gone, the next
     sync re-imports the item, and the scan re-flags it with a fresh review
-    period.  Always best effort; never raises.
+    period. If local removal could not be confirmed, ``require_removal`` makes
+    the native deletion mandatory before finalizing the candidate.
     """
     main_service = service_manager.main_media_server
     if main_service is None:
+        if require_removal:
+            raise ValueError(
+                "File removal could not be confirmed and no media server is available"
+            )
         return
 
     if allow_delete_item and item_id:
         try:
             await main_service.delete_item(item_id)
+        except PlaybackDeferred:
+            raise
         except Exception as e:
             LOG.warning(f"{context}: media server delete_item failed: {e}")
+            if require_removal:
+                raise
         return
+
+    if require_removal:
+        raise ValueError(
+            "File removal could not be confirmed; media-server fallback deletion "
+            "is disabled or the media-server item is unavailable"
+        )
 
     seen: set[str] = set()
     for path in paths:
@@ -8845,6 +8967,7 @@ async def _delete_movie_version_candidates(
     main_service_type = service_manager.main_media_server_type or Service.PLEX
 
     async with async_db() as db:
+        version_config_ids = await _movie_version_config_ids(db)
         version_ids = [
             c.movie_version_id for c in version_candidates if c.movie_version_id
         ]
@@ -8901,6 +9024,7 @@ async def _delete_movie_version_candidates(
             {version.id},
             {v.id: (v.path, v.service) for v in movie.versions},
             path_mappings,
+            service_config_ids=version_config_ids,
         )
         sibling_versions = [v for v in movie.versions if v.id in sibling_ids]
 
@@ -9365,6 +9489,14 @@ async def _delete_movie_candidates(
     # arr_movie_path is not yet populated (e.g. before first sync after upgrade).
     all_movie_ids = {c.movie_id for c in candidates if c.movie_id}
     async with async_db() as db:
+        version_config_ids = await _movie_version_config_ids(db)
+        radarr_config_rows = (
+            await db.execute(
+                select(ServiceConfig.id, ServiceConfig.enabled).where(
+                    ServiceConfig.service_type == Service.RADARR
+                )
+            )
+        ).all()
         rows = (
             await db.execute(
                 select(
@@ -9459,6 +9591,9 @@ async def _delete_movie_candidates(
                 arr_movie_path,
                 move_path_mappings,
                 path_service_type=version_service.value if version_service else None,
+                path_service_config_id=version_config_ids.get(version_service)
+                if version_service
+                else None,
                 arr_service_type=Service.RADARR.value,
                 arr_service_config_id=config_id,
             ):
@@ -9498,6 +9633,7 @@ async def _delete_movie_candidates(
             selected_version_ids,
             version_info,
             move_path_mappings,
+            service_config_ids=version_config_ids,
         )
 
         refs_by_pair = {
@@ -9520,6 +9656,9 @@ async def _delete_movie_candidates(
                         arr_movie_path,
                         move_path_mappings,
                         path_service_type=version_service.value
+                        if version_service
+                        else None,
+                        path_service_config_id=version_config_ids.get(version_service)
                         if version_service
                         else None,
                         arr_service_type=Service.RADARR.value,
@@ -9563,7 +9702,10 @@ async def _delete_movie_candidates(
         if not version_info:
             return None
         covered = _expand_to_physical_siblings(
-            selected_version_ids, version_info, move_path_mappings
+            selected_version_ids,
+            version_info,
+            move_path_mappings,
+            service_config_ids=version_config_ids,
         )
         if not covered:
             return None
@@ -9604,6 +9746,9 @@ async def _delete_movie_candidates(
                         left_service_type=version_service.value
                         if version_service
                         else None,
+                        left_service_config_id=version_config_ids.get(version_service)
+                        if version_service
+                        else None,
                         right_service_type=Service.RADARR.value,
                         right_service_config_id=config_id,
                     )
@@ -9629,6 +9774,57 @@ async def _delete_movie_candidates(
     unmatched_version_candidates: list[ReclaimCandidate] = []
     # candidate id -> why a Radarr movie delete could not be used for it
     demotion_reasons: dict[int, str] = {}
+
+    def record_unmatched_radarr_candidate(candidate: ReclaimCandidate) -> None:
+        info = movie_data.get(candidate.movie_id or 0, {})
+        refs = info.get("refs", [])
+        allowed = _candidate_arr_config_ids(candidate, rules_by_id, "radarr")
+        active_refs = [ref for ref in refs if ref[0] in radarr_clients]
+        eligible = [ref for ref in active_refs if allowed is None or ref[0] in allowed]
+        initialized = sorted(radarr_clients)
+        if not initialized:
+            enabled_ids = sorted(row.id for row in radarr_config_rows if row.enabled)
+            if enabled_ids:
+                reason = (
+                    f"Enabled Radarr configs {enabled_ids} have no initialized runtime "
+                    "client. Check service initialization errors and re-save the "
+                    "Radarr settings to reconnect; Test only checks connectivity"
+                )
+            else:
+                reason = "No enabled Radarr configuration is available"
+        elif not refs:
+            reason = (
+                f"No synced Radarr movie link for TMDB {info.get('tmdb_id')}; "
+                f"initialized Radarr configs={initialized}. Run Sync Media and "
+                "verify that Radarr and the media server identify the same movie"
+            )
+        elif not active_refs:
+            reason = (
+                f"Synced movie links refer to unavailable Radarr configs "
+                f"{sorted({ref[0] for ref in refs})}; initialized configs={initialized}. "
+                "Check that the linked configs are enabled and initialized, then run Sync Media"
+            )
+        elif not eligible:
+            reason = (
+                f"The rule's selected Radarr configs {sorted(allowed or [])} "
+                f"exclude this movie's initialized links {sorted({ref[0] for ref in active_refs})}. "
+                "Review the rule's Radarr targets"
+            )
+        else:
+            path = version_path_by_id.get(candidate.movie_version_id or 0)
+            folders = [(ref[0], ref[2]) for ref in eligible]
+            reason = (
+                f"No unambiguous Radarr path match after path mappings: "
+                f"movie file={path!r}; linked Radarr folders={folders}. "
+                "Review Settings > General > Path Mappings and the rule's Radarr targets"
+            )
+        demotion_reasons[candidate.id] = reason
+        LOG.warning(
+            f"No Radarr deletion route for candidate {candidate.id} "
+            f"('{info.get('title', 'unknown')}'): {reason}. "
+            f"Media-server fallback is {'enabled' if media_server_fallback_enabled else 'disabled'}"
+        )
+
     # movie_id -> per-file Radarr delete plan for a partial version selection
     movie_file_routing: dict[
         int, tuple[dict[tuple[int, int], list[int]], set[int]]
@@ -9644,6 +9840,7 @@ async def _delete_movie_candidates(
                 continue
             movie_info = movie_data.get(cand.movie_id)
             if not movie_info or not movie_info["refs"]:
+                record_unmatched_radarr_candidate(cand)
                 unmatched_version_candidates.append(cand)
                 continue
             ver_path = version_path_by_id.get(cand.movie_version_id)
@@ -9722,10 +9919,7 @@ async def _delete_movie_candidates(
                     )
                     unmatched_version_candidates.append(cand)
             else:
-                LOG.warning(
-                    f"No Radarr instance found for '{movie_info['title']}' "
-                    f"(path: {ver_path!r}) - routing to media server fallback"
-                )
+                record_unmatched_radarr_candidate(cand)
                 unmatched_version_candidates.append(cand)
 
         for cand in whole_movie_candidates:
@@ -9744,8 +9938,12 @@ async def _delete_movie_candidates(
                         (config_id, arr_movie_id)
                     )
             all_cand_ids_by_movie.setdefault(cand.movie_id, []).append(cand.id)
+            if cand.movie_id not in movie_arr_routing:
+                record_unmatched_radarr_candidate(cand)
     else:
         unmatched_version_candidates = list(version_candidates)
+        for candidate in candidates:
+            record_unmatched_radarr_candidate(candidate)
 
     # Partial version selections Radarr can satisfy file by file, without
     # touching the movie entry or needing the media server.
@@ -9794,6 +9992,11 @@ async def _delete_movie_candidates(
                         (
                             "Media server fallback disabled and movie was not found "
                             "in any active Radarr instance"
+                            + (
+                                f" ({demotion_reasons[cand.id]})"
+                                if cand.id in demotion_reasons
+                                else ""
+                            )
                         ),
                     )
                     LOG.warning(
@@ -9908,6 +10111,7 @@ async def _delete_movie_candidates(
                                         concrete_delete_target_version_ids,
                                         version_info_by_movie.get(movie.id, {}),
                                         move_path_mappings,
+                                        service_config_ids=version_config_ids,
                                     )
                                 )
                             if is_whole_movie:
@@ -10100,6 +10304,7 @@ async def _delete_movie_candidates(
                             }
 
                             if not keep_files:
+                                locally_removed_version_ids: set[int] = set()
                                 # Capture existing paths before removal: resolve_path only
                                 # returns paths that still exist.
                                 exclusion_source_paths = (
@@ -10108,6 +10313,9 @@ async def _delete_movie_candidates(
                                             v.path,
                                             path_mappings,
                                             service_type=v.service.value,
+                                            service_config_id=version_config_ids.get(
+                                                v.service
+                                            ),
                                         )
                                         for v in movie.versions
                                         if is_whole_movie
@@ -10131,9 +10339,10 @@ async def _delete_movie_candidates(
                                     local_path = resolve_path(
                                         ver.path,
                                         path_mappings,
-                                        service_type=unmonitor_service_type.value
-                                        if unmonitor_service_type
-                                        else None,
+                                        service_type=ver.service.value,
+                                        service_config_id=version_config_ids.get(
+                                            ver.service
+                                        ),
                                     )
                                     if local_path:
                                         try:
@@ -10143,6 +10352,8 @@ async def _delete_movie_candidates(
                                                 siblings=True,
                                             )
                                             sibling_cleanup(local_path)
+                                            if not local_path.exists():
+                                                locally_removed_version_ids.add(ver.id)
                                             playback_step_completed(
                                                 "Cleaned up matching files at "
                                                 + str(local_path)
@@ -10156,9 +10367,10 @@ async def _delete_movie_candidates(
 
                                 # keep the media server library in sync with the
                                 # files we just removed
+                                service_versions: list[MovieVersion] = []
                                 if unmonitor_service_type is not None:
                                     if is_whole_movie:
-                                        service_versions: list[MovieVersion] = [
+                                        service_versions = [
                                             v
                                             for v in movie.versions
                                             if v.service == unmonitor_service_type
@@ -10176,6 +10388,11 @@ async def _delete_movie_candidates(
                                         if ver.service_item_id in handled_item_ids:
                                             continue
                                         handled_item_ids.add(ver.service_item_id)
+                                        item_files_removed = all(
+                                            v.id in locally_removed_version_ids
+                                            for v in service_versions
+                                            if v.service_item_id == ver.service_item_id
+                                        )
                                         # a kept version sharing this media server
                                         # item (e.g. a multi version Plex entry on
                                         # one ratingKey) must never be deleted with
@@ -10196,8 +10413,28 @@ async def _delete_movie_candidates(
                                             allow_delete_item=(
                                                 media_server_fallback_enabled
                                                 and not shares_item_with_kept_version
+                                                and not item_files_removed
                                             ),
                                             context=f"movie cleanup '{movie.title}'",
+                                            require_removal=not item_files_removed,
+                                        )
+
+                                if (
+                                    unmonitor_service_type is None
+                                    or not service_versions
+                                ):
+                                    target_versions = [
+                                        v
+                                        for v in movie.versions
+                                        if is_whole_movie
+                                        or v.id in unmonitor_target_version_ids
+                                    ]
+                                    if not target_versions or any(
+                                        v.id not in locally_removed_version_ids
+                                        for v in target_versions
+                                    ):
+                                        raise ValueError(
+                                            "Movie file removal could not be confirmed"
                                         )
 
                                 if (
@@ -10344,6 +10581,14 @@ async def _delete_movie_candidates(
             raise
         except Exception as e:
             LOG.error(f"Error finalizing movie unmonitor state: {e}", exc_info=True)
+            await _mark_candidate_delete_failures(
+                [
+                    cid
+                    for info in movies_to_unmonitor
+                    for cid in info["all_candidate_ids"]
+                ],
+                f"Movie removal could not be completed: {e}",
+            )
         await _best_effort_radarr_rescan(
             radarr_refresh_after_unmonitor,
             context="movie unmonitor cleanup",
@@ -10767,6 +11012,7 @@ async def _delete_series_candidates(
 
                     if series:
                         if not keep_files:
+                            locally_removed = False
                             # delete series folder from disk using arr_series_path
                             s_refs = series_data.get(series_id, {}).get("refs", [])
                             for _, _, arr_series_path in s_refs:
@@ -10786,6 +11032,7 @@ async def _delete_series_candidates(
                                             path=str(local_path), directory=True
                                         )
                                         shutil.rmtree(str(local_path))
+                                        locally_removed = not local_path.exists()
                                         playback_step_completed(
                                             "Removed folder " + str(local_path)
                                         )
@@ -10813,8 +11060,14 @@ async def _delete_series_candidates(
                                 await _reconcile_media_server_after_delete(
                                     item_id=media_ref.service_id,
                                     paths=[media_ref.path],
-                                    allow_delete_item=media_server_fallback_enabled,
+                                    allow_delete_item=media_server_fallback_enabled
+                                    and not locally_removed,
                                     context=f"series cleanup '{series.title}'",
+                                    require_removal=not locally_removed,
+                                )
+                            elif not locally_removed:
+                                raise ValueError(
+                                    "Series file removal could not be confirmed"
                                 )
 
                             series.removed_at = datetime.now(UTC)
@@ -10884,6 +11137,10 @@ async def _delete_series_candidates(
             raise
         except Exception as e:
             LOG.error(f"Error finalizing series unmonitor state: {e}", exc_info=True)
+            await _mark_candidate_delete_failures(
+                [info["candidate_id"] for info in series_to_unmonitor],
+                f"Series removal could not be completed: {e}",
+            )
         await _best_effort_sonarr_refresh(
             sonarr_refresh_after_unmonitor,
             context="series unmonitor cleanup",
@@ -11673,6 +11930,14 @@ async def _delete_episode_candidates(
         cand_arr_action = _get_arr_action(
             candidate, episode_rules_by_id, default_arr_delete_behavior
         )
+        if cand_arr_action != "unmonitor_only":
+            async with async_db() as db:
+                file_peers = await _episode_file_peers(db, [series_obj.id])
+            if episode.id in file_peers:
+                await _mark_candidate_delete_failure(
+                    candidate.id, SHARED_EPISODE_FILE_ERROR
+                )
+                continue
         ep_label = f"S{season.season_number:02d}E{episode.episode_number:02d}"
 
         sonarr_ref_id: int | None = None
@@ -11754,6 +12019,20 @@ async def _delete_episode_candidates(
             sonarr_ep_id = _coerce_int(sonarr_ep.get("id"))
             sonarr_ep_file_id = _coerce_int(sonarr_ep.get("episodeFileId"))
 
+            # Sonarr may know a combined file before the media inventory does.
+            if (
+                cand_arr_action != "unmonitor_only"
+                and sonarr_ep_file_id
+                and any(
+                    _coerce_int(ep.get("episodeFileId")) == sonarr_ep_file_id
+                    and (ep.get("seasonNumber"), ep.get("episodeNumber"))
+                    != (season.season_number, episode.episode_number)
+                    for ep in sonarr_episodes
+                )
+            ):
+                last_sonarr_error = SHARED_EPISODE_FILE_ERROR
+                break
+
             if not sonarr_ep_file_id:
                 last_sonarr_error = f"No episode file in Sonarr for {ep_label}"
                 LOG.debug(
@@ -11791,6 +12070,10 @@ async def _delete_episode_candidates(
                     f"Sonarr episode file deletion failed for "
                     f"'{series_obj.title}' {ep_label}: {e}"
                 )
+
+        if last_sonarr_error == SHARED_EPISODE_FILE_ERROR:
+            await _mark_candidate_delete_failure(candidate.id, last_sonarr_error)
+            continue
 
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
             # keep the media server library in sync with the file we removed
@@ -13340,6 +13623,17 @@ async def _move_series_candidates(
             season_move_source_files: list[Path] = []
             season_kept_by_other_copy = False
             try:
+                if candidate.episode_id is not None and candidate.series_id is not None:
+                    async with async_db() as db:
+                        file_peers = await _episode_file_peers(
+                            db, [candidate.series_id]
+                        )
+                    if candidate.episode_id in file_peers:
+                        await _mark_candidate_delete_failure(
+                            candidate.id, SHARED_EPISODE_FILE_ERROR
+                        )
+                        failed += 1
+                        continue
                 series_obj = (
                     series_map.get(candidate.series_id) if candidate.series_id else None
                 )
@@ -13957,6 +14251,24 @@ async def _run_playback_guarded_candidates(
                 )
             )
         ).all()
+        pending_ids = set(
+            (
+                await db.scalars(
+                    select(CandidateResyncIdentity.candidate_id).where(
+                        CandidateResyncIdentity.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).all()
+        )
+        for candidate_id in pending_ids:
+            result.deferrals[candidate_id] = {
+                "code": "resync_pending",
+                "message": "Deferred: waiting for media resync",
+                "checked_at": datetime.now(UTC).isoformat(),
+                "server_config_ids": [],
+                "completed_steps": [],
+            }
+        candidates = [c for c in candidates if c.id not in pending_ids]
         rule_ids = {rid for c in candidates for rid in c.matched_rule_ids or []}
         rules = {
             r.id: r

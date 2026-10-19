@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from backend.enums import Service
 from backend.services.episode_ordering import (
     EpisodeOrderingSnapshot,
     normalize_episode_order,
@@ -240,19 +241,71 @@ def test_plex_inherited_order_is_cached_and_override_takes_precedence():
 
 
 @pytest.mark.parametrize(
-    "raw, expected", [("", "aired"), (None, "aired"), ("dvd", "dvd"), ("digital", None)]
+    "raw, expected",
+    [
+        ("", "aired"),
+        (None, "aired"),
+        ("Aired", "aired"),
+        ("DVD", "dvd"),
+        ("Absolute", "absolute"),
+        ("digital", None),
+    ],
 )
-def test_emby_and_jellyfin_effective_order(raw, expected):
+@pytest.mark.parametrize("service", [Service.EMBY, Service.JELLYFIN])
+def test_emby_and_jellyfin_effective_order(raw, expected, service):
     from backend.services.emby_base import EmbyServiceBase
 
     async def run():
+        item = {"Id": "a", "Type": "Series", "DisplayOrder": raw}
         client = SimpleNamespace(
-            _make_request=AsyncMock(
-                return_value={"Type": "Series", "DisplayOrder": raw}
-            )
+            service_type=service,
+            _make_request=AsyncMock(return_value={"Items": [item]}),
         )
         assert await EmbyServiceBase.get_series_episode_order(client, "a") == expected
-        client._make_request.assert_awaited_once_with("Items/a", timeout=10)
+        client._make_request.assert_awaited_once_with(
+            "Items",
+            params={
+                "Ids": "a",
+                "Fields": "Path,MediaSources,DisplayOrder"
+                if service is Service.EMBY
+                else "Path,MediaSources",
+                "EnableUserData": False,
+            },
+            timeout=10,
+        )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("service", [Service.EMBY, Service.JELLYFIN])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"Items": []},
+        {"Items": "invalid"},
+        {"Items": [None]},
+        {"Items": [{"Id": "other", "Type": "Series", "DisplayOrder": "Aired"}]},
+        {"Items": [{"Id": "a", "Type": "Movie"}]},
+        {"Items": [{"Id": "a", "Type": "Series"}] * 2},
+    ],
+)
+def test_emby_family_invalid_series_lookup_keeps_order_unknown(
+    monkeypatch, service, payload
+):
+    from backend.services.emby_base import EmbyServiceBase
+
+    async def run():
+        client = EmbyServiceBase("synthetic", "http://media.invalid", service)
+        monkeypatch.setattr(
+            EmbyServiceBase, "_make_request", AsyncMock(return_value=payload)
+        )
+        try:
+            order = await EpisodeOrderingSnapshot().media_order(client, "a")
+            assert order is None
+            assert ordering_error("aired", order) is not None
+        finally:
+            await client.session.close()
 
     asyncio.run(run())
 

@@ -17,6 +17,7 @@ class LiveSession:
 class PlaybackSnapshot:
     sessions: tuple[LiveSession, ...] = ()
     available: bool = True
+    unavailable_reason: str | None = None
 
 
 @dataclass(frozen=True)

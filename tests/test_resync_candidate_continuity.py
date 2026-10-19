@@ -7,9 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.database import Base
-from backend.database.models import Movie, MovieVersion, ReclaimCandidate
+from backend.database.models import (
+    CandidateResyncIdentity,
+    Movie,
+    MovieVersion,
+    ReclaimCandidate,
+)
 from backend.enums import MediaType, Service
-from backend.tasks.sync import _restore_version_scoped_candidates
+from backend.tasks.sync import _restore_pending_movie_scopes
 
 
 async def _make_session():
@@ -52,6 +57,11 @@ async def _seed(db, *, rebuilt_paths: list[str]) -> tuple[int, int]:
     )
     db.add(candidate)
     await db.flush()
+    db.add(
+        CandidateResyncIdentity(
+            candidate.id, movie.id, "/data/movies/Movie1/Movie1-4k.mkv"
+        )
+    )
     await db.commit()
     return movie.id, candidate.id
 
@@ -76,25 +86,33 @@ async def test_candidate_reattaches_to_rebuilt_version_and_keeps_its_clock(
             candidate = await db.get(ReclaimCandidate, candidate_id)
             assert candidate is not None
             candidate.created_at = flagged_at
+            # Resync disables the parent target until identity is restored.
+            candidate.movie_id = None
             await db.commit()
 
-        await _restore_version_scoped_candidates(
-            {candidate_id: (movie_id, "/data/movies/movie1/movie1-4k.mkv")}
-        )
+        async with session_maker() as db:
+            await _restore_pending_movie_scopes(db, {movie_id})
+            await db.commit()
 
         async with session_maker() as db:
             candidate = await db.get(ReclaimCandidate, candidate_id)
             assert candidate is not None
             version = (await db.execute(select(MovieVersion))).scalars().one()
             assert candidate.movie_version_id == version.id
+            assert candidate.movie_id == movie_id
             assert candidate.created_at == flagged_at
     finally:
         await engine.dispose()
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "rebuilt_path",
+    ["/data/movies/Movie1/Movie1-1080p.mkv", "/data/movies/Movie1/Movie1-4K.mkv"],
+)
 async def test_candidate_is_dropped_when_its_file_did_not_come_back(
     monkeypatch,
+    rebuilt_path,
 ) -> None:
     """A detached candidate is never left movie-scoped.
 
@@ -105,13 +123,11 @@ async def test_candidate_is_dropped_when_its_file_did_not_come_back(
     try:
         monkeypatch.setattr("backend.tasks.sync.async_db", session_maker)
         async with session_maker() as db:
-            movie_id, candidate_id = await _seed(
-                db, rebuilt_paths=["/data/movies/Movie1/Movie1-1080p.mkv"]
-            )
+            movie_id, candidate_id = await _seed(db, rebuilt_paths=[rebuilt_path])
 
-        await _restore_version_scoped_candidates(
-            {candidate_id: (movie_id, "/data/movies/movie1/movie1-4k.mkv")}
-        )
+        async with session_maker() as db:
+            await _restore_pending_movie_scopes(db, {movie_id})
+            await db.commit()
 
         async with session_maker() as db:
             assert await db.get(ReclaimCandidate, candidate_id) is None

@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import Base
@@ -21,6 +22,7 @@ from backend.database.models import (
     ServiceConfig,
 )
 from backend.enums import MediaType, Service
+from backend.models.live_playback import PlaybackDeferral, PlaybackDeferred
 from backend.tasks import cleanup
 
 
@@ -75,6 +77,66 @@ class FailingRadarr(FakeRadarr):
         add_import_exclusion: bool = False,
     ) -> None:
         raise RuntimeError("radarr unavailable")
+
+
+@pytest.mark.parametrize(
+    "outcome", ["deferred", "failed", "disabled", "deleted", "local"]
+)
+def test_movie_unmonitor_requires_confirmed_removal(monkeypatch, tmp_path, outcome):
+    async def run():
+        folder = tmp_path / "Movie"
+        source = folder / "Movie.mkv"
+        if outcome == "local":
+            folder.mkdir()
+            source.write_bytes(b"movie")
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                movie_id, candidates, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[str(source)],
+                    candidate_version_indexes=[0],
+                    arr_action="unmonitor",
+                    arr_movie_path=str(folder),
+                    media_server_fallback_enabled=outcome != "disabled",
+                )
+            media = FakeMediaServer()
+            if outcome in {"deferred", "local"}:
+                media.delete_item = AsyncMock(
+                    side_effect=PlaybackDeferred(
+                        PlaybackDeferral("playback_unavailable", "2026-10-17", (1,))
+                    )
+                )
+            elif outcome == "failed":
+                media.delete_item = AsyncMock(
+                    side_effect=ValueError("native removal failed")
+                )
+            _patch_services(monkeypatch, FakeRadarr(), config_id, media)
+            monkeypatch.setattr(cleanup, "_dispatch_reclaim_event", AsyncMock())
+            if outcome == "deferred":
+                with pytest.raises(PlaybackDeferred):
+                    await cleanup._delete_movie_candidates(frozenset(candidates))
+            else:
+                count = await cleanup._delete_movie_candidates(frozenset(candidates))
+                assert count == int(outcome in {"deleted", "local"})
+            success = outcome in {"deleted", "local"}
+            async with sessions() as db:
+                assert (
+                    (await db.get(Movie, movie_id)).removed_at is not None
+                ) is success
+                assert (
+                    await db.get(ReclaimCandidate, candidates[0]) is None
+                ) is success
+                assert len((await db.scalars(select(ReclaimHistory))).all()) == int(
+                    success
+                )
+            if outcome == "local":
+                media.delete_item.assert_not_awaited()
+                assert not source.exists()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 class FakeMediaServer:
@@ -309,6 +371,306 @@ def test_single_version_candidate_promotes_to_radarr_delete(monkeypatch) -> None
                 assert movie.removed_at is not None
                 versions = (await db.execute(select(MovieVersion))).scalars().all()
                 assert versions == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mapping_owner", ["main", "other"])
+@pytest.mark.parametrize("partial", [False, True])
+def test_radarr_routing_honors_media_server_config_scoped_path_mapping(
+    monkeypatch, mapping_owner, partial
+):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                movie_id, candidate_ids, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[
+                        "/media/movies/Movie1/1080p.mkv",
+                        "/media/movies/Movie1/4k.mkv",
+                    ]
+                    if partial
+                    else ["/media/movies/Movie1/1080p.mkv"],
+                    candidate_version_indexes=[0],
+                    arr_movie_path="/movies/Movie1",
+                )
+                main = ServiceConfig(
+                    service_type=Service.JELLYFIN,
+                    name="Main",
+                    base_url="http://jellyfin",
+                    api_key="secret",
+                    enabled=True,
+                    is_main=True,
+                )
+                other = ServiceConfig(
+                    service_type=Service.JELLYFIN,
+                    name="Other",
+                    base_url="http://other",
+                    api_key="secret",
+                    enabled=True,
+                )
+                db.add_all([main, other])
+                await db.flush()
+                versions = (await db.scalars(select(MovieVersion))).all()
+                for version in versions:
+                    version.service = Service.JELLYFIN
+                settings = (await db.scalars(select(GeneralSettings))).one()
+                settings.path_mappings = [
+                    {
+                        "source_prefix": "/media/movies",
+                        "local_prefix": "/common/movies",
+                        "service_config_id": main.id
+                        if mapping_owner == "main"
+                        else other.id,
+                    },
+                    {
+                        "source_prefix": "/movies",
+                        "local_prefix": "/common/movies",
+                        "service_config_id": config_id,
+                    },
+                ]
+                rule = (await db.scalars(select(ReclaimRule))).one()
+                rule.action = {**rule.action, "radarr_service_config_ids": [config_id]}
+                await db.commit()
+            radarr = FakeRadarr(
+                movie_files=[
+                    {"id": 700, "path": "/movies/Movie1/1080p.mkv"},
+                    {"id": 701, "path": "/movies/Movie1/4k.mkv"},
+                ]
+                if partial
+                else []
+            )
+            _patch_services(monkeypatch, radarr, config_id)
+            deleted = await cleanup._delete_movie_candidates(frozenset(candidate_ids))
+            assert deleted == int(mapping_owner == "main")
+            assert len(radarr.deleted) == int(mapping_owner == "main" and not partial)
+            assert radarr.deleted_file_ids == (
+                [[700]] if mapping_owner == "main" and partial else []
+            )
+            async with sessions() as db:
+                assert (await db.get(ReclaimCandidate, candidate_ids[0]) is None) is (
+                    mapping_owner == "main"
+                )
+                if partial:
+                    kept = (
+                        await db.scalars(
+                            select(MovieVersion).where(
+                                MovieVersion.movie_id == movie_id
+                            )
+                        )
+                    ).all()
+                    assert any(version.path.endswith("/4k.mkv") for version in kept)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("whole_movie", [False, True])
+@pytest.mark.parametrize(
+    "failure, expected",
+    [
+        ("runtime", "have no initialized runtime client"),
+        ("link", "No synced Radarr movie link for TMDB 101"),
+        ("unavailable-link", "Synced movie links refer to unavailable Radarr configs"),
+        ("rule-target", "The rule's selected Radarr configs"),
+    ],
+)
+def test_unmatched_radarr_route_preserves_specific_diagnosis(
+    monkeypatch, caplog, whole_movie, failure, expected
+):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                _, candidates, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/data/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                )
+                if whole_movie:
+                    (
+                        await db.get(ReclaimCandidate, candidates[0])
+                    ).movie_version_id = None
+                if failure == "link":
+                    await db.execute(delete(MovieArrRef))
+                elif failure in {"unavailable-link", "rule-target"}:
+                    other = ServiceConfig(
+                        service_type=Service.RADARR,
+                        name="Other",
+                        base_url="http://other",
+                        api_key="secret",
+                        enabled=failure != "unavailable-link",
+                    )
+                    db.add(other)
+                    await db.flush()
+                    if failure == "unavailable-link":
+                        (
+                            await db.scalars(select(MovieArrRef))
+                        ).one().service_config_id = other.id
+                    else:
+                        rule = (await db.scalars(select(ReclaimRule))).one()
+                        rule.action = {
+                            **rule.action,
+                            "radarr_service_config_ids": [other.id],
+                        }
+                await db.commit()
+            radarr = FakeRadarr()
+            _patch_services(
+                monkeypatch, {} if failure == "runtime" else {config_id: radarr}
+            )
+            assert await cleanup._delete_movie_candidates(frozenset(candidates)) == 0
+            assert radarr.deleted == []
+            assert radarr.deleted_file_ids == []
+            async with sessions() as db:
+                candidate = await db.get(ReclaimCandidate, candidates[0])
+                assert expected in candidate.last_delete_error
+            route_logs = [
+                record.message
+                for record in caplog.records
+                if "No Radarr deletion route" in record.message
+            ]
+            assert len(route_logs) == 1
+            assert expected in route_logs[0]
+            assert "http://" not in route_logs[0]
+            assert "secret" not in route_logs[0]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("action", ["unmonitor", cleanup.ARR_ACTION_LIST_EXCLUSION])
+def test_unmonitor_removes_file_using_media_server_config_scoped_mapping(
+    monkeypatch, tmp_path, action
+):
+    async def run():
+        source = tmp_path / "Movie1" / "Movie1.mkv"
+        source.parent.mkdir()
+        source.write_bytes(b"movie")
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                movie_id, candidates, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=["/media/movies/Movie1/Movie1.mkv"],
+                    candidate_version_indexes=[0],
+                    arr_movie_path="/movies/Movie1",
+                    arr_action=action,
+                )
+                main = ServiceConfig(
+                    service_type=Service.JELLYFIN,
+                    name="Main",
+                    base_url="http://jellyfin",
+                    api_key="secret",
+                    enabled=True,
+                    is_main=True,
+                )
+                db.add(main)
+                await db.flush()
+                (
+                    await db.scalars(select(MovieVersion))
+                ).one().service = Service.JELLYFIN
+                settings = (await db.scalars(select(GeneralSettings))).one()
+                settings.path_mappings = [
+                    {
+                        "source_prefix": "/media/movies",
+                        "local_prefix": str(tmp_path),
+                        "service_config_id": main.id,
+                    },
+                    {
+                        "source_prefix": "/movies",
+                        "local_prefix": str(tmp_path),
+                        "service_config_id": config_id,
+                    },
+                ]
+                rule = (await db.scalars(select(ReclaimRule))).one()
+                rule.action = {**rule.action, "radarr_service_config_ids": [config_id]}
+                await db.commit()
+            radarr = FakeRadarr()
+            radarr.add_import_exclusion = AsyncMock()
+            _patch_services(monkeypatch, radarr, config_id)
+            assert await cleanup._delete_movie_candidates(frozenset(candidates)) == 1
+            assert radarr.unmonitored == [[55]]
+            assert not source.exists()
+            if action == cleanup.ARR_ACTION_LIST_EXCLUSION:
+                radarr.add_import_exclusion.assert_awaited_once_with(55)
+            async with sessions() as db:
+                assert await db.get(ReclaimCandidate, candidates[0]) is None
+                assert (await db.get(Movie, movie_id)).removed_at is not None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("action", ["delete", "unmonitor"])
+def test_scoped_mapping_preserves_protection_for_same_file_alias(
+    monkeypatch, tmp_path, action
+):
+    async def run():
+        source = tmp_path / "Movie1" / "Movie1.mkv"
+        source.parent.mkdir()
+        source.write_bytes(b"kept")
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                _, candidates, config_id = await _seed_movie_version_case(
+                    db,
+                    version_paths=[
+                        "/media/movies/Movie1/Movie1.mkv",
+                        "/alternate/movies/Movie1/Movie1.mkv",
+                    ],
+                    candidate_version_indexes=[0],
+                    protected_version_indexes=[1],
+                    arr_movie_path="/movies/Movie1",
+                    arr_action=action,
+                )
+                main = ServiceConfig(
+                    service_type=Service.JELLYFIN,
+                    name="Main",
+                    base_url="http://jellyfin",
+                    api_key="secret",
+                    enabled=True,
+                    is_main=True,
+                )
+                db.add(main)
+                await db.flush()
+                for version in (await db.scalars(select(MovieVersion))).all():
+                    version.service = Service.JELLYFIN
+                settings = (await db.scalars(select(GeneralSettings))).one()
+                settings.path_mappings = [
+                    {
+                        "source_prefix": prefix,
+                        "local_prefix": str(tmp_path),
+                        "service_config_id": owner,
+                    }
+                    for prefix, owner in [
+                        ("/media/movies", main.id),
+                        ("/alternate/movies", main.id),
+                        ("/movies", config_id),
+                    ]
+                ]
+                rule = (await db.scalars(select(ReclaimRule))).one()
+                rule.action = {**rule.action, "radarr_service_config_ids": [config_id]}
+                await db.commit()
+            radarr = FakeRadarr()
+            _patch_services(monkeypatch, radarr, config_id)
+            assert await cleanup._delete_movie_candidates(frozenset(candidates)) == 0
+            assert radarr.deleted == []
+            assert radarr.unmonitored == []
+            assert radarr.deleted_file_ids == []
+            assert source.read_bytes() == b"kept"
+            async with sessions() as db:
+                assert (
+                    "protected"
+                    in (
+                        await db.get(ReclaimCandidate, candidates[0])
+                    ).last_delete_error.lower()
+                )
         finally:
             await engine.dispose()
 
@@ -1146,15 +1508,19 @@ def test_list_exclusion_keeps_radarr_entry_after_removal(
                     == b"movie"
                 )
             else:
-                assert (
-                    await cleanup._delete_movie_candidates(
-                        restrict_to_ids=frozenset(candidates), approved_by="tester"
-                    )
-                    == 1
-                )
+                assert await cleanup._delete_movie_candidates(
+                    restrict_to_ids=frozenset(candidates), approved_by="tester"
+                ) == int(failure != "remove")
             assert radarr.deleted == []
             assert excluded == ([] if failure == "remove" else [55])
             async with sessions() as db:
+                if failure == "remove":
+                    assert source.exists()
+                    assert (
+                        await db.get(ReclaimCandidate, candidates[0])
+                    ).last_delete_error
+                    assert (await db.scalars(select(ReclaimHistory))).all() == []
+                    return
                 history = (await db.execute(select(ReclaimHistory))).scalar_one()
                 assert history.attributes["arr_list_exclusion"] == (
                     "failed" if failure else "added"

@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-10-19
+
+### Added
+
+- Cleanup rules based on first Radarr/Sonarr import (@LacazeThomas)
+
+### Changed
+
+- Updated fastapi, platformdirs, and zensical.
+- Bumped 6 backend dependencies.
+
+### Fixed
+
+- Interrupted resyncs now retain movie-file identities in the database. Later successful syncs restore cleanup candidates and deletion requests to the same file without resetting review timers; intervening scans preserve suspended candidates, and queued file operations defer until recovery.
+- Movie-version deletion requests now stay attached to the same file after a resync. If that file cannot be matched, approval and retry are blocked instead of deleting the whole movie.
+- Failed or interrupted resyncs no longer turn movie-version cleanup candidates into whole-movie deletion targets. Candidates remain without an actionable target until their file identity is restored; successful resyncs preserve their review timers.
+- Movie sync no longer mistakes an identical new copy for a rename of a file that is still present. Existing candidates and protections stay attached to the original file, and ambiguous rename matches are skipped.
+- Large inventory reductions can now be confirmed across separate sync processes. The previous deletion proposal is saved per media server and media type, allowing a repeated legitimate reduction to clear stale titles instead of remaining blocked indefinitely.
+- Removing the last movie or series now clears stale inventory and cleanup candidates once the media server confirms the inventory is empty. Unavailable, incomplete, or filtered-empty responses preserve existing inventory, and large removals still require confirmation on the next sync.
+- Storage capacity now counts mounts with matching total and free space once. Administrators can save per-mount Automatic, Include, or Exclude choices on the Storage page to avoid counting pooled storage and its branches together; per-instance totals use the same choices.
+- Emby and Jellyfin episode sync now rejects truncated or repeated inventory pages instead of treating them as a complete library. Previously reported totals remain enforced if later pages omit or reduce them, preserving existing episodes and protection when a scan is incomplete.
+- Episode watch completion now resolves item IDs within their source server. Linked servers use their own matches instead of crediting an unrelated main-server episode with the same ID; ambiguous shared ID columns are not used for playback lookups.
+- Episode protection now covers other episodes sharing the same file. Individual-episode deletion and moves stop before touching combined files, including files identified as combined by Sonarr; Unmonitor Only remains available.
+- Emby and Jellyfin combined episode files now include every episode in their reported range. Watch completion and playback mappings cover each episode without multiplying physical storage or season/series playback totals.
+- Emby and Jellyfin series inventory no longer depends on the first user's library access. Season and episode watch counts, dates, and ratings now include all users while physical files and sizes are counted once.
+- Emby episode-order checks now use the supported item query, restoring Sonarr-dependent rules and season inventory for matching orders. The same fix restores item lookups used by playback and deletion-path checks.
+- Movie deletion now honors path mappings scoped to the main media-server instance when selecting a Radarr instance, matching individual movie files, and removing local files after unmonitoring. A valid mapping could previously be ignored, causing deletion to fail or fall back to the media server despite a working Radarr connection.
+- Missing Radarr deletion routes now report whether the runtime client is unavailable, the movie has no synced Radarr link, the rule excludes the linked instance, or the file paths cannot be matched. The reason is included in candidate failure details when fallback deletion is disabled.
+- Jellyfin API-key item lookups now work when checking active playback, resolving deletion paths, and verifying episode ordering, instead of returning HTTP 400 because no user was attached.
+- **Defer When Playback Status Is Unavailable** now applies to final media-server and Radarr/Sonarr deletion-path checks as well as the initial session check. Known playing or paused media remains protected when the setting is off.
+- Unmonitor-and-delete actions no longer report success or mark movies and series removed when file removal was deferred, failed, or could not be confirmed. Affected candidates remain available to retry, and confirmed local removals use a media-server path scan.
+- Disabled media servers no longer block deletion through playback checks on shared paths.
+- Playback-check failures now log the service, configuration, failure stage, and HTTP status or error type at warning level, without exposing credentials. Missing runtime clients are identified explicitly so a successful connection test no longer leaves the cause unexplained.
+
 ## [0.5.8] - 2026-10-15
 
 ### Added

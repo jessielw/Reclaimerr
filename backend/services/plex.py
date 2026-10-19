@@ -2522,6 +2522,42 @@ class PlexService:
         ]
         return snapshots, max_viewed_at
 
+    async def is_inventory_empty(self, media_type: MediaType) -> bool:
+        """Confirm raw library counts before reconciling an empty parsed catalog."""
+        data, _ = await self._make_request("library/sections")
+        container = data.get("MediaContainer") if isinstance(data, dict) else None
+        if not isinstance(container, dict):
+            return False
+        sections = container.get("Directory")
+        if sections is None and as_int(container.get("size")) == 0:
+            sections = []
+        if not isinstance(sections, list):
+            return False
+        if as_int(container.get("size")) not in (None, len(sections)):
+            return False
+        expected_type = "movie" if media_type is MediaType.MOVIE else "show"
+        for section in sections:
+            if not isinstance(section, dict) or not section.get("type"):
+                return False
+            if section["type"] != expected_type:
+                continue
+            if not section.get("key"):
+                return False
+            page, _ = await self._make_request(
+                f"library/sections/{section['key']}/all",
+                params={"X-Plex-Container-Start": 0, "X-Plex-Container-Size": 1},
+            )
+            content = page.get("MediaContainer") if isinstance(page, dict) else None
+            if not isinstance(content, dict):
+                return False
+            if (
+                as_int(content.get("totalSize", content.get("size"))) != 0
+                or as_int(content.get("size")) not in (None, 0)
+                or content.get("Metadata", []) != []
+            ):
+                return False
+        return True
+
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:

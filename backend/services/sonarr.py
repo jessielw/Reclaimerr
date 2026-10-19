@@ -266,6 +266,65 @@ class SonarrClient:
             if isinstance(series, Mapping)
         ]
 
+    async def get_import_history(self, page_size: int = 1000):
+        """Get successful episode imports globally, including every history page."""
+        if page_size <= 0:
+            raise ValueError("Import history page size must be positive")
+        records: list[dict[str, object]] = []
+        previous_page: list[object] = []
+        fetched = 0
+        page = 1
+        while True:
+            status_code, data = await self._make_request(
+                "GET",
+                "history",
+                params={
+                    "page": page,
+                    "pageSize": page_size,
+                    "sortKey": "date",
+                    "sortDirection": "descending",
+                    "eventType": 3,  # Sonarr downloadFolderImported
+                },
+                timeout=self.timeout,
+            )
+            if not isinstance(data, Mapping):
+                raise ValueError(
+                    f"Invalid response getting import history page {page} "
+                    f"(status: {status_code})"
+                )
+            raw_records = data.get("records")
+            if not isinstance(raw_records, list):
+                raise ValueError(f"Invalid records in import history page {page}")
+            total = as_int(data.get("totalRecords"))
+            if not raw_records:
+                if total is not None and fetched < total:
+                    raise ValueError(f"Incomplete import history at page {page}")
+                return records
+            if raw_records == previous_page:
+                raise ValueError(f"Repeated import history page {page}")
+            previous_page = raw_records
+            fetched += len(raw_records)
+            records += [
+                dict(record)
+                for record in raw_records
+                if isinstance(record, Mapping)
+                and record.get("eventType") in ("downloadFolderImported", 3)
+            ]
+            if total is not None and fetched >= total:
+                return records
+            page += 1
+
+    async def get_first_import_dates(self):
+        """Earliest successful episode import per series, as naive UTC dates."""
+        dates: dict[int, datetime] = {}
+        for record in await self.get_import_history():
+            series_id = as_int(record.get("seriesId"))
+            imported_at = _as_datetime(record.get("date"))
+            if series_id is None or series_id <= 0 or imported_at is None:
+                continue
+            dates[series_id] = min(dates.get(series_id, imported_at), imported_at)
+        return dates
+
     async def get_disk_space(self) -> list[dict[str, int | str]]:
         """Get disk space stats from Sonarr (GET /diskspace).
 
