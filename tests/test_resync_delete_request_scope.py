@@ -15,11 +15,9 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
-    ServiceConfig,
     User,
 )
 from backend.enums import MediaType, Service
-from backend.models.media import MovieVersionData
 from backend.tasks import sync
 
 
@@ -49,22 +47,6 @@ def version(movie_id, key):
         library_name="Movies",
         path=f"/movies/{key}/film.mkv",
         size=1000,
-        video_width=1920,
-        video_height=1080,
-        video_codec="h264",
-    )
-
-
-def incoming(key):
-    return MovieVersionData(
-        service=Service.PLEX,
-        service_item_id="item-" + key,
-        service_media_id=key,
-        library_id="library",
-        library_name="Movies",
-        path=f"/movies/{key}/film.mkv",
-        size=1000,
-        added_at=None,
         video_width=1920,
         video_height=1080,
         video_codec="h264",

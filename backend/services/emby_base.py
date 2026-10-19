@@ -2168,6 +2168,25 @@ class EmbyServiceBase:
             ) in results.items()
         ]
 
+    async def is_inventory_empty(self, media_type: MediaType) -> bool:
+        """Confirm emptiness without user visibility or external-ID filtering."""
+        data = await self._make_request(
+            "Items",
+            params={
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie"
+                if media_type is MediaType.MOVIE
+                else "Series",
+                "Limit": 1,
+                "EnableTotalRecordCount": "true",
+            },
+        )
+        return (
+            isinstance(data, dict)
+            and data.get("Items") == []
+            and as_int(data.get("TotalRecordCount")) == 0
+        )
+
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:

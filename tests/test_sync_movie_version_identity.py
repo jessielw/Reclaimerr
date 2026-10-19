@@ -2,8 +2,6 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, select
@@ -11,12 +9,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.database import Base
 from backend.database.models import (
-    DeleteRequest,
     Movie,
     MovieVersion,
     ReclaimCandidate,
-    ServiceConfig,
-    User,
 )
 from backend.enums import MediaType, Service
 from backend.models.media import MovieVersionData

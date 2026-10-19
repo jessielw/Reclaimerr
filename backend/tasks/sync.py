@@ -94,7 +94,7 @@ FINISHED_SERIES_METADATA_REFRESH_DAYS = 30
 # unknown status, is treated as still active so it can never get stuck stale
 FINISHED_SERIES_STATUSES = frozenset({"ended", "canceled", "cancelled"})
 
-_RowT = TypeVar("_RowT", Movie, Series)
+_RowT = TypeVar("_RowT", bound=Movie | Series)
 
 
 def _select_rows_to_soft_delete(
@@ -269,6 +269,23 @@ async def _purge_orphaned_arr_refs(
             f"Purged {removed} orphaned {service_type.value} ref(s) belonging to "
             "disabled or removed service configs"
         )
+
+
+async def _reconcile_empty_inventory(config_id: int, media_type: MediaType) -> None:
+    """A confirmed empty inventory still needs the normal soft-delete safeguard."""
+    model = Movie if media_type is MediaType.MOVIE else Series
+    async with async_db() as session:
+        rows = list((await session.scalars(select(model))).all())
+        missing = _select_rows_to_soft_delete(rows, set())
+        if await _soft_delete_blocked(
+            session, config_id, media_type, missing, len(missing)
+        ):
+            LOG.warning(
+                f"Empty {media_type.value} inventory requires confirmation on the next sync"
+            )
+        else:
+            await _apply_soft_deletes(session, missing, media_type)
+        await session.commit()
 
 
 def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
@@ -1609,9 +1626,11 @@ async def gather_movies(
         if not service_instance:
             return None
         LOG.debug(f"Fetching movies from {target.service_type} at {target.base_url}")
-        aggregated_movies: list[AggregatedMovieData] = (
-            await service_instance.get_aggregated_movies(included_libraries=None) or []
-        )
+        aggregated_movies: list[
+            AggregatedMovieData
+        ] = await service_instance.get_aggregated_movies(included_libraries=None)
+        if aggregated_movies is None:
+            return None
         LOG.debug(f"Fetched {len(aggregated_movies)} movies from {target.service_type}")
 
     # group by TMDB ID (merges same movie from multiple libraries on the same server)
@@ -1681,6 +1700,13 @@ async def gather_movies(
     if skipped_count > 0:
         LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
 
+    if not unique_movies and not await service_instance.is_inventory_empty(
+        MediaType.MOVIE
+    ):
+        LOG.warning(
+            "Movie inventory returned no usable titles but emptiness could not be confirmed"
+        )
+        return None
     return unique_movies
 
 
@@ -1820,12 +1846,22 @@ async def gather_series(
         if not service_instance:
             return None
         LOG.debug(f"Fetching series from {target.service_type} at {target.base_url}")
-        aggregated_series = (
-            await service_instance.get_aggregated_series(included_libraries=None) or []
+        aggregated_series = await service_instance.get_aggregated_series(
+            included_libraries=None
         )
+        if aggregated_series is None:
+            return None
         LOG.debug(f"Fetched {len(aggregated_series)} series from {target.service_type}")
 
-    return _dedupe_aggregated_series(aggregated_series)
+    result = _dedupe_aggregated_series(aggregated_series)
+    if not result[0] and not await service_instance.is_inventory_empty(
+        MediaType.SERIES
+    ):
+        LOG.warning(
+            "Series inventory returned no usable titles but emptiness could not be confirmed"
+        )
+        return None
+    return result
 
 
 async def sync_movies(
@@ -1877,8 +1913,14 @@ async def sync_movies(
     start_time = datetime.now(UTC)
 
     aggregated_movies = await gather_movies(effective_config)
+    if aggregated_movies is None:
+        LOG.warning(
+            f"Movie inventory unavailable from {effective_service.value}; keeping stored inventory"
+        )
+        return set()
     if not aggregated_movies:
-        LOG.info(f"No movies to sync from {effective_service.value}")
+        if allow_soft_delete:
+            await _reconcile_empty_inventory(effective_config.id, MediaType.MOVIE)
         return set()
     LOG.info(
         f"Gathered {len(aggregated_movies)} unique movies from {effective_service.value}"
@@ -2393,12 +2435,15 @@ async def sync_series(
     LOG.info(f"Starting series sync ({source_label})...")
 
     gather_result = await gather_series(effective_config)
-    if not gather_result:
-        LOG.info(f"No series to sync from {source_label}")
+    if gather_result is None:
+        LOG.warning(
+            f"Series inventory unavailable from {source_label}; keeping stored inventory"
+        )
         return set()
     aggregated_series, supplemental_episode_data = gather_result
     if not aggregated_series:
-        LOG.info(f"No series to sync from {source_label}")
+        if allow_soft_delete:
+            await _reconcile_empty_inventory(effective_config.id, MediaType.SERIES)
         return set()
     LOG.info(f"Gathered {len(aggregated_series)} unique series from {source_label}")
 
