@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Movie-version deletion requests now stay attached to the same file after a resync. If that file cannot be matched, approval and retry are blocked instead of deleting the whole movie.
+- Failed or interrupted resyncs no longer turn movie-version cleanup candidates into whole-movie deletion targets. Candidates remain without an actionable target until their file identity is restored; successful resyncs preserve their review timers.
+- Movie sync no longer mistakes an identical new copy for a rename of a file that is still present. Existing candidates and protections stay attached to the original file, and ambiguous rename matches are skipped.
+- Large inventory reductions can now be confirmed across separate sync processes. The previous deletion proposal is saved per media server and media type, allowing a repeated legitimate reduction to clear stale titles instead of remaining blocked indefinitely.
+- Removing the last movie or series now clears stale inventory and cleanup candidates once the media server confirms the inventory is empty. Unavailable, incomplete, or filtered-empty responses preserve existing inventory, and large removals still require confirmation on the next sync.
 - Storage capacity now counts mounts with matching total and free space once. Administrators can save per-mount Automatic, Include, or Exclude choices on the Storage page to avoid counting pooled storage and its branches together; per-instance totals use the same choices.
 - Emby and Jellyfin episode sync now rejects truncated or repeated inventory pages instead of treating them as a complete library. Previously reported totals remain enforced if later pages omit or reduce them, preserving existing episodes and protection when a scan is incomplete.
 - Episode watch completion now resolves item IDs within their source server. Linked servers use their own matches instead of crediting an unrelated main-server episode with the same ID; ambiguous shared ID columns are not used for playback lookups.
