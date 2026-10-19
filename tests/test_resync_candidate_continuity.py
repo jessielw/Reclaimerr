@@ -76,10 +76,12 @@ async def test_candidate_reattaches_to_rebuilt_version_and_keeps_its_clock(
             candidate = await db.get(ReclaimCandidate, candidate_id)
             assert candidate is not None
             candidate.created_at = flagged_at
+            # Resync disables the parent target until identity is restored.
+            candidate.movie_id = None
             await db.commit()
 
         await _restore_version_scoped_candidates(
-            {candidate_id: (movie_id, "/data/movies/movie1/movie1-4k.mkv")}
+            {candidate_id: (movie_id, "/data/movies/Movie1/Movie1-4k.mkv")}
         )
 
         async with session_maker() as db:
@@ -87,6 +89,7 @@ async def test_candidate_reattaches_to_rebuilt_version_and_keeps_its_clock(
             assert candidate is not None
             version = (await db.execute(select(MovieVersion))).scalars().one()
             assert candidate.movie_version_id == version.id
+            assert candidate.movie_id == movie_id
             assert candidate.created_at == flagged_at
     finally:
         await engine.dispose()
@@ -110,7 +113,7 @@ async def test_candidate_is_dropped_when_its_file_did_not_come_back(
             )
 
         await _restore_version_scoped_candidates(
-            {candidate_id: (movie_id, "/data/movies/movie1/movie1-4k.mkv")}
+            {candidate_id: (movie_id, "/data/movies/Movie1/Movie1-4k.mkv")}
         )
 
         async with session_maker() as db:

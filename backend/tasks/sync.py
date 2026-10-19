@@ -3314,23 +3314,7 @@ async def _restore_version_scoped_candidates(
 
     movie_ids = {movie_id for movie_id, _path in candidate_paths.values()}
     async with async_db() as session:
-        rows = (
-            await session.execute(
-                select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path).where(
-                    MovieVersion.movie_id.in_(movie_ids)
-                )
-            )
-        ).all()
-        version_by_key: dict[tuple[int, str], int] = {}
-        for version_id, movie_id, path in rows:
-            if movie_id is None or not path:
-                continue
-            key = (
-                movie_id,
-                normalize_fpath(path, strip_ending_slash=True, lower=True),
-            )
-            # a file indexed in two libraries has a row each; either will do
-            version_by_key.setdefault(key, version_id)
+        version_by_key = await _rebuilt_movie_versions_by_path(session, movie_ids)
 
         restored = 0
         dropped: list[int] = []
@@ -3342,7 +3326,7 @@ async def _restore_version_scoped_candidates(
             await session.execute(
                 sql_update(ReclaimCandidate)
                 .where(ReclaimCandidate.id == candidate_id)
-                .values(movie_version_id=version_id)
+                .values(movie_id=key[0], movie_version_id=version_id)
             )
             restored += 1
         if dropped:
@@ -3392,7 +3376,7 @@ async def resync_media() -> None:
                 resync_candidate_paths = {
                     candidate_id: (
                         movie_id,
-                        normalize_fpath(path, strip_ending_slash=True, lower=True),
+                        normalize_fpath(path, strip_ending_slash=True),
                     )
                     for candidate_id, movie_id, path in candidate_version_rows
                     if movie_id is not None and path
@@ -3424,12 +3408,20 @@ async def resync_media() -> None:
                     .values(target_scope="movie_version", movie_version_id=None)
                 )
 
-                # movie_version scoped rows must be detached before deleting versions
-                # when switching main media server, old version IDs are invalid anyway
+                # Nulling only the version promotes a candidate to a whole-movie
+                # delete. Remove its parent target too, in the same transaction,
+                # so errors or process termination cannot broaden its scope.
+                # Pathless candidates cannot be safely restored.
+                await session.execute(
+                    sql_delete(ReclaimCandidate).where(
+                        ReclaimCandidate.movie_version_id.is_not(None),
+                        ReclaimCandidate.id.notin_(resync_candidate_paths),
+                    )
+                )
                 await session.execute(
                     sql_update(ReclaimCandidate)
                     .where(ReclaimCandidate.movie_version_id.is_not(None))
-                    .values(movie_version_id=None)
+                    .values(movie_id=None, movie_version_id=None)
                 )
                 await session.execute(
                     sql_update(ProtectedMedia)

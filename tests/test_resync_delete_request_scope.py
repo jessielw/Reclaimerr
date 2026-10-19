@@ -137,3 +137,56 @@ def test_resync_keeps_delete_request_bound_to_original_file(monkeypatch, rebuilt
                     assert not (await db.scalars(select(ReclaimCandidate))).all()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure_stage", ["sync_media_libraries", "sync_movies"])
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+def test_failed_resync_does_not_leave_whole_movie_candidate(
+    monkeypatch, failure_stage, error_type
+):
+    async def run():
+        async with database() as factory:
+            monkeypatch.setattr(sync, "async_db", factory)
+            monkeypatch.setattr(sync, "track_task_execution", no_tracking)
+            monkeypatch.setattr(
+                sync, "service_manager", SimpleNamespace(main_media_server=object())
+            )
+            monkeypatch.setattr(sync, "sync_media_libraries", AsyncMock())
+            monkeypatch.setattr(
+                sync, failure_stage, AsyncMock(side_effect=error_type("server offline"))
+            )
+            async with factory() as db:
+                movie = Movie(title="Audit", tmdb_id=123, size=1000)
+                db.add(movie)
+                await db.flush()
+                original = version(movie.id, "original")
+                db.add(original)
+                await db.flush()
+                candidate = ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=movie.id,
+                    movie_version_id=original.id,
+                    matched_rule_ids=[],
+                    matched_criteria={},
+                    reason="one file",
+                    reason_data=[],
+                )
+                db.add(candidate)
+                await db.commit()
+                candidate_id = candidate.id
+            with pytest.raises(error_type, match="server offline"):
+                await sync.resync_media()
+            async with factory() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                assert candidate.movie_id is None
+                assert candidate.movie_version_id is None
+                from backend.tasks import cleanup
+
+                monkeypatch.setattr(cleanup, "async_db", factory)
+                assert (
+                    await cleanup._delete_movie_candidates(frozenset({candidate_id}))
+                    == 0
+                )
+
+    asyncio.run(run())
