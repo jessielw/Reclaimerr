@@ -25,7 +25,8 @@ from backend.services.playback_guard import (
 )
 
 
-def test_jellyfin_paths_use_api_key_compatible_item_query():
+@pytest.mark.parametrize("service", [Service.EMBY, Service.JELLYFIN])
+def test_emby_family_paths_use_api_key_compatible_item_query(service):
     async def run():
         client = SimpleNamespace(
             _make_request=AsyncMock(
@@ -44,18 +45,21 @@ def test_jellyfin_paths_use_api_key_compatible_item_query():
                 }
             )
         )
-        assert await native_item_paths(client, Service.JELLYFIN, "7", "9") == [
+        assert await native_item_paths(client, service, "7", "9") == [
             ("/selected.mkv", False)
         ]
         client._make_request.assert_awaited_once_with(
             "Items",
-            params={"Ids": "7", "Fields": "Path,MediaSources", "EnableUserData": False},
+            params={
+                "Ids": "7",
+                "Fields": "Path,MediaSources,DisplayOrder"
+                if service is Service.EMBY
+                else "Path,MediaSources",
+                "EnableUserData": False,
+            },
             timeout=10,
         )
-        assert (
-            await native_item_paths(client, Service.JELLYFIN, "7", "absent-version")
-            == []
-        )
+        assert await native_item_paths(client, service, "7", "absent-version") == []
 
     asyncio.run(run())
 
@@ -71,11 +75,12 @@ def test_jellyfin_paths_use_api_key_compatible_item_query():
         {"Items": [{"Id": "7"}, {"Id": "7"}]},
     ],
 )
-def test_jellyfin_rejects_invalid_or_mismatched_item_lookup(payload):
+@pytest.mark.parametrize("service", [Service.EMBY, Service.JELLYFIN])
+def test_emby_family_rejects_invalid_or_mismatched_item_lookup(payload, service):
     async def run():
         client = SimpleNamespace(_make_request=AsyncMock(return_value=payload))
         with pytest.raises(ValueError):
-            await native_item_paths(client, Service.JELLYFIN, "7")
+            await native_item_paths(client, service, "7")
 
     asyncio.run(run())
 

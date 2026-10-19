@@ -425,8 +425,7 @@ def test_native_adapters_enrich_original_paths_and_reject_auth_failure(provider)
                 "Id": "7",
                 "MediaSources": [{"Id": "9", "Path": "/original.mkv"}],
             }
-            if provider is Service.JELLYFIN:
-                metadata = {"Items": [metadata]}
+            metadata = {"Items": [metadata]}
             method = EmbyServiceBase.get_live_sessions
         response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
         client = SimpleNamespace(
