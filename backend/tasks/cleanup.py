@@ -79,6 +79,7 @@ from backend.core.utils.filesystem import (
     move_directory,
     move_media,
     move_season_files,
+    normalize_fpath,
     paths_equivalent,
     remove_empty_directory,
     resolve_path,
@@ -91,6 +92,7 @@ from backend.database import async_db
 from backend.database.models import (
     DeleteRequest,
     Episode,
+    EpisodeVersion,
     GeneralSettings,
     MediaFavorite,
     MediaWatchUser,
@@ -348,6 +350,67 @@ def _is_episode_scope(model: Any) -> Any:
 def _has_media_path(path: str | None) -> bool:
     """Return whether a synchronized item points to physical media."""
     return bool(path and path.strip())
+
+
+SHARED_EPISODE_FILE_ERROR = (
+    "This file contains more than one episode. Individual-episode deletion or "
+    "moving would also remove other episodes; use a season or series action "
+    "after checking its protections, or choose Unmonitor Only."
+)
+
+
+async def _episode_file_peers(
+    db: AsyncSession, series_ids: Collection[int]
+) -> dict[int, set[int]]:
+    """Find logical episodes affected by the same physical file or item deletion."""
+    if not series_ids:
+        return {}
+    episodes = (
+        await db.scalars(
+            select(Episode)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Season.series_id.in_(series_ids))
+        )
+    ).all()
+    groups: dict[tuple[str, ...], set[int]] = defaultdict(set)
+
+    def add_path(episode_id: int, path: str | None) -> None:
+        if path and path.strip():
+            groups[("path", str(normalize_fpath(path)))].add(episode_id)
+
+    for episode in episodes:
+        add_path(episode.id, episode.path)
+        for service, item_id in (
+            (Service.PLEX, episode.plex_rating_key),
+            (Service.JELLYFIN, episode.jellyfin_episode_id),
+            (Service.EMBY, episode.emby_episode_id),
+        ):
+            if item_id:
+                groups[("item", service.value, item_id)].add(episode.id)
+    versions = (
+        await db.scalars(
+            select(EpisodeVersion)
+            .join(Episode, EpisodeVersion.episode_id == Episode.id)
+            .join(Season, Episode.season_id == Season.id)
+            .where(Season.series_id.in_(series_ids))
+        )
+    ).all()
+    for version in versions:
+        add_path(version.episode_id, version.path)
+        if version.service_item_id:
+            groups[("item", version.service.value, version.service_item_id)].add(
+                version.episode_id
+            )
+        if version.service_media_id:
+            groups[("file", version.service.value, version.service_media_id)].add(
+                version.episode_id
+            )
+    peers: dict[int, set[int]] = defaultdict(set)
+    for ids in groups.values():
+        if len(ids) > 1:
+            for episode_id in ids:
+                peers[episode_id].update(ids - {episode_id})
+    return peers
 
 
 def _season_holds_media(season: Season) -> bool:
@@ -6957,6 +7020,13 @@ async def _collect_episode_candidate_records(
         protected_episode_ids = {
             b.episode_id for b in protected_episode_result.scalars().all()
         }
+        file_peers = await _episode_file_peers(db, [s.id for s in all_series])
+        protected_episode_ids.update(
+            peer
+            for episode_id in list(protected_episode_ids)
+            if episode_id is not None
+            for peer in file_peers.get(episode_id, set())
+        )
 
     records: list[MatchedCandidateRecord] = []
 
@@ -11850,6 +11920,14 @@ async def _delete_episode_candidates(
         cand_arr_action = _get_arr_action(
             candidate, episode_rules_by_id, default_arr_delete_behavior
         )
+        if cand_arr_action != "unmonitor_only":
+            async with async_db() as db:
+                file_peers = await _episode_file_peers(db, [series_obj.id])
+            if episode.id in file_peers:
+                await _mark_candidate_delete_failure(
+                    candidate.id, SHARED_EPISODE_FILE_ERROR
+                )
+                continue
         ep_label = f"S{season.season_number:02d}E{episode.episode_number:02d}"
 
         sonarr_ref_id: int | None = None
@@ -11931,6 +12009,20 @@ async def _delete_episode_candidates(
             sonarr_ep_id = _coerce_int(sonarr_ep.get("id"))
             sonarr_ep_file_id = _coerce_int(sonarr_ep.get("episodeFileId"))
 
+            # Sonarr may know a combined file before the media inventory does.
+            if (
+                cand_arr_action != "unmonitor_only"
+                and sonarr_ep_file_id
+                and any(
+                    _coerce_int(ep.get("episodeFileId")) == sonarr_ep_file_id
+                    and (ep.get("seasonNumber"), ep.get("episodeNumber"))
+                    != (season.season_number, episode.episode_number)
+                    for ep in sonarr_episodes
+                )
+            ):
+                last_sonarr_error = SHARED_EPISODE_FILE_ERROR
+                break
+
             if not sonarr_ep_file_id:
                 last_sonarr_error = f"No episode file in Sonarr for {ep_label}"
                 LOG.debug(
@@ -11968,6 +12060,10 @@ async def _delete_episode_candidates(
                     f"Sonarr episode file deletion failed for "
                     f"'{series_obj.title}' {ep_label}: {e}"
                 )
+
+        if last_sonarr_error == SHARED_EPISODE_FILE_ERROR:
+            await _mark_candidate_delete_failure(candidate.id, last_sonarr_error)
+            continue
 
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":
             # keep the media server library in sync with the file we removed
@@ -13517,6 +13613,17 @@ async def _move_series_candidates(
             season_move_source_files: list[Path] = []
             season_kept_by_other_copy = False
             try:
+                if candidate.episode_id is not None and candidate.series_id is not None:
+                    async with async_db() as db:
+                        file_peers = await _episode_file_peers(
+                            db, [candidate.series_id]
+                        )
+                    if candidate.episode_id in file_peers:
+                        await _mark_candidate_delete_failure(
+                            candidate.id, SHARED_EPISODE_FILE_ERROR
+                        )
+                        failed += 1
+                        continue
                 series_obj = (
                     series_map.get(candidate.series_id) if candidate.series_id else None
                 )

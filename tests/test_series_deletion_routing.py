@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.database import Base
 from backend.database.models import (
     Episode,
+    EpisodeVersion,
     GeneralSettings,
+    ProtectedMedia,
     ReclaimCandidate,
     ReclaimHistory,
     ReclaimRule,
@@ -1331,6 +1333,162 @@ def test_season_move_adds_exclusion_after_source_removed(monkeypatch, tmp_path, 
                 history = (await db.execute(select(ReclaimHistory))).scalar_one()
                 assert history.action == "moved"
                 assert history.attributes["arr_list_exclusion"] == "added"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+async def _add_combined_peer(db, kind):
+    first = (await db.scalars(select(Episode))).one()
+    second = Episode(
+        season_id=first.season_id,
+        episode_number=2,
+        size=100,
+        path=first.path if kind == "path" else "/data/Show/Season 01/other.mkv",
+    )
+    if kind in ("emby", "jellyfin"):
+        setattr(first, f"{kind}_episode_id", "combined")
+        setattr(second, f"{kind}_episode_id", "combined")
+    db.add(second)
+    await db.flush()
+    if kind == "version":
+        for episode in (first, second):
+            db.add(
+                EpisodeVersion(
+                    episode_id=episode.id,
+                    service=Service.EMBY,
+                    service_item_id=f"item-{episode.id}",
+                    service_media_id="shared-file",
+                    library_id="tv",
+                    library_name="TV",
+                    path="/physical/combined.mkv",
+                    size=100,
+                )
+            )
+    season = await db.get(Season, first.season_id)
+    season.episode_count = 2
+    await db.commit()
+    return first.id, second.id
+
+
+@pytest.mark.parametrize("kind", ["path", "emby", "jellyfin", "version", "sonarr"])
+@pytest.mark.parametrize("action", ["delete", "unmonitor_only"])
+def test_combined_episode_delete_preserves_shared_file(monkeypatch, kind, action):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="episode",
+                    arr_action=action,
+                )
+                if kind != "sonarr":
+                    await _add_combined_peer(db, kind)
+            sonarr = FakeSonarr(
+                {
+                    arr_ids[0]: [
+                        {
+                            "id": 11,
+                            "seasonNumber": 1,
+                            "episodeNumber": 1,
+                            "episodeFileId": 90,
+                        },
+                        {
+                            "id": 12,
+                            "seasonNumber": 1,
+                            "episodeNumber": 2,
+                            "episodeFileId": 90,
+                        },
+                    ]
+                }
+            )
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, {configs[0]: sonarr}, media)
+            count = await cleanup._delete_episode_candidates(frozenset([candidate_id]))
+            assert count == (1 if action == "unmonitor_only" else 0)
+            assert sonarr.deleted_episode_files == []
+            assert media.deleted_items == []
+            assert sonarr.unmonitored_episodes == (
+                [11] if action == "unmonitor_only" else []
+            )
+            async with sessions() as db:
+                assert len((await db.scalars(select(Episode))).all()) == (
+                    1 if kind == "sonarr" else 2
+                )
+                assert (await db.scalars(select(Season))).one().size == 100
+                assert (await db.scalars(select(Series))).one().size == 100
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                if action == "delete":
+                    assert (
+                        candidate.last_delete_error == cleanup.SHARED_EPISODE_FILE_ERROR
+                    )
+                    assert (await db.scalars(select(ReclaimHistory))).all() == []
+                else:
+                    assert candidate is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind", ["path", "emby", "jellyfin", "version"])
+def test_combined_episode_protection_covers_file_peer(monkeypatch, kind):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                await _seed_series_case(db, target_scope="episode")
+                first, second = await _add_combined_peer(db, kind)
+                db.add(
+                    ProtectedMedia(
+                        media_type=MediaType.SERIES, episode_id=second, permanent=True
+                    )
+                )
+                await db.commit()
+            monkeypatch.setattr(
+                cleanup, "_evaluate_rule_for_episode", lambda *args: True
+            )
+            async with sessions() as db:
+                rules = list((await db.scalars(select(ReclaimRule))).all())
+                records = await cleanup._collect_episode_candidate_records(
+                    db, rules, target_ids={first}
+                )
+                assert records == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_combined_episode_move_stops_before_moving_file(monkeypatch, tmp_path):
+    async def run():
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, _, _ = await _seed_series_case(db, target_scope="episode")
+                await _add_combined_peer(db, "path")
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+            moved = []
+            monkeypatch.setattr(cleanup, "move_media", lambda *a, **k: moved.append(a))
+            result = await cleanup._move_series_candidates(
+                [candidate],
+                destination_series_str=str(tmp_path / "archive"),
+                path_mappings=[],
+                rules_by_id={},
+                series_arr_actions={},
+                default_arr_delete_behavior="unmonitor",
+                add_arr_import_exclusions_on_delete=True,
+                approved_by="tester",
+            )
+            assert result == (0, 1)
+            assert moved == []
+            async with sessions() as db:
+                assert len((await db.scalars(select(Episode))).all()) == 2
+                assert (
+                    await db.get(ReclaimCandidate, candidate_id)
+                ).last_delete_error == cleanup.SHARED_EPISODE_FILE_ERROR
         finally:
             await engine.dispose()
 

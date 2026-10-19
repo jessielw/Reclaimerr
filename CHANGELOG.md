@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Episode protection now covers other episodes sharing the same file. Individual-episode deletion and moves stop before touching combined files, including files identified as combined by Sonarr; Unmonitor Only remains available.
 - Emby and Jellyfin combined episode files now include every episode in their reported range. Watch completion and playback mappings cover each episode without multiplying physical storage or season/series playback totals.
 - Emby and Jellyfin series inventory no longer depends on the first user's library access. Season and episode watch counts, dates, and ratings now include all users while physical files and sizes are counted once.
 - Emby episode-order checks now use the supported item query, restoring Sonarr-dependent rules and season inventory for matching orders. The same fix restores item lookups used by playback and deletion-path checks.
