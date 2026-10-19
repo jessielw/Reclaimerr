@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -1385,8 +1386,27 @@ async def _upsert_movie_versions(
         (v.service, v.service_media_id): v for v in result.scalars().all()
     }
 
+    # Reserve direct matches before examining any rename, regardless of input
+    # order. A newly indexed identical copy must not consume a still-live row.
+    incoming_keys = {(ver.service, ver.service_media_id) for ver in versions}
+    incoming_fingerprints = Counter(
+        _make_fp(
+            ver.service,
+            ver.video_width,
+            ver.video_height,
+            ver.video_codec,
+            ver.video_hdr,
+            ver.video_dolby_vision,
+            ver.size,
+            ver.container,
+        )
+        for ver in versions
+        if (ver.service, ver.service_media_id) not in existing
+    )
     fp_map: dict[tuple[Any, ...], MovieVersion | None] = {}
-    for ev in existing.values():
+    for key, ev in existing.items():
+        if key in incoming_keys:
+            continue
         fp = _make_fp(
             ev.service,
             ev.video_width,
@@ -1402,7 +1422,6 @@ async def _upsert_movie_versions(
         # None = ambiguous, skip
         fp_map[fp] = None if fp in fp_map else ev
 
-    incoming_keys: set[tuple[Any, ...]] = set()
     for ver in versions:
         key = (ver.service, ver.service_media_id)
         incoming_keys.add(key)
@@ -1423,7 +1442,11 @@ async def _upsert_movie_versions(
                 ver.container,
             )
             matched_ev = fp_map.get(fp) if fp else None
-            if fp is not None and matched_ev is not None:
+            if (
+                fp is not None
+                and matched_ev is not None
+                and incoming_fingerprints[fp] == 1
+            ):
                 # rename detected: update service IDs in place so all FK references
                 # (protections, requests, candidates) pointing at this row are preserved.
                 old_key = (matched_ev.service, matched_ev.service_media_id)
@@ -1486,6 +1509,7 @@ async def _upsert_movie_versions(
                 continue
 
         # update all fields on ev (reached for both primary-key match and fingerprint match)
+        ev.service_item_id = ver.service_item_id
         ev.library_id = ver.library_id
         ev.library_name = ver.library_name
         ev.path = ver.path
