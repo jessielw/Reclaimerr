@@ -28,6 +28,7 @@ These generated documents include internal UI routes as well as the mounted exte
 - `GET /api/dashboard`
 - `GET /api/calendar`
 - `GET /api/storage`
+- `PUT /api/storage/mounts` (admin only)
 - `GET /api/info/sidebar-indicators`
 - `GET /api/info/ui-indicators`
 - `GET /api/alerts`
@@ -115,7 +116,9 @@ The lookup endpoints are admin-only helpers used by the rule editor. Language re
 
 `GET /api/calendar` groups scheduled candidate actions by day. It takes `start` and `end` (inclusive), plus `tz_offset_minutes` so days are bucketed in the viewer's own zone rather than UTC, and `per_day_limit` to cap the items returned per day; `item_count` and `total_bytes` always describe the whole day. Only candidates whose deadline is scheduled, eligible, or postponed appear, and deadlines are resolved with the same code the candidates list and the auto-delete task use. The window is capped at 366 days.
 
-`GET /api/storage` reports disk capacity from the configured Radarr and Sonarr instances, library size, reclaimable space, and reclaimed totals by outcome. A volume reported by several instances is merged on path and total size and counted once. A mount that reports no total sets `capacity_incomplete`. An instance that cannot be reached is listed in `errors` instead of failing the request.
+`GET /api/storage` reports disk capacity from the configured Radarr and Sonarr instances, library size, reclaimable space, and reclaimed totals by outcome. Reports with the same path and total size are merged across instances. Mounts with known, matching total and free space are counted once automatically, even under different paths. Every mount remains visible with its `capacity_mode`, `included_in_capacity`, and `duplicate_of` status. Matching space values are a heuristic, since Arr does not provide filesystem identities or pool membership.
+
+Administrators can save choices with `PUT /api/storage/mounts`: `{"mode":"exclude","targets":[{"service_type":"radarr","service_config_id":1,"path":"/media/nas"}]}`. The mode is `auto`, `include`, or `exclude`; submit all sources of a merged mount to update them together. Choices persist by instance and path when space values change. Explicit includes override automatic duplicate detection, allowing separate disks with matching values to be counted. For mergerfs or unionfs, exclude either the pool or its branches on the Storage page. These choices apply to the overall and per-instance capacity totals, not to disk-pressure rules. A counted mount with no total sets `capacity_incomplete`. An instance that cannot be reached is listed in `errors` instead of failing the request.
 
 The log endpoints are admin-only. `GET /api/settings/logs` returns the most recent entries oldest-first, with `level` filtering to that level and above and `search` matching anywhere in an entry, both applied across the whole window that is read rather than only the returned lines. A traceback stays attached to the entry that raised it. `scan_truncated` reports that the window did not reach the start of the file. `file` accepts only the names `GET /api/settings/logs/files` returns.
 

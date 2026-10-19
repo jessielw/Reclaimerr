@@ -1697,6 +1697,9 @@ export interface StorageMount {
   free_bytes: number | null;
   used_bytes: number | null;
   sources: StorageMountSource[];
+  capacity_mode: "auto" | "include" | "exclude";
+  included_in_capacity: boolean;
+  duplicate_of: string | null;
 }
 
 export interface StorageInstanceUsage {

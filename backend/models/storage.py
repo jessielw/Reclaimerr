@@ -1,6 +1,21 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+StorageCapacityMode = Literal["auto", "include", "exclude"]
+
+
+class StorageMountTarget(BaseModel):
+    service_type: Literal["radarr", "sonarr"]
+    service_config_id: int = Field(ge=0)
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class StorageMountUpdate(BaseModel):
+    targets: list[StorageMountTarget] = Field(min_length=1, max_length=100)
+    mode: StorageCapacityMode
 
 
 class StorageMountSource(BaseModel):
@@ -24,6 +39,9 @@ class StorageMount(BaseModel):
     free_bytes: int | None = None
     used_bytes: int | None = None
     sources: list[StorageMountSource]
+    capacity_mode: StorageCapacityMode = "auto"
+    included_in_capacity: bool = True
+    duplicate_of: str | None = None
 
 
 class StorageInstanceUsage(BaseModel):

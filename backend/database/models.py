@@ -379,6 +379,11 @@ class GeneralSettings(Base):
     login_background_path: Mapped[str | None] = mapped_column(String(255), default=None)
     login_background_interval: Mapped[int] = mapped_column(Integer, default=5)
 
+    # Storage-page capacity choices, keyed by Arr instance and mount path.
+    storage_mount_overrides: Mapped[dict[str, bool]] = mapped_column(
+        JSON, default_factory=dict
+    )
+
     # cleanup and tagging settings
     worker_poll_min_seconds: Mapped[float | None] = mapped_column(Float, default=None)
     worker_poll_max_seconds: Mapped[float | None] = mapped_column(Float, default=None)
