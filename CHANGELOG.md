@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Emby and Jellyfin series inventory no longer depends on the first user's library access. Season and episode watch counts, dates, and ratings now include all users while physical files and sizes are counted once.
 - Emby episode-order checks now use the supported item query, restoring Sonarr-dependent rules and season inventory for matching orders. The same fix restores item lookups used by playback and deletion-path checks.
 - Movie deletion now honors path mappings scoped to the main media-server instance when selecting a Radarr instance, matching individual movie files, and removing local files after unmonitoring. A valid mapping could previously be ignored, causing deletion to fail or fall back to the media server despite a working Radarr connection.
 - Missing Radarr deletion routes now report whether the runtime client is unavailable, the movie has no synced Radarr link, the rule excludes the linked instance, or the file paths cannot be matched. The reason is included in candidate failure details when fallback deletion is disabled.
