@@ -43,9 +43,12 @@ from backend.models.media import (
     AggregatedMovieData,
     AggregatedSeasonData,
     AggregatedSeriesData,
+    ArrTag,
     EpisodeVersionData,
     MovieVersionData,
 )
+from backend.models.services.radarr import RadarrMovie
+from backend.models.services.sonarr import SonarrSeries
 from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.emby import EmbyService
 from backend.services.episode_ordering import EpisodeOrderingSnapshot, ordering_error
@@ -2062,11 +2065,28 @@ async def sync_movies(
                     f"lowered ({kept_watch_count} movie(s) kept their stored values)"
                 )
 
-            # refresh per instance Radarr refs for active movies
-            await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
+            # Fetch all history before any Arr ref writes acquire SQLite's write lock.
             radarr_clients = service_manager.radarr_clients()
             if not radarr_clients and service_manager.radarr:
                 radarr_clients = {0: service_manager.radarr}
+            snapshots: list[
+                tuple[int, list[RadarrMovie], list[ArrTag], dict[int, datetime]]
+            ] = []
+            for config_id, client in radarr_clients.items():
+                all_movies = await client.get_all_movies()
+                tag_list = await client.get_tags()
+                try:
+                    first_imports = await client.get_first_import_dates()
+                except Exception as exc:
+                    LOG.warning(
+                        f"Radarr import history unavailable (config {config_id}); "
+                        f"preserving known first import dates: {exc}"
+                    )
+                    first_imports = {}
+                snapshots.append((config_id, all_movies, tag_list, first_imports))
+
+            # refresh per instance Radarr refs for active movies
+            await _purge_orphaned_arr_refs(session, MovieArrRef, Service.RADARR)
             if radarr_clients:
                 # purge legacy rows written before multi-arr support (service_config_id=0)
                 await session.execute(
@@ -2101,14 +2121,13 @@ async def sync_movies(
                 # accumulate resolved tag labels per movie across all Radarr instances
                 movie_tags: dict[int, set[str]] = {}
                 movie_arr_files: dict[int, list[tuple[int, str | None, datetime]]] = {}
-                for config_id, client in radarr_clients.items():
+                movie_first_imports: dict[int, datetime] = {}
+                for config_id, all_movies, tag_list, first_imports in snapshots:
                     await session.execute(
                         sql_delete(MovieArrRef).where(
                             MovieArrRef.service_config_id == config_id
                         )
                     )
-                    all_movies = await client.get_all_movies()
-                    tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     for arr_movie in all_movies:
                         if not arr_movie.tmdb_id:
@@ -2116,6 +2135,12 @@ async def sync_movies(
                         movie_id = movie_id_by_tmdb.get(arr_movie.tmdb_id)
                         if movie_id is None:
                             continue
+                        imported_at = first_imports.get(arr_movie.id)
+                        if imported_at is not None:
+                            movie_first_imports[movie_id] = min(
+                                movie_first_imports.get(movie_id, imported_at),
+                                imported_at,
+                            )
                         arr_path = (
                             str(PurePosixPath(normalize_fpath(arr_movie.path)))
                             if arr_movie.path
@@ -2154,6 +2179,17 @@ async def sync_movies(
                         result_row.arr_added_at = max(
                             (added_at for _, _, added_at in arr_files), default=None
                         )
+                        imported_at = movie_first_imports.get(movie_id)
+                        if imported_at is not None:
+                            persisted = result_row.arr_first_import_at
+                            result_row.arr_first_import_at = (
+                                min(
+                                    ensure_utc(persisted).replace(tzinfo=None),
+                                    imported_at,
+                                )
+                                if persisted is not None
+                                else imported_at
+                            )
 
                         versions = versions_by_movie.get(movie_id, [])
                         for version in versions:
@@ -2580,11 +2616,30 @@ async def sync_series(
             )
             await session.commit()
 
-            # refresh per instance Sonarr refs for active series
-            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
+            # Fetch all history before any Arr ref writes acquire SQLite's write lock.
             sonarr_clients = service_manager.sonarr_clients()
             if not sonarr_clients and service_manager.sonarr:
                 sonarr_clients = {0: service_manager.sonarr}
+            sonarr_snapshots: list[
+                tuple[int, list[SonarrSeries], list[ArrTag], dict[int, datetime]]
+            ] = []
+            for config_id, client in sonarr_clients.items():
+                all_series = await client.get_all_series()
+                tag_list = await client.get_tags()
+                try:
+                    first_imports = await client.get_first_import_dates()
+                except Exception as exc:
+                    LOG.warning(
+                        f"Sonarr import history unavailable (config {config_id}); "
+                        f"preserving known first import dates: {exc}"
+                    )
+                    first_imports = {}
+                sonarr_snapshots.append(
+                    (config_id, all_series, tag_list, first_imports)
+                )
+
+            # refresh per instance Sonarr refs for active series
+            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
             if sonarr_clients:
                 # purge legacy rows written before multi-arr support (service_config_id=0)
                 await session.execute(
@@ -2629,14 +2684,14 @@ async def sync_series(
                 inventory_fetched_series_ids: set[int] = set()
                 date_fetch_failed_series_ids: set[int] = set()
                 ordering = EpisodeOrderingSnapshot()
-                for config_id, client in sonarr_clients.items():
+                series_first_imports: dict[int, datetime] = {}
+                for config_id, all_series, tag_list, first_imports in sonarr_snapshots:
+                    client = sonarr_clients[config_id]
                     await session.execute(
                         sql_delete(SeriesArrRef).where(
                             SeriesArrRef.service_config_id == config_id
                         )
                     )
-                    all_series = await client.get_all_series()
-                    tag_list = await client.get_tags()
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     matched_series = [
                         (arr_series, series_id)
@@ -2711,6 +2766,12 @@ async def sync_series(
                         series_id = _match_series_id(arr_series)
                         if series_id is None:
                             continue
+                        imported_at = first_imports.get(arr_series.id)
+                        if imported_at is not None:
+                            series_first_imports[series_id] = min(
+                                series_first_imports.get(series_id, imported_at),
+                                imported_at,
+                            )
                         arr_path = (
                             str(PurePosixPath(normalize_fpath(arr_series.path)))
                             if arr_series.path
@@ -2731,12 +2792,23 @@ async def sync_series(
                             if label:
                                 series_tags.setdefault(series_id, set()).add(label)
 
-                # write resolved tags back to Series rows
+                # write resolved tags and earliest import dates back to Series rows
                 for series_id in series_id_by_tmdb.values():
                     result_row = await session.get(Series, series_id)
                     if result_row is not None:
                         tags = series_tags.get(series_id)
                         result_row.arr_tags = sorted(tags) if tags else []
+                        imported_at = series_first_imports.get(series_id)
+                        if imported_at is not None:
+                            persisted = result_row.arr_first_import_at
+                            result_row.arr_first_import_at = (
+                                min(
+                                    ensure_utc(persisted).replace(tzinfo=None),
+                                    imported_at,
+                                )
+                                if persisted is not None
+                                else imported_at
+                            )
 
                 eligible_series_ids = set(series_id_by_tmdb.values()).difference(
                     date_fetch_failed_series_ids

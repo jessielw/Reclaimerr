@@ -799,6 +799,10 @@ class Movie(Base):
         DateTime, default=None, init=False
     )
 
+    arr_first_import_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
+
     # cache freshness
     last_metadata_refresh_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
@@ -1514,6 +1518,10 @@ class Series(Base):
 
     # cache freshness
     last_metadata_refresh_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, init=False
+    )
+
+    arr_first_import_at: Mapped[datetime | None] = mapped_column(
         DateTime, default=None, init=False
     )
 

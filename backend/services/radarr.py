@@ -635,7 +635,11 @@ class RadarrClient:
         Asks Radarr to filter by event type, then filters again locally in case
         an older Radarr ignores the parameter.
         """
+        if page_size <= 0:
+            raise ValueError("Import history page size must be positive")
         records: list[dict[str, object]] = []
+        previous_page: list[object] = []
+        fetched = 0
         page = 1
         while True:
             status_code, data = await self._make_request(
@@ -656,20 +660,38 @@ class RadarrClient:
                     f"(status: {status_code})"
                 )
             raw_records = data.get("records")
-            page_records = (
-                [dict(r) for r in raw_records if isinstance(r, Mapping)]
-                if isinstance(raw_records, list)
-                else []
-            )
+            if not isinstance(raw_records, list):
+                raise ValueError(f"Invalid records in import history page {page}")
+            total = as_int(data.get("totalRecords"))
+            if not raw_records:
+                if total is not None and fetched < total:
+                    raise ValueError(f"Incomplete import history at page {page}")
+                return records
+            if raw_records == previous_page:
+                raise ValueError(f"Repeated import history page {page}")
+            previous_page = raw_records
+            fetched += len(raw_records)
             records += [
-                r
-                for r in page_records
-                if r.get("eventType") == "downloadFolderImported"
+                dict(r)
+                for r in raw_records
+                if isinstance(r, Mapping)
+                and r.get("eventType")
+                in ("downloadFolderImported", _HISTORY_EVENT_DOWNLOAD_FOLDER_IMPORTED)
             ]
-            total = as_int(data.get("totalRecords")) or 0
-            if not page_records or page * page_size >= total:
+            if total is not None and fetched >= total:
                 return records
             page += 1
+
+    async def get_first_import_dates(self):
+        """Earliest known successful import per movie, as naive UTC datetimes."""
+        dates: dict[int, datetime] = {}
+        for record in await self.get_import_history():
+            movie_id = as_int(record.get("movieId"))
+            imported_at = _as_datetime(record.get("date"))
+            if movie_id is None or movie_id <= 0 or imported_at is None:
+                continue
+            dates[movie_id] = min(dates.get(movie_id, imported_at), imported_at)
+        return dates
 
     async def delete_movie_files(self, movie_file_ids: list[int]) -> None:
         """Delete individual movie files without touching the Radarr movie entry.

@@ -385,6 +385,13 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "arr.days_since_first_import",
+      label: "Days since first Arr import",
+      kind: "number",
+      operators: numericOperators,
+      defaultOperator: "greater_than_or_equal",
+    },
+    {
       value: "watch.view_count",
       label: "View count",
       kind: "number",
@@ -1304,6 +1311,7 @@
       "arr.movie_ids",
       "arr.tags",
       "arr.days_since_file_added",
+      "arr.days_since_first_import",
       "audio.bitrate_kbps",
       "audio.channels",
       "audio.codec_family",
@@ -1386,6 +1394,7 @@
       "trakt.vote_count",
     ]),
     series: new Set<string>([
+      "arr.days_since_first_import",
       "anilist.favourites",
       "anilist.popularity",
       "anilist.score",

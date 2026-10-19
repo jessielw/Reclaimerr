@@ -20,6 +20,7 @@ Operators: `equals`, `exists`, `greater_than`, `greater_than_or_equal`, `less_th
 | `anilist.popularity` | AniList popularity | all | whole number >= 0 |
 | `anilist.score` | AniList score | all | whole number 0-100 |
 | `arr.days_since_file_added` | Days since latest Arr file added | all | days |
+| `arr.days_since_first_import` | Days since first Arr import | movie_version, series | days |
 | `audio.bitrate_kbps` | Audio bitrate (kbps) | movie_version | kbps |
 | `audio.channels` | Audio channels | movie_version, series, season |  |
 | `audio.track_count` | Audio track count | movie_version |  |
