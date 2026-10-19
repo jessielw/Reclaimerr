@@ -1,5 +1,5 @@
 export interface PlaybackDeferral {
-  code: "currently_playing" | "playback_unavailable";
+  code: "currently_playing" | "playback_unavailable" | "resync_pending";
   message: string;
   checked_at: string;
   server_config_ids: number[];

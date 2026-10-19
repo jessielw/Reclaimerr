@@ -20,7 +20,9 @@ from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import normalize_fpath, paths_equivalent
 from backend.database import async_db
 from backend.database.models import (
+    CandidateResyncIdentity,
     DeleteRequest,
+    DeleteRequestResyncIdentity,
     Episode,
     EpisodeVersion,
     GeneralSettings,
@@ -285,6 +287,10 @@ async def _reconcile_empty_inventory(config_id: int, media_type: MediaType) -> N
             )
         else:
             await _apply_soft_deletes(session, missing, media_type)
+        if media_type is MediaType.MOVIE:
+            await _restore_pending_movie_scopes(
+                session, {row.id for row in rows if row.removed_at}
+            )
         await session.commit()
 
 
@@ -2314,6 +2320,11 @@ async def sync_movies(
                     )
                 await session.commit()
 
+            await _restore_pending_movie_scopes(
+                session,
+                matched_row_ids | {m.id for m in existing_movies_list if m.removed_at},
+            )
+            await session.commit()
             duration = (datetime.now(UTC) - start_time).total_seconds()
             LOG.info(
                 f"Movie sync ({effective_service.value}) completed successfully in {duration:.2f}s"
@@ -3338,9 +3349,9 @@ async def _rebuilt_movie_versions_by_path(
 ) -> dict[tuple[int, str], int]:
     rows = (
         await session.execute(
-            select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path).where(
-                MovieVersion.movie_id.in_(movie_ids)
-            )
+            select(MovieVersion.id, MovieVersion.movie_id, MovieVersion.path)
+            .join(Movie, MovieVersion.movie_id == Movie.id)
+            .where(MovieVersion.movie_id.in_(movie_ids), Movie.removed_at.is_(None))
         )
     ).all()
     versions: dict[tuple[int, str], int] = {}
@@ -3351,73 +3362,63 @@ async def _rebuilt_movie_versions_by_path(
     return versions
 
 
-async def _restore_version_scoped_delete_requests(
-    request_paths: dict[int, tuple[int, str]],
+async def _restore_pending_movie_scopes(
+    session: AsyncSession, reconciled_movie_ids: set[int]
 ) -> None:
-    """Restore exact file targets; missing files stay explicitly version-scoped."""
-    if not request_paths:
-        return
-    async with async_db() as session:
-        versions = await _rebuilt_movie_versions_by_path(
-            session, {movie_id for movie_id, _ in request_paths.values()}
-        )
-        for request_id, key in request_paths.items():
-            await session.execute(
-                sql_update(DeleteRequest)
-                .where(DeleteRequest.id == request_id)
-                .values(movie_version_id=versions.get(key))
-            )
-        await session.commit()
+    """Restore durable targets only after their movie inventory synced successfully.
 
-
-async def _restore_version_scoped_candidates(
-    candidate_paths: dict[int, tuple[int, str]],
-) -> None:
-    """Reattach version-scoped candidates to the rebuilt MovieVersion rows.
-
-    A resync drops and recreates every version row, so each one comes back with
-    a new id. A candidate left pointing at nothing is dropped by the next scan
-    as a legacy row and created again from scratch, and since the review period
-    runs from the candidate's `created_at`, that silently restarts the countdown
-    for every movie - a title a day away from automatic deletion goes back to
-    the full waiting period, every resync. Matching on the file path keeps the
-    original candidate, and its clock, alive instead.
-
-    A candidate whose file did not come back is removed rather than left
-    movie-scoped, because a movie-scoped candidate deletes every version of the
-    movie - far more than the rule selected.
+    Paths remain case-sensitive: two distinct files on Linux must never merge.
+    Unconfirmed missing titles keep their identities until a later sync. Missing
+    requests remain version-scoped and can recover if their original file returns.
     """
-    if not candidate_paths:
+    if not reconciled_movie_ids:
         return
-
-    movie_ids = {movie_id for movie_id, _path in candidate_paths.values()}
-    async with async_db() as session:
-        version_by_key = await _rebuilt_movie_versions_by_path(session, movie_ids)
-
-        restored = 0
-        dropped: list[int] = []
-        for candidate_id, key in candidate_paths.items():
-            version_id = version_by_key.get(key)
-            if version_id is None:
-                dropped.append(candidate_id)
-                continue
+    await session.flush()
+    candidates = (
+        await session.scalars(
+            select(CandidateResyncIdentity).where(
+                CandidateResyncIdentity.movie_id.in_(reconciled_movie_ids)
+            )
+        )
+    ).all()
+    requests = (
+        await session.scalars(
+            select(DeleteRequestResyncIdentity).where(
+                DeleteRequestResyncIdentity.movie_id.in_(reconciled_movie_ids)
+            )
+        )
+    ).all()
+    if not candidates and not requests:
+        return
+    versions = await _rebuilt_movie_versions_by_path(session, reconciled_movie_ids)
+    for identity in candidates:
+        version_id = versions.get((identity.movie_id, identity.path))
+        if version_id is None:
+            await session.execute(
+                sql_delete(ReclaimCandidate).where(
+                    ReclaimCandidate.id == identity.candidate_id
+                )
+            )
+        else:
             await session.execute(
                 sql_update(ReclaimCandidate)
-                .where(ReclaimCandidate.id == candidate_id)
-                .values(movie_id=key[0], movie_version_id=version_id)
+                .where(ReclaimCandidate.id == identity.candidate_id)
+                .values(movie_id=identity.movie_id, movie_version_id=version_id)
             )
-            restored += 1
-        if dropped:
+        await session.execute(
+            sql_delete(CandidateResyncIdentity).where(
+                CandidateResyncIdentity.candidate_id == identity.candidate_id
+            )
+        )
+    for identity in requests:
+        version_id = versions.get((identity.movie_id, identity.path))
+        if version_id is not None:
             await session.execute(
-                sql_delete(ReclaimCandidate).where(ReclaimCandidate.id.in_(dropped))
+                sql_update(DeleteRequest)
+                .where(DeleteRequest.id == identity.delete_request_id)
+                .values(movie_version_id=version_id)
             )
-        await session.commit()
-
-    LOG.info(
-        f"Reattached {restored} movie version candidate(s) after resync, "
-        f"keeping their review periods; dropped {len(dropped)} whose file is "
-        "no longer present"
-    )
+            await session.delete(identity)
 
 
 async def resync_media() -> None:
@@ -3435,10 +3436,8 @@ async def resync_media() -> None:
     async with track_task_execution(Task.RESYNC_MEDIA):
         try:
             async with async_db() as session:
-                # Remember which file each version-scoped candidate stood for
-                # before the rows are dropped, so they can be reattached once
-                # the sync below rebuilds them. See
-                # _restore_version_scoped_candidates for why this matters.
+                # Persist exact targets in the same transaction as detaching them.
+                # Existing identities survive repeated failed resync attempts.
                 candidate_version_rows = (
                     await session.execute(
                         select(
@@ -3478,6 +3477,15 @@ async def resync_media() -> None:
                     for request_id, movie_id, path in request_version_rows
                     if movie_id is not None and path
                 }
+                for candidate_id, (movie_id, path) in resync_candidate_paths.items():
+                    await session.merge(
+                        CandidateResyncIdentity(candidate_id, movie_id, path)
+                    )
+                for request_id, (movie_id, path) in resync_request_paths.items():
+                    await session.merge(
+                        DeleteRequestResyncIdentity(request_id, movie_id, path)
+                    )
+                await session.flush()
                 # Preserve the scope even for legacy requests without a snapshot,
                 # and when a failed resync never reaches the reattachment step.
                 await session.execute(
@@ -3525,8 +3533,6 @@ async def resync_media() -> None:
             # before the movie/series sync restores version data
             await sync_media_libraries()
             await sync_movies(allow_soft_delete=False)
-            await _restore_version_scoped_delete_requests(resync_request_paths)
-            await _restore_version_scoped_candidates(resync_candidate_paths)
             await sync_series(allow_soft_delete=False)
             async with async_db() as session:
                 resynced_main = await _get_main_media_server(session)

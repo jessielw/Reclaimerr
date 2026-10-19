@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Interrupted resyncs now retain movie-file identities in the database. Later successful syncs restore cleanup candidates and deletion requests to the same file without resetting review timers; intervening scans preserve suspended candidates, and queued file operations defer until recovery.
 - Movie-version deletion requests now stay attached to the same file after a resync. If that file cannot be matched, approval and retry are blocked instead of deleting the whole movie.
 - Failed or interrupted resyncs no longer turn movie-version cleanup candidates into whole-movie deletion targets. Candidates remain without an actionable target until their file identity is restored; successful resyncs preserve their review timers.
 - Movie sync no longer mistakes an identical new copy for a rename of a file that is still present. Existing candidates and protections stay attached to the original file, and ambiguous rename matches are skipped.

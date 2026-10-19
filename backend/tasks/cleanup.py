@@ -90,6 +90,7 @@ from backend.core.utils.resolution import guesstimate_resolution
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import (
+    CandidateResyncIdentity,
     DeleteRequest,
     Episode,
     EpisodeVersion,
@@ -470,7 +471,10 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             (
                 await db.execute(
                     select(ReclaimCandidate).where(
-                        ReclaimCandidate.delete_request_id.is_(None)
+                        ReclaimCandidate.delete_request_id.is_(None),
+                        ReclaimCandidate.id.notin_(
+                            select(CandidateResyncIdentity.candidate_id)
+                        ),
                     )
                 )
             )
@@ -6577,10 +6581,16 @@ async def _sync_movie_version_candidates(
     commit: bool = True,
 ) -> tuple[int, int, int]:
     """Synchronize movie version candidates with the database."""
+    pending = (await db.scalars(select(CandidateResyncIdentity))).all()
+    pending_movie_ids = {identity.movie_id for identity in pending}
+    records = [record for record in records if record.movie_id not in pending_movie_ids]
     existing_result = await db.execute(
         select(ReclaimCandidate)
         .where(ReclaimCandidate.delete_request_id.is_(None))
         .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+        .where(
+            ReclaimCandidate.id.notin_(identity.candidate_id for identity in pending)
+        )
     )
     existing_candidates = existing_result.scalars().all()
     version_candidate_lookup: dict[int, ReclaimCandidate] = {
@@ -14241,6 +14251,24 @@ async def _run_playback_guarded_candidates(
                 )
             )
         ).all()
+        pending_ids = set(
+            (
+                await db.scalars(
+                    select(CandidateResyncIdentity.candidate_id).where(
+                        CandidateResyncIdentity.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).all()
+        )
+        for candidate_id in pending_ids:
+            result.deferrals[candidate_id] = {
+                "code": "resync_pending",
+                "message": "Deferred: waiting for media resync",
+                "checked_at": datetime.now(UTC).isoformat(),
+                "server_config_ids": [],
+                "completed_steps": [],
+            }
+        candidates = [c for c in candidates if c.id not in pending_ids]
         rule_ids = {rid for c in candidates for rid in c.matched_rule_ids or []}
         rules = {
             r.id: r

@@ -286,6 +286,30 @@ class SyncDeletionProposal(Base):
     row_ids: Mapped[list[int]] = mapped_column(JSON)
 
 
+class CandidateResyncIdentity(Base):
+    """Durable file target while a resync has detached a cleanup candidate."""
+
+    __tablename__ = "candidate_resync_identities"
+
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("reclaim_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    movie_id: Mapped[int] = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024))
+
+
+class DeleteRequestResyncIdentity(Base):
+    """Durable file target for a deletion request awaiting rebuilt versions."""
+
+    __tablename__ = "delete_request_resync_identities"
+
+    delete_request_id: Mapped[int] = mapped_column(
+        ForeignKey("delete_requests.id", ondelete="CASCADE"), primary_key=True
+    )
+    movie_id: Mapped[int] = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024))
+
+
 class ServiceMediaLibrary(Base):
     """Media libraries available from the main media server.
 
