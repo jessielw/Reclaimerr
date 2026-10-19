@@ -1413,6 +1413,8 @@ class EmbyServiceBase:
 
         start_index = 0
         limit = 500
+        expected_total: int | None = None
+        seen_item_ids: set[str] = set()
 
         while True:
             params = {
@@ -1444,7 +1446,14 @@ class EmbyServiceBase:
                 raise RuntimeError(
                     "Media server episode inventory response did not contain an item list"
                 )
+            reported_total = as_int(get_data.get("TotalRecordCount"))
+            if reported_total is not None:
+                expected_total = max(expected_total or 0, reported_total)
             if not raw_episodes:
+                if expected_total is not None and start_index < expected_total:
+                    raise RuntimeError(
+                        "Media server returned incomplete episode inventory"
+                    )
                 break
             if any(not isinstance(episode, dict) for episode in raw_episodes):
                 raise RuntimeError(
@@ -1453,6 +1462,15 @@ class EmbyServiceBase:
             episodes = [
                 episode for episode in raw_episodes if isinstance(episode, dict)
             ]
+            for episode in episodes:
+                item_id = episode.get("Id")
+                if item_id is not None:
+                    key = str(item_id)
+                    if key in seen_item_ids:
+                        raise RuntimeError(
+                            "Media server repeated an item in episode inventory"
+                        )
+                    seen_item_ids.add(key)
 
             LOG.debug(
                 f"Processing episodes {start_index} to {start_index + len(episodes)}"
@@ -1726,11 +1744,10 @@ class EmbyServiceBase:
                                     normalized_lang
                                 )
 
-            total_record_count = as_int(get_data.get("TotalRecordCount"))
             start_index += len(raw_episodes)
-            if total_record_count is not None and start_index >= total_record_count:
+            if expected_total is not None and start_index >= expected_total:
                 break
-            if total_record_count is None and len(raw_episodes) < limit:
+            if expected_total is None and len(raw_episodes) < limit:
                 break
 
         # build AggregatedSeasonData objects

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Emby and Jellyfin episode sync now rejects truncated or repeated inventory pages instead of treating them as a complete library. Previously reported totals remain enforced if later pages omit or reduce them, preserving existing episodes and protection when a scan is incomplete.
 - Episode watch completion now resolves item IDs within their source server. Linked servers use their own matches instead of crediting an unrelated main-server episode with the same ID; ambiguous shared ID columns are not used for playback lookups.
 - Episode protection now covers other episodes sharing the same file. Individual-episode deletion and moves stop before touching combined files, including files identified as combined by Sonarr; Unmonitor Only remains available.
 - Emby and Jellyfin combined episode files now include every episode in their reported range. Watch completion and playback mappings cover each episode without multiplying physical storage or season/series playback totals.
