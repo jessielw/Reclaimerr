@@ -566,8 +566,9 @@
           time: Date.now(),
           completed:
             (
-              candidateJobPayload(job)
-                .progress as CandidateFileOpJobProgress | undefined
+              candidateJobPayload(job).progress as
+                | CandidateFileOpJobProgress
+                | undefined
             )?.completed_items ?? 0,
         };
         updateActiveJob(jobId, job, baseline);
