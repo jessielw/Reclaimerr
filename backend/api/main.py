@@ -243,6 +243,7 @@ fastapi_app.mount(
     "/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars"
 )
 
+
 def _resolve_spa_file(fe_dist_root: Path, full_path: str) -> Path:
     """Map an SPA request path to a file to serve.
 
