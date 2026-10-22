@@ -56,10 +56,14 @@ def _make_callback_request() -> Request:
     return Request(scope)
 
 
-def _make_plex_callback_request(state: str = "expected-state") -> Request:
+def _make_plex_callback_request(
+    state: str = "expected-state", *, flow_cookie: str | None = "expected-state"
+) -> Request:
     headers = [
         (b"host", b"testserver"),
     ]
+    if flow_cookie is not None:
+        headers.append((b"cookie", f"plex_auth_flow={flow_cookie}".encode()))
     scope = {
         "type": "http",
         "method": "GET",
@@ -114,9 +118,11 @@ def _make_plex_start_request(
     *,
     scheme: str = "http",
     referer: str | None = None,
+    sec_fetch_site: str = "same-origin",
 ) -> Request:
     headers = [
         (b"host", b"testserver"),
+        (b"sec-fetch-site", sec_fetch_site.encode()),
     ]
     if referer is not None:
         headers.append((b"referer", referer.encode()))
@@ -1033,7 +1039,9 @@ def test_media_plex_callback_expired_state_uses_application_url_error() -> None:
             )
             await db_session.commit()
 
-            request = _make_plex_callback_request()
+            request = _make_plex_callback_request(
+                "expired-state", flow_cookie="expired-state"
+            )
             response = await auth_routes.media_plex_callback(
                 request=request,
                 state="expired-state",
@@ -1232,7 +1240,7 @@ def test_request_origin_prefers_origin_then_referer() -> None:
                 "type": "http",
                 "method": "GET",
                 "path": "/api/auth/media/plex/start",
-                "headers": headers,
+                "headers": [(b"sec-fetch-site", b"same-origin"), *headers],
                 "query_string": b"",
                 "client": ("127.0.0.1", 4242),
                 "scheme": "http",
@@ -1259,6 +1267,67 @@ def test_request_origin_prefers_origin_then_referer() -> None:
     )
     assert auth_routes._request_origin(_request([(b"origin", b"null")])) is None
     assert auth_routes._request_origin(_request([])) is None
+
+
+@pytest.mark.parametrize("sec_fetch_site", [None, "cross-site", "same-site", "none"])
+def test_request_origin_ignores_navigations_from_other_sites(
+    sec_fetch_site: str | None,
+) -> None:
+    # A link on another site sends that site in Referer. Trusting it would let the
+    # link choose the post-login redirect and the Plex callback host.
+    headers = [(b"referer", b"https://evil.example.com/")]
+    if sec_fetch_site is not None:
+        headers.append((b"sec-fetch-site", sec_fetch_site.encode()))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/auth/media/plex/start",
+            "headers": headers,
+            "query_string": b"",
+            "client": ("127.0.0.1", 4242),
+            "scheme": "http",
+            "server": ("testserver", 80),
+        }
+    )
+    assert auth_routes._request_origin(request) is None
+
+
+@pytest.mark.parametrize("flow_cookie", [None, "other-state"])
+def test_media_plex_callback_rejects_state_from_another_browser(
+    monkeypatch, flow_cookie: str | None
+) -> None:
+    # state rides through Plex in forwardUrl, so whoever controls that URL sees
+    # it. Without the cookie it must neither sign in nor consume the real flow.
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=False, class_=AsyncSession
+        )
+
+        def fail_pop(_state: str) -> None:
+            raise AssertionError("flow must not be consumed")
+
+        monkeypatch.setattr(auth_routes, "pop_pending_plex_auth", fail_pop)
+
+        async with session_maker() as db_session:
+            response = await auth_routes.media_plex_callback(
+                request=_make_plex_callback_request(
+                    "victim-state", flow_cookie=flow_cookie
+                ),
+                state="victim-state",
+                db=db_session,
+            )
+
+            assert response.status_code == 302
+            assert "auth_error=" in (response.headers.get("location") or "")
+            assert "set-cookie" not in response.headers
+
+        await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_media_plex_callback_popup_mode_returns_self_closing_page(
@@ -1373,7 +1442,9 @@ def test_media_plex_start_popup_mode_binds_flow_and_tags_callback(monkeypatch) -
     asyncio.run(run())
 
 
-def test_media_plex_start_redirect_mode_sets_no_flow_cookie(monkeypatch) -> None:
+def test_media_plex_start_redirect_mode_binds_flow_without_tagging_callback(
+    monkeypatch,
+) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -1410,6 +1481,7 @@ def test_media_plex_start_redirect_mode_sets_no_flow_cookie(monkeypatch) -> None
                 state: str | None = None,
             ) -> str:
                 captured["callback_url"] = callback_url
+                captured["state"] = state or ""
                 return "http://plex.local/auth"
 
             monkeypatch.setattr(
@@ -1431,8 +1503,12 @@ def test_media_plex_start_redirect_mode_sets_no_flow_cookie(monkeypatch) -> None
             )
 
             assert response.status_code == 302
+            assert captured["state"]
             assert "mode=" not in captured["callback_url"]
-            assert not response.headers.get("set-cookie")
+            # The callback checks this cookie against state (see
+            # test_media_plex_callback_rejects_state_from_another_browser).
+            cookie = response.headers.get("set-cookie") or ""
+            assert f"{auth_routes.PLEX_FLOW_COOKIE}={captured['state']}" in cookie
 
         await engine.dispose()
 

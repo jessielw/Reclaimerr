@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Low risk security update - Reclaimerr is not exploitable by this but I figured I would harden it anyways.
 - Display name is now the larger/top name that will be seen everywhere in the app instead of the username.
 
+### Security
+
+- Plex sign-in now has to finish in the browser that started it, and links from other sites can no longer choose where sign-in redirects to. Without an Application URL set, a crafted link could previously capture a Plex sign-in.
+
 ## [0.5.11] - 2026-10-22
 
 ### Changed

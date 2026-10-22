@@ -294,7 +294,8 @@ def test_pending_redirect_flows_cannot_complete_after_method_is_disabled(monkeyp
             ) as client:
                 sso = await client.get("/api/auth/oidc/callback?code=code&state=state")
                 plex = await client.get(
-                    "/api/auth/media/plex/callback?state=test-state"
+                    "/api/auth/media/plex/callback?state=test-state",
+                    cookies={auth_routes.PLEX_FLOW_COOKIE: "test-state"},
                 )
                 for response in (sso, plex):
                     assert "disabled" in response.headers["location"]

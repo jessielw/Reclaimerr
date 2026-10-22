@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import html
 from datetime import UTC, datetime
 from typing import Any
@@ -205,8 +206,15 @@ def _request_origin(request: Request | None) -> str | None:
     carries a full ``Referer``. That gives us the public origin a user actually
     reached us on even when Application URL is unset and the proxy headers are
     not trusted, which is the common self-hosted default.
+
+    Only a same-origin navigation counts. A link on another site carries that
+    site's origin in ``Referer``, and trusting it would let the link pick the
+    post-login redirect and the Plex callback host. ``Sec-Fetch-Site`` is set by
+    the browser and cannot be forged by page script.
     """
     if request is None:
+        return None
+    if request.headers.get("sec-fetch-site", "").strip().lower() != "same-origin":
         return None
     for header_name in ("origin", "referer"):
         raw = request.headers.get(header_name)
@@ -957,18 +965,18 @@ async def media_plex_start(
         ) from exc
 
     response = RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
-    if mode == "popup":
-        # First-party cookie, so the opener window's poll carries it automatically.
-        # Plex only ever sees ``state`` (via forwardUrl), never this.
-        response.set_cookie(
-            key=PLEX_FLOW_COOKIE,
-            value=state,
-            httponly=True,
-            secure=settings.cookie_secure,
-            samesite="lax",
-            max_age=PLEX_FLOW_COOKIE_MAX_AGE,
-            path=PLEX_FLOW_COOKIE_PATH,
-        )
+    # First-party cookie binding the flow to this browser. Popup mode's poll reads
+    # it; redirect mode's callback checks it against ``state``, because ``state``
+    # travels through Plex in forwardUrl and on its own proves nothing.
+    response.set_cookie(
+        key=PLEX_FLOW_COOKIE,
+        value=state,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        max_age=PLEX_FLOW_COOKIE_MAX_AGE,
+        path=PLEX_FLOW_COOKIE_PATH,
+    )
     return response
 
 
@@ -998,6 +1006,15 @@ async def media_plex_callback(
     if not state:
         return _auth_error_redirect(
             "Plex callback is missing state", redirect_to=default_redirect
+        )
+
+    # Checked before the flow is consumed, so a replayed state from another
+    # browser can neither sign in nor cancel the real user's attempt.
+    flow_cookie = request.cookies.get(PLEX_FLOW_COOKIE) or ""
+    if not hmac.compare_digest(flow_cookie.encode(), state.encode()):
+        return _auth_error_redirect(
+            "Plex sign-in must finish in the browser that started it.",
+            redirect_to=default_redirect,
         )
 
     pending = pop_pending_plex_auth(state)
@@ -1068,6 +1085,7 @@ async def media_plex_callback(
         )
 
     response = RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
+    response.delete_cookie(PLEX_FLOW_COOKIE, path=PLEX_FLOW_COOKIE_PATH)
     await _issue_login_session(
         request=request, response=response, user=user, db=db, login_method="media"
     )
