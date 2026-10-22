@@ -4,19 +4,27 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.api.routes.settings import backups as backup_routes
 from backend.core.auth import get_current_user
+from backend.database import alembic_config
 from backend.database.models import User
 from backend.enums import UserRole
 from backend.services import database_backup
 from backend.services.database_backup import (
+    InvalidBackupError,
+    apply_pending_restore,
+    cancel_pending_restore,
     copy_database,
+    has_pending_restore,
     list_backups,
+    pending_restore_path,
     prune_backups,
     resolve_backup,
+    stage_restore,
     write_backup,
 )
 
@@ -142,3 +150,114 @@ def test_backup_routes_reject_non_admins(url: str) -> None:
     response = TestClient(app).get(url)
 
     assert response.status_code == 403
+
+
+def _make_restorable(path: Path, marker: str, version: str | None = None) -> None:
+    if version is None:
+        version = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+    conn.execute("INSERT INTO alembic_version VALUES (?)", (version,))
+    conn.execute("CREATE TABLE marker (value TEXT)")
+    conn.execute("INSERT INTO marker VALUES (?)", (marker,))
+    conn.commit()
+    conn.close()
+
+
+def _marker(path: Path) -> str:
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("SELECT value FROM marker").fetchone()[0]
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(database_backup.settings, "data_dir", tmp_path)
+    return tmp_path
+
+
+def test_staged_restore_replaces_the_database_and_keeps_the_old_one(
+    data_dir: Path,
+) -> None:
+    live = database_backup.settings.db_path
+    _make_restorable(live, "live")
+    backup = data_dir / "reclaimerr-20260101-000000.db"
+    _make_restorable(backup, "backup")
+
+    stage_restore(lambda partial: partial.write_bytes(backup.read_bytes()))
+    assert has_pending_restore()
+    assert _marker(live) == "live"  # staging never touches the live database
+
+    assert apply_pending_restore() is True
+
+    assert _marker(live) == "backup"
+    assert _marker(live.with_name("reclaimerr.db.pre-restore")) == "live"
+    assert not has_pending_restore()
+
+
+def test_cancelled_restore_is_not_applied(data_dir: Path) -> None:
+    live = database_backup.settings.db_path
+    _make_restorable(live, "live")
+    backup = data_dir / "backup.db"
+    _make_restorable(backup, "backup")
+    stage_restore(lambda partial: partial.write_bytes(backup.read_bytes()))
+
+    cancel_pending_restore()
+
+    assert apply_pending_restore() is False
+    assert _marker(live) == "live"
+
+
+@pytest.mark.parametrize("kind", ["garbage", "not_reclaimerr", "newer"])
+def test_invalid_backups_are_refused_and_never_staged(
+    data_dir: Path, kind: str
+) -> None:
+    def write(partial: Path) -> None:
+        if kind == "garbage":
+            partial.write_bytes(b"this is not a database" * 100)
+        elif kind == "not_reclaimerr":
+            _make_source(partial)
+        else:
+            _make_restorable(partial, "x", version="ffffffffffff")
+
+    with pytest.raises(InvalidBackupError):
+        stage_restore(write)
+
+    assert not has_pending_restore()
+    assert not list(database_backup.settings.db_path.parent.glob("*.partial*"))
+
+
+def test_bad_pending_file_leaves_the_live_database_alone(data_dir: Path) -> None:
+    live = database_backup.settings.db_path
+    _make_restorable(live, "live")
+    pending_restore_path().write_bytes(b"corrupt")
+
+    assert apply_pending_restore() is False
+
+    assert _marker(live) == "live"
+    assert not has_pending_restore()
+
+
+def test_restore_routes_reject_non_admins() -> None:
+    app = FastAPI()
+    app.include_router(backup_routes.router, prefix="/api/settings")
+    app.dependency_overrides[get_current_user] = lambda: User(
+        username="viewer", password_hash="x", role=UserRole.USER, permissions=[]
+    )
+    client = TestClient(app)
+
+    assert client.delete("/api/settings/backups/restore").status_code == 403
+    assert (
+        client.post(
+            "/api/settings/backups/reclaimerr-20260101-000000.db/restore"
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/settings/backups/restore", files={"file": ("a.db", b"x")}
+        ).status_code
+        == 403
+    )

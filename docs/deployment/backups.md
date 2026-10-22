@@ -42,6 +42,16 @@ The folder must be writable by the runtime user. Backups already in the old fold
 
 ### Restoring a Database Backup
 
+#### In the app
+
+1. Under **Settings → General → Database Backups**, click **Restore** next to a stored backup, or **Restore from file** to upload one (for example one from **Download backup now**).
+2. Reclaimerr checks that the file is an intact Reclaimerr database that this version can read, then stages it. Nothing changes yet, and **Cancel restore** discards it.
+3. Restart Reclaimerr (for Docker, `docker restart reclaimerr`). On start the staged backup replaces the database, then migrations run.
+
+The database being replaced is kept as `DATA_DIR/database/reclaimerr.db.pre-restore`, so a wrong restore can be undone by hand. Only the most recent one is kept. A backup made by a newer version of Reclaimerr is refused. If the swap fails on start, the current database is left in place and the error is logged.
+
+#### By hand
+
 1. Stop Reclaimerr.
 2. Replace `DATA_DIR/database/reclaimerr.db` with the backup file, renamed to `reclaimerr.db`.
 3. Start Reclaimerr. Migrations run on start, so a backup from an older version upgrades itself.
