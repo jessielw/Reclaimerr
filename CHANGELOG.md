@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Non-admin users with Manage Users can no longer grant or remove permissions or page access they don't have themselves, including on their own account.
 - The IP address shown for a session can no longer be faked with an `X-Forwarded-For` header. It is only taken from forwarding headers when the request comes from a host in `PROXY_TRUSTED_HOSTS`.
 - Two first-run setup requests sent at the same moment can no longer both get through. Only the first creates the admin account.
+- Sending a test notification is now limited to 5 per minute. Non-admin users get a general error message when a test fails instead of the raw delivery error, which could describe hosts on your network. The full error is still in the logs.
 
 ## [0.5.11] - 2026-10-22
 
