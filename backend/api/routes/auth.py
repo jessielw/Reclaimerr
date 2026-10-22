@@ -32,6 +32,7 @@ from backend.core.auth import (
     build_session_expires_at,
     create_access_token,
     decode_token,
+    dummy_password_hash,
     generate_session_id,
     get_request_client_ip,
     get_request_user_agent,
@@ -797,11 +798,10 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    if (
-        not user
-        or not user.password_hash
-        or not verify_password(body.password, user.password_hash)
-    ):
+    password_hash = user.password_hash if user else None
+    # always run one Argon2 verify so timing does not reveal unknown usernames
+    password_ok = verify_password(body.password, password_hash or dummy_password_hash())
+    if not user or not password_hash or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )

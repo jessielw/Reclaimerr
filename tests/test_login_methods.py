@@ -528,3 +528,36 @@ def test_method_disabled_during_provider_request_cannot_issue_a_session(monkeypa
                 assert (await db.execute(select(UserSession))).scalars().all() == []
 
     asyncio.run(run())
+
+
+def test_login_runs_one_password_check_for_known_and_unknown_usernames(monkeypatch):
+    # Skipping Argon2 for an unknown username made it answer measurably faster
+    # than a wrong password, which revealed which usernames exist.
+    monkeypatch.setattr(settings, "auth_force_local_login", False)
+    checked_hashes: list[str] = []
+    real_verify = auth_routes.verify_password
+
+    def counting_verify(password: str, hashed: str) -> bool:
+        checked_hashes.append(hashed)
+        return real_verify(password, hashed)
+
+    monkeypatch.setattr(auth_routes, "verify_password", counting_verify)
+
+    async def run():
+        async with _database() as db:
+            db.add(_user())
+            await db.commit()
+            async with AsyncClient(
+                transport=ASGITransport(app=_app(db)), base_url="http://test"
+            ) as client:
+                for username in ("admin", "nobody"):
+                    response = await client.post(
+                        "/api/auth/login",
+                        json={"username": username, "password": "wrong"},
+                    )
+                    assert response.status_code == 401
+                    assert response.json()["detail"] == "Invalid credentials"
+
+    asyncio.run(run())
+    assert len(checked_hashes) == 2
+    assert checked_hashes[1] == auth_routes.dummy_password_hash()

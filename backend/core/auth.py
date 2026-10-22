@@ -107,6 +107,17 @@ def get_password_hash(password: str) -> str:
     return argon_ph.hash(password)
 
 
+@lru_cache(maxsize=1)
+def dummy_password_hash() -> str:
+    """A throwaway Argon2 hash to verify against when there is no real one.
+
+    Checking a password against it costs the same as a real check, so a login
+    for an unknown username takes as long as one with a wrong password and the
+    response time does not reveal which usernames exist.
+    """
+    return argon_ph.hash(uuid4().hex)
+
+
 def create_access_token(
     data: dict[str, Any],
     expires_delta: timedelta | None = None,
