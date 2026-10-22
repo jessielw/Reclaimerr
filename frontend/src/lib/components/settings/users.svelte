@@ -588,7 +588,7 @@
                     <Avatar.Root class="w-16 h-16 border-2 border-primary">
                       <Avatar.Image src={user.avatar_url} alt={user.username} />
                       <Avatar.Fallback
-                        >{user.username
+                        >{(user.display_name || user.username)
                           .charAt(0)
                           .toUpperCase()}</Avatar.Fallback
                       >
@@ -598,7 +598,9 @@
                       class="w-16 h-16 text-2xl text-primary-foreground font-bold"
                     >
                       <Avatar.Fallback class="bg-primary">
-                        {user.username.charAt(0).toUpperCase()}
+                        {(user.display_name || user.username)
+                          .charAt(0)
+                          .toUpperCase()}
                       </Avatar.Fallback>
                     </Avatar.Root>
                   {/if}
@@ -608,10 +610,12 @@
                   <div
                     class="flex flex-col text-sm font-medium text-foreground"
                   >
-                    <span>{user.username}</span>
-                    <span class="text-xs text-muted-foreground italic"
-                      >{user.display_name}</span
-                    >
+                    <span>{user.display_name || user.username}</span>
+                    {#if user.display_name && user.display_name !== user.username}
+                      <span class="text-xs text-muted-foreground italic"
+                        >{user.username}</span
+                      >
+                    {/if}
                   </div>
                   {#if user.email}
                     <div class="text-xs text-muted-foreground">

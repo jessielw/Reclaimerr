@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Low risk security update - Reclaimerr is not exploitable by this but I figured I would harden it anyways.
+- Display name is now the larger/top name that will be seen everywhere in the app instead of the username.
 
 ## [0.5.11] - 2026-10-22
 

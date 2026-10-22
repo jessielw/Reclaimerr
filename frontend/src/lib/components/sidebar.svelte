@@ -418,7 +418,9 @@
               <Avatar.Root class="w-10 h-10 border-3 border-primary">
                 <Avatar.Image src={$auth.user.avatar_url} alt="Avatar" />
                 <Avatar.Fallback
-                  >{$auth.user.username.charAt(0).toUpperCase()}
+                  >{($auth.user.display_name || $auth.user.username)
+                    .charAt(0)
+                    .toUpperCase()}
                 </Avatar.Fallback>
               </Avatar.Root>
             {:else}
@@ -426,7 +428,7 @@
                 class="w-10 h-10 text-2xl text-primary-foreground font-bold"
               >
                 <Avatar.Fallback class="bg-primary"
-                  >{$auth.user.username
+                  >{($auth.user.display_name || $auth.user.username)
                     .charAt(0)
                     .toUpperCase()}</Avatar.Fallback
                 >
