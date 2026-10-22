@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two first-run setup requests sent at the same moment can no longer both get through. Only the first creates the admin account.
 - Sending a test notification is now limited to 5 per minute. Non-admin users get a general error message when a test fails instead of the raw delivery error, which could describe hosts on your network. The full error is still in the logs.
 - Login now takes the same time for an unknown username as for a wrong password, so response timing no longer reveals which usernames exist.
+- The API docs pages (`/docs`, `/redoc`, `/api/v1/docs`, `/api/v1/redoc`) now load Swagger UI and ReDoc from Reclaimerr itself instead of the jsdelivr CDN, and no longer load Google Fonts or an external favicon. A compromised CDN file could previously have run script as a logged-in admin who opened these pages. If your reverse proxy only forwards selected paths, add `/docs-assets`.
 
 ## [0.5.11] - 2026-10-22
 

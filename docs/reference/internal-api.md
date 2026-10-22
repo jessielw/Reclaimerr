@@ -15,6 +15,8 @@ The running application exposes its complete FastAPI schema at:
 
 These generated documents include internal UI routes as well as the mounted external API. Contributors can use them for the exact internal request and response models.
 
+Like the external API docs, these pages load Swagger UI and ReDoc from `/docs-assets` on the same server. The vendored versions and update steps are in `backend/api/docs_assets/README.md`.
+
 ## Status And Setup
 
 - `GET /api/setup/status`

@@ -10,6 +10,8 @@ Interactive documentation containing only the supported external API is generate
 
 Use Swagger UI's **Authorize** button to provide a bearer token and try requests directly from the browser.
 
+These pages load their scripts and styles from Reclaimerr itself under `/docs-assets`, not from a third-party CDN, so they also work without internet access. If your reverse proxy only forwards selected paths, include `/docs-assets` along with the docs pages.
+
 ```http
 Authorization: Bearer rcl_prefix_secret
 ```
