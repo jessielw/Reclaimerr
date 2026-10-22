@@ -40,7 +40,7 @@ class BackupFile:
 
 
 def backups_dir() -> Path:
-    return settings.data_dir_path / "backups"
+    return settings.backup_dir or settings.data_dir_path / "backups"
 
 
 def backup_file_name(now: datetime | None = None) -> str:

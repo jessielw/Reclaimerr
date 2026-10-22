@@ -768,3 +768,8 @@ class DatabaseBackupInfo(BaseModel):
     name: str
     size_bytes: int
     created_at: datetime
+
+
+class DatabaseBackupList(BaseModel):
+    directory: str
+    backups: list[DatabaseBackupInfo]

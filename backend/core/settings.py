@@ -29,6 +29,12 @@ class Settings(BaseSettings):
         default=Path("./data"), description="Directory for database, logs, cache."
     )
 
+    # database backups directory (defaults to <data_dir>/backups)
+    backup_dir: Path | None = Field(
+        default=None,
+        description="Directory for database backups. Defaults to DATA_DIR/backups.",
+    )
+
     # static directory
     static_dir: Path = Field(
         default=Path("./data/static"), description="Directory for static files."

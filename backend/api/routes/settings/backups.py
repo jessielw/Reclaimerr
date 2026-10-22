@@ -11,9 +11,10 @@ from starlette.background import BackgroundTask
 
 from backend.core.auth import require_admin
 from backend.database.models import User
-from backend.models.settings import DatabaseBackupInfo
+from backend.models.settings import DatabaseBackupInfo, DatabaseBackupList
 from backend.services.database_backup import (
     backup_file_name,
+    backups_dir,
     copy_database,
     list_backups,
     resolve_backup,
@@ -25,18 +26,21 @@ router = APIRouter(tags=["settings", "backups"])
 # so every route here is admin only.
 
 
-@router.get("/backups", response_model=list[DatabaseBackupInfo])
+@router.get("/backups", response_model=DatabaseBackupList)
 async def get_backups(
     _admin: Annotated[User, Depends(require_admin)],
-) -> list[DatabaseBackupInfo]:
-    """List the scheduled backups kept in the data folder, newest first."""
+) -> DatabaseBackupList:
+    """List the scheduled backups and the folder they are kept in, newest first."""
     files = await asyncio.to_thread(list_backups)
-    return [
-        DatabaseBackupInfo(
-            name=item.name, size_bytes=item.size_bytes, created_at=item.created_at
-        )
-        for item in files
-    ]
+    return DatabaseBackupList(
+        directory=str(backups_dir()),
+        backups=[
+            DatabaseBackupInfo(
+                name=item.name, size_bytes=item.size_bytes, created_at=item.created_at
+            )
+            for item in files
+        ],
+    )
 
 
 @router.get("/backups/download")

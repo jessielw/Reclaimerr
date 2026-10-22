@@ -21,11 +21,17 @@
   let { retention = $bindable() }: Props = $props();
 
   let backups = $state<DatabaseBackupInfo[]>([]);
+  let directory = $state<string | null>(null);
   let error = $state<string | null>(null);
 
   onMount(async () => {
     try {
-      backups = await get_api<DatabaseBackupInfo[]>("/api/settings/backups");
+      const data = await get_api<{
+        directory: string;
+        backups: DatabaseBackupInfo[];
+      }>("/api/settings/backups");
+      backups = data.backups;
+      directory = data.directory;
     } catch (e: any) {
       error = e.message ?? "Could not load backups.";
     }
@@ -36,8 +42,9 @@
   <h3 class="font-semibold text-foreground mb-1">Database Backups</h3>
   <p class="text-muted-foreground text-sm mb-3">
     The <strong>Back Up Database</strong> task saves a copy of the database to
-    the <code>backups</code> folder in the data directory every week. You can
-    also download a copy now. To restore, stop Reclaimerr, replace
+    {#if directory}<code>{directory}</code>{:else}the backups folder{/if} every
+    week. Set <code>BACKUP_DIR</code> to change the location. You can also download
+    a copy now. To restore, stop Reclaimerr, replace
     <code>database/reclaimerr.db</code> with the backup, and start it again. A
     restore onto a new install also needs the original <code>secrets.env</code>.
   </p>

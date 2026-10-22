@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Candidates page now shows live progress while a delete or move runs: a progress bar, items completed, the title currently being processed, and an estimated time remaining. The banner returns if you leave the page and come back, and further deletes/moves are disabled until the running one finishes.
+- Backup dir env var support.
 
 ### Changed
 

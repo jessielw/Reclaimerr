@@ -26,7 +26,19 @@ Reclaimerr can back up its own database while it runs, so you do not need to sto
 
 These copies contain service API keys, media server tokens, and email settings, so only admins can download them. Keep them private.
 
-The `backups/` folder lives inside `DATA_DIR`, on the same disk as the database. Copy it somewhere else as well.
+By default the `backups/` folder lives inside `DATA_DIR`, on the same disk as the database. To store backups elsewhere, such as a separate drive mounted into the container, set `BACKUP_DIR`:
+
+```yaml
+services:
+  reclaimerr:
+    environment:
+      - BACKUP_DIR=/backups
+    volumes:
+      - ./data:/app/data
+      - /mnt/backup-drive/reclaimerr:/backups
+```
+
+The folder must be writable by the runtime user. Backups already in the old folder are not moved; copy them over if you want them listed in the app.
 
 ### Restoring a Database Backup
 
