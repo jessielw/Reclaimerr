@@ -5,6 +5,7 @@ import os
 import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -196,7 +197,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.5.10",
+    version="0.5.11",
     lifespan=lifespan,
 )
 
@@ -242,19 +243,32 @@ fastapi_app.mount(
     "/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars"
 )
 
+
+def _resolve_spa_file(fe_dist_root: Path, full_path: str) -> Path:
+    """Map an SPA request path to a file to serve.
+
+    Resolves the requested path and requires it to stay inside the built
+    frontend directory, so ``../`` traversal or absolute paths cannot read
+    arbitrary files off the host (CWE-22). Anything that escapes the dist
+    directory, or is not a real file, falls back to the SPA entrypoint.
+    """
+    candidate = (fe_dist_root / full_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(fe_dist_root):
+        return candidate
+    return fe_dist_root / "index.html"
+
+
 # serve built frontend (desktop mode) when FRONTEND_DIST is set
 if settings.frontend_dist and settings.frontend_dist.is_dir():
     fe_dist = settings.frontend_dist
+    fe_dist_root = fe_dist.resolve()
     fastapi_app.mount(
         "/assets", StaticFiles(directory=fe_dist / "assets"), name="frontend-assets"
     )
 
     @fastapi_app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str) -> FileResponse:
-        candidate = fe_dist / full_path
-        if candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(fe_dist / "index.html")
+        return FileResponse(_resolve_spa_file(fe_dist_root, full_path))
 
 
 app = _wrap_proxy_headers(
