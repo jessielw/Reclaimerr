@@ -8,8 +8,7 @@ match-only rule  ->  GET /api/v1/rules/{id}/matches  ->  your script  ->  Radarr
 
 A match-only rule never creates candidates or protections, and scans skip it. It is evaluated only when your script asks.
 
-!!! tip
-    If all you need is a quality profile change with a review period, a cleanup rule's **Change Quality Profile** action does that without a script. See [Arr Action](rules.md#arr-action).
+!!! tip If all you need is a quality profile change with a review period, a cleanup rule's **Change Quality Profile** action does that without a script. See [Arr Action](rules.md#arr-action).
 
 ## Set Up
 
@@ -65,7 +64,12 @@ curl -fsS -X POST -H "X-Api-Key: $RADARR_API_KEY" -H "Content-Type: application/
 
 ```json
 {
-  "rule": { "id": 12, "name": "Unwatched 4K movies", "media_type": "movie", "target_scope": "movie_version" },
+  "rule": {
+    "id": 12,
+    "name": "Unwatched 4K movies",
+    "media_type": "movie",
+    "target_scope": "movie_version"
+  },
   "complete": true,
   "warnings": [],
   "total": 1,
@@ -84,7 +88,12 @@ curl -fsS -X POST -H "X-Api-Key: $RADARR_API_KEY" -H "Content-Type: application/
       "tvdb_id": null,
       "imdb_id": "tt0137523",
       "arr": [
-        { "service": "radarr", "service_config_id": 1, "service_name": "Radarr 4K", "arr_id": 42 }
+        {
+          "service": "radarr",
+          "service_config_id": 1,
+          "service_name": "Radarr 4K",
+          "arr_id": 42
+        }
       ],
       "reason": "..."
     }
@@ -108,10 +117,10 @@ Every example below follows these rules. Keep them in your own scripts.
 
 Add a condition that stops matching once the change is made, so running the script again does nothing to items it already handled:
 
-| Change | Guard condition |
-| --- | --- |
-| Add a tag | **Arr tags** does not contain the tag |
-| Unmonitor | **Arr monitored** is true |
+| Change           | Guard condition                                          |
+| ---------------- | -------------------------------------------------------- |
+| Add a tag        | **Arr tags** does not contain the tag                    |
+| Unmonitor        | **Arr monitored** is true                                |
 | Move root folder | **Arr tags** does not contain a tag the script also adds |
 
 Reclaimerr reads Arr tags and monitoring from Radarr and Sonarr each time the rule is evaluated, so the guard works on the very next run.
