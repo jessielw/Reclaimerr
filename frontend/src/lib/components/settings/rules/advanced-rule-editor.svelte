@@ -1384,9 +1384,11 @@
             .metadata.watch_completion_unavailable_count === 1
             ? ""
             : "s"} sit on a media server whose watch state could not be read, so
-          <strong>Fully watched by users</strong> is unknown for them and
-          matched neither <em>matches any</em> nor <em>matches none</em>. Run a
-          media sync or check that server before relying on this rule.
+          <strong>Fully watched by users</strong> and
+          <strong>Partial viewers in this or earlier seasons</strong> are
+          unknown for them and matched neither <em>matches any</em> nor
+          <em>matches none</em>. Run a media sync or check that server before
+          relying on this rule.
         </Notice>
       {/if}
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}

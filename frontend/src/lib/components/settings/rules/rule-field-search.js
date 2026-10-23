@@ -29,6 +29,12 @@ const FIELD_ALIASES = {
     "watched by user",
     "fully watched by user",
   ],
+  "season.partial_viewer_usernames": [
+    "partially watched",
+    "in progress",
+    "unfinished",
+    "still watching",
+  ],
   "series.fully_watched": [
     "series finished",
     "show fully watched",

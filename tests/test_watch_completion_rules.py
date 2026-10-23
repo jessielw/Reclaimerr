@@ -367,6 +367,59 @@ class WatchCompletionEvaluationTests(unittest.TestCase):
         self.assertIs(resolver.resolve(TARGET_SERIES, None), RULE_VALUE_UNAVAILABLE)
 
 
+class PartialViewerEvaluationTests(unittest.TestCase):
+    """`Partial viewers in this or earlier seasons` as a rule condition."""
+
+    def tearDown(self) -> None:
+        WatchCompletionResolver._ctx.set(None)
+
+    @staticmethod
+    def _cleanup_rule() -> ReclaimRule:
+        """The rule the feature exists for: someone finished it, nobody is mid-way."""
+        return _rule(
+            TARGET_SEASON,
+            _condition("playback.fully_watched_usernames", "exists"),
+            _condition("season.partial_viewer_usernames", "not_exists"),
+        )
+
+    def _state(self) -> bool | None:
+        series = _series(_season(2, inventory=[1, 2], watched={1, 2}))
+        return evaluate_advanced_rule_state(
+            self._cleanup_rule(),
+            target_scope=TARGET_SEASON,
+            series=series,
+            season=series.seasons[0],
+        )
+
+    def test_allows_cleanup_when_nobody_is_part_way(self) -> None:
+        WatchCompletionResolver(
+            {(TARGET_SEASON, 900, 2, None): {"alice"}}, {(900, 2): set()}
+        ).activate()
+        self.assertIs(self._state(), True)
+
+    def test_blocks_cleanup_while_someone_is_part_way(self) -> None:
+        WatchCompletionResolver(
+            {(TARGET_SEASON, 900, 2, None): {"alice"}}, {(900, 2): {"bob"}}
+        ).activate()
+        self.assertIs(self._state(), False)
+
+    def test_unknown_partial_state_never_allows_cleanup(self) -> None:
+        WatchCompletionResolver({(TARGET_SEASON, 900, 2, None): {"alice"}}).activate()
+        self.assertIsNone(self._state())
+
+    def test_field_is_season_only(self) -> None:
+        for scope in (TARGET_SERIES, TARGET_EPISODE, TARGET_MOVIE_VERSION):
+            with self.subTest(scope=scope):
+                with self.assertRaises(ValueError):
+                    validate_rule_definition(
+                        _rule(
+                            scope,
+                            _condition("season.partial_viewer_usernames", "not_exists"),
+                        ).definition,
+                        target_scope=scope,
+                    )
+
+
 class WatchCompletionActivationTests(unittest.IsolatedAsyncioTestCase):
     """What a scan actually loads, against a real database."""
 
@@ -585,6 +638,145 @@ class WatchCompletionActivationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(metadata.watch_completion_unavailable_count, 1)
 
+    async def _seed_seasons(
+        self, inventories: dict[int, list[int] | None]
+    ) -> ServiceConfig:
+        """Several seasons of one show on an observable Plex server."""
+        async with self._sessionmaker() as db:
+            plex = ServiceConfig(
+                service_type=Service.PLEX,
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "watch_snapshot_sync": {
+                        "available": True,
+                        "last_success_at": "2026-07-05T00:00:00Z",
+                    }
+                },
+            )
+            series = Series(title="Show", tmdb_id=900, size=1024)
+            db.add_all([plex, series])
+            await db.flush()
+            db.add(
+                SeriesServiceRef(
+                    series_id=series.id,
+                    service=Service.PLEX,
+                    service_id="plex-series",
+                    library_id="tv",
+                    library_name="TV",
+                )
+            )
+            for season_number, inventory in inventories.items():
+                season = Season(
+                    series_id=series.id, season_number=season_number, size=1024
+                )
+                season.sonarr_episode_numbers = inventory
+                db.add(season)
+            await db.commit()
+            return plex
+
+    async def _watched_episodes(
+        self, plex: ServiceConfig, entries: list[tuple[str, int, int]]
+    ) -> None:
+        """Record (username, season, episode) completions."""
+        async with self._sessionmaker() as db:
+            db.add_all(
+                [
+                    MediaWatchUserEpisode(
+                        series_tmdb_id=900,
+                        season_number=season_number,
+                        episode_number=episode_number,
+                        watch_user_key=username,
+                        watch_user_key_normalized=username.casefold(),
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex.id,
+                        last_watched_at=NOW,
+                    )
+                    for username, season_number, episode_number in entries
+                ]
+            )
+            await db.commit()
+
+    @staticmethod
+    def _partial_rule() -> ReclaimRule:
+        return _rule(
+            TARGET_SEASON, _condition("season.partial_viewer_usernames", "not_exists")
+        )
+
+    async def test_partial_viewers_follow_the_reported_examples(self) -> None:
+        """Issue #455: alice finished season 2; what does bob's progress do?"""
+        alice_s2 = [("alice", 2, 1), ("alice", 2, 2)]
+        s1_full = [("bob", 1, 1), ("bob", 1, 2)]
+        s2_full = [("bob", 2, 1), ("bob", 2, 2)]
+        cases = {
+            "never started the show": ([], []),
+            "completed s1, never started s2": (s1_full, []),
+            "partially watched s1": ([("bob", 1, 1)], ["bob"]),
+            "completed s1, partially watched s2": (s1_full + [("bob", 2, 1)], ["bob"]),
+            "completed s1 and s2": (s1_full + s2_full, []),
+            "completed s1 and s2, partially watched s3": (
+                s1_full + s2_full + [("bob", 3, 1)],
+                [],
+            ),
+        }
+        for label, (bob_entries, expected) in cases.items():
+            with self.subTest(label):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                plex = await self._seed_seasons({1: [1, 2], 2: [1, 2], 3: [1, 2]})
+                await self._watched_episodes(plex, alice_s2 + bob_entries)
+
+                resolver, _metadata = await self._activate(self._partial_rule())
+                assert resolver is not None
+                self.assertEqual(resolver.resolve_partial(900, 2), expected)
+
+    async def test_viewers_are_never_combined(self) -> None:
+        """Between them every episode was watched, but nobody finished it."""
+        plex = await self._seed_seasons({1: [1, 2]})
+        await self._watched_episodes(plex, [("alice", 1, 1), ("bob", 1, 2)])
+
+        resolver, _metadata = await self._activate(
+            _rule(
+                TARGET_SEASON,
+                _condition("playback.fully_watched_usernames", "exists"),
+                _condition("season.partial_viewer_usernames", "not_exists"),
+            )
+        )
+        assert resolver is not None
+        self.assertEqual(resolver.resolve(TARGET_SEASON, 900, season_number=1), [])
+        self.assertEqual(resolver.resolve_partial(900, 1), ["alice", "bob"])
+
+    async def test_specials_neither_block_nor_are_blocked(self) -> None:
+        plex = await self._seed_seasons({0: [1, 2], 1: [1, 2], 2: [1]})
+        await self._watched_episodes(plex, [("bob", 0, 1), ("carol", 1, 1)])
+
+        resolver, _metadata = await self._activate(self._partial_rule())
+        assert resolver is not None
+        self.assertEqual(resolver.resolve_partial(900, 2), ["carol"])
+        self.assertEqual(resolver.resolve_partial(900, 0), ["bob"])
+
+    async def test_an_earlier_season_without_inventory_leaves_later_ones_unknown(
+        self,
+    ) -> None:
+        plex = await self._seed_seasons({0: [1], 1: None, 2: [1, 2]})
+        await self._watched_episodes(plex, [("alice", 2, 1), ("alice", 2, 2)])
+
+        resolver, _metadata = await self._activate(self._partial_rule())
+        assert resolver is not None
+        self.assertIs(resolver.resolve_partial(900, 1), RULE_VALUE_UNAVAILABLE)
+        self.assertIs(resolver.resolve_partial(900, 2), RULE_VALUE_UNAVAILABLE)
+        self.assertEqual(resolver.resolve_partial(900, 0), [])
+
+    async def test_a_season_no_longer_in_the_library_is_skipped(self) -> None:
+        """Season 1 was already reclaimed, so its row and inventory are gone."""
+        plex = await self._seed_seasons({2: [1, 2]})
+        await self._watched_episodes(plex, [("bob", 1, 1)])
+
+        resolver, _metadata = await self._activate(self._partial_rule())
+        assert resolver is not None
+        self.assertEqual(resolver.resolve_partial(900, 2), [])
+
     async def test_nothing_is_loaded_for_a_rule_that_does_not_ask(self) -> None:
         plex = await self._seed()
         await self._watched(plex, [("alice", 1), ("alice", 2)])
@@ -612,6 +804,7 @@ class WatchSensitivityTests(unittest.TestCase):
             (TARGET_SERIES, "series.fully_watched"),
             (TARGET_SERIES, "series.watched_percent"),
             (TARGET_SEASON, "playback.fully_watched_usernames"),
+            (TARGET_SEASON, "season.partial_viewer_usernames"),
         ):
             with self.subTest(field=field):
                 condition = (
