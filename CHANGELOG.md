@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Can now see user last login time in Settings -> Users.
 
+### Fixed
+
+- Database backups on SMB/NFS locking up when variable `BACKUP_DIR` is used.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added

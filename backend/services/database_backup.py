@@ -117,15 +117,22 @@ def write_backup(keep: int, directory: Path | None = None) -> Path:
         raise RuntimeError(f"Backup folder {folder} is not writable: {exc}") from exc
 
     target = folder / backup_file_name()
+    # SQLite needs working file locks on the destination, which network shares
+    # (SMB/NFS) often lack and can hang on, so the copy is made on the local disk
+    # next to the live database and only a plain file copy crosses into the folder
+    staged = settings.db_path.with_name(f"{target.name}.partial")
     # written under a name retention ignores, so a crash mid-copy never leaves
     # a broken file that looks like a good backup
     partial = target.with_name(f"{target.name}.partial")
     try:
-        copy_database(partial)
+        copy_database(staged)
+        shutil.copyfile(staged, partial)
         partial.replace(target)
     except (OSError, sqlite3.Error) as exc:
         partial.unlink(missing_ok=True)
         raise RuntimeError(f"Could not write backup to {folder}: {exc}") from exc
+    finally:
+        staged.unlink(missing_ok=True)
 
     removed = prune_backups(keep, folder)
     if removed:

@@ -93,17 +93,13 @@ def test_retention_deletes_only_the_oldest_backups(tmp_path: Path) -> None:
 def test_scheduled_backup_writes_a_named_copy_and_applies_retention(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "reclaimerr.db"
+    monkeypatch.setattr(database_backup.settings, "data_dir", tmp_path / "data")
+    source = database_backup.settings.db_path
     _make_source(source)
     folder = tmp_path / "backups"
     folder.mkdir()
     for day in (1, 2):
         (folder / f"reclaimerr-2026010{day}-000000.db").write_bytes(b"")
-    monkeypatch.setattr(
-        database_backup,
-        "copy_database",
-        lambda destination: copy_database(destination, source=source),
-    )
 
     path = write_backup(2, folder)
 
@@ -113,6 +109,8 @@ def test_scheduled_backup_writes_a_named_copy_and_applies_retention(
     ]
     assert _tables(path) == ["history", "rules"]
     assert not list(folder.glob("*.partial"))
+    # the local staging copy is cleaned up too
+    assert not list(source.parent.glob("*.partial"))
 
 
 def test_unwritable_backup_folder_fails_with_a_clear_error(tmp_path: Path) -> None:
