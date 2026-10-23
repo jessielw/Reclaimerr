@@ -6,10 +6,14 @@ API, which is safe while the app is writing and folds in the WAL; copying the
 file directly could capture a torn page or miss committed writes still in the
 WAL.
 
+Backups are zipped with the database stored as ``reclaimerr.db``; SQLite files
+compress around 5x. Plain ``.db`` backups from older versions still list, prune
+and restore.
+
 Restore is staged, never live: the app validates a backup and parks it next to
 the database, and the swap happens on the next start before any connection is
-opened. Migrations run after that, so an older backup upgrades itself. Replacing
-``reclaimerr.db`` by hand with the app stopped works too.
+opened. Migrations run after that, so an older backup upgrades itself. Extracting
+``reclaimerr.db`` over the live one by hand with the app stopped works too.
 """
 
 from __future__ import annotations
@@ -18,6 +22,9 @@ import asyncio
 import re
 import shutil
 import sqlite3
+import tempfile
+import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,7 +42,10 @@ from backend.database import alembic_config, async_db
 from backend.database.models import GeneralSettings
 from backend.enums import Task
 
-BACKUP_NAME_PATTERN = re.compile(r"^reclaimerr-\d{8}-\d{6}\.db$")
+BACKUP_NAME_PATTERN = re.compile(r"^reclaimerr-\d{8}-\d{6}\.db(\.zip)?$")
+# the database's name inside a backup zip, so extracting it gives a drop-in file
+ARCHIVE_MEMBER = "reclaimerr.db"
+ZIP_MAGIC = b"PK"
 DEFAULT_BACKUP_RETENTION = 4
 # generous for a large database on a slow share; only a stalled write gets near it
 BACKUP_TIMEOUT_SECONDS = 600
@@ -53,7 +63,7 @@ def backups_dir() -> Path:
 
 
 def backup_file_name(now: datetime | None = None) -> str:
-    return f"reclaimerr-{(now or datetime.now(UTC)):%Y%m%d-%H%M%S}.db"
+    return f"reclaimerr-{(now or datetime.now(UTC)):%Y%m%d-%H%M%S}.db.zip"
 
 
 def copy_database(destination: Path, source: Path | None = None) -> None:
@@ -67,6 +77,23 @@ def copy_database(destination: Path, source: Path | None = None) -> None:
             dest_conn.close()
     finally:
         source_conn.close()
+
+
+def create_backup_archive(destination: Path) -> None:
+    """Write a zipped, consistent copy of the live database to ``destination``."""
+    # the uncompressed copy goes next to the live database, which is on the
+    # data volume rather than the container's own (possibly small) disk
+    with tempfile.TemporaryDirectory(
+        prefix="backup-", dir=settings.db_path.parent
+    ) as tmp:
+        database = Path(tmp) / ARCHIVE_MEMBER
+        copy_database(database)
+        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(database, ARCHIVE_MEMBER)
+
+
+def backup_media_type(path: Path) -> str:
+    return "application/zip" if path.suffix == ".zip" else "application/vnd.sqlite3"
 
 
 def list_backups(directory: Path | None = None) -> list[BackupFile]:
@@ -128,8 +155,8 @@ def write_backup(keep: int, directory: Path | None = None) -> Path:
     # a broken file that looks like a good backup
     partial = target.with_name(f"{target.name}.partial")
     try:
-        LOG.debug(f"Copying the live database to {staged}")
-        copy_database(staged)
+        LOG.debug(f"Writing a zipped copy of the live database to {staged}")
+        create_backup_archive(staged)
         LOG.debug(f"Copying the backup into {folder}")
         shutil.copyfile(staged, partial)
         partial.replace(target)
@@ -156,6 +183,32 @@ def pending_restore_path() -> Path:
 
 def has_pending_restore() -> bool:
     return pending_restore_path().is_file()
+
+
+def unzip_backup(path: Path) -> None:
+    """Replace a zipped backup at ``path`` with the database inside it.
+
+    A plain database file is left as is, so older ``.db`` backups still restore.
+    """
+    with path.open("rb") as file:
+        if file.read(len(ZIP_MAGIC)) != ZIP_MAGIC:
+            return
+    extracted = path.with_name(f"{path.name}.unzip")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            try:
+                member = archive.open(ARCHIVE_MEMBER)
+            except KeyError:
+                raise InvalidBackupError(
+                    f"The zip file does not contain {ARCHIVE_MEMBER}"
+                ) from None
+            with member, extracted.open("wb") as out:
+                shutil.copyfileobj(member, out)
+        extracted.replace(path)
+    except (zipfile.BadZipFile, zlib.error) as exc:
+        raise InvalidBackupError(f"The zip file is damaged: {exc}") from exc
+    finally:
+        extracted.unlink(missing_ok=True)
 
 
 def validate_backup(path: Path) -> None:
@@ -195,6 +248,7 @@ def stage_restore(write_source: Callable[[Path], object]) -> None:
     partial = pending.with_name(f"{pending.name}.partial")
     try:
         write_source(partial)
+        unzip_backup(partial)
         validate_backup(partial)
         partial.replace(pending)
     except InvalidBackupError:

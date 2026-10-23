@@ -155,7 +155,7 @@
     <input
       bind:this={uploadInput}
       type="file"
-      accept=".db,application/vnd.sqlite3,application/octet-stream"
+      accept=".zip,.db,application/zip,application/vnd.sqlite3,application/octet-stream"
       class="hidden"
       onchange={onUploadPicked}
     />

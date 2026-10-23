@@ -19,9 +19,10 @@ Back up the full `DATA_DIR`. That directory contains the app state you need to r
 
 Reclaimerr can back up its own database while it runs, so you do not need to stop it first.
 
-- The **Back Up Database** task runs weekly (Sunday at 1 AM by default, before automatic deletion) and writes `backups/reclaimerr-YYYYMMDD-HHMMSS.db` inside `DATA_DIR`.
+- The **Back Up Database** task runs weekly (Sunday at 1 AM by default, before automatic deletion) and writes `backups/reclaimerr-YYYYMMDD-HHMMSS.db.zip` inside `DATA_DIR`. Each zip holds the database as `reclaimerr.db`, compressed to roughly a fifth of its size.
 - It keeps the newest 4 backups. Change this under **Settings → General → Database Backups**.
-- **Download backup now** on the same card makes a fresh copy and downloads it. Earlier scheduled backups are listed there for download too.
+- **Download backup now** on the same card makes a fresh zipped copy and downloads it. Earlier scheduled backups are listed there for download too.
+- Plain `.db` backups made by older versions stay listed, count toward retention, and can still be restored.
 - If the backups folder is not writable, the task fails and sends a task failure notification.
 
 These copies contain service API keys, media server tokens, and email settings, so only admins can download them. Keep them private.
@@ -44,7 +45,7 @@ The folder must be writable by the runtime user. Backups already in the old fold
 
 #### In the app
 
-1. Under **Settings → General → Database Backups**, click **Restore** next to a stored backup, or **Restore from file** to upload one (for example one from **Download backup now**).
+1. Under **Settings → General → Database Backups**, click **Restore** next to a stored backup, or **Restore from file** to upload one (for example one from **Download backup now**). Both `.db.zip` and plain `.db` files are accepted.
 2. Reclaimerr checks that the file is an intact Reclaimerr database that this version can read, then stages it. Nothing changes yet, and **Cancel restore** discards it.
 3. Restart Reclaimerr (for Docker, `docker restart reclaimerr`). On start the staged backup replaces the database, then migrations run.
 
@@ -53,7 +54,7 @@ The database being replaced is kept as `DATA_DIR/database/reclaimerr.db.pre-rest
 #### By hand
 
 1. Stop Reclaimerr.
-2. Replace `DATA_DIR/database/reclaimerr.db` with the backup file, renamed to `reclaimerr.db`.
+2. Extract `reclaimerr.db` from the backup zip and replace `DATA_DIR/database/reclaimerr.db` with it. Also delete any `reclaimerr.db-wal` and `reclaimerr.db-shm` files next to it, or SQLite will replay them over the restored database. For an older plain `.db` backup, rename it to `reclaimerr.db` instead.
 3. Start Reclaimerr. Migrations run on start, so a backup from an older version upgrades itself.
 
 Restoring onto a new install also needs the original `secrets.env`. Without it, the saved API keys and tokens cannot be decrypted and must be entered again.

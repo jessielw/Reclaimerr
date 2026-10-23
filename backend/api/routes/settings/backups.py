@@ -16,9 +16,10 @@ from backend.models.settings import DatabaseBackupInfo, DatabaseBackupList
 from backend.services.database_backup import (
     InvalidBackupError,
     backup_file_name,
+    backup_media_type,
     backups_dir,
     cancel_pending_restore,
-    copy_database,
+    create_backup_archive,
     has_pending_restore,
     list_backups,
     resolve_backup,
@@ -63,7 +64,7 @@ async def download_fresh_backup(
         folder.rmdir()
 
     try:
-        await asyncio.to_thread(copy_database, path)
+        await asyncio.to_thread(create_backup_archive, path)
     except Exception as exc:
         cleanup()
         raise HTTPException(
@@ -71,7 +72,7 @@ async def download_fresh_backup(
         ) from exc
     return FileResponse(
         path,
-        media_type="application/vnd.sqlite3",
+        media_type=backup_media_type(path),
         filename=path.name,
         background=BackgroundTask(cleanup),
     )
@@ -89,7 +90,7 @@ async def download_backup(
         raise HTTPException(status_code=400, detail="Invalid backup name") from None
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Backup not found") from None
-    return FileResponse(path, media_type="application/vnd.sqlite3", filename=path.name)
+    return FileResponse(path, media_type=backup_media_type(path), filename=path.name)
 
 
 # Restores are staged, not applied: the swap happens on the next start, before

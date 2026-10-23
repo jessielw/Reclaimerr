@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+import zipfile
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +30,7 @@ from backend.services.database_backup import (
     prune_backups,
     resolve_backup,
     stage_restore,
+    stage_stored_backup,
     write_backup,
 )
 
@@ -56,6 +58,12 @@ def _tables(path: Path) -> list[str]:
         conn.close()
 
 
+def _unzip(archive: Path, folder: Path) -> Path:
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.namelist() == ["reclaimerr.db"]
+        return Path(zf.extract("reclaimerr.db", folder))
+
+
 def test_copy_is_a_valid_database_with_the_same_tables(tmp_path: Path) -> None:
     source = tmp_path / "reclaimerr.db"
     _make_source(source)
@@ -80,7 +88,11 @@ def test_copy_is_a_valid_database_with_the_same_tables(tmp_path: Path) -> None:
 
 
 def test_retention_deletes_only_the_oldest_backups(tmp_path: Path) -> None:
-    names = [f"reclaimerr-2026010{day}-000000.db" for day in range(1, 6)]
+    # older versions wrote plain .db backups; both kinds share one retention
+    names = [
+        f"reclaimerr-2026010{day}-000000.db{'.zip' if day % 2 else ''}"
+        for day in range(1, 6)
+    ]
     for name in names:
         (tmp_path / name).write_bytes(b"")
     unrelated = ["notes.db", "reclaimerr.db", f"{names[0]}.partial"]
@@ -107,11 +119,12 @@ def test_scheduled_backup_writes_a_named_copy_and_applies_retention(
 
     path = write_backup(2, folder)
 
+    assert path.name.endswith(".db.zip")
     assert [item.name for item in list_backups(folder)] == [
         path.name,
         "reclaimerr-20260102-000000.db",
     ]
-    assert _tables(path) == ["history", "rules"]
+    assert _tables(_unzip(path, tmp_path / "extracted")) == ["history", "rules"]
     assert not list(folder.glob("*.partial"))
     # the local staging copy is cleaned up too
     assert not list(source.parent.glob("*.partial"))
@@ -187,6 +200,26 @@ def test_backup_routes_reject_non_admins(url: str) -> None:
     assert response.status_code == 403
 
 
+def test_fresh_download_is_a_zipped_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(database_backup.settings, "data_dir", tmp_path)
+    _make_source(database_backup.settings.db_path)
+    app = FastAPI()
+    app.include_router(backup_routes.router, prefix="/api/settings")
+    app.dependency_overrides[get_current_user] = lambda: User(
+        username="admin", password_hash="x", role=UserRole.ADMIN, permissions=[]
+    )
+
+    response = TestClient(app).get("/api/settings/backups/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    archive = tmp_path / "download.db.zip"
+    archive.write_bytes(response.content)
+    assert _tables(_unzip(archive, tmp_path / "extracted")) == ["history", "rules"]
+
+
 def _make_restorable(path: Path, marker: str, version: str | None = None) -> None:
     if version is None:
         version = ScriptDirectory.from_config(alembic_config()).get_current_head()
@@ -245,7 +278,9 @@ def test_cancelled_restore_is_not_applied(data_dir: Path) -> None:
     assert _marker(live) == "live"
 
 
-@pytest.mark.parametrize("kind", ["garbage", "not_reclaimerr", "newer"])
+@pytest.mark.parametrize(
+    "kind", ["garbage", "not_reclaimerr", "newer", "zip_without_db", "zip_damaged"]
+)
 def test_invalid_backups_are_refused_and_never_staged(
     data_dir: Path, kind: str
 ) -> None:
@@ -254,6 +289,11 @@ def test_invalid_backups_are_refused_and_never_staged(
             partial.write_bytes(b"this is not a database" * 100)
         elif kind == "not_reclaimerr":
             _make_source(partial)
+        elif kind == "zip_without_db":
+            with zipfile.ZipFile(partial, "w") as zf:
+                zf.writestr("notes.txt", "not a backup")
+        elif kind == "zip_damaged":
+            partial.write_bytes(b"PK" + b"truncated" * 100)
         else:
             _make_restorable(partial, "x", version="ffffffffffff")
 
@@ -262,6 +302,31 @@ def test_invalid_backups_are_refused_and_never_staged(
 
     assert not has_pending_restore()
     assert not list(database_backup.settings.db_path.parent.glob("*.partial*"))
+
+
+@pytest.mark.parametrize("zipped", [True, False])
+def test_stored_backup_restores_zipped_or_plain(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch, zipped: bool
+) -> None:
+    monkeypatch.setattr(database_backup.settings, "backup_dir", None)
+    live = database_backup.settings.db_path
+    _make_restorable(live, "live")
+    folder = data_dir / "backups"
+    folder.mkdir()
+    database = data_dir / "backup.db"
+    _make_restorable(database, "backup")
+    if zipped:
+        name = "reclaimerr-20260101-000000.db.zip"
+        with zipfile.ZipFile(folder / name, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(database, "reclaimerr.db")
+    else:
+        name = "reclaimerr-20260101-000000.db"
+        database.replace(folder / name)
+
+    stage_stored_backup(name)
+
+    assert apply_pending_restore() is True
+    assert _marker(live) == "backup"
 
 
 def test_bad_pending_file_leaves_the_live_database_alone(data_dir: Path) -> None:

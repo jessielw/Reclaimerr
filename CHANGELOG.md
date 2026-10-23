@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Database backup tasks will now timeout after 600 seconds to prevent blocking other tasks.
+- Database backups will now automatically be compressed (.zip).
 
 ### Fixed
 
