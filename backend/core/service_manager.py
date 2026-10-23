@@ -142,6 +142,26 @@ class ServiceManager:
             return dict(self._plex_clients)
         return {}
 
+    def secondary_media_servers(
+        self,
+    ) -> list[JellyfinService | EmbyService | PlexService]:
+        """Get every initialized media server client except the main one."""
+        seen: set[int] = {id(self._main_media_server)}
+        clients: list[JellyfinService | EmbyService | PlexService] = []
+        for client in (
+            *self._jellyfin_clients.values(),
+            *self._emby_clients.values(),
+            *self._plex_clients.values(),
+            self._jellyfin,
+            self._emby,
+            self._plex,
+        ):
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
+            clients.append(client)
+        return clients
+
     @property
     def radarr(self) -> RadarrClient | None:
         """Get Radarr service (must be initialized first)."""

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Can now see user last login time in Settings -> Users.
 - Improved logging related to database backups.
+- After a delete or move, every enabled media server now gets a path rescan, not only the main one. Secondary servers only refresh paths that match their own libraries exactly, and they never receive delete requests. #458
 
 ### Changed
 

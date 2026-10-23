@@ -1085,7 +1085,9 @@ class PlexService:
 
         return all_items
 
-    async def scan_item_path(self, item_path: str) -> bool:
+    async def scan_item_path(
+        self, item_path: str, *, warn_unmatched: bool = True
+    ) -> bool:
         """Scan a specific item path in Plex library.
 
         This triggers Plex to scan the specific path, similar to how Radarr/Sonarr
@@ -1093,6 +1095,7 @@ class PlexService:
 
         Args:
             item_path: Filesystem path to the item (e.g., '/movies/The Matrix (1999)')
+            warn_unmatched: Log a warning when no library section holds the path
 
         Returns:
             True if scan was triggered successfully, False otherwise
@@ -1142,7 +1145,8 @@ class PlexService:
                         )
                         return True
 
-            LOG.warning(f"Could not find Plex section for path: {item_path}")
+            log = LOG.warning if warn_unmatched else LOG.debug
+            log(f"Could not find Plex section for path: {item_path}")
             return False
         except Exception as e:
             LOG.error(f"Failed to scan Plex path {item_path}: {e}")
