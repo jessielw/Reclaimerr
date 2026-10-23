@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Can now see user last login time in Settings -> Users.
+- Improved logging related to database backups.
 
 ### Fixed
 

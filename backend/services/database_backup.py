@@ -117,6 +117,7 @@ def write_backup(keep: int, directory: Path | None = None) -> Path:
         raise RuntimeError(f"Backup folder {folder} is not writable: {exc}") from exc
 
     target = folder / backup_file_name()
+    LOG.info(f"Writing database backup to {target}")
     # SQLite needs working file locks on the destination, which network shares
     # (SMB/NFS) often lack and can hang on, so the copy is made on the local disk
     # next to the live database and only a plain file copy crosses into the folder
@@ -125,7 +126,9 @@ def write_backup(keep: int, directory: Path | None = None) -> Path:
     # a broken file that looks like a good backup
     partial = target.with_name(f"{target.name}.partial")
     try:
+        LOG.debug(f"Copying the live database to {staged}")
         copy_database(staged)
+        LOG.debug(f"Copying the backup into {folder}")
         shutil.copyfile(staged, partial)
         partial.replace(target)
     except (OSError, sqlite3.Error) as exc:
@@ -180,7 +183,7 @@ def validate_backup(path: Path) -> None:
         ) from exc
 
 
-def stage_restore(write_source: Callable[[Path], None]) -> None:
+def stage_restore(write_source: Callable[[Path], object]) -> None:
     """Validate a backup and stage it to be restored on the next start.
 
     The live database is never touched here: a running app holds open
