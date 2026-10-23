@@ -37,6 +37,8 @@ from backend.enums import Task
 
 BACKUP_NAME_PATTERN = re.compile(r"^reclaimerr-\d{8}-\d{6}\.db$")
 DEFAULT_BACKUP_RETENTION = 4
+# generous for a large database on a slow share; only a stalled write gets near it
+BACKUP_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,5 +264,17 @@ async def backup_database() -> None:
     """Scheduled task: write a backup into the data folder and keep the newest N."""
     async with track_task_execution(Task.BACKUP_DATABASE):
         keep = await _backup_retention()
-        path = await asyncio.to_thread(write_backup, keep)
+        try:
+            # a stalled network share blocks the copy in the kernel, where it
+            # can't be interrupted; timing out abandons that thread but frees the
+            # task queue and reports the failure instead of hanging forever
+            path = await asyncio.wait_for(
+                asyncio.to_thread(write_backup, keep), BACKUP_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Backup to {backups_dir()} did not finish within "
+                f"{BACKUP_TIMEOUT_SECONDS} seconds; the folder may be on an "
+                "unresponsive network share"
+            ) from exc
         LOG.info(f"Database backed up to {path}")

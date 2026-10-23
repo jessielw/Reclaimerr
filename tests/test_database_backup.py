@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -119,6 +123,39 @@ def test_unwritable_backup_folder_fails_with_a_clear_error(tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="not writable"):
         write_backup(4, blocked)
+
+
+def test_stalled_backup_times_out_instead_of_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+
+    def stalled(keep: int) -> Path:
+        # stands in for a write blocked on an unresponsive network share
+        release.wait(5)
+        return tmp_path / "never.db"
+
+    @asynccontextmanager
+    async def untracked(task: object) -> AsyncGenerator[None, None]:
+        yield
+
+    async def retention() -> int:
+        return 4
+
+    monkeypatch.setattr(database_backup.settings, "backup_dir", tmp_path)
+    monkeypatch.setattr(database_backup, "write_backup", stalled)
+    monkeypatch.setattr(database_backup, "track_task_execution", untracked)
+    monkeypatch.setattr(database_backup, "_backup_retention", retention)
+    monkeypatch.setattr(database_backup, "BACKUP_TIMEOUT_SECONDS", 0.1)
+
+    async def run() -> None:
+        try:
+            with pytest.raises(RuntimeError, match="did not finish"):
+                await database_backup.backup_database()
+        finally:
+            release.set()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("name", ["../reclaimerr.db", "notes.db", "reclaimerr.db"])

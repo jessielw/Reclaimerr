@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Can now see user last login time in Settings -> Users.
 - Improved logging related to database backups.
 
+### Changed
+
+- Database backup tasks will now timeout after 600 seconds to prevent blocking other tasks.
+
 ### Fixed
 
 - Database backups on SMB/NFS locking up when variable `BACKUP_DIR` is used.
