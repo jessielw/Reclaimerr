@@ -33,7 +33,7 @@ def _preset(
     *,
     prerequisites: list[str],
     users: bool = False,
-    outcome: Literal["candidate", "protect"] = "candidate",
+    outcome: Literal["candidate", "protect", "match"] = "candidate",
     required_services: list[Literal["sonarr", "seerr"]] | None = None,
     target_scopes: list[str] | None = None,
 ) -> RulePreset:

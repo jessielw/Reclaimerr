@@ -25,6 +25,7 @@ Available scopes are:
 - `events:read` for the durable lifecycle event feed.
 - `protections:read` for protection lookup.
 - `protections:manage` for creating and removing protections. This also grants `protections:read`.
+- `rules:read` for listing rules and evaluating match-only rules.
 - `tasks:read` for schedules, next runs, current state, and run history.
 - `tasks:run` for triggering enabled tasks. This also grants `tasks:read`.
 
@@ -101,6 +102,28 @@ curl -X POST \
   -d '{"media_type":"movie","tmdb_id":550,"reason":"Keep for event"}' \
   "https://reclaimerr.example/api/v1/protections"
 ```
+
+### Rules
+
+- `GET /api/v1/rules`
+- `GET /api/v1/rules/{rule_id}/matches`
+
+`/api/v1/rules` lists every rule with its `id`, `name`, `media_type`, `target_scope`, `outcome` (`candidate`, `protect`, or `match`), and `enabled`.
+
+`/matches` evaluates one [match-only rule](../usage/rules.md#rule-outcomes) on the spot and returns every match in one response; it is not paginated. Each item carries the Reclaimerr IDs (`movie_id` and `movie_version_id`, or `series_id` with `season_number` and `episode_number` when the scope has them), `title`, `year`, `tmdb_id`, `tvdb_id`, `imdb_id`, `reason`, and an `arr` list with one `{service, service_config_id, service_name, arr_id}` entry per Radarr or Sonarr instance that has the title. Use `arr_id` directly with that instance's API. A movie with several matching versions appears once per version.
+
+The endpoint returns HTTP 404 for an unknown rule and HTTP 409 when the rule is a cleanup or protection rule (use `/api/v1/candidates` for cleanup) or is disabled. Disabling the rule in Reclaimerr is the kill switch for any script that acts on it.
+
+Evaluation uses the data from the latest syncs, so it can take a while on a large library. Requests are handled one at a time.
+
+`complete` is `false` when provider data the rule depends on was missing, such as Seerr requests, playback history, or Sonarr series data. `warnings` says what was missing. **Skip the run when `complete` is false**: missing data counts as no match, so the list may be partial.
+
+```bash
+curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  "https://reclaimerr.example/api/v1/rules/12/matches"
+```
+
+See [Scripting Arr Changes](../usage/scripting-arr-changes.md) for complete Radarr and Sonarr scripts.
 
 ### Tasks and System
 

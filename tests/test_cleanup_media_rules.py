@@ -4617,6 +4617,66 @@ class CleanupScanIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([match.series_id for match in result.matches], [series_id])
             self.assertEqual(result.metadata.skipped_protected_count, 0)
 
+    async def test_match_only_preview_includes_already_protected_media(self) -> None:
+        async with self._sessionmaker() as db:
+            user = User(username="admin", password_hash="x")
+            rule = _make_rule(MediaType.SERIES, min_size=1)
+            rule.action = {"outcome": "match"}
+            series = Series(title="Preview Match", tmdb_id=10008, size=1024)
+            db.add_all([user, rule, series])
+            await db.flush()
+            db.add_all(
+                [
+                    _make_physical_season(series.id),
+                    ProtectedMedia(
+                        media_type=MediaType.SERIES,
+                        series_id=series.id,
+                        protected_by_user_id=user.id,
+                        reason="Manual protection",
+                    ),
+                ]
+            )
+            await db.commit()
+            series_id = series.id
+
+        async with self._sessionmaker() as db:
+            rule = (await db.execute(select(ReclaimRule))).scalar_one()
+            result = await collect_rule_preview_matches_with_metadata(db, [rule])
+            self.assertEqual([match.series_id for match in result.matches], [series_id])
+            self.assertEqual(result.metadata.skipped_protected_count, 0)
+
+    async def test_scan_ignores_match_only_rules(self) -> None:
+        async with self._sessionmaker() as db:
+            rule = _make_rule(MediaType.MOVIE, min_size=1)
+            rule.action = {"outcome": "match", "tag_enabled": True}
+            movie = Movie(title="Matched Movie", tmdb_id=10009, size=1024)
+            db.add_all([rule, movie])
+            await db.flush()
+            version = _make_movie_version(
+                service_media_id="match-version",
+                service_item_id="match-item",
+            )
+            version.movie_id = movie.id
+            version.size = 1024
+            db.add(version)
+            await db.commit()
+
+        async with self._sessionmaker() as db:
+            with patch(
+                "backend.tasks.cleanup._refresh_arr_tags_for_rules",
+                new=AsyncMock(),
+            ) as refresh_tags:
+                result = await _scan_with_db(db)
+            # a scan with only match-only rules behaves as if no rules exist
+            self.assertIsNone(result)
+            refresh_tags.assert_not_awaited()
+            self.assertEqual(
+                (await db.execute(select(ReclaimCandidate))).scalars().all(), []
+            )
+            self.assertEqual(
+                (await db.execute(select(ProtectedMedia))).scalars().all(), []
+            )
+
     async def test_sonarr_rule_fetches_only_latest_regular_season(self) -> None:
         async with self._sessionmaker() as db:
             config = ServiceConfig(

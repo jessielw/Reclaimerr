@@ -14,6 +14,7 @@ ApiTokenScope = Literal[
     "media:read",
     "protections:read",
     "protections:manage",
+    "rules:read",
     "system:read",
     "tasks:read",
     "tasks:run",

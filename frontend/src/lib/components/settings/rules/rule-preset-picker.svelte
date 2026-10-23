@@ -146,7 +146,9 @@
               <span class="block text-xs font-medium text-primary mt-1"
                 >{preset.rule.action?.outcome === "protect"
                   ? "Protection"
-                  : "Cleanup candidates"}</span
+                  : preset.rule.action?.outcome === "match"
+                    ? "Match only"
+                    : "Cleanup candidates"}</span
               >
               <span class="mt-1 block text-sm text-muted-foreground"
                 >{preset.description}</span
@@ -259,6 +261,11 @@
               >Enable the saved rule to protect matching media on the next scan.
               This preset creates protections, not cleanup candidates. Review
               matches before saving.</Notice
+            >
+          {:else if selected.rule.action?.outcome === "match"}
+            <Notice type="info" title="Starts disabled"
+              >Enable the saved rule to read its matches through the API. It
+              takes no action on its own.</Notice
             >
           {:else}
             <Notice type="info" title="Starts disabled"

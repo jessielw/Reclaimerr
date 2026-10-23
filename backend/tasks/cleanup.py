@@ -40,6 +40,7 @@ from backend.core.rule_engine import (
     RANK_RULE_FIELDS,
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
+    RULE_OUTCOME_MATCH,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
     SONARR_RULE_FIELDS,
@@ -1327,15 +1328,17 @@ async def collect_rule_preview_matches_with_metadata(
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
     metadata.playback_error = playback_result.error
-    is_protection_preview = bool(rules) and all(
-        normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT for rule in rules
+    # favorites and protections only guard against deletion, so they hide items
+    # from cleanup previews but not from protect or match-only rules
+    has_candidate_rules = not rules or any(
+        normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE for rule in rules
     )
     matches = await _collect_rule_match_records(
         db,
         rules,
         preview_metadata=metadata,
-        exclude_favorites=not is_protection_preview,
-        exclude_protected=not is_protection_preview,
+        exclude_favorites=has_candidate_rules,
+        exclude_protected=has_candidate_rules,
         target_ids_by_scope=target_ids_by_scope,
     )
     metadata.matched_count = len(matches)
@@ -5762,7 +5765,13 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         result = await db.execute(
             select(ReclaimRule).where(ReclaimRule.enabled == True)
         )
-        rules = result.scalars().all()
+        # match-only rules are evaluated on demand through the API, so they
+        # take no part in scans and must not trigger provider refreshes
+        rules = [
+            rule
+            for rule in result.scalars().all()
+            if normalize_rule_outcome(rule) != RULE_OUTCOME_MATCH
+        ]
 
         if not rules:
             LOG.info(

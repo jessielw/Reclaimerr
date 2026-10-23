@@ -42,6 +42,9 @@ VALID_TARGET_SCOPES = {
 }
 RULE_OUTCOME_CANDIDATE = "candidate"
 RULE_OUTCOME_PROTECT = "protect"
+# evaluated only when asked for through the API; never creates candidates or
+# protections, so scans skip these rules entirely
+RULE_OUTCOME_MATCH = "match"
 SONARR_RULE_FIELDS = {
     "sonarr.series_status",
     "sonarr.latest_season_has_unaired_episodes",
@@ -124,13 +127,15 @@ MEDIA_SERVER_GENRE_FIELDS: dict[str, Service] = {
 }
 
 
+def normalize_outcome_value(value: object) -> str:
+    if value in (RULE_OUTCOME_PROTECT, RULE_OUTCOME_MATCH):
+        return str(value)
+    return RULE_OUTCOME_CANDIDATE
+
+
 def normalize_rule_outcome(rule: ReclaimRule) -> str:
     action = rule.action if isinstance(rule.action, dict) else {}
-    return (
-        RULE_OUTCOME_PROTECT
-        if action.get("outcome") == RULE_OUTCOME_PROTECT
-        else RULE_OUTCOME_CANDIDATE
-    )
+    return normalize_outcome_value(action.get("outcome"))
 
 
 FIELD_LABELS: dict[str, str] = {

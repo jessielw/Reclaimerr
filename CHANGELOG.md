@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Candidates page now shows live progress while a delete or move runs: a progress bar, items completed, the title currently being processed, and an estimated time remaining. The banner returns if you leave the page and come back, and further deletes/moves are disabled until the running one finishes.
 - Backup dir env var support.
+- New **Match only** rule outcome. A match-only rule never creates candidates or protections and never acts on its own. Scripts read its matches through `GET /api/v1/rules/{rule_id}/matches` (new `rules:read` token scope) and act on them in Radarr or Sonarr themselves. See [Scripting Arr Changes](https://jessielw.github.io/Reclaimerr/usage/scripting-arr-changes/) and the example `scripts/radarr_reprofile_matches.py`. Each request evaluates the rule live, so expect it to take a while on large libraries. Disable or delete match-only rules before downgrading: older versions treat them as cleanup rules.
 
 ### Changed
 

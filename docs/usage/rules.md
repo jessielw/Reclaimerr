@@ -1,12 +1,12 @@
 # Rules
 
-Rules determine which media becomes a reclaim candidate or receives an automated protection. A rule has:
+Rules determine which media becomes a reclaim candidate or receives an automated protection. Match-only rules instead report their matches to your own scripts through the API. A rule has:
 
 - a short name and optional plain-text description for identifying it throughout the app
 - a target scope
 - one or more conditions
 - nested `AND` or `OR` groups
-- an outcome: cleanup candidate or automated protection
+- an outcome: cleanup candidate, automated protection, or match only
 - candidate action settings when the outcome is cleanup
 
 Use rule preview before saving or running a cleanup scan. Preview shows the items that match and the actual values used for each matching condition.
@@ -56,6 +56,9 @@ Recent-import protection uses the target's added date. New episodes do not resta
 | --- | --- |
 | Cleanup candidate | Matching media enters the normal review and deletion workflow |
 | Automated protection | Matching media is protected from cleanup without creating a candidate |
+| Match only | Nothing happens in Reclaimerr. Scripts read the matches through the [External API](../reference/api.md#rules) |
+
+Match-only rules let you script changes Reclaimerr doesn't make itself, such as switching a Radarr quality profile, root folder, or tags. Scans skip them; they are evaluated only when an API token with the `rules:read` scope asks for their matches. Favorites and protected items are included, because protection only guards against deletion. Disabling the rule makes the API refuse it, so scripts acting on it stop. See [Scripting Arr Changes](scripting-arr-changes.md) for setup and example scripts.
 
 Automated protections are reconciled on each cleanup scan. They are added when a rule starts matching and removed when that same rule no longer matches, is disabled, or is deleted. Manual protections are not changed by this process.
 
@@ -575,7 +578,7 @@ Rules other users have shared are on [Community Rules](../community-rules/index.
 
 ## Recommended Workflow
 
-1. Choose whether the rule creates cleanup candidates or automated protections.
+1. Choose whether the rule creates cleanup candidates or automated protections, or only reports matches to the API.
 2. Select the narrowest target scope that represents the intended item.
 3. Add positive conditions that identify the media.
 4. Add quality, age, watch-history, or metadata conditions to reduce broad matches.
@@ -587,6 +590,7 @@ Rules other users have shared are on [Community Rules](../community-rules/index.
 
 - [How It Works](how-it-works.md)
 - [Tasks](tasks.md)
+- [Scripting Arr Changes](scripting-arr-changes.md)
 - [External API](../reference/api.md)
 - [Internal UI API](../reference/internal-api.md)
 - [Rule Format](../reference/rule-format.md)
