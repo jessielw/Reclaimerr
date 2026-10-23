@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Database backups on SMB/NFS locking up when variable `BACKUP_DIR` is used.
+- Moving a season that another Sonarr still holds asked the media server to rescan the local path after path mappings, not the path the media server knows, so the rescan missed when the mappings differ.
 
 ## [0.6.0] - 2026-10-22
 

@@ -14056,6 +14056,15 @@ async def _move_series_candidates(
                         preserve_unavailable=True,
                     )
 
+                # Media-server paths, not the locally mapped ones: the servers
+                # only recognise paths as they reported them.
+                if is_episode and episode:
+                    media_server_scan_path = episode.path
+                elif is_season and season:
+                    media_server_scan_path = season.path or series_ref.path
+                else:
+                    media_server_scan_path = series_ref.path
+
                 # Remove from the media server after the local files have
                 # already been moved. This is intentionally best-effort and
                 # never falls back to the normal destructive delete path.
@@ -14064,7 +14073,10 @@ async def _move_series_candidates(
                     main_service_type = service_manager.main_media_server_type
                     if main_service and series_ref:
                         if season_kept_by_other_copy:
-                            await main_service.scan_item_path(str(season_folder))
+                            if media_server_scan_path:
+                                await main_service.scan_item_path(
+                                    media_server_scan_path
+                                )
                         elif is_episode and episode:
                             if main_service_type is Service.JELLYFIN:
                                 episode_service_id = episode.jellyfin_episode_id
@@ -14094,14 +14106,8 @@ async def _move_series_candidates(
                         f"failed for '{series_obj.title}' after files were moved; "
                         f"no delete fallback will be attempted: {svc_err}"
                     )
-                if is_episode and episode:
-                    secondary_scan_path = episode.path
-                elif is_season and season:
-                    secondary_scan_path = season.path or series_ref.path
-                else:
-                    secondary_scan_path = series_ref.path
                 await _scan_secondary_media_servers(
-                    [secondary_scan_path], context=f"move '{series_obj.title}'"
+                    [media_server_scan_path], context=f"move '{series_obj.title}'"
                 )
 
                 # update DB

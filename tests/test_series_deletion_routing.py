@@ -1188,6 +1188,51 @@ def test_conditional_monitoring_season_move(
     asyncio.run(run())
 
 
+def test_season_move_kept_copy_scans_media_server_path(monkeypatch, tmp_path):
+    """The re-scan sends the path the media server reported, not the local one
+    path mappings resolved it to - the server does not know the local path."""
+
+    async def run():
+        local_root = tmp_path / "data"
+        season_dir = local_root / "Show" / "Season 01"
+        season_dir.mkdir(parents=True)
+        (season_dir / "Show - S01E01.mkv").write_bytes(b"episode")
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action=cleanup.ARR_ACTION_MONITOR_NEW_SEASONS,
+                    arr_series_paths=["/data/Show", "/data/OtherShow"],
+                    arr_series_ids=[11, 22],
+                    path_mappings=[
+                        {
+                            "source_prefix": "/data",
+                            "local_prefix": str(local_root).replace("\\", "/"),
+                        }
+                    ],
+                    series_service_path="/data/Show",
+                    move_destination_series=str(tmp_path / "archive"),
+                )
+            media = FakeMediaServer()
+            _patch_services(
+                monkeypatch,
+                {configs[0]: MonitoringSonarr(ids[0]), configs[1]: MonitoringSonarr(22)},
+                media,
+            )
+            result = await cleanup._move_specific_candidates_impl(
+                [candidate_id], approved_by="tester"
+            )
+            assert result == (1, 0)
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data/Show/Season 01"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("route", ["unavailable", "ambiguous", "selected", "no_files"])
 def test_conditional_monitoring_requires_usable_sonarr_route(monkeypatch, route):
     async def run():
