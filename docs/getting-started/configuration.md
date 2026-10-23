@@ -18,30 +18,9 @@ Set Sonarr and your media servers to the same episode order. Reclaimerr recogniz
 
 Number-based cleanup is blocked when orders differ or cannot be verified. This includes season and episode actions, plus whole-show actions whose rules depend on watch data, episode inventory, or Sonarr import dates. The candidate's error identifies the affected instance. Correct the ordering, run **Sync Media**, and retry. Reclaimerr does not change server settings or translate historical episode numbers. Independent whole-series rules, such as title or year conditions, remain available.
 
-## Important Environment Variables
+## Environment Variables
 
-| Variable | Purpose |
-| --- | --- |
-| `API_HOST` | Bind address for the API server |
-| `API_PORT` | HTTP port for the API server |
-| `DATA_DIR` | Persistent application data location |
-| `BACKUP_DIR` | Optional database backup location (default `DATA_DIR/backups`) |
-| `TZ` | Local timezone for cron-style schedules |
-| `UMASK` | Default permissions for created files |
-| `PROXY_TRUSTED_HOSTS` | Trusted reverse proxy IPs or CIDRs |
-| `AUTH_FORCE_LOCAL_LOGIN` | Recovery switch: restore local password login regardless of saved login methods (default: off) |
-| `FORWARD_AUTH_ENABLED` | Trust an authenticated username supplied by an approved reverse proxy |
-| `FORWARD_AUTH_USER_HEADER` | Forward-auth username header (default: `Remote-User`) |
-| `FORWARD_AUTH_TRUSTED_PROXIES` | Direct proxy IPs/CIDRs permitted to supply the identity header |
-| `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` | Recovery switch: allow local login when the asserted username is unrecognized (default: off) |
-| `FORWARD_AUTH_LOGOUT_URL` | Identity provider sign-out endpoint used by the UI logout control |
-| `JWT_SECRET` | Session signing secret |
-| `ENCRYPTION_KEY` | Secrets encryption key |
-| `ADMIN_PASSWORD` | Initial admin password or admin password reset on startup |
-| `RECLAIMERR_TASK_ISOLATION` | Set to `off` to run heavy tasks inline instead of isolated child processes |
-| `RECLAIMERR_COMMAND_WORKERS` | Advanced: internal command executors, from 1 to 8 (default: 2) |
-| `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, or `CRITICAL` |
-| `LOG_RETENTION_DAYS` | Days of rotated log files to keep (default: 30) |
+See the [environment variable reference](../reference/environment-variables.md) for the complete list, defaults, and behavior across backend, Docker, desktop, and script settings.
 
 `LOG_LEVEL` is read once at startup and there is no in-app switch for it, so raising it means setting the variable and restarting the container. Confirm it took effect by looking for the `Log level: LogLevel.DEBUG` line the API logs on boot - if that line says `LogLevel.INFO`, the variable did not reach the container and debug lines will be missing no matter what else is configured.
 

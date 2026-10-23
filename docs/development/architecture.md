@@ -37,7 +37,7 @@ The scheduler stores task definitions in the database and mirrors enabled tasks 
 
 ## Background Command Pool
 
-The API process starts three command executors by default. The count can be adjusted from 1 through 8 with `RECLAIMERR_COMMAND_WORKERS`, although the default is intended for most installations.
+The API process starts two command executors by default. The count can be adjusted from 1 through 8 with `RECLAIMERR_COMMAND_WORKERS`, although the default is intended for most installations. See the [environment variable reference](../reference/environment-variables.md).
 
 - Idle polling backs off to reduce churn.
 - Job claims and priority are durable so stale jobs can be reset on startup and manual work is not trapped behind routine scheduled work.
