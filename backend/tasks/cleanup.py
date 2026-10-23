@@ -8837,16 +8837,18 @@ async def _reconcile_media_server_after_delete(
     sync re-imports the item, and the scan re-flags it with a fresh review
     period. If local removal could not be confirmed, ``require_removal`` makes
     the native deletion mandatory before finalizing the candidate.
+
+    Secondary media servers only ever get the path scan, so libraries that share
+    the main server's paths catch up too.
     """
+    scan_paths = list(dict.fromkeys(path for path in paths if path))
     main_service = service_manager.main_media_server
     if main_service is None:
         if require_removal:
             raise ValueError(
                 "File removal could not be confirmed and no media server is available"
             )
-        return
-
-    if allow_delete_item and item_id:
+    elif allow_delete_item and item_id:
         try:
             await main_service.delete_item(item_id)
         except PlaybackDeferred:
@@ -8855,23 +8857,43 @@ async def _reconcile_media_server_after_delete(
             LOG.warning(f"{context}: media server delete_item failed: {e}")
             if require_removal:
                 raise
-        return
-
-    if require_removal:
+    elif require_removal:
         raise ValueError(
             "File removal could not be confirmed; media-server fallback deletion "
             "is disabled or the media-server item is unavailable"
         )
+    else:
+        for path in scan_paths:
+            try:
+                await main_service.scan_item_path(path)
+            except Exception as e:
+                LOG.warning(
+                    f"{context}: media server path scan failed for '{path}': {e}"
+                )
 
-    seen: set[str] = set()
-    for path in paths:
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        try:
-            await main_service.scan_item_path(path)
-        except Exception as e:
-            LOG.warning(f"{context}: media server path scan failed for '{path}': {e}")
+    await _scan_secondary_media_servers(scan_paths, context=context)
+
+
+async def _scan_secondary_media_servers(
+    paths: Iterable[str | None], *, context: str
+) -> None:
+    """Best effort path scan on every media server except the main one.
+
+    Only servers whose libraries contain the exact path pick it up; the rest
+    ignore it, so no path translation is attempted.
+    """
+    scan_paths = list(dict.fromkeys(path for path in paths if path))
+    if not scan_paths:
+        return
+    for service in service_manager.secondary_media_servers():
+        for path in scan_paths:
+            try:
+                await service.scan_item_path(path, warn_unmatched=False)
+            except Exception as e:
+                LOG.warning(
+                    f"{context}: secondary media server path scan failed for "
+                    f"'{path}': {e}"
+                )
 
 
 def _cleanup_moved_source_directories(
@@ -13516,6 +13538,9 @@ async def _move_specific_candidates_impl(
                     f"for '{movie.title}' after files were moved; no delete fallback "
                     f"will be attempted: {svc_err}"
                 )
+            await _scan_secondary_media_servers(
+                [version.path], context=f"move '{movie.title}'"
+            )
 
             # update DB
             async with async_db() as db:
@@ -14031,6 +14056,15 @@ async def _move_series_candidates(
                         preserve_unavailable=True,
                     )
 
+                # Media-server paths, not the locally mapped ones: the servers
+                # only recognise paths as they reported them.
+                if is_episode and episode:
+                    media_server_scan_path = episode.path
+                elif is_season and season:
+                    media_server_scan_path = season.path or series_ref.path
+                else:
+                    media_server_scan_path = series_ref.path
+
                 # Remove from the media server after the local files have
                 # already been moved. This is intentionally best-effort and
                 # never falls back to the normal destructive delete path.
@@ -14039,7 +14073,10 @@ async def _move_series_candidates(
                     main_service_type = service_manager.main_media_server_type
                     if main_service and series_ref:
                         if season_kept_by_other_copy:
-                            await main_service.scan_item_path(str(season_folder))
+                            if media_server_scan_path:
+                                await main_service.scan_item_path(
+                                    media_server_scan_path
+                                )
                         elif is_episode and episode:
                             if main_service_type is Service.JELLYFIN:
                                 episode_service_id = episode.jellyfin_episode_id
@@ -14069,6 +14106,9 @@ async def _move_series_candidates(
                         f"failed for '{series_obj.title}' after files were moved; "
                         f"no delete fallback will be attempted: {svc_err}"
                     )
+                await _scan_secondary_media_servers(
+                    [media_server_scan_path], context=f"move '{series_obj.title}'"
+                )
 
                 # update DB
                 async with async_db() as db:

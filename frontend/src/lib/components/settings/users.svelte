@@ -19,7 +19,11 @@
   } from "$lib/page-access";
   import { Button } from "$lib/components/ui/button/index.js";
   import { toast } from "svelte-sonner";
-  import { formatDate } from "$lib/utils/date";
+  import {
+    formatDate,
+    formatDateTimeToLocaleString,
+    formatDistanceToNow,
+  } from "$lib/utils/date";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -573,6 +577,10 @@
             >Joined</th
           >
           <th
+            class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
+            >Last Login</th
+          >
+          <th
             class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
             >Actions</th
           >
@@ -640,6 +648,16 @@
               class="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground"
             >
               {formatDate(user.created_at)}
+            </td>
+            <td
+              class="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground"
+              title={user.last_login_at
+                ? formatDateTimeToLocaleString(user.last_login_at)
+                : undefined}
+            >
+              {user.last_login_at
+                ? formatDistanceToNow(user.last_login_at)
+                : "Never"}
             </td>
             <td
               class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"

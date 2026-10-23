@@ -122,6 +122,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
     permissions: list[Permission] = []
     allowed_pages: list[PageAccess] | None = None
     created_at: datetime
+    last_login_at: datetime | None = None
     has_local_password: bool
     require_password_change: bool
 
@@ -206,6 +207,7 @@ class UserInfo(BaseModel, UsernameMixin, DisplayNameMixin):
                 getattr(user, "allowed_pages", None)
             ),
             created_at=user.created_at,
+            last_login_at=getattr(user, "last_login_at", None),
             has_local_password=bool(user.password_hash),
             require_password_change=user.require_password_change or False,
         )

@@ -925,7 +925,9 @@ class EmbyServiceBase:
                 )
             ) from e
 
-    async def scan_item_path(self, item_path: str) -> bool:
+    async def scan_item_path(
+        self, item_path: str, *, warn_unmatched: bool = True
+    ) -> bool:
         """Refresh a specific item by its filesystem path in Emby/Jellyfin.
 
         This triggers Emby/Jellyfin to scan the specific path, similar to how Radarr/Sonarr
@@ -933,6 +935,7 @@ class EmbyServiceBase:
 
         Args:
             item_path: Filesystem path to the item (e.g., '/movies/The Matrix (1999)')
+            warn_unmatched: Unused; the server ignores paths outside its libraries
 
         Returns:
             True if refresh was triggered successfully, False otherwise

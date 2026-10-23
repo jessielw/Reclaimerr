@@ -56,6 +56,7 @@ export enum PageAccess {
 export interface UserProfile extends User {
   avatar_url: string | null;
   created_at: string;
+  last_login_at: string | null;
   auth_source?: "forward_auth" | "local";
   logout_url?: string | null;
 }

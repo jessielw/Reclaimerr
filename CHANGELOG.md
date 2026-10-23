@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-23
+
+### Added
+
+- Can now see user last login time in Settings -> Users.
+- Improved logging related to database backups.
+- After a delete or move, every enabled media server now gets a path rescan, not only the main one. Secondary servers only refresh paths that match their own libraries exactly, and they never receive delete requests. #458
+
+### Changed
+
+- Database backup tasks will now timeout after 600 seconds to prevent blocking other tasks.
+- Database backups will now automatically be compressed (.zip).
+
+### Fixed
+
+- Database backups on SMB/NFS locking up when variable `BACKUP_DIR` is used.
+- Moving a season that another Sonarr still holds asked the media server to rescan the local path after path mappings, not the path the media server knows, so the rescan missed when the mappings differ.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added

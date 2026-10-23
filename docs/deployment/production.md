@@ -12,21 +12,7 @@ For production deployments, use this guide.
 
 ## Environment Variables
 
-| Variable | Why It Matters |
-| --- | --- |
-| `DATA_DIR` | Keeps the database, logs, cache, and generated secrets in one persistent location |
-| `API_HOST` | Bind address for the backend process |
-| `API_PORT` | Port exposed by the backend process |
-| `TZ` | Keeps cron schedules and timestamps aligned with your locale |
-| `PROXY_TRUSTED_HOSTS` | Ensures forwarded headers are only accepted from trusted proxies |
-| `FORWARD_AUTH_ENABLED` | Enables opt-in trusted-header authentication |
-| `FORWARD_AUTH_USER_HEADER` | Selects the proxy-provided username header |
-| `FORWARD_AUTH_TRUSTED_PROXIES` | Restricts identity headers to direct proxy IPs/CIDRs |
-| `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` | Recovery switch for an unrecognised proxy identity; remove after use |
-| `FORWARD_AUTH_LOGOUT_URL` | Identity provider sign-out endpoint used by the UI logout control |
-| `CORS_ORIGINS` | Restricts the UI origins that can talk to the API |
-| `COOKIE_SECURE` | Marks auth cookies secure when served over HTTPS |
-| `RECLAIMERR_COMMAND_WORKERS` | Advanced internal command executor count (default `2`, range `1`-`8`) |
+See the [environment variable reference](../reference/environment-variables.md) for every supported variable, its default, and where it applies. For production, pay particular attention to `DATA_DIR`, `JWT_SECRET`, `ENCRYPTION_KEY`, `COOKIE_SECURE`, proxy trust settings, and `CORS_ORIGINS`.
 
 ## Secrets and Persistence
 

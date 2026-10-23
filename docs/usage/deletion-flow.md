@@ -74,6 +74,8 @@ Removing a file does not tell your media server anything. Whenever Radarr, Sonar
 - with `Allow Media Server Fallback Deletion` **on**, it removes the item from the media server, exactly as before;
 - with it **off**, it asks the media server to re-scan the affected path instead. That is a read-only request - it never deletes anything - so the setting still means what it says.
 
+Every other enabled media server gets the same read-only path re-scan, whatever the setting, so a Plex and a Jellyfin sharing one media folder both stay current. Secondary servers never receive delete requests. The paths must match exactly as each server sees them: a server whose libraries do not contain the path ignores it, and no path translation is attempted. If a secondary server is unreachable, Reclaimerr logs a warning and the cleanup still counts as successful.
+
 This matters more than it sounds. Skipping the reconciliation leaves the media server serving an entry whose files are already gone. The next **Sync Media** run re-imports that entry, the next **Scan Cleanup Candidates** run flags it again as a _new_ candidate, and because the review period is measured from when a candidate was created, the countdown restarts from zero. The item then never reaches automatic deletion, however long you wait.
 
 One Plex caveat: a path scan only drops missing items when Plex's _Empty trash automatically after every scan_ library setting is enabled, which is Plex's default. With it turned off, Plex keeps the entry until you empty the trash yourself.

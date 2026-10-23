@@ -20,6 +20,8 @@ services:
 
 ## Common Environment Variables
 
+The complete list, including Docker-specific permissions and timezone controls, is in the [environment variable reference](../reference/environment-variables.md).
+
 ```yaml
 DATA_DIR=./data
 # Optional; defaults to DATA_DIR/backups
