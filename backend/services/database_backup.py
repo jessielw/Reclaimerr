@@ -197,7 +197,11 @@ def stage_restore(write_source: Callable[[Path], None]) -> None:
 
 def stage_stored_backup(name: str) -> None:
     source = resolve_backup(name)
-    stage_restore(lambda partial: shutil.copyfile(source, partial))
+
+    def write_source(partial: Path) -> None:
+        shutil.copyfile(source, partial)
+
+    stage_restore(write_source)
 
 
 def cancel_pending_restore() -> None:
