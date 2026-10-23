@@ -203,7 +203,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.5.11",
+    version="0.6.0",
     lifespan=lifespan,
     # replaced below with pages that load vendored assets instead of the CDN
     docs_url=None,
