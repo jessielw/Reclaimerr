@@ -14,11 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Low risk security update - Reclaimerr is not exploitable by this but I figured I would harden it anyways.
 - Display name is now the larger/top name that will be seen everywhere in the app instead of the username.
+- Update fastapi, granian, pillow, and pydantic-settings dependencies.
 
 ### Security
 
+- Low risk security update - Reclaimerr is not exploitable by this but I figured I would harden it anyways.
 - Plex sign-in now has to finish in the browser that started it, and links from other sites can no longer choose where sign-in redirects to. Without an Application URL set, a crafted link could previously capture a Plex sign-in.
 - Non-admin users with Manage Users can no longer grant or remove permissions or page access they don't have themselves, including on their own account.
 - The IP address shown for a session can no longer be faked with an `X-Forwarded-For` header. It is only taken from forwarding headers when the request comes from a host in `PROXY_TRUSTED_HOSTS`.
