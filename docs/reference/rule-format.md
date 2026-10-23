@@ -140,7 +140,7 @@ A rule without a `library.id` condition covers every library of its media type. 
 
 | Key | Default | Value |
 | --- | --- | --- |
-| `outcome` | `"candidate"` | `"candidate"` makes matches cleanup candidates. `"protect"` protects matches and ignores the rest of the action. |
+| `outcome` | `"candidate"` | `"candidate"` makes matches cleanup candidates. `"protect"` protects matches and ignores the rest of the action. `"match"` takes no action and ignores the rest of the action; matches are read through the [External API](api.md#rules). |
 | `arr_action` | `"delete"` | `"delete"`, `"unmonitor"`, `"unmonitor_only"`, `"unmonitor_delete_monitor_new_seasons"`, `"unmonitor_delete_list_exclusion"`, `"unmonitor_delete_monitor_or_exclude"`, or `"change_quality_profile"` |
 | `tag_enabled` | `true` | Tag matches in Radarr/Sonarr |
 | `arr_tag` | rule name | Tag text. Converted to a `rec-` slug. |

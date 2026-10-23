@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-22
+
+### Added
+
+- Candidates page now shows live progress while a delete or move runs: a progress bar, items completed, the title currently being processed, and an estimated time remaining. The banner returns if you leave the page and come back, and further deletes/moves are disabled until the running one finishes.
+- Backup dir env var support.
+- New **Match only** rule outcome. A match-only rule never creates candidates or protections and never acts on its own. Scripts read its matches through `GET /api/v1/rules/{rule_id}/matches` (new `rules:read` token scope) and act on them in Radarr or Sonarr themselves. See [Scripting Arr Changes](https://jessielw.github.io/Reclaimerr/usage/scripting-arr-changes/) and the example `scripts/radarr_reprofile_matches.py`. Each request evaluates the rule live, so expect it to take a while on large libraries. Disable or delete match-only rules before downgrading: older versions treat them as cleanup rules.
+
+### Changed
+
+- Display name is now the larger/top name that will be seen everywhere in the app instead of the username.
+- Update fastapi, granian, pillow, and pydantic-settings dependencies.
+
+### Security
+
+- Low risk security update - Reclaimerr is not exploitable by this but I figured I would harden it anyways.
+- Plex sign-in now has to finish in the browser that started it, and links from other sites can no longer choose where sign-in redirects to. Without an Application URL set, a crafted link could previously capture a Plex sign-in.
+- Non-admin users with Manage Users can no longer grant or remove permissions or page access they don't have themselves, including on their own account.
+- The IP address shown for a session can no longer be faked with an `X-Forwarded-For` header. It is only taken from forwarding headers when the request comes from a host in `PROXY_TRUSTED_HOSTS`.
+- Two first-run setup requests sent at the same moment can no longer both get through. Only the first creates the admin account.
+- Sending a test notification is now limited to 5 per minute. Non-admin users get a general error message when a test fails instead of the raw delivery error, which could describe hosts on your network. The full error is still in the logs.
+- Login now takes the same time for an unknown username as for a wrong password, so response timing no longer reveals which usernames exist.
+- The API docs pages (`/docs`, `/redoc`, `/api/v1/docs`, `/api/v1/redoc`) now load Swagger UI and ReDoc from Reclaimerr itself instead of the jsdelivr CDN, and no longer load Google Fonts or an external favicon. A compromised CDN file could previously have run script as a logged-in admin who opened these pages. If your reverse proxy only forwards selected paths, add `/docs-assets`.
+
 ## [0.5.11] - 2026-10-22
 
 ### Changed

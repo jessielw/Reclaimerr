@@ -41,7 +41,7 @@ class RulePreviewRequest(BaseModel):
     media_type: MediaType
     target_scope: str
     definition: dict[str, Any]
-    outcome: Literal["candidate", "protect"] = "candidate"
+    outcome: Literal["candidate", "protect", "match"] = "candidate"
     page: int = Field(default=1, ge=1)
     per_page: int = Field(default=25, ge=1, le=100)
 

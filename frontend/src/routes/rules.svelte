@@ -19,6 +19,7 @@
   import Tv from "@lucide/svelte/icons/tv";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
+  import ScanSearch from "@lucide/svelte/icons/scan-search";
   import Search from "@lucide/svelte/icons/search";
   import { toast } from "svelte-sonner";
   import {
@@ -28,6 +29,7 @@
     type LibraryType,
     type RuleNode,
     type RuleDraft,
+    type RuleOutcome,
     TaskStatus,
   } from "$lib/types/shared";
   import AdvancedRuleEditor from "$lib/components/settings/rules/advanced-rule-editor.svelte";
@@ -45,7 +47,7 @@
   let presetDraft = $state<RuleDraft | null>(null);
   let presetTitle = $state("");
   let availableLibraries = $state<LibraryType[]>([]);
-  let outcomeFilter = $state<"all" | "candidate" | "protect">("all");
+  let outcomeFilter = $state<"all" | RuleOutcome>("all");
   let searchQuery = $state("");
   let statusFilter = $state<"all" | "enabled" | "disabled">("all");
   let scopeFilter = $state<"all" | NonNullable<ReclaimRule["target_scope"]>>(
@@ -91,8 +93,7 @@
         rule.target_scope ??
         (rule.media_type === MediaType.Movie ? "movie_version" : "series");
       if (scopeFilter !== "all" && scope !== scopeFilter) return false;
-      const outcome =
-        rule.action?.outcome === "protect" ? "protect" : "candidate";
+      const outcome = rule.action?.outcome ?? "candidate";
       return outcomeFilter === "all" || outcome === outcomeFilter;
     }),
   );
@@ -299,7 +300,9 @@
     const outcome =
       rule.action?.outcome === "protect"
         ? "creating protections"
-        : "creating cleanup candidates";
+        : rule.action?.outcome === "match"
+          ? "match only"
+          : "creating cleanup candidates";
     return `${count} condition${count === 1 ? "" : "s"} targeting ${target}, ${outcome}`;
   };
 
@@ -688,7 +691,9 @@
                 ? "Protection rules"
                 : outcomeFilter === "candidate"
                   ? "Candidate rules"
-                  : "All outcomes"}
+                  : outcomeFilter === "match"
+                    ? "Match-only rules"
+                    : "All outcomes"}
             </Select.Trigger>
             <Select.Content class="bg-card">
               <Select.Item value="all" label="All outcomes"
@@ -699,6 +704,9 @@
               >
               <Select.Item value="protect" label="Protection rules"
                 >Protection rules</Select.Item
+              >
+              <Select.Item value="match" label="Match-only rules"
+                >Match-only rules</Select.Item
               >
             </Select.Content>
           </Select.Root>
@@ -791,12 +799,17 @@
                           variant="secondary"
                           class="shrink-0 {rule.action?.outcome === 'protect'
                             ? 'border-emerald-500/50 text-emerald-600 dark:text-emerald-400'
-                            : 'border-amber-500/50 text-amber-600 dark:text-amber-400'}"
+                            : rule.action?.outcome === 'match'
+                              ? 'border-sky-500/50 text-sky-600 dark:text-sky-400'
+                              : 'border-amber-500/50 text-amber-600 dark:text-amber-400'}"
                         >
                           <div class="inline-flex items-center gap-1.5">
                             {#if rule.action?.outcome === "protect"}
                               <ShieldCheck class="size-4" />
                               <span>Protection</span>
+                            {:else if rule.action?.outcome === "match"}
+                              <ScanSearch class="size-4" />
+                              <span>Match only</span>
                             {:else}
                               <ListChecks class="size-4" />
                               <span>Candidate</span>

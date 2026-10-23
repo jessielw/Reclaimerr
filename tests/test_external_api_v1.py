@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.api.routes.v1 import discover_api
 from backend.api.routes.v1 import router as external_api_router
-from backend.api.routes.v1.docs import build_external_openapi_schema
+from backend.api.routes.v1.docs import DOCS_ASSETS_DIR, build_external_openapi_schema
 from backend.api.routes.v1.events import list_events
 from backend.api.routes.v1.media import get_movie, list_movies, list_series
 from backend.api.routes.v1.protections import (
@@ -247,7 +247,7 @@ def test_external_openapi_schema_only_contains_supported_v1_routes() -> None:
             for operations in schema["paths"].values()
             for method in operations
         )
-        == 22
+        == 24
     )
     assert all(path.startswith("/api/v1") for path in schema["paths"])
     assert "/api/settings/general" not in schema["paths"]
@@ -274,16 +274,32 @@ def test_external_api_documentation_routes() -> None:
             for operations in schema["paths"].values()
             for method in operations
         )
-        == 22
+        == 24
     )
 
     swagger_response = client.get("/api/v1/docs")
     assert swagger_response.status_code == 200
     assert "/api/v1/openapi.json" in swagger_response.text
+    assert "/docs-assets/swagger-ui/swagger-ui-bundle.js" in swagger_response.text
 
     redoc_response = client.get("/api/v1/redoc")
     assert redoc_response.status_code == 200
     assert "/api/v1/openapi.json" in redoc_response.text
+    assert "/docs-assets/redoc/redoc.standalone.js" in redoc_response.text
+
+    # no third-party script, style or font hosts on the docs pages
+    for response in (swagger_response, redoc_response):
+        assert "https://" not in response.text
+
+
+def test_docs_assets_exist_for_rendered_pages() -> None:
+    for relative in (
+        "swagger-ui/swagger-ui-bundle.js",
+        "swagger-ui/swagger-ui.css",
+        "redoc/redoc.standalone.js",
+        "favicon.png",
+    ):
+        assert (DOCS_ASSETS_DIR / relative).is_file()
 
 
 def test_api_scope_implications_are_domain_specific() -> None:

@@ -20,6 +20,7 @@ from backend.core.auth import (
     COOKIE_NAME,
     create_access_token,
     get_current_user,
+    get_request_client_ip,
     has_permission,
 )
 from backend.database import Base
@@ -364,3 +365,24 @@ def test_busy_session_touch_leaves_request_user_loaded(monkeypatch) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_session_ip_ignores_client_supplied_forwarding_headers() -> None:
+    # Only the proxy header wrapper, which checks PROXY_TRUSTED_HOSTS, may
+    # rewrite the client address; raw headers are whatever the client sent.
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/auth/login",
+            "headers": [
+                (b"x-forwarded-for", b"203.0.113.9"),
+                (b"x-real-ip", b"203.0.113.10"),
+            ],
+            "query_string": b"",
+            "client": ("198.51.100.4", 4242),
+            "scheme": "http",
+            "server": ("testserver", 80),
+        }
+    )
+    assert get_request_client_ip(request) == "198.51.100.4"

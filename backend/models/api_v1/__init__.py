@@ -13,6 +13,11 @@ from backend.models.api_v1.protections import (
     ProtectionMutationResponse,
     ProtectionResponse,
 )
+from backend.models.api_v1.rules import (
+    RuleListResponse,
+    RuleMatchesResponse,
+    RuleResponse,
+)
 from backend.models.api_v1.stats import StatsResponse
 from backend.models.api_v1.system import ApiDiscoveryResponse, SystemResponse
 from backend.models.api_v1.tasks import (
@@ -38,6 +43,9 @@ __all__ = [
     "ProtectionListResponse",
     "ProtectionMutationResponse",
     "ProtectionResponse",
+    "RuleListResponse",
+    "RuleMatchesResponse",
+    "RuleResponse",
     "StatsResponse",
     "SystemResponse",
     "TaskListResponse",

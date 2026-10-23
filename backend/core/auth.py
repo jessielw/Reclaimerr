@@ -107,6 +107,17 @@ def get_password_hash(password: str) -> str:
     return argon_ph.hash(password)
 
 
+@lru_cache(maxsize=1)
+def dummy_password_hash() -> str:
+    """A throwaway Argon2 hash to verify against when there is no real one.
+
+    Checking a password against it costs the same as a real check, so a login
+    for an unknown username takes as long as one with a wrong password and the
+    response time does not reveal which usernames exist.
+    """
+    return argon_ph.hash(uuid4().hex)
+
+
 def create_access_token(
     data: dict[str, Any],
     expires_delta: timedelta | None = None,
@@ -178,16 +189,12 @@ def get_request_session_id(request: Request) -> str | None:
 
 
 def get_request_client_ip(request: Request) -> str | None:
-    """Best effort client IP extraction."""
-    xff = request.headers.get("x-forwarded-for")
-    if isinstance(xff, str) and xff.strip():
-        ip = xff.split(",")[0].strip()
-        return ip[:64] if ip else None
+    """Best effort client IP extraction.
 
-    x_real_ip = request.headers.get("x-real-ip")
-    if isinstance(x_real_ip, str) and x_real_ip.strip():
-        return x_real_ip.strip()[:64]
-
+    Forwarding headers are not read here: any client can send them. The proxy
+    header wrapper already rewrites ``request.client`` from X-Forwarded-For when
+    the peer is in PROXY_TRUSTED_HOSTS.
+    """
     if request.client and request.client.host:
         return request.client.host[:64]
 

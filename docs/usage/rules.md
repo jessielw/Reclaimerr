@@ -1,12 +1,12 @@
 # Rules
 
-Rules determine which media becomes a reclaim candidate or receives an automated protection. A rule has:
+Rules determine which media becomes a reclaim candidate or receives an automated protection. Match-only rules instead report their matches to your own scripts through the API. A rule has:
 
 - a short name and optional plain-text description for identifying it throughout the app
 - a target scope
 - one or more conditions
 - nested `AND` or `OR` groups
-- an outcome: cleanup candidate or automated protection
+- an outcome: cleanup candidate, automated protection, or match only
 - candidate action settings when the outcome is cleanup
 
 Use rule preview before saving or running a cleanup scan. Preview shows the items that match and the actual values used for each matching condition.
@@ -56,6 +56,9 @@ Recent-import protection uses the target's added date. New episodes do not resta
 | --- | --- |
 | Cleanup candidate | Matching media enters the normal review and deletion workflow |
 | Automated protection | Matching media is protected from cleanup without creating a candidate |
+| Match only | Nothing happens in Reclaimerr. Scripts read the matches through the [External API](../reference/api.md#rules) |
+
+Match-only rules let you script changes Reclaimerr doesn't make itself, such as switching a Radarr quality profile, root folder, or tags. Scans skip them; they are evaluated only when an API token with the `rules:read` scope asks for their matches. Favorites and protected items are included, because protection only guards against deletion. Disabling the rule makes the API refuse it, so scripts acting on it stop. See [Scripting Arr Changes](scripting-arr-changes.md) for setup and example scripts.
 
 Automated protections are reconciled on each cleanup scan. They are added when a rule starts matching and removed when that same rule no longer matches, is disabled, or is deleted. Manual protections are not changed by this process.
 
@@ -491,15 +494,16 @@ The thresholds are applied while history is imported, so a change only affects e
 
 #### Per-user playback conditions
 
-The fields above are aggregated across every user who played the media, so `Longest playback > 30` matches if _anyone_ watched 30+ minutes, even if the specific person you care about only watched a few seconds. Three additional fields scope playback to one or more chosen users instead:
+The fields above are aggregated across every user who played the media, so `Longest playback > 30` matches if _anyone_ watched 30+ minutes, even if the specific person you care about only watched a few seconds. These additional fields look at each user on their own instead:
 
 | Field | Meaning | Available scopes |
 | --- | --- | --- |
 | Playback duration by user (minutes) | Selected user's total watched minutes for the target | Movie version, series, season, episode |
 | Playback watched by user (%) | Selected user's total watched time as a percent of runtime | Movie version, episode only |
 | Fully watched by users | Who has individually finished the target | All scopes |
+| Partial viewers in this or earlier seasons | Who is part-way through this season or an earlier one | Season only |
 
-The two duration fields are covered here; `Fully watched by users` has its own section below. Both duration fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option - use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
+The two duration fields are covered here; `Fully watched by users` and `Partial viewers in this or earlier seasons` have their own sections below. Both duration fields require picking at least one user from a user-picker in the rule editor (there is no "any user" option - use the aggregate `Playback users` / `Longest playback` fields above for that). When more than one user is selected, each one is compared on their own and the condition matches as soon as any of them satisfies it, so `under 5 minutes by alice or bob` is true when either of them is under 5 minutes. A selected user with no recorded activity counts as 0, not unknown, on any target imported history covers. Both fields read the same imported events the aggregate duration fields do, so a target with no Playback Reporting or Tautulli history behind it is unknown rather than watched by nobody, and the condition does not match it.
 
 `Playback watched by user (%)` is only available for movie-version and episode rules, since percent-watched needs a known runtime and only movie files and episodes have one on record (series and season rules can still use the minutes field). Episode runtimes are recorded during a media-server sync, so on an existing install episode percent rules stay unknown until the next sync has run.
 
@@ -531,6 +535,32 @@ AND
 Completion is measured against Sonarr's episode inventory, the same denominator `Season fully watched` and `Series fully watched` use. A season still carrying unaired episode numbers therefore cannot read as finished just because somebody has caught up with everything that has downloaded so far. Episode targets need no denominator and stay answerable even when a season's inventory is missing. Season 0 specials are excluded from series completion.
 
 This is the opposite choice from `Seerr requester has watched`, which counts the episodes you actually have. That field guards `is false` deletion rules, where an unwatchable episode must not read as unwatched; this one is built for `matches all` deletion rules, where the stricter Sonarr denominator is the safe direction.
+
+#### Partial viewers in this or earlier seasons
+
+Season rules only. `Partial viewers in this or earlier seasons` lists everyone who has finished some, but not all, of the episodes in this season or in any earlier regular season. Viewers are found automatically, so you do not need to name anyone. Paired with `Fully watched by users`, it lets you clean up a season once one person has finished it, without pulling it from someone who is still working through the show:
+
+```text
+AND
+  Fully watched by users exists
+  Partial viewers in this or earlier seasons does not exist
+```
+
+For season 2, with alice having finished it:
+
+| Another viewer's progress                           | Season 2 removed? |
+| --------------------------------------------------- | ----------------- |
+| Never started the show                              | Yes               |
+| Finished season 1, never started season 2           | Yes               |
+| Part-way through season 1                           | No                |
+| Finished season 1, part-way through season 2        | No                |
+| Finished seasons 1 and 2, part-way through season 3 | Yes               |
+
+Each viewer and each season is judged on its own. Two people who each watched half of a season are both partial viewers; together they do not count as one person finishing it. Never starting a season does not count as partial.
+
+"Every episode" means Sonarr's episode inventory, the same one `Fully watched by users` uses. As a result, everyone who has caught up on a season that is still airing counts as partial in it. Season 0 specials never hold a regular season back, and a specials season checks only itself. A season that is no longer in the library (for example one already reclaimed) has no inventory left to check and is skipped. If Sonarr cannot answer for this season or any earlier one, or the media server's watch state cannot be read, the field is unknown and the rule does not match.
+
+There is no inactivity cut-off: someone who stopped halfway through season 1 years ago blocks every later season until you step in. Use `Partial viewers in this or earlier seasons matches any` on a match-only rule to see who is holding a season back.
 
 Evidence is the same completed-play evidence the requester-watch fields use: current per-user watched state from Plex, Jellyfin, and Emby, merged with Tautulli or Tracearr events whose provider-native status is complete. A person recorded under several names on one media server -- a Plex title and the Tautulli username underneath it -- is matched under all of them, so any name the picker offers works. Progress is not combined across different media servers, for the same reason provider ids never bridge providers.
 
@@ -575,7 +605,7 @@ Rules other users have shared are on [Community Rules](../community-rules/index.
 
 ## Recommended Workflow
 
-1. Choose whether the rule creates cleanup candidates or automated protections.
+1. Choose whether the rule creates cleanup candidates or automated protections, or only reports matches to the API.
 2. Select the narrowest target scope that represents the intended item.
 3. Add positive conditions that identify the media.
 4. Add quality, age, watch-history, or metadata conditions to reduce broad matches.
@@ -587,6 +617,7 @@ Rules other users have shared are on [Community Rules](../community-rules/index.
 
 - [How It Works](how-it-works.md)
 - [Tasks](tasks.md)
+- [Scripting Arr Changes](scripting-arr-changes.md)
 - [External API](../reference/api.md)
 - [Internal UI API](../reference/internal-api.md)
 - [Rule Format](../reference/rule-format.md)

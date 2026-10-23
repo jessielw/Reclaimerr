@@ -178,6 +178,7 @@ The item can hold several values (for example several genres). `value` is an arr
 | `playback.usernames` | Playback users | all | install-specific usernames |
 | `playback_history.usernames` | Recorded history users | all | install-specific usernames; selected provider only |
 | `plex.genres` | Plex genres | all |  |
+| `season.partial_viewer_usernames` | Partial viewers in this or earlier seasons | season | usernames with some but not all episodes of this or an earlier regular season watched; `not_exists` is portable |
 | `tmdb.genres` | TMDB genres | all |  |
 
 ## ID lists

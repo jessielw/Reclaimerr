@@ -117,6 +117,7 @@ VALUE_NOTES: dict[str, str] = {
     "playback_history.has_completed_watch": "explicit provider completion; episode completion for TV targets",
     "playback_history.last_completed_at": "latest explicit completion; episode completion for TV targets",
     "playback.fully_watched_usernames": "install-specific usernames",
+    "season.partial_viewer_usernames": "usernames with some but not all episodes of this or an earlier regular season watched; `not_exists` is portable",
     "favorites.usernames": "install-specific usernames",
     "audio.languages": "ISO 639 codes, e.g. `eng`",
     "subtitle.languages": "ISO 639 codes, e.g. `eng`",

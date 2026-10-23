@@ -16,6 +16,7 @@
     UserRole,
     Permission,
     type BackgroundJobRecord,
+    type CandidateFileOpJobProgress,
     type CandidateRuleFilterOption,
     type EpisodeWithStatus,
     type ReclaimCandidateEntry,
@@ -174,6 +175,17 @@
   // bulk delete confirmation
   let bulkDeleteDialogOpen = $state(false);
   let bulkDeleteSubmitting = $state(false);
+
+  // the delete/move job currently running; blocks queueing another until done
+  let activeJob = $state<{
+    id: number;
+    operation: "delete" | "move";
+    total: number;
+    completed: number;
+    failed: number;
+    currentLabel: string | null;
+    etaSeconds: number | null;
+  } | null>(null);
 
   const durationOptions = [
     { value: "30", label: "30 days" },
@@ -475,27 +487,95 @@
       : null;
   };
 
+  const formatEta = (seconds: number): string => {
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  };
+
+  const updateActiveJob = (
+    jobId: number,
+    job: BackgroundJobRecord,
+    baseline: { time: number; completed: number } | null,
+  ) => {
+    const progress = candidateJobPayload(job).progress as
+      | CandidateFileOpJobProgress
+      | undefined;
+    const total = progress?.total_items ?? 0;
+    const completed = progress?.completed_items ?? 0;
+    // rate is measured from when this page first saw the job, so a resumed
+    // job doesn't count work finished before we started watching
+    const done = baseline ? completed - baseline.completed : 0;
+    // no estimate until at least one item has finished while watching
+    const etaSeconds =
+      baseline && done > 0 && total > completed
+        ? (((Date.now() - baseline.time) / done) * (total - completed)) / 1000
+        : null;
+    activeJob = {
+      id: jobId,
+      operation: candidateJobOperation(job),
+      total,
+      completed,
+      failed: progress?.failed_items ?? 0,
+      currentLabel: progress?.current_item_label ?? null,
+      etaSeconds,
+    };
+  };
+
   const watchCandidateJob = async (
     jobId: number,
     onTerminal?: (job: BackgroundJobRecord) => Promise<void> | void,
+    resumed = false,
   ) => {
-    for (let attempt = 0; attempt < 160; attempt += 1) {
-      const job = await get_api<BackgroundJobRecord>(
-        `/api/tasks/candidate-file-op-jobs/${jobId}`,
-      );
-
-      if (
-        job.status === BackgroundJobStatus.Completed ||
-        job.status === BackgroundJobStatus.Failed ||
-        job.status === BackgroundJobStatus.Canceled
-      ) {
-        if (onTerminal) {
-          await onTerminal(job);
+    // set on the first poll when resuming, so the rate starts from what we saw
+    let baseline: { time: number; completed: number } | null = resumed
+      ? null
+      : { time: Date.now(), completed: 0 };
+    let consecutiveErrors = 0;
+    try {
+      // runs until the job reaches a final state: large deletes take a while
+      while (mounted) {
+        let job: BackgroundJobRecord;
+        try {
+          job = await get_api<BackgroundJobRecord>(
+            `/api/tasks/candidate-file-op-jobs/${jobId}`,
+          );
+          consecutiveErrors = 0;
+        } catch (e) {
+          // tolerate brief network blips, give up if the server stays unreachable
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 5) throw e;
+          await sleep(1500);
+          continue;
         }
-        return job;
-      }
 
-      await sleep(1500);
+        if (
+          job.status === BackgroundJobStatus.Completed ||
+          job.status === BackgroundJobStatus.Failed ||
+          job.status === BackgroundJobStatus.Canceled
+        ) {
+          activeJob = null;
+          if (onTerminal) {
+            await onTerminal(job);
+          }
+          return job;
+        }
+
+        baseline ??= {
+          time: Date.now(),
+          completed:
+            (
+              candidateJobPayload(job).progress as
+                | CandidateFileOpJobProgress
+                | undefined
+            )?.completed_items ?? 0,
+        };
+        updateActiveJob(jobId, job, baseline);
+        await sleep(1500);
+      }
+    } finally {
+      if (activeJob?.id === jobId) activeJob = null;
     }
 
     return null;
@@ -548,6 +628,11 @@
     operation: "delete" | "move",
     candidateIds: number[],
   ) => {
+    if (activeJob) {
+      throw new Error(
+        `A ${activeJob.operation} is already in progress. Wait for it to finish.`,
+      );
+    }
     const response = await post_api<CandidateOperationQueuedResponse>(
       operation === "move"
         ? "/api/media/candidates/move"
@@ -559,14 +644,45 @@
       toast.success(response.message);
     }
     if (response.job_id != null) {
-      void watchCandidateJob(response.job_id, async (job) => {
-        notifyCandidateJobTerminalState(job);
-        await loadCandidates(currentPage);
-        uiIndicators.invalidate();
-      });
+      // show the banner immediately instead of waiting for the first poll
+      activeJob = {
+        id: response.job_id,
+        operation,
+        total: candidateIds.length,
+        completed: 0,
+        failed: 0,
+        currentLabel: null,
+        etaSeconds: null,
+      };
+      void watchCandidateJob(response.job_id, onCandidateJobDone);
     }
 
     return response;
+  };
+
+  const onCandidateJobDone = async (job: BackgroundJobRecord) => {
+    notifyCandidateJobTerminalState(job);
+    await loadCandidates(currentPage);
+    uiIndicators.invalidate();
+  };
+
+  // pick a delete/move job back up after leaving and returning to the page
+  const resumeRunningJob = async () => {
+    try {
+      const { jobs } = await get_api<{ jobs: BackgroundJobRecord[] }>(
+        "/api/tasks/candidate-file-op-jobs?limit=10",
+      );
+      const running = jobs.find(
+        (job) =>
+          job.status === BackgroundJobStatus.Pending ||
+          job.status === BackgroundJobStatus.Running,
+      );
+      if (!running || activeJob) return;
+      updateActiveJob(running.id, running, null);
+      void watchCandidateJob(running.id, onCandidateJobDone, true);
+    } catch {
+      // best effort: the banner is a convenience, not required to function
+    }
   };
 
   // toggle selection of an individual candidate ID
@@ -1044,6 +1160,7 @@
       toast.error(e.message ?? "Failed to load candidate rule filters.");
     }
     mounted = true;
+    void resumeRunningJob();
     await loadCandidates();
     // load move destination availability from general settings
     try {
@@ -1572,6 +1689,7 @@
                 <Button
                   size="sm"
                   class="bg-amber-500/80 hover:bg-amber-500/60"
+                  disabled={!!activeJob}
                   onclick={() => (bulkMoveDialogOpen = true)}
                 >
                   <FolderOutput class="size-4" />
@@ -1591,6 +1709,7 @@
                 <Button
                   size="sm"
                   class="bg-destructive/80 hover:bg-destructive/60"
+                  disabled={!!activeJob}
                   onclick={() => (bulkDeleteDialogOpen = true)}
                 >
                   <Trash2 class="size-4" />
@@ -1603,6 +1722,47 @@
             </Tooltip.Root>
           {/if}
         </div>
+      </div>
+    {/if}
+
+    <!-- active delete/move progress -->
+    {#if activeJob}
+      {@const pct =
+        activeJob.total > 0
+          ? Math.min(100, (activeJob.completed / activeJob.total) * 100)
+          : 0}
+      <div
+        class="bg-card rounded-lg border border-border p-4 space-y-2"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="flex items-center justify-between gap-4 text-sm">
+          <span class="font-medium">
+            {activeJob.operation === "move" ? "Moving" : "Deleting"}
+            {activeJob.completed} of {activeJob.total}
+            {#if activeJob.failed > 0}
+              <span class="text-destructive font-normal">
+                ({activeJob.failed} failed)
+              </span>
+            {/if}
+          </span>
+          <span class="text-muted-foreground shrink-0">
+            {activeJob.etaSeconds != null
+              ? `~${formatEta(activeJob.etaSeconds)} left`
+              : "Estimating..."}
+          </span>
+        </div>
+        <div class="h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            class="h-full bg-primary transition-all duration-500"
+            style="width: {pct}%"
+          ></div>
+        </div>
+        <p class="text-xs text-muted-foreground truncate">
+          {activeJob.currentLabel
+            ? `Current: ${activeJob.currentLabel}`
+            : "Starting..."}
+        </p>
       </div>
     {/if}
 

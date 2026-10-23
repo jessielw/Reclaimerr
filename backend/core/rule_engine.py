@@ -42,6 +42,9 @@ VALID_TARGET_SCOPES = {
 }
 RULE_OUTCOME_CANDIDATE = "candidate"
 RULE_OUTCOME_PROTECT = "protect"
+# evaluated only when asked for through the API; never creates candidates or
+# protections, so scans skip these rules entirely
+RULE_OUTCOME_MATCH = "match"
 SONARR_RULE_FIELDS = {
     "sonarr.series_status",
     "sonarr.latest_season_has_unaired_episodes",
@@ -87,6 +90,11 @@ USER_SCOPED_PLAYBACK_FIELDS = {
 # (USER_SCOPED_PLAYBACK_FIELDS). Served by its own resolver because completion
 # comes from the per-user watch tables, not the playback aggregates.
 WATCH_COMPLETION_RULE_FIELDS = {"playback.fully_watched_usernames"}
+# Who is part-way through this season or an earlier regular one. Built from the
+# same per-user watch tables and Sonarr inventory as WATCH_COMPLETION_RULE_FIELDS,
+# but only meaningful for a season target, so it is kept out of that set (which
+# every scope allows).
+SEASON_PARTIAL_VIEWER_FIELDS = {"season.partial_viewer_usernames"}
 # Fields whose values name playback users. One person is often recorded under
 # several keys -- Plex history keys an unshared account by its number while
 # Tautulli has the name -- so these compare through WatchUserAliasResolver.
@@ -94,6 +102,7 @@ PLAYBACK_USERNAME_FIELDS = {
     "playback_history.usernames",
     "playback.usernames",
     "playback.fully_watched_usernames",
+    "season.partial_viewer_usernames",
 }
 # Episode-level watch progress rolled up to a season or a whole series. Both
 # read Sonarr's canonical episode inventory, so both need the same eager-loaded
@@ -124,13 +133,15 @@ MEDIA_SERVER_GENRE_FIELDS: dict[str, Service] = {
 }
 
 
+def normalize_outcome_value(value: object) -> str:
+    if value in (RULE_OUTCOME_PROTECT, RULE_OUTCOME_MATCH):
+        return str(value)
+    return RULE_OUTCOME_CANDIDATE
+
+
 def normalize_rule_outcome(rule: ReclaimRule) -> str:
     action = rule.action if isinstance(rule.action, dict) else {}
-    return (
-        RULE_OUTCOME_PROTECT
-        if action.get("outcome") == RULE_OUTCOME_PROTECT
-        else RULE_OUTCOME_CANDIDATE
-    )
+    return normalize_outcome_value(action.get("outcome"))
 
 
 FIELD_LABELS: dict[str, str] = {
@@ -169,6 +180,7 @@ FIELD_LABELS: dict[str, str] = {
     "season.episode_count": "Episode count",
     "season.fully_watched": "Season fully watched",
     "season.watched_percent": "Season watched (%)",
+    "season.partial_viewer_usernames": "Partial viewers in this or earlier seasons",
     "season.is_latest_season": "Is latest season",
     "season.seasons_from_latest": "Seasons from latest",
     "episode.number": "Episode number",
@@ -489,6 +501,7 @@ TEXT_FIELDS = {
     "seerr.requested_by_user_ids",
     "playback.usernames",
     "playback.fully_watched_usernames",
+    "season.partial_viewer_usernames",
 }
 MULTI_VALUE_TEXT_FIELDS = {
     "playback_history.usernames",
@@ -504,6 +517,7 @@ MULTI_VALUE_TEXT_FIELDS = {
     "tmdb.origin_country",
     "playback.usernames",
     "playback.fully_watched_usernames",
+    "season.partial_viewer_usernames",
     *MEDIA_SERVER_GENRE_FIELDS,
 }
 LANGUAGE_FIELDS = {
@@ -647,6 +661,7 @@ FIELD_ALLOWED_OPERATORS: dict[str, set[str]] = {
     "playback.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback_history.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "playback.fully_watched_usernames": set(MULTI_VALUE_TEXT_OPERATORS),
+    "season.partial_viewer_usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "favorites.usernames": set(MULTI_VALUE_TEXT_OPERATORS),
     "seerr.requested_by_user_ids": set(SEERR_REQUESTER_ID_OPERATORS),
     "arr.movie_ids": set(SEERR_REQUESTER_ID_OPERATORS),
@@ -872,6 +887,7 @@ TARGET_SCOPE_ALLOWED_FIELDS: dict[str, set[str]] = {
         "season.seasons_from_latest",
         "season.position_by_air_date",
         "season.watched_percent",
+        *SEASON_PARTIAL_VIEWER_FIELDS,
         "seerr.requested",
         "seerr.last_requested_at",
         "seerr.days_since_last_requested",
@@ -1699,13 +1715,16 @@ class WatchCompletionResolver:
     (``matches none``) cannot delete media purely because a server was
     unreadable. An observable target nobody finished is present with an empty
     set, which is a known fact and does match ``matches none``.
+
+    ``partial_usernames_by_season`` follows the same missing-means-unknown rule,
+    keyed by ``(tmdb_id, season_number)``.
     """
 
     _ctx: ContextVar[WatchCompletionResolver | None] = ContextVar(
         "watch_completion_resolver", default=None
     )
 
-    __slots__ = ("_usernames_by_target",)
+    __slots__ = ("_partial_usernames_by_season", "_usernames_by_target")
 
     def __init__(
         self,
@@ -1713,12 +1732,18 @@ class WatchCompletionResolver:
             tuple[str, int, int | None, int | None], Iterable[str]
         ]
         | None = None,
+        partial_usernames_by_season: Mapping[tuple[int, int], Iterable[str]]
+        | None = None,
     ) -> None:
         self._usernames_by_target: dict[
             tuple[str, int, int | None, int | None], list[str]
         ] = {
             key: sorted({text for value in names if (text := str(value).strip())})
             for key, names in (usernames_by_target or {}).items()
+        }
+        self._partial_usernames_by_season: dict[tuple[int, int], list[str]] = {
+            key: sorted({text for value in names if (text := str(value).strip())})
+            for key, names in (partial_usernames_by_season or {}).items()
         }
 
     def activate(self) -> None:
@@ -1741,6 +1766,15 @@ class WatchCompletionResolver:
             return RULE_VALUE_UNAVAILABLE
         key = (target_scope, int(tmdb_id), season_number, episode_number)
         usernames = self._usernames_by_target.get(key)
+        if usernames is None:
+            return RULE_VALUE_UNAVAILABLE
+        return list(usernames)
+
+    def resolve_partial(self, tmdb_id: int | None, season_number: int) -> object:
+        """Return who is part-way through this or an earlier season, or unavailable."""
+        if tmdb_id is None:
+            return RULE_VALUE_UNAVAILABLE
+        usernames = self._partial_usernames_by_season.get((int(tmdb_id), season_number))
         if usernames is None:
             return RULE_VALUE_UNAVAILABLE
         return list(usernames)
@@ -1793,8 +1827,8 @@ def _watch_completion_context(
     season_number: int | None = None,
     episode_number: int | None = None,
 ) -> dict[str, object]:
-    """Build the per-user completion context value for one target."""
-    return {
+    """Build the per-user completion context values for one target."""
+    context: dict[str, object] = {
         "playback.fully_watched_usernames": (
             resolver.resolve(
                 target_scope,
@@ -1806,6 +1840,13 @@ def _watch_completion_context(
             else RULE_VALUE_UNAVAILABLE
         )
     }
+    if target_scope == TARGET_SEASON and season_number is not None:
+        context["season.partial_viewer_usernames"] = (
+            resolver.resolve_partial(tmdb_id, season_number)
+            if resolver
+            else RULE_VALUE_UNAVAILABLE
+        )
+    return context
 
 
 def _playback_context(

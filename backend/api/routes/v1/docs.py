@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
@@ -17,6 +18,38 @@ EXTERNAL_API_DESCRIPTION = (
     "Create a scoped bearer token under Settings > Integrations, then use the "
     "Authorize button to authenticate requests."
 )
+
+# Swagger UI and ReDoc are vendored and served from our own origin instead of
+# FastAPI's default jsdelivr CDN, so a compromised CDN file can't run script on
+# the app's origin. See docs_assets/README.md for versions and how to update.
+DOCS_ASSETS_DIR = Path(__file__).resolve().parents[2] / "docs_assets"
+DOCS_ASSETS_URL = "/docs-assets"
+
+
+def swagger_ui_html(request: Request, openapi_url: str, title: str) -> HTMLResponse:
+    """Render Swagger UI using the locally served assets."""
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    assets = f"{root_path}{DOCS_ASSETS_URL}"
+    return get_swagger_ui_html(
+        openapi_url=f"{root_path}{openapi_url}",
+        title=title,
+        swagger_js_url=f"{assets}/swagger-ui/swagger-ui-bundle.js",
+        swagger_css_url=f"{assets}/swagger-ui/swagger-ui.css",
+        swagger_favicon_url=f"{assets}/favicon.png",
+    )
+
+
+def redoc_html(request: Request, openapi_url: str, title: str) -> HTMLResponse:
+    """Render ReDoc using the locally served assets."""
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    assets = f"{root_path}{DOCS_ASSETS_URL}"
+    return get_redoc_html(
+        openapi_url=f"{root_path}{openapi_url}",
+        title=title,
+        redoc_js_url=f"{assets}/redoc/redoc.standalone.js",
+        redoc_favicon_url=f"{assets}/favicon.png",
+        with_google_fonts=False,
+    )
 
 
 def configure_external_api_docs(api_router: APIRouter) -> None:
@@ -58,17 +91,11 @@ async def external_api_openapi(request: Request) -> JSONResponse:
 
 @router.get("/docs", include_in_schema=False, name="external_api_swagger")
 async def external_api_swagger(request: Request) -> HTMLResponse:
-    root_path = request.scope.get("root_path", "").rstrip("/")
-    return get_swagger_ui_html(
-        openapi_url=f"{root_path}/api/v1/openapi.json",
-        title=f"{EXTERNAL_API_TITLE} - Swagger UI",
+    return swagger_ui_html(
+        request, "/api/v1/openapi.json", f"{EXTERNAL_API_TITLE} - Swagger UI"
     )
 
 
 @router.get("/redoc", include_in_schema=False, name="external_api_redoc")
 async def external_api_redoc(request: Request) -> HTMLResponse:
-    root_path = request.scope.get("root_path", "").rstrip("/")
-    return get_redoc_html(
-        openapi_url=f"{root_path}/api/v1/openapi.json",
-        title=f"{EXTERNAL_API_TITLE} - ReDoc",
-    )
+    return redoc_html(request, "/api/v1/openapi.json", f"{EXTERNAL_API_TITLE} - ReDoc")

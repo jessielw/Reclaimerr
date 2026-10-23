@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from granian.utils.proxies import wrap_asgi_with_proxy_headers
 from slowapi import Limiter
@@ -34,6 +34,12 @@ from backend.api.routes.storage import router as storage_router
 from backend.api.routes.system import router as system_router
 from backend.api.routes.tasks import router as tasks_router
 from backend.api.routes.v1 import router as external_api_router
+from backend.api.routes.v1.docs import (
+    DOCS_ASSETS_DIR,
+    DOCS_ASSETS_URL,
+    redoc_html,
+    swagger_ui_html,
+)
 from backend.api.utils.exception_handlers import register_exception_handlers
 from backend.api.utils.middleware import (
     cors_middleware,
@@ -197,8 +203,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.5.11",
+    version="0.6.0",
     lifespan=lifespan,
+    # replaced below with pages that load vendored assets instead of the CDN
+    docs_url=None,
+    redoc_url=None,
 )
 
 # register exception handlers
@@ -235,12 +244,27 @@ fastapi_app.include_router(system_router)
 fastapi_app.include_router(external_api_router)
 
 
+@fastapi_app.get("/docs", include_in_schema=False)
+async def internal_api_swagger(request: Request) -> HTMLResponse:
+    return swagger_ui_html(
+        request, "/openapi.json", f"{fastapi_app.title} - Swagger UI"
+    )
+
+
+@fastapi_app.get("/redoc", include_in_schema=False)
+async def internal_api_redoc(request: Request) -> HTMLResponse:
+    return redoc_html(request, "/openapi.json", f"{fastapi_app.title} - ReDoc")
+
+
 # mount static files LAST
 fastapi_app.mount(
     "/static", StaticFiles(directory=settings.static_dir_path), name="static"
 )
 fastapi_app.mount(
     "/avatars", StaticFiles(directory=settings.avatars_dir_path), name="avatars"
+)
+fastapi_app.mount(
+    DOCS_ASSETS_URL, StaticFiles(directory=DOCS_ASSETS_DIR), name="docs-assets"
 )
 
 

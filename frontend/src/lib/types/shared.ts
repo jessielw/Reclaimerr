@@ -361,6 +361,7 @@ export type ApiTokenScope =
   | "media:read"
   | "protections:read"
   | "protections:manage"
+  | "rules:read"
   | "system:read"
   | "tasks:read"
   | "tasks:run";
@@ -638,8 +639,11 @@ export interface RuleDefinition {
   root: RuleGroup;
 }
 
+// "match" rules create nothing; they are evaluated through the API on demand
+export type RuleOutcome = "candidate" | "protect" | "match";
+
 export interface RuleAction {
-  outcome: "candidate" | "protect";
+  outcome: RuleOutcome;
   candidate: boolean;
   tag_enabled: boolean;
   arr_tag: string | null;

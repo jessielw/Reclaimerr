@@ -71,6 +71,7 @@ nav:
       - Duplicates: usage/duplicates.md
       - Rules: usage/rules.md
       - Community Rules: community-rules/index.md
+      - Scripting Arr Changes: usage/scripting-arr-changes.md
       - Tasks: usage/tasks.md
       - Dashboard Widgets: usage/dashboard-widgets.md
   - Deployment:

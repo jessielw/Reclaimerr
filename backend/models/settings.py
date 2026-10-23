@@ -768,3 +768,10 @@ class DatabaseBackupInfo(BaseModel):
     name: str
     size_bytes: int
     created_at: datetime
+
+
+class DatabaseBackupList(BaseModel):
+    directory: str
+    backups: list[DatabaseBackupInfo]
+    # a restore is staged and will be applied on the next start
+    restore_pending: bool = False

@@ -15,6 +15,8 @@ The running application exposes its complete FastAPI schema at:
 
 These generated documents include internal UI routes as well as the mounted external API. Contributors can use them for the exact internal request and response models.
 
+Like the external API docs, these pages load Swagger UI and ReDoc from `/docs-assets` on the same server. The vendored versions and update steps are in `backend/api/docs_assets/README.md`.
+
 ## Status And Setup
 
 - `GET /api/setup/status`
@@ -124,7 +126,7 @@ The log endpoints are admin-only. `GET /api/settings/logs` returns the most rece
 
 `GET /api/rules/quality-profiles` lists the profiles a rule can switch media onto, for one `service` (`radarr` or `sonarr`) and optionally one `service_config_id`. Profile IDs are per instance, so each profile carries the instance it belongs to, and an unreachable instance is reported in `errors` rather than raised.
 
-Rule actions support `outcome: "candidate"` and `outcome: "protect"`. Existing rules without an outcome remain candidate rules for compatibility. Protection previews include items that are already protected because the preview reports what the rule itself matches.
+Rule actions support `outcome: "candidate"`, `outcome: "protect"`, and `outcome: "match"`. Existing rules without an outcome remain candidate rules for compatibility. Protection and match-only previews include items that are already protected or favorited because the preview reports what the rule itself matches.
 
 A rule's `arr_action` is one of `delete`, `unmonitor`, `unmonitor_only`, or `change_quality_profile`. The last one also requires `quality_profile_id` and accepts `trigger_search`, and is refused on season and episode scopes because a Sonarr quality profile covers the whole series. It clears `media_server_action` and `move_instead_of_delete`, since nothing is removed or relocated.
 

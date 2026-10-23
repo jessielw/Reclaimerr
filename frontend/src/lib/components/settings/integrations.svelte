@@ -84,6 +84,11 @@
       description: "Create and remove protections",
     },
     {
+      value: "rules:read",
+      label: "Rules",
+      description: "Rules and match-only rule results",
+    },
+    {
       value: "tasks:read",
       label: "Tasks",
       description: "Schedules and run history",
@@ -101,6 +106,7 @@
     "candidates:read",
     "events:read",
     "protections:read",
+    "rules:read",
     "tasks:read",
   ];
 

@@ -6,25 +6,32 @@ API, which is safe while the app is writing and folds in the WAL; copying the
 file directly could capture a torn page or miss committed writes still in the
 WAL.
 
-Restore is deliberately manual: stop the app, replace ``reclaimerr.db`` and
-start it again. Migrations run on start, so an older backup upgrades itself.
+Restore is staged, never live: the app validates a backup and parks it next to
+the database, and the swap happens on the next start before any connection is
+opened. Migrations run after that, so an older backup upgrades itself. Replacing
+``reclaimerr.db`` by hand with the app stopped works too.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from alembic.script import ScriptDirectory
+from alembic.script.revision import RevisionError
+from alembic.util.exc import CommandError
 from sqlalchemy import select
 
 from backend.core.logger import LOG
 from backend.core.settings import settings
 from backend.core.task_tracking import track_task_execution
-from backend.database import async_db
+from backend.database import alembic_config, async_db
 from backend.database.models import GeneralSettings
 from backend.enums import Task
 
@@ -40,7 +47,7 @@ class BackupFile:
 
 
 def backups_dir() -> Path:
-    return settings.data_dir_path / "backups"
+    return settings.backup_dir or settings.data_dir_path / "backups"
 
 
 def backup_file_name(now: datetime | None = None) -> str:
@@ -124,6 +131,113 @@ def write_backup(keep: int, directory: Path | None = None) -> Path:
     if removed:
         LOG.info(f"Removed {len(removed)} old database backup(s)")
     return target
+
+
+class InvalidBackupError(ValueError):
+    """The file is not a backup this version of Reclaimerr can restore."""
+
+
+def pending_restore_path() -> Path:
+    # next to the live database so applying it is an atomic rename on one disk
+    return settings.db_path.with_name("restore.pending.db")
+
+
+def has_pending_restore() -> bool:
+    return pending_restore_path().is_file()
+
+
+def validate_backup(path: Path) -> None:
+    """Raise InvalidBackupError unless ``path`` is an intact, restorable database."""
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise InvalidBackupError(
+            f"Could not open the file as a database: {exc}"
+        ) from exc
+    try:
+        if conn.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise InvalidBackupError("The backup failed its integrity check")
+        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    except sqlite3.Error as exc:
+        raise InvalidBackupError("Not a Reclaimerr database") from exc
+    finally:
+        conn.close()
+
+    if row is None:
+        raise InvalidBackupError("Not a Reclaimerr database")
+    try:
+        ScriptDirectory.from_config(alembic_config()).get_revision(row[0])
+    except (RevisionError, CommandError) as exc:
+        raise InvalidBackupError(
+            "This backup was made by a newer version of Reclaimerr"
+        ) from exc
+
+
+def stage_restore(write_source: Callable[[Path], None]) -> None:
+    """Validate a backup and stage it to be restored on the next start.
+
+    The live database is never touched here: a running app holds open
+    connections, so the swap happens in ``apply_pending_restore`` at startup.
+    """
+    pending = pending_restore_path()
+    partial = pending.with_name(f"{pending.name}.partial")
+    try:
+        write_source(partial)
+        validate_backup(partial)
+        partial.replace(pending)
+    except InvalidBackupError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"Could not stage the restore: {exc}") from exc
+    finally:
+        partial.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(f"{partial}{suffix}").unlink(missing_ok=True)
+
+
+def stage_stored_backup(name: str) -> None:
+    source = resolve_backup(name)
+
+    def write_source(partial: Path) -> None:
+        shutil.copyfile(source, partial)
+
+    stage_restore(write_source)
+
+
+def cancel_pending_restore() -> None:
+    pending_restore_path().unlink(missing_ok=True)
+
+
+def apply_pending_restore() -> bool:
+    """Swap a staged backup in as the live database. Call before the engine opens.
+
+    The database being replaced is kept as ``reclaimerr.db.pre-restore`` so a
+    wrong restore can be undone. On any failure the live database is left as is.
+    """
+    pending = pending_restore_path()
+    if not pending.is_file():
+        return False
+
+    live = settings.db_path
+    kept = live.with_name(f"{live.name}.pre-restore")
+    try:
+        validate_backup(pending)
+        if live.exists():
+            # backup API rather than a rename, so rows still in the WAL are kept
+            kept.unlink(missing_ok=True)
+            copy_database(kept, source=live)
+        # a stale WAL next to the new file would be replayed over it
+        for suffix in ("-wal", "-shm"):
+            Path(f"{live}{suffix}").unlink(missing_ok=True)
+            Path(f"{pending}{suffix}").unlink(missing_ok=True)
+        pending.replace(live)
+    except (OSError, sqlite3.Error, InvalidBackupError) as exc:
+        LOG.error(f"Could not restore the staged database backup: {exc}")
+        pending.unlink(missing_ok=True)
+        return False
+
+    LOG.info(f"Restored the database from a staged backup; previous kept as {kept}")
+    return True
 
 
 async def _backup_retention() -> int:

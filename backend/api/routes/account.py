@@ -84,6 +84,41 @@ async def _default_allowed_pages_for_new_user(db: AsyncSession) -> list[str]:
     return valid_pages or list(DEFAULT_NEW_USER_ALLOWED_PAGES)
 
 
+def _page_set(pages: list[str] | None) -> set[str]:
+    # None means every page
+    return {page.value for page in PageAccess} if pages is None else set(pages)
+
+
+def _ensure_actor_can_grant(
+    actor: User,
+    *,
+    current_permissions: list[str],
+    requested_permissions: list[str],
+    current_pages: list[str] | None,
+    requested_pages: list[str] | None,
+) -> None:
+    """Keep non-admin user managers from handing out access they do not hold.
+
+    Without this a manager could grant themselves, or an account they control,
+    any permission or page. Only what changes is checked, so a manager can still
+    edit a user who already holds more than they do.
+    """
+    if actor.role is UserRole.ADMIN:
+        return
+    changed_permissions = set(current_permissions) ^ set(requested_permissions)
+    if not changed_permissions <= set(actor.permissions or []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only grant or remove permissions you have yourself",
+        )
+    changed_pages = _page_set(current_pages) ^ _page_set(requested_pages)
+    if not changed_pages <= _page_set(actor.allowed_pages):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only grant or remove page access you have yourself",
+        )
+
+
 async def _revoke_user_sessions(
     db: AsyncSession,
     *,
@@ -452,6 +487,15 @@ async def create_user(
     else:
         allowed_pages = [page.value for page in request.allowed_pages]
 
+    _ensure_actor_can_grant(
+        actor,
+        current_permissions=[],
+        requested_permissions=permissions,
+        # the admin-configured default page set is always allowed
+        current_pages=allowed_pages if request.use_default_page_access else [],
+        requested_pages=allowed_pages,
+    )
+
     # ensure we don't create a user that already exists
     if request.email:  # if user provided an email, check both username and email
         result = await db.execute(
@@ -576,6 +620,19 @@ async def update_user(
                 detail="Only administrators can grant admin role",
             )
 
+    requested_pages = (
+        None
+        if request.role is UserRole.ADMIN or request.allowed_pages is None
+        else [page.value for page in request.allowed_pages]
+    )
+    _ensure_actor_can_grant(
+        actor,
+        current_permissions=list(user.permissions or []),
+        requested_permissions=requested_permissions,
+        current_pages=user.allowed_pages,
+        requested_pages=requested_pages,
+    )
+
     # rename is optional; omitting the field leaves the username untouched
     new_username = request.username
     if new_username and new_username != user.username:
@@ -607,11 +664,7 @@ async def update_user(
     user.email = request.email
     user.role = request.role
     user.permissions = requested_permissions
-    user.allowed_pages = (
-        None
-        if request.role is UserRole.ADMIN or request.allowed_pages is None
-        else [page.value for page in request.allowed_pages]
-    )
+    user.allowed_pages = requested_pages
 
     if request.password:
         user.password_hash = get_password_hash(request.password)

@@ -24,6 +24,7 @@ from backend.core.rule_actions import (
 from backend.core.rule_engine import (
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
+    RULE_OUTCOME_MATCH,
     RULE_OUTCOME_PROTECT,
     TARGET_EPISODE,
     TARGET_MOVIE_VERSION,
@@ -32,6 +33,7 @@ from backend.core.rule_engine import (
     collect_rule_conditions,
     collect_rule_path_conditions,
     derive_path_scope_library_ids,
+    normalize_outcome_value,
     normalize_rule_definition,
     normalize_rule_target,
     validate_rule_definition,
@@ -197,11 +199,7 @@ def _normalize_rule_action(
 ) -> dict[str, Any]:
     """Normalize the rule action dictionary."""
     normalized = _action_or_default(action)
-    outcome = (
-        RULE_OUTCOME_PROTECT
-        if normalized.get("outcome") == RULE_OUTCOME_PROTECT
-        else RULE_OUTCOME_CANDIDATE
-    )
+    outcome = normalize_outcome_value(normalized.get("outcome"))
     normalized["outcome"] = outcome
     normalized["candidate"] = outcome == RULE_OUTCOME_CANDIDATE
     normalized["tag_enabled"] = bool(normalized.get("tag_enabled", True))
@@ -273,7 +271,7 @@ def _normalize_rule_action(
     else:
         normalized["radarr_service_config_id"] = None
         normalized["radarr_service_config_ids"] = []
-    if outcome == RULE_OUTCOME_PROTECT:
+    if outcome in (RULE_OUTCOME_PROTECT, RULE_OUTCOME_MATCH):
         normalized["tag_enabled"] = False
         normalized["arr_tag"] = None
         normalized["arr_action"] = "delete"

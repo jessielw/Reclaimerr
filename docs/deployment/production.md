@@ -38,7 +38,7 @@ For production deployments, use this guide.
 ## Reverse Proxy Checklist
 
 - Forward `X-Forwarded-For` and `X-Forwarded-Proto`.
-- Set `PROXY_TRUSTED_HOSTS` to the proxy IP or CIDR.
+- Set `PROXY_TRUSTED_HOSTS` to the proxy IP or CIDR. Without it every request appears to come from the proxy, so per-IP limits such as 5 login attempts a minute are shared by all users, and one person mistyping a password can lock everyone else out of local login for a minute.
 - Verify the public callback URLs for OIDC or Plex login flows. Use `Application URL` in General Settings for the shared public base URL, and keep `redirect_uri_override` for OIDC-only cases.
 - Keep the backend port private if the proxy is the only ingress point.
 - When using trusted-header authentication, never use a wildcard or all-address proxy range such as `0.0.0.0/0`; Reclaimerr rejects both. The proxy must strip the client-supplied identity header before the auth step runs, not just overwrite it. See [Trusted Proxy Authentication](../getting-started/configuration.md#trusted-proxy-authentication) for the reasoning and a verified Caddy example.

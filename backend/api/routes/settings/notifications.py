@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -21,6 +23,15 @@ from backend.services.notifications import test_notification_url, test_system_em
 from backend.services.smtp import load_smtp_config
 
 router = APIRouter(tags=["settings", "notifications"])
+limiter = Limiter(key_func=get_remote_address)
+
+# Any user with the Settings page can call the test route, and it makes the
+# server send to an address of their choosing, so it is rate limited and the
+# raw delivery error (which can describe internal hosts) is kept for admins.
+GENERIC_TEST_FAILURE = (
+    "Test notification failed. Check the destination and try again, or ask an "
+    "administrator to check the logs."
+)
 
 
 @router.get("/notifications")
@@ -88,8 +99,11 @@ async def get_notification_email_status(
 
 
 @router.post("/notifications/test")
+@limiter.limit("5/minute")
 async def test_notification(
     data: NotificationTestRequest,
+    # named 'request' because the rate limiter looks it up by that name
+    request: Request,
     current_user: Annotated[User, Depends(require_page_access(PageAccess.SETTINGS))],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
@@ -122,7 +136,12 @@ async def test_notification(
         success, error_message = await test_notification_url(data.url)
 
     if not success:
-        raise HTTPException(status_code=400, detail=error_message)
+        detail = (
+            error_message
+            if current_user.role is UserRole.ADMIN
+            else GENERIC_TEST_FAILURE
+        )
+        raise HTTPException(status_code=400, detail=detail)
 
     return {"message": "Test notification sent successfully"}
 

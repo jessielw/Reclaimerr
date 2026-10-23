@@ -39,6 +39,7 @@
     type RuleNode,
     type RequesterWatchExplain,
     type RulePreviewEntry,
+    type RuleOutcome,
   } from "$lib/types/shared";
   import { formatFileSize } from "$lib/utils/formatters";
   import { guardUnsavedChanges } from "$lib/utils/unsaved-changes";
@@ -110,9 +111,7 @@
     initial.targetScope,
   );
   let definition = $state<RuleDefinition>(initial.definition);
-  let outcome = $state<"candidate" | "protect">(
-    initial.action?.outcome === "protect" ? "protect" : "candidate",
-  );
+  let outcome = $state<RuleOutcome>(initial.action?.outcome ?? "candidate");
   let tagEnabled = $state(initial.action?.tag_enabled ?? false);
   let autoDeleteEnabled = $state(initial.action?.auto_delete_enabled ?? false);
   let moveInsteadOfDelete = $state(
@@ -221,7 +220,7 @@
     media_type: MediaType;
     target_scope: "movie_version" | "series" | "season" | "episode";
     definition: RuleDefinition;
-    outcome: "candidate" | "protect";
+    outcome: RuleOutcome;
     per_page: number;
   } | null>(null);
 
@@ -499,7 +498,7 @@
           candidate: outcome === "candidate",
           tag_enabled: outcome === "candidate" ? tagEnabled : false,
           arr_tag: outcome === "candidate" ? normalizedTag : null,
-          arr_action: arrAction,
+          arr_action: outcome === "candidate" ? arrAction : "delete",
           quality_profile_id:
             outcome === "candidate" && arrAction === "change_quality_profile"
               ? qualityProfileId
@@ -769,6 +768,8 @@
       {#if outcome === "protect"}
         Enabling the rule creates protections for matching media on the next
         scan.
+      {:else if outcome === "match"}
+        Enabling the rule lets scripts read its matches through the API.
       {:else}
         Enabling the rule generates candidates; automatic deletion is a separate
         setting.
@@ -861,13 +862,16 @@
         type="single"
         value={outcome}
         onValueChange={(value) => {
-          if (value === "candidate" || value === "protect") outcome = value;
+          if (value === "candidate" || value === "protect" || value === "match")
+            outcome = value;
         }}
       >
         <Select.Trigger class="w-full bg-card text-card-foreground ">
           {outcome === "protect"
             ? "Create automated protection"
-            : "Create cleanup candidate"}
+            : outcome === "match"
+              ? "Match only"
+              : "Create cleanup candidate"}
         </Select.Trigger>
         <Select.Content>
           <Select.Item value="candidate" label="Create cleanup candidate">
@@ -876,12 +880,15 @@
           <Select.Item value="protect" label="Create automated protection">
             Create automated protection
           </Select.Item>
+          <Select.Item value="match" label="Match only">Match only</Select.Item>
         </Select.Content>
       </Select.Root>
       <p class="text-xs text-muted-foreground">
         {outcome === "protect"
           ? "Matching items are protected on each cleanup scan. Protection always takes precedence over candidate rules."
-          : "Matching items become cleanup candidates and can use the configured Arr action."}
+          : outcome === "match"
+            ? "Evaluated only when requested through the API (rules:read). Takes no action."
+            : "Matching items become cleanup candidates and can use the configured Arr action."}
       </p>
 
       {#if outcome === "protect"}
@@ -1278,7 +1285,9 @@
       <Dialog.Description>
         {outcome === "protect"
           ? "Dry run only. Previewing does not save the rule or create protections."
-          : "Dry run only. Previewing does not save the rule or create cleanup candidates."}
+          : outcome === "match"
+            ? "Dry run only. Previewing does not save the rule."
+            : "Dry run only. Previewing does not save the rule or create cleanup candidates."}
       </Dialog.Description>
     </Dialog.Header>
 
@@ -1375,9 +1384,11 @@
             .metadata.watch_completion_unavailable_count === 1
             ? ""
             : "s"} sit on a media server whose watch state could not be read, so
-          <strong>Fully watched by users</strong> is unknown for them and
-          matched neither <em>matches any</em> nor <em>matches none</em>. Run a
-          media sync or check that server before relying on this rule.
+          <strong>Fully watched by users</strong> and
+          <strong>Partial viewers in this or earlier seasons</strong> are
+          unknown for them and matched neither <em>matches any</em> nor
+          <em>matches none</em>. Run a media sync or check that server before
+          relying on this rule.
         </Notice>
       {/if}
       {#if previewData?.metadata && previewData.metadata.sonarr_unavailable_count > 0}

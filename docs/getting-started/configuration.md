@@ -25,6 +25,7 @@ Number-based cleanup is blocked when orders differ or cannot be verified. This i
 | `API_HOST` | Bind address for the API server |
 | `API_PORT` | HTTP port for the API server |
 | `DATA_DIR` | Persistent application data location |
+| `BACKUP_DIR` | Optional database backup location (default `DATA_DIR/backups`) |
 | `TZ` | Local timezone for cron-style schedules |
 | `UMASK` | Default permissions for created files |
 | `PROXY_TRUSTED_HOSTS` | Trusted reverse proxy IPs or CIDRs |

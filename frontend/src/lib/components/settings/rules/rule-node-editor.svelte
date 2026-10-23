@@ -714,6 +714,13 @@
       defaultOperator: "greater_than_or_equal",
     },
     {
+      value: "season.partial_viewer_usernames",
+      label: "Partial viewers in this or earlier seasons",
+      kind: "text",
+      operators: multiValueTextOperators,
+      defaultOperator: "not_exists",
+    },
+    {
       value: "season.is_latest_season",
       label: "Is latest season",
       kind: "boolean",
@@ -1517,6 +1524,7 @@
       "season.seasons_from_latest",
       "season.position_by_air_date",
       "season.watched_percent",
+      "season.partial_viewer_usernames",
       "seerr.requested",
       "seerr.last_requested_at",
       "seerr.days_since_last_requested",
@@ -1872,6 +1880,7 @@
     "playback_history.usernames",
     "playback.usernames",
     "playback.fully_watched_usernames",
+    "season.partial_viewer_usernames",
   ]);
   const isPlaybackUserListInput = (c: RuleCondition) =>
     PLAYBACK_USER_LIST_FIELDS.has(c.field) && listOperators.has(c.operator);
@@ -1887,6 +1896,8 @@
       return "Playback usernames (comma-separated)...";
     if (c.field === "playback.fully_watched_usernames")
       return "Usernames who finished it (comma-separated)...";
+    if (c.field === "season.partial_viewer_usernames")
+      return "Usernames part-way through (comma-separated)...";
     if (c.field === "tmdb.collection_name")
       return "Collection names (comma-separated)...";
     if (isGenreField(c.field)) return "Genres (comma-separated)...";

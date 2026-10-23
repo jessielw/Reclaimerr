@@ -80,8 +80,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def init_db() -> None:
-    """Run pending Alembic migrations and configure WAL mode."""
+def alembic_config() -> AlembicConfig:
     # derive the alembic scripts path from __file__ so it resolves correctly
     # in all three deployment modes (docker, source, pyinstaller bundle) without
     # depending on CWD or alembic.ini being present at runtime.
@@ -90,6 +89,18 @@ async def init_db() -> None:
     cfg.set_main_option(
         "script_location", str(Path(__file__).resolve().parent.parent / "alembic")
     )
+    return cfg
+
+
+async def init_db() -> None:
+    """Apply a staged backup restore, run pending Alembic migrations and configure WAL mode."""
+    # a staged restore swaps the database file, so it has to happen before the
+    # engine opens its first connection
+    from backend.services.database_backup import apply_pending_restore
+
+    apply_pending_restore()
+
+    cfg = alembic_config()
     global _migrating
     _migrating = True
     try:

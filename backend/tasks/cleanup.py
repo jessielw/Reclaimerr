@@ -40,8 +40,10 @@ from backend.core.rule_engine import (
     RANK_RULE_FIELDS,
     REGEX_OPERATORS,
     RULE_OUTCOME_CANDIDATE,
+    RULE_OUTCOME_MATCH,
     RULE_OUTCOME_PROTECT,
     RULE_VALUE_UNAVAILABLE,
+    SEASON_PARTIAL_VIEWER_FIELDS,
     SONARR_RULE_FIELDS,
     TAG_SUBSTRING_OPERATORS,
     TARGET_EPISODE,
@@ -1327,15 +1329,17 @@ async def collect_rule_preview_matches_with_metadata(
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
     metadata.playback_error = playback_result.error
-    is_protection_preview = bool(rules) and all(
-        normalize_rule_outcome(rule) == RULE_OUTCOME_PROTECT for rule in rules
+    # favorites and protections only guard against deletion, so they hide items
+    # from cleanup previews but not from protect or match-only rules
+    has_candidate_rules = not rules or any(
+        normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE for rule in rules
     )
     matches = await _collect_rule_match_records(
         db,
         rules,
         preview_metadata=metadata,
-        exclude_favorites=not is_protection_preview,
-        exclude_protected=not is_protection_preview,
+        exclude_favorites=has_candidate_rules,
+        exclude_protected=has_candidate_rules,
         target_ids_by_scope=target_ids_by_scope,
     )
     metadata.matched_count = len(matches)
@@ -1979,6 +1983,7 @@ WATCH_SENSITIVE_RULE_FIELDS = frozenset(
         "series.fully_watched",
         "series.watched_percent",
         "playback.fully_watched_usernames",
+        *SEASON_PARTIAL_VIEWER_FIELDS,
         "watch.view_count",
         "watch.last_viewed_at",
         "watch.days_since_last_watched",
@@ -4399,6 +4404,23 @@ def _completed_watchers(
     }
 
 
+def _partial_watchers(
+    watched_by_person: Mapping[WatchPerson, set[tuple[int, int]]],
+    expected: set[tuple[int, int]],
+) -> set[str]:
+    """Names of everyone who finished some, but not all, expected episodes.
+
+    Never starting a season is not partial: it says nothing about whether that
+    person is still working through the show.
+    """
+    return {
+        name
+        for person, watched in watched_by_person.items()
+        if 0 < len(expected & watched) < len(expected)
+        for name in person
+    }
+
+
 async def _activate_watch_user_aliases_for_rules(
     db: AsyncSession, rules: list[ReclaimRule]
 ) -> None:
@@ -4432,8 +4454,14 @@ async def _activate_watch_completion_for_rules(
     denominator `season.fully_watched` and `series.fully_watched` use, so a
     season still carrying unaired episode numbers cannot read as finished just
     because somebody caught up with what has downloaded so far.
+
+    The same per-person episode sets also answer `Partial viewers in this or
+    earlier seasons`, so a season can be reclaimed once someone finished it
+    without pulling it from a viewer still working towards it.
     """
-    if not _rules_use_any_field(rules, WATCH_COMPLETION_RULE_FIELDS):
+    if not _rules_use_any_field(
+        rules, WATCH_COMPLETION_RULE_FIELDS | SEASON_PARTIAL_VIEWER_FIELDS
+    ):
         WatchCompletionResolver({}).activate()
         return
 
@@ -4640,6 +4668,7 @@ async def _activate_watch_completion_for_rules(
             )
 
     usernames_by_target: dict[tuple[str, int, int | None, int | None], set[str]] = {}
+    partial_by_season: dict[tuple[int, int], set[str]] = {}
 
     for tmdb_id in movie_tmdb_ids:
         if (MediaType.MOVIE, tmdb_id) in unobservable_keys:
@@ -4675,6 +4704,27 @@ async def _activate_watch_completion_for_rules(
                 _completed_watchers(watched_by_person, expected)
             )
 
+        # A season is checked together with every regular season before it, so
+        # someone part-way through season 1 holds season 2 back. Specials only
+        # check themselves. A season no longer in the library has no inventory
+        # left to judge and is skipped; one Sonarr cannot answer for leaves the
+        # answer unknown.
+        without_inventory = seasons_without_inventory.get(tmdb_id, set())
+        library_seasons = expected_by_season.keys() | without_inventory
+        for season_number in library_seasons:
+            checked = {
+                number for number in library_seasons if 0 < number <= season_number
+            } | {season_number}
+            if checked & without_inventory:
+                continue
+            partial_by_season[(tmdb_id, season_number)] = {
+                name
+                for number in checked
+                for name in _partial_watchers(
+                    watched_by_person, expected_by_season[number]
+                )
+            }
+
         # Season 0 specials never count towards the series, matching
         # `series.fully_watched` and the requester-watch series rollup. One
         # regular season Sonarr cannot answer for leaves the whole series
@@ -4698,7 +4748,7 @@ async def _activate_watch_completion_for_rules(
             watched_by_person, series_expected
         )
 
-    WatchCompletionResolver(usernames_by_target).activate()
+    WatchCompletionResolver(usernames_by_target, partial_by_season).activate()
     LOG.debug(
         f"Activated watch completion resolver for {len(usernames_by_target)} target(s) "
         f"across {len(movie_tmdb_ids)} movie and {len(series_tmdb_ids)} series key(s)"
@@ -5762,7 +5812,13 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         result = await db.execute(
             select(ReclaimRule).where(ReclaimRule.enabled == True)
         )
-        rules = result.scalars().all()
+        # match-only rules are evaluated on demand through the API, so they
+        # take no part in scans and must not trigger provider refreshes
+        rules = [
+            rule
+            for rule in result.scalars().all()
+            if normalize_rule_outcome(rule) != RULE_OUTCOME_MATCH
+        ]
 
         if not rules:
             LOG.info(

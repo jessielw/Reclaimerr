@@ -22,6 +22,8 @@ services:
 
 ```yaml
 DATA_DIR=./data
+# Optional; defaults to DATA_DIR/backups
+# BACKUP_DIR=/backups
 API_HOST=0.0.0.0
 API_PORT=8000
 TZ=America/New_York
