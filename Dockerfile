@@ -2,7 +2,7 @@
 # cSpell:disable
 
 ## frontend build stage
-FROM node:25-alpine3.22 AS frontend-build
+FROM node:26-alpine3.22 AS frontend-build
 WORKDIR /frontend
 ARG VITE_APP_CHANNEL=dev
 COPY frontend/package.json ./package.json
