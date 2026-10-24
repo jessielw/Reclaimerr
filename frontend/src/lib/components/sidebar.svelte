@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
   import { onMount } from "svelte";
-  import { link, location } from "svelte-spa-router";
+  import { link, router } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import ThemeToggle from "./theme-toggle.svelte";
   import SidebarNotices from "./sidebar-notices.svelte";
@@ -182,7 +182,7 @@
 
   // function to check if a nav item is active
   const isActive = (path: string): boolean => {
-    return $location === path;
+    return router.location === path;
   };
 
   // A proxy-managed session is owned by the identity provider, not by us.

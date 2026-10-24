@@ -613,8 +613,7 @@
               <Label class="mb-1">Body template</Label><textarea
                 class="min-h-20 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
                 placeholder="Leave empty to send the full JSON event"
-                bind:value={webhook.body_template}
-              ></textarea>
+                bind:value={webhook.body_template}></textarea>
             </div>
           {/if}
         </div>

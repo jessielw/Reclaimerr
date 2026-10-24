@@ -139,8 +139,11 @@
   let pathMappingScopes = $state<PathMappingScope[]>([]);
   const serviceTypeOptions = ["plex", "jellyfin", "emby", "radarr", "sonarr"];
 
-  const parseOptionalSeconds = (value: string): number | null => {
-    if (!value.trim()) return null;
+  // number inputs bind as number|null once edited, so don't assume a string
+  const parseOptionalSeconds = (
+    value: string | number | null,
+  ): number | null => {
+    if (value === null || String(value).trim() === "") return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   };
@@ -282,14 +285,14 @@
     );
 
     if (
-      generalSettings.workerPollMinSeconds.trim() &&
+      String(generalSettings.workerPollMinSeconds ?? "").trim() &&
       workerPollMinSeconds === null
     ) {
       return "Worker poll minimum must be a valid number of seconds";
     }
 
     if (
-      generalSettings.workerPollMaxSeconds.trim() &&
+      String(generalSettings.workerPollMaxSeconds ?? "").trim() &&
       workerPollMaxSeconds === null
     ) {
       return "Worker poll maximum must be a valid number of seconds";

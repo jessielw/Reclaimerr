@@ -4,13 +4,7 @@
   import { MediaType } from "$lib/types/shared";
 
   type TMDBPosterSizeOption =
-    | "92"
-    | "154"
-    | "185"
-    | "342"
-    | "500"
-    | "780"
-    | "original";
+    "92" | "154" | "185" | "342" | "500" | "780" | "original";
 
   let {
     mediaType,

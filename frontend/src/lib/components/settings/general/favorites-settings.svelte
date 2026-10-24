@@ -235,8 +235,7 @@
               px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
             placeholder="user1, user2"
             bind:value={favoritesUsernamesInput}
-            disabled={favoritesProtectAllUsers}
-          ></textarea>
+            disabled={favoritesProtectAllUsers}></textarea>
           <p class="text-xs text-muted-foreground mt-1">
             Comma or newline separated. Matching is case-insensitive.
           </p>

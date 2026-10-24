@@ -508,8 +508,7 @@
           rows={3}
           class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm
             placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1
-            focus-visible:ring-ring resize-none"
-        ></textarea>
+            focus-visible:ring-ring resize-none"></textarea>
       </div>
     </div>
     <Dialog.Footer>
@@ -554,8 +553,7 @@
           rows={3}
           class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm
             placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1
-            focus-visible:ring-ring resize-none"
-        ></textarea>
+            focus-visible:ring-ring resize-none"></textarea>
       </div>
     </div>
     <Dialog.Footer>
@@ -688,8 +686,7 @@
           class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm
             placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1
             focus-visible:ring-ring resize-none"
-          placeholder="Applied to all selected requests"
-        ></textarea>
+          placeholder="Applied to all selected requests"></textarea>
       </div>
     </div>
     <Dialog.Footer>
@@ -728,8 +725,7 @@
         bind:value={bulkNotes}
         rows={3}
         class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
-        placeholder="Applied to all selected requests"
-      ></textarea>
+        placeholder="Applied to all selected requests"></textarea>
     </div>
     <Dialog.Footer>
       <Button variant="outline" onclick={() => (bulkDenyDialogOpen = false)}>

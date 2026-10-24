@@ -362,8 +362,7 @@
       return;
     }
     const result = ((job.payload ?? {}) as Record<string, unknown>).result as
-      | DuplicateJobResult
-      | undefined;
+      DuplicateJobResult | undefined;
     if (!result) return;
     if ((result.succeeded ?? 0) > 0) {
       toast.success(

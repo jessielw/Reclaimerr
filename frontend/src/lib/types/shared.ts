@@ -317,9 +317,7 @@ export interface GeneralSettings {
   playback_unavailable_protection_enabled?: boolean;
   media_server_fallback_enabled: boolean;
   default_arr_delete_behavior:
-    | "unmonitor"
-    | "unmonitor_only"
-    | "remove_if_empty";
+    "unmonitor" | "unmonitor_only" | "remove_if_empty";
   add_arr_import_exclusions_on_delete: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
@@ -724,11 +722,7 @@ export enum BackgroundJobPriority {
 }
 
 export type CandidateFileOpScope =
-  | "movie"
-  | "version"
-  | "series"
-  | "season"
-  | "episode";
+  "movie" | "version" | "series" | "season" | "episode";
 
 export interface CandidateFileOpJobItem {
   candidate_id: number;
@@ -1150,12 +1144,7 @@ export interface ProtectionRequest {
   poster_url: string | null;
   media_id: number;
   target_scope:
-    | "movie"
-    | "movie_version"
-    | "series"
-    | "season"
-    | "episode"
-    | null;
+    "movie" | "movie_version" | "series" | "season" | "episode" | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -1198,12 +1187,7 @@ export interface DeleteRequest {
   poster_url: string | null;
   media_id: number;
   target_scope:
-    | "movie"
-    | "movie_version"
-    | "series"
-    | "season"
-    | "episode"
-    | null;
+    "movie" | "movie_version" | "series" | "season" | "episode" | null;
   movie_version_id: number | null;
   media_title: string;
   media_year: number | null;
@@ -1390,11 +1374,7 @@ export interface ReclaimCandidateEntry {
       operator: string;
       operator_label: string;
       expected:
-        | string
-        | number
-        | boolean
-        | (string | number | boolean)[]
-        | null;
+        string | number | boolean | (string | number | boolean)[] | null;
       actual: string | number | boolean | (string | number | boolean)[] | null;
       details: string[];
       display: string;
@@ -1411,11 +1391,7 @@ export interface ReclaimCandidateEntry {
   auto_delete_is_eligible: boolean;
   auto_delete_is_active: boolean;
   auto_delete_state:
-    | "disabled"
-    | "scheduled"
-    | "eligible"
-    | "postponed"
-    | "canceled";
+    "disabled" | "scheduled" | "eligible" | "postponed" | "canceled";
   auto_delete_cancelled_at: string | null;
   auto_delete_postponed_until: string | null;
   auto_delete_timer_started_at: string | null;

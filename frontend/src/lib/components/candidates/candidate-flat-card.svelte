@@ -10,14 +10,7 @@
   import CandidateMatchDetails from "$lib/components/candidates/candidate-match-details.svelte";
 
   type PosterSize =
-    | "92"
-    | "154"
-    | "185"
-    | "342"
-    | "500"
-    | "780"
-    | "original"
-    | number;
+    "92" | "154" | "185" | "342" | "500" | "780" | "original" | number;
 
   interface Props {
     entry: ReclaimCandidateEntry;

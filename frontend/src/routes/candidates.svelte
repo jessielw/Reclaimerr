@@ -500,8 +500,7 @@
     baseline: { time: number; completed: number } | null,
   ) => {
     const progress = candidateJobPayload(job).progress as
-      | CandidateFileOpJobProgress
-      | undefined;
+      CandidateFileOpJobProgress | undefined;
     const total = progress?.total_items ?? 0;
     const completed = progress?.completed_items ?? 0;
     // rate is measured from when this page first saw the job, so a resumed
@@ -567,8 +566,7 @@
           completed:
             (
               candidateJobPayload(job).progress as
-                | CandidateFileOpJobProgress
-                | undefined
+                CandidateFileOpJobProgress | undefined
             )?.completed_items ?? 0,
         };
         updateActiveJob(jobId, job, baseline);
