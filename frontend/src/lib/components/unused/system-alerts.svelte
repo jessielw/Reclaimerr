@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { location } from "svelte-spa-router";
+  import { router } from "svelte-spa-router";
   import { auth } from "$lib/stores/auth";
   import { get_api } from "$lib/api";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
@@ -33,7 +33,7 @@
   // fetch again whenever the route changes so alerts clear as soon as the user
   // fixes the issue
   $effect(() => {
-    void $location;
+    void router.location;
     fetchAlerts();
   });
 

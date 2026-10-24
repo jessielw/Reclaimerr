@@ -43,6 +43,9 @@ dist
 dist-ssr
 *.local
 
+# frontend stuff
+frontend/.svelte-check/
+
 # docker
 compose.yml
 compose.yaml

@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
   import Router from "svelte-spa-router";
-  import { location } from "svelte-spa-router";
+  import { router } from "svelte-spa-router";
   import wrap from "svelte-spa-router/wrap";
   import { auth } from "$lib/stores/auth";
   import { ModeWatcher } from "mode-watcher";
@@ -118,10 +118,10 @@
 
   $effect(() => {
     if ($auth.loading || needsSetup || !$auth.isAuthenticated) return;
-    const page = pageForPath($location);
+    const page = pageForPath(router.location);
     if (!page || hasPageAccess($auth.user, page)) return;
     const target = firstAccessiblePath($auth.user);
-    if (target === $location || typeof window === "undefined") return;
+    if (target === router.location || typeof window === "undefined") return;
     window.location.hash = `#${target}`;
   });
 </script>
