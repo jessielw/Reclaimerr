@@ -120,7 +120,7 @@ function editDistance(left, right) {
  */
 function wordScore(queryWord, candidateWord) {
   if (queryWord === candidateWord) return 1;
-  if (queryWord.length >= 3 && candidateWord.startsWith(queryWord)) return 0.94;
+  if (candidateWord.startsWith(queryWord)) return 0.94;
   if (queryWord.length >= 3 && candidateWord.includes(queryWord)) return 0.88;
   if (candidateWord.length >= 3 && queryWord.includes(candidateWord))
     return 0.8;

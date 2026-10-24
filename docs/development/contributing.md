@@ -32,6 +32,7 @@ npm run dev
 
 - Base work on the `dev` branch unless the maintainers tell you otherwise.
 - Target pull requests at `dev`.
+- User-facing changes get a line under `## [Unreleased]` in `CHANGELOG.md` (Added / Changed / Fixed). Maintainers move these under the version heading at release time, and the release notes workflow publishes them. See [Release Process](release-process.md).
 
 ## Architecture
 

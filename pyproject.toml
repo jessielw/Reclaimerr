@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.6.1"
+dynamic = ["version"]
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -12,7 +12,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "authlib>=1.9.1",
     "cryptography>=50.0.2",
-    "fastapi[standard]>=0.161.1",
+    "fastapi[standard]>=0.162.0",
     "granian>=2.8.5",
     "itsdangerous>=2.2.0",
     "niquests[speedups]>=3.21.2",
@@ -54,6 +54,11 @@ Documentation = "https://jessielw.github.io/Reclaimerr"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# single source of truth is backend/core/__version__.py
+path = "backend/core/__version__.py"
+pattern = 'VersionInfo\.parse\("(?P<version>[^"]+)"\)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend/core", "backend/api", "backend/services"]
