@@ -1,6 +1,6 @@
 {
   "name": "reclaimerr-web",
-  "version": "0.6.2-beta.1",
+  "version": "0.6.2",
   "type": "module",
   "scripts": {
     "test:unsaved-changes": "node --test tests/unsaved-changes.test.mjs",
