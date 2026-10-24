@@ -8,11 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Bumped fastapi.
+- Bumped dependencies.
 
 ### Fixed
 
 - Rule node editor search was not working correctly in some cases.
+- Edge case bugs where Reclaim Candidates page error and settings page could throw errors when utilizing actions.
 
 ## [0.6.1] - 2026-10-23
 
