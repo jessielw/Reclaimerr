@@ -1,0 +1,100 @@
+name: Release Notes
+
+# Fills a new GitHub release with its CHANGELOG.md section plus GitHub's generated
+# "What's Changed", marked "Wait to grab" until the Docker and desktop builds for
+# the tag have both succeeded. Stable tags use their own `## [X.Y.Z]` section;
+# prerelease tags (X.Y.Z-beta.N) use `## [Unreleased]`.
+
+on:
+  release:
+    types: [published]
+  workflow_run:
+    workflows: ["Docker Build", "Desktop Build"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+# serialize the release event and both build completions for the same tag
+concurrency:
+  group: release-notes-${{ github.event.release.tag_name || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  notes:
+    name: Update release notes
+    runs-on: ubuntu-latest
+    # for workflow_run only tag pushes matter, not manual dispatch runs
+    if: github.event_name == 'release' || github.event.workflow_run.event == 'push'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name || github.event.workflow_run.head_branch }}
+      MARKER: "# Wait to grab - release is building (until this is removed)"
+
+    steps:
+      - name: Check out the tagged commit
+        if: github.event_name == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Fill release body
+        if: github.event_name == 'release'
+        run: |
+          # leave a hand-written body alone
+          existing=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
+          if [ -n "${existing//[[:space:]]/}" ]; then
+            echo "Release already has a body, skipping."
+            exit 0
+          fi
+
+          # prereleases (contain a '-') use the Unreleased section
+          if [[ "$TAG" == *-* ]]; then heading="Unreleased"; else heading="$TAG"; fi
+
+          section=$(awk -v h="## [$heading]" '
+            /^## \[/ { if (on) exit; if (index($0, h) == 1) { on = 1; next } }
+            on && (NF || seen) { seen = 1; print }
+          ' CHANGELOG.md)
+
+          generated=$(gh api -X POST "repos/$REPO/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body)
+
+          {
+            echo "$MARKER"
+            echo
+            if grep -q '^- ' <<< "$section"; then
+              echo "$section"
+            else
+              echo "> Changelog section \`$heading\` is missing or empty, please edit these notes."
+              echo "::warning::CHANGELOG.md has no entries under [$heading]"
+            fi
+            echo
+            echo "----"
+            echo
+            echo "$generated"
+          } > body.md
+
+          gh release edit "$TAG" --repo "$REPO" --notes-file body.md
+
+      - name: Remove the wait line once both builds succeeded
+        run: |
+          # no release for this tag (yet), nothing to edit
+          if ! body=$(gh release view "$TAG" --repo "$REPO" --json body -q .body); then
+            echo "No release for $TAG, skipping."
+            exit 0
+          fi
+
+          for wf in docker.yml desktop.yml; do
+            result=$(gh run list --repo "$REPO" --workflow "$wf" --branch "$TAG" \
+              --event push --limit 1 --json conclusion -q '.[0].conclusion')
+            if [ "$result" != "success" ]; then
+              echo "$wf is '${result:-not found}', keeping the wait line."
+              exit 0
+            fi
+          done
+
+          printf '%s\n' "$body" | tr -d '\r' | grep -vxF "$MARKER" > body.md || true
+          gh release edit "$TAG" --repo "$REPO" --notes-file body.md
+          echo "Builds finished, wait line removed."
