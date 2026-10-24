@@ -232,8 +232,7 @@
           disabled={busy}
           rows="5"
           class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          placeholder="https://example.com/background.jpg"
-        ></textarea>
+          placeholder="https://example.com/background.jpg"></textarea>
         <p class="text-xs text-muted-foreground">
           Up to 50 direct image URLs. One image stays static; multiple images
           rotate in the listed order. These replace the default rotation. Use

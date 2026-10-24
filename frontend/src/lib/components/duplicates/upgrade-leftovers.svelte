@@ -254,8 +254,7 @@
       return;
     }
     const result = ((job.payload ?? {}) as Record<string, unknown>).result as
-      | JobResult
-      | undefined;
+      JobResult | undefined;
     if (!result) return;
     if ((result.succeeded ?? 0) > 0) {
       toast.success(

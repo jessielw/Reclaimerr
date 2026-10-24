@@ -70,12 +70,7 @@
 
   type RuleTargetScope = "movie_version" | "series" | "season" | "episode";
   type FieldKind =
-    | "number"
-    | "bytes"
-    | "text"
-    | "boolean"
-    | "temporal"
-    | "user_scoped_number";
+    "number" | "bytes" | "text" | "boolean" | "temporal" | "user_scoped_number";
 
   interface FieldConfig {
     value: string;
@@ -1968,18 +1963,16 @@
     node.type === "group" &&
     canMoveRuleNodeToGroup(dragState.activeNode, node, depth, MAX_GROUP_DEPTH);
 
-  const dndOptions = $derived.by(
-    (): DndOptions<RuleDndItem> => ({
-      items: dndItems,
-      type: RULE_DND_TYPE,
-      flipDurationMs: 150,
-      dropFromOthersDisabled:
-        dragState.activeNode !== null && !canAcceptActiveNode(),
-      dropTargetClasses: ["rule-drop-target"],
-      delayTouchStart: 120,
-      useCursorForDetection: true,
-    }),
-  );
+  const dndOptions = $derived.by((): DndOptions<RuleDndItem> => ({
+    items: dndItems,
+    type: RULE_DND_TYPE,
+    flipDurationMs: 150,
+    dropFromOthersDisabled:
+      dragState.activeNode !== null && !canAcceptActiveNode(),
+    dropTargetClasses: ["rule-drop-target"],
+    delayTouchStart: 120,
+    useCursorForDetection: true,
+  }));
 
   const handleDndConsider = (event: CustomEvent<DndEvent<RuleDndItem>>) => {
     if (node.type !== "group") return;
