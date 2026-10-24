@@ -1,6 +1,6 @@
 [project]
 name = "reclaimerr"
-version = "0.6.1"
+dynamic = ["version"]
 description = "Backend of Reclaimerr"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -54,6 +54,11 @@ Documentation = "https://jessielw.github.io/Reclaimerr"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# single source of truth is backend/core/__version__.py
+path = "backend/core/__version__.py"
+pattern = 'VersionInfo\.parse\("(?P<version>[^"]+)"\)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend/core", "backend/api", "backend/services"]
