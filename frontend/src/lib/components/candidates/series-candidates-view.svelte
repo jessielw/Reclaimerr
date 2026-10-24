@@ -97,7 +97,7 @@
 </script>
 
 <div class="divide-y divide-border">
-  {#each rows as row (row.kind === "flat" ? `mobile-flat-${row.entry.id}` : `mobile-group-${row.media_id}`)}
+  {#each rows as row (row.kind === "flat" ? `mobile-flat-${row.entry.id}` : `mobile-group-${row.group_type}-${row.media_id}`)}
     {#if row.kind === "flat"}
       {@const entry = row.entry}
       <CandidateFlatCard
