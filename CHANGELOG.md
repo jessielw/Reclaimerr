@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped fastapi.
+
 ### Fixed
 
 - Rule node editor search was not working correctly in some cases.
