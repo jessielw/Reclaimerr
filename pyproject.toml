@@ -23,7 +23,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "semver>=3.1.0",
     "slowapi>=0.1.10",
-    "sqlalchemy[asyncio]>=2.0.54,<2.1",
+    "sqlalchemy[asyncio]>=2.0.54,<2.2",
     "tenacity>=9.2.1",
 ]
 
