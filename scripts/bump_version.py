@@ -92,7 +92,12 @@ def main() -> None:
         [npm, "install", "--package-lock-only"], cwd=FRONTEND_DIR, check=True
     )
 
-    print(f"Done. Now add a [{target}] section to CHANGELOG.md.")
+    if target.prerelease:
+        print("Done. Prereleases use the [Unreleased] section of CHANGELOG.md as is.")
+    else:
+        print(
+            f"Done. Now move the [Unreleased] entries under [{target}] in CHANGELOG.md."
+        )
 
 
 if __name__ == "__main__":
