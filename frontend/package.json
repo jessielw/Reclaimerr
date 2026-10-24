@@ -30,7 +30,7 @@
     "mode-watcher": "^1.1.0",
     "postcss": "^8.5.26",
     "prettier": "^3.8.1",
-    "prettier-plugin-svelte": "^3.4.1",
+    "prettier-plugin-svelte": "^4.1.1",
     "svelte": "^5.48.0",
     "svelte-check": "^4.3.5",
     "svelte-dnd-action": "^0.9.69",
