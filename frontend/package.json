@@ -47,6 +47,6 @@
     "@tailwindcss/typography": "^0.5.20",
     "pathe": "^2.0.3",
     "svelte-exmarkdown": "^5.0.2",
-    "svelte-spa-router": "^4.0.1"
+    "svelte-spa-router": "^5.1.1"
   }
 }
