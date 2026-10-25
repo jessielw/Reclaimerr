@@ -582,7 +582,7 @@
   const notifyCandidateJobTerminalState = (job: BackgroundJobRecord) => {
     if (job.status === BackgroundJobStatus.Failed) {
       toast.error(
-        job.error_message ??
+        job.error_message ||
           `${candidateJobOperation(job) === "move" ? "Move" : "Delete"} job failed.`,
       );
       return;

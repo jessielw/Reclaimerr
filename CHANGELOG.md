@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Failed TV series deletes now say why. When Reclaimerr could not find Sonarr's series folder, the error showed only "Series file removal could not be confirmed". It now names the folder it looked for, any error from removing it, and why the media-server fallback could not run. A failed media-server fallback delete was only written to the log, so the candidate showed a generic "failed before a scoped handler could complete". It now shows the media server's error. When both Sonarr and the media-server fallback fail, both reasons are kept, for seasons and episodes too.
+- Errors with no message, such as timeouts, were stored as blank reasons or a bare trailing colon. Delete jobs could fail with an empty toast. They now show the error type. A Sonarr request that keeps failing shows the last underlying error and the attempt count, instead of `RetryError[<Future …>]`.
+- One failed series in a Sonarr delete batch no longer marks every other series in the batch as failed, or drops series that Sonarr had already removed.
+- Series folder removal now applies path mappings scoped to a single Sonarr instance, as season removal already did. Before, only global and Sonarr-wide mappings were tried, so the folder was reported as not found.
+- The **Delete failed** line on a candidate shows the full reason (up to 500 characters) instead of cutting it at 220, which often removed the Arr or media-server response.
+
 ## [0.6.3] - 2026-10-24
 
 ### Changed
