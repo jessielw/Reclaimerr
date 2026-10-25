@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 import niquests
+from tenacity import RetryError
 
 RETRY_CODES = (429, 503, 502, 504)
 
@@ -136,3 +137,30 @@ def summarize_error_message(
     if not normalized:
         return None
     return _truncate(_redact_sensitive(normalized), max_chars=max_chars)
+
+
+# carry an already-written message; their type name adds nothing
+_PLAIN_MESSAGE_EXCEPTIONS = (Exception, ValueError, RuntimeError)
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Readable, never-empty text for an exception stored as a failure reason.
+
+    `str(exc)` is empty for many timeout errors and says little for a bare
+    `KeyError`, and a tenacity `RetryError` only names the future it wraps, so
+    the type is kept and retries are unwrapped to the error that ended them.
+    """
+    if isinstance(exc, RetryError):
+        last = exc.last_attempt
+        inner = last.exception() if last.failed else None
+        if inner is not None:
+            return (
+                f"{describe_exception(inner)} "
+                f"(gave up after {last.attempt_number} attempts)"
+            )
+    text = str(exc).strip()
+    if not text:
+        return type(exc).__name__
+    if type(exc) in _PLAIN_MESSAGE_EXCEPTIONS:
+        return text
+    return f"{type(exc).__name__}: {text}"

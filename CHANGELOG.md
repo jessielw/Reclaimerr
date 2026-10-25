@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Don't let "Group movies into collections" hide movies from sync.
+- Failed series and movie deletes now say why: the path Reclaimerr looked for, the removal error, and why the media server fallback could not take over.
+- Errors with no message (such as timeouts) no longer show as blank reasons or empty toasts.
+- One failed series in a Sonarr delete batch no longer marks the rest of the batch as failed.
+- Series folder removal now applies path mappings scoped to a single Sonarr instance.
+- The **Delete failed** line on a candidate shows the full reason instead of cutting it at 220 characters.
 
 ## [0.6.3] - 2026-10-24
 

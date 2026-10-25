@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.core.logger import LOG
-from backend.core.utils.request import summarize_error_message
+from backend.core.utils.request import describe_exception, summarize_error_message
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import (
@@ -351,7 +351,7 @@ async def _run_candidate_file_op_job_unlocked(
                 candidate_ids=payload.candidate_ids,
                 succeeded=succeeded,
                 failed=max(failed, len(payload.candidate_ids) - completed_items),
-                fallback_error=str(exc),
+                fallback_error=describe_exception(exc),
             )
         raise
     finally:

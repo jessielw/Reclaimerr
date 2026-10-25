@@ -20,8 +20,11 @@ from backend.database.models import (
     GeneralSettings,
     Movie,
     MovieArrRef,
+    MovieVersion,
     ReclaimCandidate,
     Series,
+    SeriesArrRef,
+    SeriesServiceRef,
     ServiceConfig,
 )
 from backend.enums import MediaType, Service
@@ -43,6 +46,9 @@ class FakeRadarr:
     async def rescan_movies(self, movie_ids: list[int]) -> None:
         pass
 
+    async def unmonitor_movies(self, movie_ids: list[int]) -> None:
+        pass
+
 
 class FakeSonarr:
     def __init__(self) -> None:
@@ -55,6 +61,25 @@ class FakeSonarr:
         add_import_exclusion: bool = False,
     ) -> None:
         self.deleted_series.append(series_id)
+
+    async def unmonitor_series(self, series_ids: list[int]) -> None:
+        pass
+
+    async def refresh_series(self, series_ids: list[int]) -> None:
+        pass
+
+
+class TimingOutSonarr(FakeSonarr):
+    async def unmonitor_series(self, series_ids: list[int]) -> None:
+        raise TimeoutError()
+
+
+class FailingMediaServer:
+    async def delete_item(self, item_id: str) -> None:
+        raise ValueError(
+            f"Failed to delete Plex item {item_id} (status=500, method=DELETE, "
+            'body={"error":"library is locked"})'
+        )
 
 
 def _patch_services(
@@ -149,6 +174,109 @@ async def _seed_series_candidate(db: AsyncSession, *, removed_at: datetime) -> i
         reason="cleanup",
         reason_data=[],
         series_id=series.id,
+        estimated_space_bytes=100,
+    )
+    db.add(candidate)
+    await db.flush()
+    await db.commit()
+    return candidate.id
+
+
+async def _seed_live_series_candidate(
+    db: AsyncSession,
+    *,
+    sonarr_series_id: int | None,
+    plex_item_id: str | None,
+    sonarr_path: str | None = None,
+) -> int:
+    db.add(GeneralSettings(media_server_fallback_enabled=True, path_mappings=[]))
+    service_config = ServiceConfig(
+        service_type=Service.SONARR,
+        base_url="http://sonarr",
+        api_key="secret",
+        name="Sonarr",
+        enabled=True,
+    )
+    series = Series(title="Show1", tmdb_id=201, year=2020, size=100)
+    db.add_all([service_config, series])
+    await db.flush()
+    if sonarr_series_id is not None:
+        db.add(
+            SeriesArrRef(
+                series_id=series.id,
+                service_config_id=service_config.id,
+                arr_series_id=sonarr_series_id,
+                arr_series_path=sonarr_path,
+                tmdb_id=series.tmdb_id,
+            )
+        )
+    if plex_item_id is not None:
+        db.add(
+            SeriesServiceRef(
+                series_id=series.id,
+                service=Service.PLEX,
+                service_id=plex_item_id,
+                library_id="2",
+                library_name="TV",
+            )
+        )
+    candidate = ReclaimCandidate(
+        media_type=MediaType.SERIES,
+        matched_rule_ids=[],
+        matched_criteria={},
+        reason="cleanup",
+        reason_data=[],
+        series_id=series.id,
+        estimated_space_bytes=100,
+    )
+    db.add(candidate)
+    await db.flush()
+    await db.commit()
+    return candidate.id
+
+
+async def _seed_live_movie_candidate(
+    db: AsyncSession, *, radarr_movie_id: int | None, plex_path: str
+) -> int:
+    db.add(GeneralSettings(media_server_fallback_enabled=True, path_mappings=[]))
+    service_config = ServiceConfig(
+        service_type=Service.RADARR,
+        base_url="http://radarr",
+        api_key="secret",
+        name="Radarr",
+        enabled=True,
+    )
+    movie = Movie(title="Movie1", tmdb_id=101, year=2020, size=100)
+    db.add_all([service_config, movie])
+    await db.flush()
+    if radarr_movie_id is not None:
+        db.add(
+            MovieArrRef(
+                movie_id=movie.id,
+                service_config_id=service_config.id,
+                arr_movie_id=radarr_movie_id,
+                arr_movie_path=plex_path.rsplit("/", 1)[0],
+                tmdb_id=movie.tmdb_id,
+            )
+        )
+    db.add(
+        MovieVersion(
+            movie_id=movie.id,
+            service=Service.PLEX,
+            service_item_id="88",
+            service_media_id="880",
+            library_id="1",
+            library_name="Movies",
+            path=plex_path,
+        )
+    )
+    candidate = ReclaimCandidate(
+        media_type=MediaType.MOVIE,
+        matched_rule_ids=[],
+        matched_criteria={},
+        reason="cleanup",
+        reason_data=[],
+        movie_id=movie.id,
         estimated_space_bytes=100,
     )
     db.add(candidate)
@@ -363,6 +491,184 @@ def test_retry_replaces_the_previous_attempts_error(monkeypatch) -> None:
                 assert candidate.last_delete_error is not None
                 assert "a week ago" not in candidate.last_delete_error
                 assert "tombstoned in Reclaimerr" in candidate.last_delete_error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_series_media_server_failure_is_recorded(monkeypatch) -> None:
+    """A media-server fallback error used to reach only the log, leaving the
+    candidate with the generic 'failed before a scoped handler' text."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_series_candidate(
+                    db, sonarr_series_id=None, plex_item_id="77"
+                )
+
+            _patch_services(
+                monkeypatch, sonarr=FakeSonarr(), main_media_server=FailingMediaServer()
+            )
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert "could not delete 'Show1'" in error
+                assert "library is locked" in error
+                assert "scoped handler" not in error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_series_sonarr_and_fallback_failures_are_both_recorded(monkeypatch) -> None:
+    """An empty Sonarr exception left a bare 'config 1:' with nothing after it,
+    and the media-server fallback that followed reported nothing at all."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_series_candidate(
+                    db, sonarr_series_id=12, plex_item_id=None
+                )
+
+            _patch_services(
+                monkeypatch,
+                sonarr=TimingOutSonarr(),
+                main_media_server=FailingMediaServer(),
+            )
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert error.startswith(
+                    "Sonarr unmonitor failed for config 1: TimeoutError | then: "
+                )
+                assert "not linked to an item on the main media server" in error
+                # both reasons belong to one attempt
+                assert candidate.delete_attempts == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unreachable_series_folder_names_the_path(monkeypatch, tmp_path) -> None:
+    """Sonarr's folder not being visible to Reclaimerr (no mount or path
+    mapping) used to surface only as 'Series file removal could not be
+    confirmed'."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        missing = tmp_path / "tv" / "Show1"
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_series_candidate(
+                    db,
+                    sonarr_series_id=12,
+                    plex_item_id=None,
+                    sonarr_path=str(missing),
+                )
+
+            _patch_services(
+                monkeypatch, sonarr=FakeSonarr(), main_media_server=FailingMediaServer()
+            )
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert f"Sonarr folder '{missing}' was not found" in error
+                assert "no main media server item is linked" in error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_movie_media_server_failure_is_recorded(monkeypatch, tmp_path) -> None:
+    """Same gap as series: the media-server error reached only the log."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_movie_candidate(
+                    db,
+                    radarr_movie_id=None,
+                    plex_path=str(tmp_path / "Movie1" / "Movie1.mkv"),
+                )
+
+            _patch_services(
+                monkeypatch, radarr=FakeRadarr(), main_media_server=FailingMediaServer()
+            )
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert "could not delete 'Movie1'" in error
+                assert "library is locked" in error
+                assert "scoped handler" not in error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unreachable_movie_file_names_the_path(monkeypatch, tmp_path) -> None:
+    """A movie file Reclaimerr cannot see used to surface only as 'Movie file
+    removal could not be confirmed'."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        missing = tmp_path / "Movie1" / "Movie1.mkv"
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_movie_candidate(
+                    db, radarr_movie_id=55, plex_path=str(missing)
+                )
+
+            _patch_services(monkeypatch, radarr=FakeRadarr())
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert f"plex file '{missing}' was not found" in error
+                assert "no main media server item is linked" in error
         finally:
             await engine.dispose()
 
