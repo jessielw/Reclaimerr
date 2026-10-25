@@ -50,6 +50,60 @@ class EmbyFamilySeriesInventoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(fields), 2)
                 self.assertTrue(all("Genres" in value for value in fields))
 
+    async def test_inventory_disables_boxset_collapsing_and_skips_boxsets(
+        self,
+    ) -> None:
+        for service_class in (JellyfinService, EmbyService):
+            with self.subTest(service=service_class.__name__):
+                client = service_class(api_key="key", base_url="http://media-server")
+                seen_params: list[dict[str, Any]] = []
+
+                async def request(
+                    endpoint: str, *, params: dict[str, Any], timeout: int
+                ) -> dict[str, Any]:
+                    seen_params.append(params)
+                    kind = params["includeItemTypes"]
+                    return {
+                        "Items": [
+                            {
+                                "Id": f"{kind}-1",
+                                "Type": kind,
+                                "Name": "Real",
+                                "DateCreated": "2024-01-01T00:00:00",
+                                "ProviderIds": {"Tmdb": "100"},
+                                "UserData": {},
+                            },
+                            {
+                                "Id": "boxset-1",
+                                "Type": "BoxSet",
+                                "Name": "Some Collection",
+                                "DateCreated": "2024-01-01T00:00:00",
+                                "ProviderIds": {"Tmdb": "200"},
+                                "UserData": {},
+                            },
+                        ],
+                        "TotalRecordCount": 2,
+                    }
+
+                try:
+                    with patch.object(
+                        service_class, "_make_request", side_effect=request
+                    ):
+                        movies = await client.get_movies_for_user(
+                            "user", "movies", "Movies"
+                        )
+                        series = await client.get_series_for_user(
+                            "user", "shows", "Shows"
+                        )
+                finally:
+                    await client.session.close()
+
+                self.assertTrue(
+                    all(p["CollapseBoxSetItems"] == "false" for p in seen_params)
+                )
+                self.assertEqual([m.external_ids.tmdb for m in movies], [100])
+                self.assertEqual([s.external_ids.tmdb for s in series], [100])
+
     async def test_user_scoped_lookup_uses_items_route_for_jellyfin_v12(self) -> None:
         client = JellyfinService(api_key="key", base_url="http://jellyfin")
         calls: list[tuple[str, dict[str, Any]]] = []
