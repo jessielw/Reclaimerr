@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - One failed series in a Sonarr delete batch no longer marks the rest of the batch as failed.
 - Series folder removal now applies path mappings scoped to a single Sonarr instance.
 - The **Delete failed** line on a candidate shows the full reason instead of cutting it at 220 characters.
+- Delete failure reasons now capitalize media server names (Plex, Jellyfin, Emby).
 
 ## [0.6.3] - 2026-10-24
 

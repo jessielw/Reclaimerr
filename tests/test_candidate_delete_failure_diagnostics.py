@@ -667,7 +667,7 @@ def test_unreachable_movie_file_names_the_path(monkeypatch, tmp_path) -> None:
                 candidate = await db.get(ReclaimCandidate, candidate_id)
                 assert candidate is not None
                 error = candidate.last_delete_error or ""
-                assert f"plex file '{missing}' was not found" in error
+                assert f"Plex file '{missing}' was not found" in error
                 assert "no main media server item is linked" in error
         finally:
             await engine.dispose()

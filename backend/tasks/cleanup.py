@@ -10460,7 +10460,7 @@ async def _delete_movie_candidates(
                                     if not ver.path:
                                         removal_notes.append(
                                             f"no file path is recorded for the "
-                                            f"{ver.service.value} version"
+                                            f"{ver.service.value.title()} version"
                                         )
                                         continue
                                     local_path = resolve_path(
@@ -10473,7 +10473,8 @@ async def _delete_movie_candidates(
                                     )
                                     if not local_path:
                                         removal_notes.append(
-                                            f"{ver.service.value} file '{ver.path}' "
+                                            f"{ver.service.value.title()} file "
+                                            f"'{ver.path}' "
                                             "was not found by Reclaimerr, as-is or "
                                             "through a path mapping"
                                         )
@@ -12629,8 +12630,9 @@ async def _delete_movies_via_media_server(
         if not service_versions:
             reason = (
                 f"Media server fallback skipped: '{movie.title}' is not linked "
-                f"to an item on the main media server ({main_service_type}). Run a "
-                "media server sync, then retry"
+                "to an item on the main media server "
+                f"({main_service_type.value.title()}). Run a media server sync, "
+                "then retry"
             )
             await _add_candidate_delete_failure(candidate.id, reason)
             LOG.warning(reason)
@@ -12725,7 +12727,7 @@ async def _delete_movies_via_media_server(
             detail = describe_exception(e)
             await _add_candidate_delete_failure(
                 candidate.id,
-                f"Media server ({main_service_type}) could not delete "
+                f"Media server ({main_service_type.value.title()}) could not delete "
                 f"'{movie.title}': {detail}",
             )
             LOG.error(
@@ -12806,8 +12808,9 @@ async def _delete_series_via_media_server(
         if not ref:
             reason = (
                 f"Media server fallback skipped: '{series_obj.title}' is not linked "
-                f"to an item on the main media server ({main_service_type}). Run a "
-                "media server sync, then retry"
+                "to an item on the main media server "
+                f"({main_service_type.value.title()}). Run a media server sync, "
+                "then retry"
             )
             await _add_candidate_delete_failure(candidate.id, reason)
             LOG.warning(reason)
@@ -12872,7 +12875,7 @@ async def _delete_series_via_media_server(
             detail = describe_exception(e)
             await _add_candidate_delete_failure(
                 candidate.id,
-                f"Media server ({main_service_type}) could not delete "
+                f"Media server ({main_service_type.value.title()}) could not delete "
                 f"'{series_obj.title}': {detail}",
             )
             LOG.error(
