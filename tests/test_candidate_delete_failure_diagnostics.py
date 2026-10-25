@@ -20,6 +20,7 @@ from backend.database.models import (
     GeneralSettings,
     Movie,
     MovieArrRef,
+    MovieVersion,
     ReclaimCandidate,
     Series,
     SeriesArrRef,
@@ -43,6 +44,9 @@ class FakeRadarr:
         self.deleted.append({"movie_ids": movie_ids})
 
     async def rescan_movies(self, movie_ids: list[int]) -> None:
+        pass
+
+    async def unmonitor_movies(self, movie_ids: list[int]) -> None:
         pass
 
 
@@ -223,6 +227,56 @@ async def _seed_live_series_candidate(
         reason="cleanup",
         reason_data=[],
         series_id=series.id,
+        estimated_space_bytes=100,
+    )
+    db.add(candidate)
+    await db.flush()
+    await db.commit()
+    return candidate.id
+
+
+async def _seed_live_movie_candidate(
+    db: AsyncSession, *, radarr_movie_id: int | None, plex_path: str
+) -> int:
+    db.add(GeneralSettings(media_server_fallback_enabled=True, path_mappings=[]))
+    service_config = ServiceConfig(
+        service_type=Service.RADARR,
+        base_url="http://radarr",
+        api_key="secret",
+        name="Radarr",
+        enabled=True,
+    )
+    movie = Movie(title="Movie1", tmdb_id=101, year=2020, size=100)
+    db.add_all([service_config, movie])
+    await db.flush()
+    if radarr_movie_id is not None:
+        db.add(
+            MovieArrRef(
+                movie_id=movie.id,
+                service_config_id=service_config.id,
+                arr_movie_id=radarr_movie_id,
+                arr_movie_path=plex_path.rsplit("/", 1)[0],
+                tmdb_id=movie.tmdb_id,
+            )
+        )
+    db.add(
+        MovieVersion(
+            movie_id=movie.id,
+            service=Service.PLEX,
+            service_item_id="88",
+            service_media_id="880",
+            library_id="1",
+            library_name="Movies",
+            path=plex_path,
+        )
+    )
+    candidate = ReclaimCandidate(
+        media_type=MediaType.MOVIE,
+        matched_rule_ids=[],
+        matched_criteria={},
+        reason="cleanup",
+        reason_data=[],
+        movie_id=movie.id,
         estimated_space_bytes=100,
     )
     db.add(candidate)
@@ -547,6 +601,73 @@ def test_unreachable_series_folder_names_the_path(monkeypatch, tmp_path) -> None
                 assert candidate is not None
                 error = candidate.last_delete_error or ""
                 assert f"Sonarr folder '{missing}' was not found" in error
+                assert "no main media server item is linked" in error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_movie_media_server_failure_is_recorded(monkeypatch, tmp_path) -> None:
+    """Same gap as series: the media-server error reached only the log."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_movie_candidate(
+                    db,
+                    radarr_movie_id=None,
+                    plex_path=str(tmp_path / "Movie1" / "Movie1.mkv"),
+                )
+
+            _patch_services(
+                monkeypatch, radarr=FakeRadarr(), main_media_server=FailingMediaServer()
+            )
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert "could not delete 'Movie1'" in error
+                assert "library is locked" in error
+                assert "scoped handler" not in error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unreachable_movie_file_names_the_path(monkeypatch, tmp_path) -> None:
+    """A movie file Reclaimerr cannot see used to surface only as 'Movie file
+    removal could not be confirmed'."""
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        missing = tmp_path / "Movie1" / "Movie1.mkv"
+        try:
+            async with session_maker() as db:
+                candidate_id = await _seed_live_movie_candidate(
+                    db, radarr_movie_id=55, plex_path=str(missing)
+                )
+
+            _patch_services(monkeypatch, radarr=FakeRadarr())
+
+            deleted, failed = await cleanup.delete_specific_candidates(
+                [candidate_id], approved_by="tester"
+            )
+
+            assert (deleted, failed) == (0, 1)
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                error = candidate.last_delete_error or ""
+                assert f"plex file '{missing}' was not found" in error
                 assert "no main media server item is linked" in error
         finally:
             await engine.dispose()

@@ -8227,7 +8227,7 @@ async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
 async def _add_candidate_delete_failure(candidate_id: int, error: str) -> None:
     """Record a failure without discarding one already recorded this attempt.
 
-    A Sonarr failure is followed by a media-server fallback; when that fails
+    A Radarr/Sonarr failure is followed by a media-server fallback; when that fails
     too, both reasons are needed to tell what went wrong. Errors are cleared at
     the start of each attempt, so an existing one belongs to this attempt and
     the attempt is not counted twice.
@@ -9302,9 +9302,15 @@ async def _delete_movie_version_candidates(
         except PlaybackDeferred:
             raise
         except Exception as e:
+            detail = describe_exception(e)
             await _mark_candidate_delete_failure(
                 candidate.id,
-                f"Version delete failed via {main_service_type.value}: {e}",
+                f"Version delete failed via {main_service_type.value}: {detail}",
+            )
+            LOG.error(
+                f"Version delete failed for '{movie.title}' via "
+                f"{main_service_type.value}: {detail}",
+                exc_info=True,
             )
 
     return deleted_count
@@ -9379,9 +9385,15 @@ async def _delete_movie_version_files_via_radarr(
         except PlaybackDeferred:
             raise
         except Exception as e:
+            detail = describe_exception(e)
             await _mark_candidate_delete_failures(
                 candidate_ids,
-                f"Radarr movie-file delete failed for config {config_id}: {e}",
+                f"Radarr movie-file delete failed for config {config_id}: {detail}",
+            )
+            LOG.error(
+                f"Radarr movie-file delete failed for '{movie.title}' "
+                f"(config {config_id}): {detail}",
+                exc_info=True,
             )
             return 0
 
@@ -10163,12 +10175,13 @@ async def _delete_movie_candidates(
                 for movie_info in batch
                 for cand_id in movie_info.get("all_candidate_ids", [])
             ]
+            detail = describe_exception(e)
             await _mark_candidate_delete_failures(
                 failed_candidate_ids,
-                f"Radarr delete failed for config {config_id}: {e}",
+                f"Radarr delete failed for config {config_id}: {detail}",
             )
             LOG.error(
-                f"Error deleting movies via Radarr config {config_id}: {e}",
+                f"Error deleting movies via Radarr config {config_id}: {detail}",
                 exc_info=True,
             )
 
@@ -10364,12 +10377,13 @@ async def _delete_movie_candidates(
                 for movie_info in batch
                 for cand_id in movie_info.get("all_candidate_ids", [])
             ]
+            detail = describe_exception(e)
             await _mark_candidate_delete_failures(
                 failed_candidate_ids,
-                f"Radarr unmonitor failed for config {config_id}: {e}",
+                f"Radarr unmonitor failed for config {config_id}: {detail}",
             )
             LOG.error(
-                f"Error unmonitoring movies via Radarr config {config_id}: {e}",
+                f"Error unmonitoring movies via Radarr config {config_id}: {detail}",
                 exc_info=True,
             )
 
@@ -10412,6 +10426,8 @@ async def _delete_movie_candidates(
 
                             if not keep_files:
                                 locally_removed_version_ids: set[int] = set()
+                                # why files were not removed, for the error
+                                removal_notes: list[str] = []
                                 # Capture existing paths before removal: resolve_path only
                                 # returns paths that still exist.
                                 exclusion_source_paths = (
@@ -10436,13 +10452,17 @@ async def _delete_movie_candidates(
                                 # sibling_cleanup matches by file stem so it naturally scopes
                                 # to subtitles/nfo files belonging to that specific version.
                                 for ver in movie.versions:
-                                    if not ver.path:
-                                        continue
                                     if (
                                         not is_whole_movie
                                         and ver.id not in unmonitor_target_version_ids
                                     ):
                                         continue  # preserve non candidate version files
+                                    if not ver.path:
+                                        removal_notes.append(
+                                            f"no file path is recorded for the "
+                                            f"{ver.service.value} version"
+                                        )
+                                        continue
                                     local_path = resolve_path(
                                         ver.path,
                                         path_mappings,
@@ -10451,26 +10471,45 @@ async def _delete_movie_candidates(
                                             ver.service
                                         ),
                                     )
-                                    if local_path:
-                                        try:
-                                            await playback_checkpoint(
-                                                path=str(local_path),
-                                                directory=False,
-                                                siblings=True,
+                                    if not local_path:
+                                        removal_notes.append(
+                                            f"{ver.service.value} file '{ver.path}' "
+                                            "was not found by Reclaimerr, as-is or "
+                                            "through a path mapping"
+                                        )
+                                        continue
+                                    try:
+                                        await playback_checkpoint(
+                                            path=str(local_path),
+                                            directory=False,
+                                            siblings=True,
+                                        )
+                                        sibling_cleanup(local_path)
+                                        if not local_path.exists():
+                                            locally_removed_version_ids.add(ver.id)
+                                        else:
+                                            removal_notes.append(
+                                                f"'{local_path}' still exists after "
+                                                "removal"
                                             )
-                                            sibling_cleanup(local_path)
-                                            if not local_path.exists():
-                                                locally_removed_version_ids.add(ver.id)
-                                            playback_step_completed(
-                                                "Cleaned up matching files at "
-                                                + str(local_path)
-                                            )
-                                        except PlaybackDeferred:
-                                            raise
-                                        except Exception as fs_err:
-                                            LOG.warning(
-                                                f"sibling_cleanup failed for '{ver.path}': {fs_err}"
-                                            )
+                                        playback_step_completed(
+                                            "Cleaned up matching files at "
+                                            + str(local_path)
+                                        )
+                                    except PlaybackDeferred:
+                                        raise
+                                    except Exception as fs_err:
+                                        removal_notes.append(
+                                            f"could not remove '{local_path}': "
+                                            f"{describe_exception(fs_err)}"
+                                        )
+                                        LOG.warning(
+                                            f"sibling_cleanup failed for '{ver.path}': {fs_err}"
+                                        )
+                                removal_reason = "Movie files not removed: " + (
+                                    "; ".join(dict.fromkeys(removal_notes))
+                                    or "no file is recorded for this movie"
+                                )
 
                                 # keep the media server library in sync with the
                                 # files we just removed
@@ -10514,17 +10553,26 @@ async def _delete_movie_candidates(
                                                 not in unmonitor_target_version_ids
                                             )
                                         )
-                                        await _reconcile_media_server_after_delete(
-                                            item_id=ver.service_item_id,
-                                            paths=[ver.path],
-                                            allow_delete_item=(
-                                                media_server_fallback_enabled
-                                                and not shares_item_with_kept_version
-                                                and not item_files_removed
-                                            ),
-                                            context=f"movie cleanup '{movie.title}'",
-                                            require_removal=not item_files_removed,
-                                        )
+                                        try:
+                                            await _reconcile_media_server_after_delete(
+                                                item_id=ver.service_item_id,
+                                                paths=[ver.path],
+                                                allow_delete_item=(
+                                                    media_server_fallback_enabled
+                                                    and not shares_item_with_kept_version
+                                                    and not item_files_removed
+                                                ),
+                                                context=f"movie cleanup '{movie.title}'",
+                                                require_removal=not item_files_removed,
+                                            )
+                                        except PlaybackDeferred:
+                                            raise
+                                        except Exception as e:
+                                            # only raised when files were not removed
+                                            raise ValueError(
+                                                f"{removal_reason} | then: "
+                                                f"{describe_exception(e)}"
+                                            ) from e
 
                                 if (
                                     unmonitor_service_type is None
@@ -10541,7 +10589,9 @@ async def _delete_movie_candidates(
                                         for v in target_versions
                                     ):
                                         raise ValueError(
-                                            "Movie file removal could not be confirmed"
+                                            f"{removal_reason} | then: no main media "
+                                            "server item is linked to delete it "
+                                            "through instead"
                                         )
 
                                 if (
@@ -10694,7 +10744,7 @@ async def _delete_movie_candidates(
                     for info in movies_to_unmonitor
                     for cid in info["all_candidate_ids"]
                 ],
-                f"Movie removal could not be completed: {e}",
+                f"Movie removal could not be completed: {describe_exception(e)}",
             )
         await _best_effort_radarr_rescan(
             radarr_refresh_after_unmonitor,
@@ -12542,6 +12592,11 @@ async def _delete_movies_via_media_server(
     main_service = service_manager.main_media_server
     if not main_service:
         LOG.warning("No main media server available for movie deletion fallback")
+        for candidate in remaining_candidates:
+            await _add_candidate_delete_failure(
+                candidate.id,
+                "Media server fallback unavailable: no main media server is set",
+            )
         return 0
 
     main_service_type = service_manager.main_media_server_type or Service.PLEX
@@ -12563,13 +12618,22 @@ async def _delete_movies_via_media_server(
             continue
         movie = movies.get(candidate.movie_id)
         if not movie or not movie.tmdb_id:
+            if movie:
+                await _add_candidate_delete_failure(
+                    candidate.id,
+                    f"Media server fallback skipped: '{movie.title}' has no TMDB ID",
+                )
             continue
 
         service_versions = [v for v in movie.versions if v.service == main_service_type]
         if not service_versions:
-            LOG.debug(
-                f"Movie '{movie.title}' has no versions for {main_service_type} - skipping"
+            reason = (
+                f"Media server fallback skipped: '{movie.title}' is not linked "
+                f"to an item on the main media server ({main_service_type}). Run a "
+                "media server sync, then retry"
             )
+            await _add_candidate_delete_failure(candidate.id, reason)
+            LOG.warning(reason)
             continue
 
         try:
@@ -12658,8 +12722,16 @@ async def _delete_movies_via_media_server(
         except PlaybackDeferred:
             raise
         except Exception as e:
+            detail = describe_exception(e)
+            await _add_candidate_delete_failure(
+                candidate.id,
+                f"Media server ({main_service_type}) could not delete "
+                f"'{movie.title}': {detail}",
+            )
             LOG.error(
-                f"Failed to delete movie '{movie.title}' via {main_service_type}: {e}"
+                f"Failed to delete movie '{movie.title}' via "
+                f"{main_service_type}: {detail}",
+                exc_info=True,
             )
 
     return deleted_count
