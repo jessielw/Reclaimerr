@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Recently Added** row on the dashboard: the newest movies and series by media server added date. Click a poster to open its details and request protection or deletion from there. Hover a poster for its full title and added date. Pick how many titles to show (6, 12 or 24) or collapse the row; both are remembered per browser.
+
 ### Fixed
 
 - Don't let "Group movies into collections" hide movies from sync.

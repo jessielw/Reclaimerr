@@ -3,6 +3,7 @@
   import { get_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import Notice from "$lib/components/notice.svelte";
+  import RecentlyAdded from "$lib/components/media/recently-added.svelte";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
   import { formatFileSize } from "$lib/utils/formatters";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
@@ -527,6 +528,8 @@
               </article>
             {/if}
           </section>
+
+          <RecentlyAdded />
 
           <!-- recent activity -->
           <section class="bg-card rounded-lg border border-border p-5">
