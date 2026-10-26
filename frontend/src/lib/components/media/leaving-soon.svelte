@@ -100,6 +100,7 @@
     storageKey="dashboard_leaving_soon"
     emptyText="Nothing scheduled. Titles show up here once a rule with auto-delete schedules them."
     {fetchEntries}
-    onSelect={() => push("/candidates")}
+    onSelect={(entry) =>
+      push(`/candidates?search=${encodeURIComponent(entry.title)}`)}
   />
 {/if}
