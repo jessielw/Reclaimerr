@@ -126,10 +126,15 @@
     showDeleteDialog = true;
   };
 
-  const tooltipFor = ({ media, mediaType }: RecentEntry) => {
+  const tooltipLines = ({ media, mediaType }: RecentEntry): string[] => {
     const name = media.year ? `${media.title} (${media.year})` : media.title;
     const kind = mediaType === MediaType.Movie ? "Movie" : "Series";
-    return `${name} • ${kind} • Added ${formatDate(media.added_at!)}`;
+    const lines = [name, `${kind} • Added ${formatDate(media.added_at!)}`];
+    if (media.seerr_requesters.length > 0) {
+      const names = media.seerr_requesters.map((r) => r.display_name);
+      lines.push(`Requested by ${names.join(", ")}`);
+    }
+    return lines;
   };
 
   // load on mount, then again whenever the row is expanded or resized; the
@@ -226,7 +231,9 @@
               </p>
             </Tooltip.Trigger>
             <Tooltip.Content>
-              <p>{tooltipFor(entry)}</p>
+              {#each tooltipLines(entry) as line}
+                <p>{line}</p>
+              {/each}
             </Tooltip.Content>
           </Tooltip.Root>
         {/each}
