@@ -22,6 +22,8 @@
   } from "$lib/types/shared";
 
   const COUNT_OPTIONS = [6, 12, 24];
+  // matches the dashboard's own stats refresh
+  const REFRESH_MS = 60000;
 
   const _countStore = createFilterState(
     "dashboard_recently_added_count",
@@ -147,6 +149,10 @@
 
   onMount(() => {
     mounted = true;
+    const timer = setInterval(() => {
+      if (!collapsed && (canViewMovies || canViewSeries)) load();
+    }, REFRESH_MS);
+    return () => clearInterval(timer);
   });
 </script>
 
