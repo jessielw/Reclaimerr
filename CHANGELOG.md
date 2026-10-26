@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Recently Added** row on the dashboard: the newest movies and series by media server added date. Click a poster to open its details and request protection or deletion from there. Hover a poster for its full title, added date and who requested it in Seerr. Pick how many titles to show (6, 12 or 24) or collapse the row; both are remembered per browser. The row refreshes every minute along with the rest of the dashboard.
 - **Leaving Soon** row on the dashboard: the titles auto-delete will remove or move next, soonest first. Hover for the date, scope and space freed; click to open Candidates. Same count picker and collapse toggle as Recently Added.
+- Browser tabs are named after the open page (e.g. **Candidates · Reclaimerr**) instead of always reading Reclaimerr.
 - Dashboard tiles now open the page behind their number: reclaimed totals go to History, library totals to Movies or Series, reclaimable space to Candidates, and request counts to Requests. Tiles for pages you can't access stay plain.
 
 ### Fixed
