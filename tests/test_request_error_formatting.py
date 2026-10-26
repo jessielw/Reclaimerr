@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from backend.core.utils.request import format_http_failure, summarize_error_message
+import asyncio
+
+import pytest
+from tenacity import RetryError, retry, retry_if_exception_type, stop_after_attempt
+
+from backend.core.utils.request import (
+    describe_exception,
+    format_http_failure,
+    summarize_error_message,
+)
 
 
 class _FakeRequest:
@@ -84,3 +93,29 @@ def test_summarize_error_message_redacts_and_truncates() -> None:
     assert "<redacted>" in summary
     assert "very-secret-value" not in summary
     assert "another-secret-value" not in summary
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        # a timeout with no message used to be stored as an empty reason
+        (TimeoutError(), "TimeoutError"),
+        (KeyError("tmdb_id"), "KeyError: 'tmdb_id'"),
+        (ValueError("Failed to delete series 12"), "Failed to delete series 12"),
+    ],
+)
+def test_describe_exception_is_never_empty(exc: BaseException, expected: str) -> None:
+    assert describe_exception(exc) == expected
+
+
+def test_describe_exception_unwraps_exhausted_retries() -> None:
+    @retry(stop=stop_after_attempt(2), retry=retry_if_exception_type(TimeoutError))
+    async def always_times_out() -> None:
+        raise TimeoutError("read timed out (read timeout=60)")
+
+    with pytest.raises(RetryError) as caught:
+        asyncio.run(always_times_out())
+
+    assert describe_exception(caught.value) == (
+        "TimeoutError: read timed out (read timeout=60) (gave up after 2 attempts)"
+    )

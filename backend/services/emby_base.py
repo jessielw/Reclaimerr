@@ -1093,6 +1093,8 @@ class EmbyServiceBase:
                 "UserDataLastPlayedDate,UserDataPlayCount,ProductionYear,PremiereDate,Genres"
             ),
             "ParentId": library_id,
+            # "Group movies into collections" otherwise swaps member movies for BoxSets
+            "CollapseBoxSetItems": "false",
         }
 
         if filters:
@@ -1106,6 +1108,8 @@ class EmbyServiceBase:
 
         data = []
         for item in items_data:
+            if item.get("Type") not in (None, "Movie"):
+                continue  # BoxSet Tmdb IDs are collection IDs, not movie IDs
             provider_ids = item.get("ProviderIds", {})
             tmdb_id = provider_ids.get("Tmdb")
             if not tmdb_id:
@@ -1291,6 +1295,8 @@ class EmbyServiceBase:
                 "ProductionYear,PremiereDate,DateCreated,Genres"
             ),
             "ParentId": library_id,
+            # "Group shows into collections" otherwise swaps member series for BoxSets
+            "CollapseBoxSetItems": "false",
         }
         if user_id is not None:
             params["userId"] = user_id
@@ -1314,6 +1320,8 @@ class EmbyServiceBase:
 
         data = []
         for item in items_data:
+            if item.get("Type") not in (None, "Series"):
+                continue  # BoxSet Tmdb IDs are collection IDs, not series IDs
             provider_ids = item.get("ProviderIds", {})
             tmdb_id = provider_ids.get("Tmdb")
             if not tmdb_id:

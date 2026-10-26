@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { router } from "svelte-spa-router";
   import { get_api, post_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import CompactPagination from "$lib/components/compact-pagination.svelte";
@@ -102,7 +103,10 @@
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
-  let searchQuery = $state("");
+  // links like /candidates?search=Title (from the dashboard) open pre-filtered
+  let searchQuery = $state(
+    new URLSearchParams(router.querystring ?? "").get("search") ?? "",
+  );
   let ruleOptions = $state<CandidateRuleFilterOption[]>([]);
   const _mediaFilterStore = createFilterState<CandidateMediaFilter>(
     "candidates_media_filter",
@@ -582,7 +586,7 @@
   const notifyCandidateJobTerminalState = (job: BackgroundJobRecord) => {
     if (job.status === BackgroundJobStatus.Failed) {
       toast.error(
-        job.error_message ??
+        job.error_message ||
           `${candidateJobOperation(job) === "move" ? "Move" : "Delete"} job failed.`,
       );
       return;

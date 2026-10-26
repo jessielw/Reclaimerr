@@ -333,14 +333,13 @@ export const candidateWatchCountLabel = (
   return `${count} view${count === 1 ? "" : "s"}`;
 };
 
-const DELETE_ERROR_MAX_CHARS = 220;
-
 /** "3 attempts, last 12 Sep 2026 - <reason>", or null when nothing has failed.
  *
  * `last_delete_error` is cleared at the start of every attempt while
  * `delete_attempts` keeps counting, so the pair reads as "latest reason, total
  * attempts". A candidate that keeps failing silently is exactly the case this
- * line exists for.
+ * line exists for. The backend already caps the reason at 500 characters, and
+ * cutting it further hides the Arr/media-server response that explains it.
  */
 export const candidateDeleteFailureLabel = (
   entry: ReclaimCandidateEntry,
@@ -354,12 +353,7 @@ export const candidateDeleteFailureLabel = (
   }
   const summary = parts.join(", ");
   const error = entry.last_delete_error?.trim();
-  if (!error) return summary;
-  const trimmed =
-    error.length > DELETE_ERROR_MAX_CHARS
-      ? `${error.slice(0, DELETE_ERROR_MAX_CHARS)}...`
-      : error;
-  return `${summary} - ${trimmed}`;
+  return error ? `${summary} - ${error}` : summary;
 };
 
 export const candidateMediaMetaFields = (

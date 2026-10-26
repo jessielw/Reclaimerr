@@ -30,6 +30,7 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import logoImage from "$lib/assets/logo.png";
   import {
+    PAGE_ACCESS_OPTIONS,
     firstAccessiblePath,
     hasPageAccess,
     pageForPath,
@@ -114,6 +115,17 @@
         document.documentElement.dataset.theme = theme;
       }
     }
+  });
+
+  // name the browser tab after the open page so several tabs stay tellable
+  const pageTitles = new Map<string, string>([
+    ...PAGE_ACCESS_OPTIONS.map((o) => [o.path, o.label] as [string, string]),
+    ["/rules", "Rules"],
+  ]);
+  $effect(() => {
+    const signedIn = $auth.isAuthenticated && !needsSetup;
+    const label = signedIn ? pageTitles.get(router.location) : undefined;
+    document.title = label ? `${label} · Reclaimerr` : "Reclaimerr";
   });
 
   $effect(() => {

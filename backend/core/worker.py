@@ -7,6 +7,7 @@ from time import monotonic
 from sqlalchemy import select
 
 from backend.core.logger import LOG
+from backend.core.utils.request import describe_exception
 from backend.database import async_db
 from backend.database.models import GeneralSettings
 from backend.enums import BackgroundJobType
@@ -118,7 +119,7 @@ async def worker_loop(
                 exc_info=True,
             )
             try:
-                await fail_background_job(job.id, str(exc))
+                await fail_background_job(job.id, describe_exception(exc))
             except Exception as persistence_exc:
                 LOG.error(
                     f"Worker {worker_id} could not persist failure state for "

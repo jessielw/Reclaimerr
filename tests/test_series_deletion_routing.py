@@ -488,7 +488,6 @@ def test_whole_series_sonarr_batch_failure_records_candidate_error(
                 assert candidate is not None
                 assert candidate.delete_attempts == 1
                 assert candidate.last_delete_error is not None
-                assert "Sonarr delete failed" in candidate.last_delete_error
                 assert "sonarr unavailable" in candidate.last_delete_error
         finally:
             await engine.dispose()

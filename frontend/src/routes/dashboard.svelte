@@ -3,16 +3,22 @@
   import { get_api } from "$lib/api";
   import ErrorBox from "$lib/components/error-box.svelte";
   import Notice from "$lib/components/notice.svelte";
+  import DashboardTile from "$lib/components/dashboard-tile.svelte";
+  import RecentlyAdded from "$lib/components/media/recently-added.svelte";
+  import LeavingSoon from "$lib/components/media/leaving-soon.svelte";
   import { formatDate, formatDistanceToNow } from "$lib/utils/date";
   import { formatFileSize } from "$lib/utils/formatters";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
   import TrendingDown from "@lucide/svelte/icons/trending-down";
   import Minus from "@lucide/svelte/icons/minus";
-  import type {
-    DashboardActivityItem,
-    DashboardResponse,
+  import {
+    PageAccess,
+    type DashboardActivityItem,
+    type DashboardResponse,
   } from "$lib/types/shared";
   import { capitalizeFirstLetter } from "$lib/utils/strings";
+  import { auth } from "$lib/stores/auth";
+  import { hasPageAccess } from "$lib/page-access";
   import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
   import EmbySVG from "$lib/components/svgs/emby-svg.svelte";
   import PlexSVG from "$lib/components/svgs/plex-svg.svelte";
@@ -66,6 +72,17 @@
     return Math.round(
       ((dashboard?.kpis.reclaimable_series_bytes ?? 0) / total) * 100,
     );
+  });
+
+  // tiles link to the page behind their number, when the viewer can open it
+  const tileHref = (page: PageAccess, path: string) =>
+    hasPageAccess($auth.user, page) ? `#${path}` : undefined;
+  const tileLinks = $derived({
+    history: tileHref(PageAccess.History, "/history"),
+    movies: tileHref(PageAccess.Movies, "/movies"),
+    series: tileHref(PageAccess.Series, "/series"),
+    candidates: tileHref(PageAccess.Candidates, "/candidates"),
+    requests: tileHref(PageAccess.Requests, "/requests"),
   });
 
   // map svgs
@@ -264,37 +281,29 @@
 
           <!-- reclaimed totals banner -->
           <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            <DashboardTile href={tileLinks.history} class="min-h-24">
               <p class="text-sm text-muted-foreground">Space Reclaimed</p>
               <p class="text-3xl font-bold text-primary mt-2">
                 {formatSize(dashboard.kpis.reclaimed_total_bytes)}
               </p>
-            </article>
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            </DashboardTile>
+            <DashboardTile href={tileLinks.history} class="min-h-24">
               <p class="text-sm text-muted-foreground">Movies Reclaimed</p>
               <p class="text-3xl font-bold text-primary mt-2">
                 {dashboard.kpis.reclaimed_movies}
               </p>
-            </article>
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            </DashboardTile>
+            <DashboardTile href={tileLinks.history} class="min-h-24">
               <p class="text-sm text-muted-foreground">Series Reclaimed</p>
               <p class="text-3xl font-bold text-primary mt-2">
                 {dashboard.kpis.reclaimed_series}
               </p>
-            </article>
+            </DashboardTile>
           </section>
 
           <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <!-- movies -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-28"
-            >
+            <DashboardTile href={tileLinks.movies} class="min-h-28">
               <p class="text-sm text-muted-foreground">Total Movies</p>
               <p class="text-3xl font-bold text-foreground mt-2">
                 {dashboard.kpis.total_movies}
@@ -309,12 +318,10 @@
                   <i>({formatSize(dashboard.kpis.total_movies_size_bytes)})</i>
                 {/if}
               </p>
-            </article>
+            </DashboardTile>
 
             <!-- series -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-28"
-            >
+            <DashboardTile href={tileLinks.series} class="min-h-28">
               <p class="text-sm text-muted-foreground">Total Series</p>
               <p class="text-3xl font-bold text-foreground mt-2">
                 {dashboard.kpis.total_series}
@@ -329,12 +336,10 @@
                   <i>({formatSize(dashboard.kpis.total_series_size_bytes)})</i>
                 {/if}
               </p>
-            </article>
+            </DashboardTile>
 
             <!-- reclaimable movies -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-28"
-            >
+            <DashboardTile href={tileLinks.candidates} class="min-h-28">
               <p class="text-sm text-muted-foreground">Reclaimable (Movies)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
                 {formatSize(dashboard.kpis.reclaimable_movies_bytes)}
@@ -342,12 +347,10 @@
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableMovieShare}% of reclaimable total
               </p>
-            </article>
+            </DashboardTile>
 
             <!-- reclaimable series -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-28"
-            >
+            <DashboardTile href={tileLinks.candidates} class="min-h-28">
               <p class="text-sm text-muted-foreground">Reclaimable (Series)</p>
               <p class="text-3xl font-bold text-green-500 mt-2">
                 {formatSize(dashboard.kpis.reclaimable_series_bytes)}
@@ -355,14 +358,12 @@
               <p class="text-xs text-muted-foreground mt-2">
                 {reclaimableSeriesShare}% of reclaimable total
               </p>
-            </article>
+            </DashboardTile>
           </section>
 
           <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <!-- total reclaimable -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            <DashboardTile href={tileLinks.candidates} class="min-h-24">
               <p class="text-sm text-muted-foreground">Total Reclaimable</p>
               <p class="text-2xl font-bold text-primary mt-2">
                 {formatSize(dashboard.kpis.reclaimable_total_bytes)}
@@ -372,12 +373,10 @@
                   ? "Cleanup opportunity available"
                   : "Nothing reclaimable right now"}
               </p>
-            </article>
+            </DashboardTile>
 
             <!-- pending requests -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            <DashboardTile href={tileLinks.requests} class="min-h-24">
               <p class="text-sm text-muted-foreground">Pending Requests</p>
               <p class="text-2xl font-bold text-yellow-500 mt-2">
                 {dashboard.requests.pending_count}
@@ -385,12 +384,10 @@
               <p class="text-xs text-muted-foreground mt-2">
                 {dashboard.requests.mine_pending} assigned to you
               </p>
-            </article>
+            </DashboardTile>
 
             <!--  -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            <DashboardTile href={tileLinks.requests} class="min-h-24">
               <p class="text-sm text-muted-foreground">Approved (7d)</p>
               <p class="text-2xl font-bold text-green-500 mt-2">
                 {dashboard.requests.approved_7d}
@@ -401,12 +398,10 @@
                 <TrendingUp class="w-3.5 h-3.5 text-green-500" />
                 Last 7 days
               </div>
-            </article>
+            </DashboardTile>
 
             <!-- denied requests -->
-            <article
-              class="bg-card rounded-lg border border-border p-5 min-h-24"
-            >
+            <DashboardTile href={tileLinks.requests} class="min-h-24">
               <p class="text-sm text-muted-foreground">Denied (7d)</p>
               <p class="text-2xl font-bold text-destructive mt-2">
                 {dashboard.requests.denied_7d}
@@ -417,7 +412,7 @@
                 <TrendingDown class="w-3.5 h-3.5 text-destructive" />
                 Last 7 days
               </div>
-            </article>
+            </DashboardTile>
           </section>
 
           <!-- request balance (7d) -->
@@ -527,6 +522,10 @@
               </article>
             {/if}
           </section>
+
+          <LeavingSoon />
+
+          <RecentlyAdded />
 
           <!-- recent activity -->
           <section class="bg-card rounded-lg border border-border p-5">

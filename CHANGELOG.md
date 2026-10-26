@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-10-25
+
+### Added
+
+- **Recently Added** row on the dashboard: the newest movies and series by media server added date. Click a poster to open its details and request protection or deletion from there. Hover a poster for its full title, added date and who requested it in Seerr. Pick how many titles to show (6, 12 or 24) or collapse the row; both are remembered per browser. The row refreshes every minute along with the rest of the dashboard.
+- **Leaving Soon** row on the dashboard: the titles auto-delete will remove or move next, soonest first. Hover for the date, scope and space freed; click to open Candidates filtered to that title. Same count picker and collapse toggle as Recently Added.
+- Candidates accepts a `?search=` link (e.g. `#/candidates?search=The%20Matrix`) and opens with that search filled in.
+- Browser tabs are named after the open page (e.g. **Candidates · Reclaimerr**) instead of always reading Reclaimerr.
+- Dashboard tiles now open the page behind their number: reclaimed totals go to History, library totals to Movies or Series, reclaimable space to Candidates, and request counts to Requests. Tiles for pages you can't access stay plain.
+
+### Fixed
+
+- Don't let "Group movies into collections" hide movies from sync.
+- Failed series and movie deletes now say why: the path Reclaimerr looked for, the removal error, and why the media server fallback could not take over.
+- Errors with no message (such as timeouts) no longer show as blank reasons or empty toasts.
+- One failed series in a Sonarr delete batch no longer marks the rest of the batch as failed.
+- Series folder removal now applies path mappings scoped to a single Sonarr instance.
+- The **Delete failed** line on a candidate shows the full reason instead of cutting it at 220 characters.
+- Delete failure reasons now capitalize media server names (Plex, Jellyfin, Emby).
+
 ## [0.6.3] - 2026-10-24
 
 ### Changed
