@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,8 +20,15 @@ from tenacity import (
 )
 
 from backend.core.logger import LOG
+from backend.core.rule_engine import (
+    FIELD_LABELS,
+    OPERATOR_LABELS,
+    VALUELESS_OPERATORS,
+    format_rule_value,
+)
 from backend.database import async_db
 from backend.database.models import (
+    Episode,
     GeneralSettings,
     Movie,
     MovieVersion,
@@ -281,73 +289,225 @@ def _compose_title(
     return f"{title}: {subject}"
 
 
-def _format_cleanup_candidate_line(
-    candidate: dict[str, Any], *, include_reason: bool = False
-) -> str:
-    """Format a single cleanup candidate as one scannable bullet."""
-    media_type = str(candidate.get("media_type") or "").lower()
-    season_number = candidate.get("season_number")
-    episode_number = candidate.get("episode_number")
-    version_file_name = str(candidate.get("version_file_name") or "").strip()
+# Conditions that only scope a rule to part of the library. They say where a
+# rule looks, not why a title matched, and their values are opaque server ids.
+_SCOPE_ONLY_REASON_FIELDS = frozenset({"library.id"})
 
-    parts = [
-        _media_label(
-            candidate.get("media_title") or "Unknown", candidate.get("media_year")
+
+def _notification_reasons(reason_data: Any) -> list[dict[str, Any]]:
+    """Turn stored candidate reasons into what a notification can show.
+
+    Each reason keeps its rule name plus two renderings of its conditions:
+    "full" with the measured value, as the candidates page shows it, and
+    "short" without it, so episodes matched by the same rule collapse into one
+    line. Library scoping conditions are dropped; see _SCOPE_ONLY_REASON_FIELDS.
+    """
+    reasons: list[dict[str, Any]] = []
+    for part in reason_data if isinstance(reason_data, list) else []:
+        if not isinstance(part, dict):
+            continue
+        full: list[str] = []
+        short: list[str] = []
+        for condition in part.get("conditions") or []:
+            if not isinstance(condition, dict):
+                continue
+            field = str(condition.get("field") or "")
+            if field in _SCOPE_ONLY_REASON_FIELDS:
+                continue
+            operator = str(condition.get("operator") or "")
+            label = str(condition.get("field_label") or FIELD_LABELS.get(field, field))
+            op = str(
+                condition.get("operator_label")
+                or OPERATOR_LABELS.get(operator, operator)
+            )
+            display = str(condition.get("display") or "").strip()
+            if operator in VALUELESS_OPERATORS:
+                brief = f"{label} {op}".strip()
+            else:
+                expected = condition.get("expected")
+                values = expected if isinstance(expected, list) else [expected]
+                rendered = ", ".join(
+                    format_rule_value(field, value)
+                    for value in values
+                    if value is not None
+                )
+                brief = f"{label} {op} {rendered}".strip()
+            if brief:
+                short.append(brief)
+                full.append(display or brief)
+        rule = str(part.get("rule_name") or "").strip()
+        if full or rule:
+            reasons.append({"rule": rule, "full": full, "short": short})
+    return reasons
+
+
+def _episode_codes(pairs: Iterable[tuple[int, int]]) -> str:
+    """Compress season/episode pairs into codes such as "S01E05-E07, S02E01"."""
+    by_season: dict[int, list[int]] = defaultdict(list)
+    for season_number, episode_number in sorted(set(pairs)):
+        by_season[season_number].append(episode_number)
+    codes: list[str] = []
+    for season_number, episodes in by_season.items():
+        start = prev = episodes[0]
+        runs: list[tuple[int, int]] = []
+        for episode_number in episodes[1:]:
+            if episode_number == prev + 1:
+                prev = episode_number
+                continue
+            runs.append((start, prev))
+            start = prev = episode_number
+        runs.append((start, prev))
+        for first, last in runs:
+            code = f"S{season_number:02d}E{first:02d}"
+            codes.append(code if first == last else f"{code}-E{last:02d}")
+    return ", ".join(codes)
+
+
+def _candidate_group_scope(items: list[dict[str, Any]]) -> str:
+    """Describe which part of a title the grouped candidates cover."""
+    media_type = str(items[0].get("media_type") or "").lower()
+    if media_type == "series":
+        episodes = [
+            (item["season_number"], item["episode_number"])
+            for item in items
+            if isinstance(item.get("season_number"), int)
+            and isinstance(item.get("episode_number"), int)
+        ]
+        seasons = sorted(
+            {
+                item["season_number"]
+                for item in items
+                if isinstance(item.get("season_number"), int)
+                and not isinstance(item.get("episode_number"), int)
+            }
         )
-    ]
-    if media_type == "series" and isinstance(season_number, int):
-        if isinstance(episode_number, int):
-            parts.append(f"S{season_number:02d}E{episode_number:02d}")
-        else:
-            parts.append(f"Season {season_number}")
-    elif version_file_name:
-        parts.append(_code(version_file_name))
-    parts.append(_format_bytes(int(candidate.get("estimated_space_bytes") or 0)))
+        parts: list[str] = []
+        if seasons:
+            parts.append(
+                f"Season {seasons[0]}"
+                if len(seasons) == 1 and not episodes
+                else ", ".join(f"S{number:02d}" for number in seasons)
+            )
+        if episodes:
+            parts.append(_episode_codes(episodes))
+        return ", ".join(parts)
+    if len(items) > 1:
+        return f"{len(items)} versions"
+    return ""
 
-    line = f"- {_SEPARATOR.join(parts)}"
-    if include_reason:
-        reasons = candidate.get("reason_tokens")
-        if isinstance(reasons, list):
-            tokens = [
-                str(reason).strip()
-                for reason in reasons[:_MAX_REASON_TOKENS]
-                if str(reason).strip()
-            ]
-            if tokens:
-                line += f" - {', '.join(tokens)}"
-    return line
+
+def _candidate_reason_lines(items: list[dict[str, Any]]) -> list[str]:
+    """Return the distinct reasons behind a group of candidates.
+
+    A lone candidate keeps its measured values ("Days since watched > 7 (8)").
+    A group drops them, since every episode carries a slightly different number
+    and listing each would repeat the same rule once per episode.
+    """
+    key = "full" if len(items) == 1 else "short"
+    seen: list[str] = []
+    for item in items:
+        reasons = item.get("reasons")
+        if isinstance(reasons, list) and reasons:
+            texts = []
+            for reason in reasons:
+                if not isinstance(reason, dict):
+                    continue
+                conditions = [c for c in reason.get(key) or [] if c]
+                rule = str(reason.get("rule") or "").strip()
+                if conditions:
+                    texts.append(", ".join(conditions))
+                elif rule:
+                    texts.append(rule)
+        else:
+            # contexts built before structured reasons existed
+            tokens = item.get("reason_tokens")
+            texts = [str(t).strip() for t in tokens or [] if str(t).strip()]
+        for text in texts[:_MAX_REASON_TOKENS]:
+            if text not in seen:
+                seen.append(text)
+    return seen[:_MAX_REASON_TOKENS]
+
+
+def _group_cleanup_candidates(
+    candidates: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group candidates by title so one show reads as one line, biggest first."""
+    groups: dict[tuple[str, str, Any], list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        key = (
+            str(candidate.get("media_type") or "").lower(),
+            str(candidate.get("media_title") or "Unknown"),
+            candidate.get("media_year"),
+        )
+        groups.setdefault(key, []).append(candidate)
+    ordered = sorted(
+        groups.items(),
+        key=lambda entry: (
+            -sum(int(item.get("estimated_space_bytes") or 0) for item in entry[1])
+        ),
+    )
+    return [(key[0], items) for key, items in ordered]
+
+
+def _format_cleanup_group(
+    items: list[dict[str, Any]], *, include_reasons: bool
+) -> list[str]:
+    """Render one title as a bullet, with its reasons as sub-bullets."""
+    first = items[0]
+    parts = [
+        f"**{_media_label(first.get('media_title') or 'Unknown', first.get('media_year'))}**"
+    ]
+    scope = _candidate_group_scope(items)
+    if scope:
+        parts.append(scope)
+    parts.append(
+        _format_bytes(
+            sum(int(item.get("estimated_space_bytes") or 0) for item in items)
+        )
+    )
+    lines = [f"- {_SEPARATOR.join(parts)}"]
+    if include_reasons:
+        if len(items) == 1:
+            file_name = str(first.get("version_file_name") or "").strip()
+            if file_name:
+                lines.append(f"  - {_code(file_name)}")
+        lines.extend(f"  - _{reason}_" for reason in _candidate_reason_lines(items))
+    return lines
 
 
 def _cleanup_candidate_lines(
-    candidates: list[dict[str, Any]], *, include_reasons: bool
+    groups: list[tuple[str, list[dict[str, Any]]]], *, include_reasons: bool
 ) -> list[str]:
-    """Group the shown candidates by media type so the list reads in blocks."""
-    grouped: dict[str, list[dict[str, Any]]] = {"Movies": [], "Series": [], "Other": []}
-    for candidate in candidates:
-        media_type = str(candidate.get("media_type") or "").lower()
-        key = (
+    """Render grouped titles, with Movies/Series headings when both appear."""
+    sections: dict[str, list[list[dict[str, Any]]]] = {
+        "Movies": [],
+        "Series": [],
+        "Other": [],
+    }
+    for media_type, items in groups:
+        label = (
             "Movies"
             if media_type == "movie"
             else "Series"
             if media_type == "series"
             else "Other"
         )
-        grouped[key].append(candidate)
+        sections[label].append(items)
 
-    populated = [(label, items) for label, items in grouped.items() if items]
-    # a lone group needs no heading; the bullets already read as one list
+    populated = [(label, entries) for label, entries in sections.items() if entries]
+    # a lone section needs no heading; the bullets already read as one list
     show_headings = len(populated) > 1
 
     lines: list[str] = []
-    for label, items in populated:
+    for label, entries in populated:
         if show_headings:
             if lines:
                 lines.append("")
             lines.append(f"**{label}**")
-        lines.extend(
-            _format_cleanup_candidate_line(item, include_reason=include_reasons)
-            for item in items
-        )
+        for items in entries:
+            lines.extend(_format_cleanup_group(items, include_reasons=include_reasons))
     return lines
 
 
@@ -406,8 +566,10 @@ def _compose_body(
 
         max_items = int(pref.get("max_items") or 5)
         max_items = min(max(max_items, 1), 20)
-        shown = [item for item in candidates[:max_items] if isinstance(item, dict)]
-        extra = max(0, len(candidates) - len(shown))
+        # max_items counts titles: ten new episodes of one show are one entry
+        groups = _group_cleanup_candidates(candidates)
+        shown = groups[:max_items]
+        extra = max(0, len(groups) - len(shown))
         lines = [
             f"**{count}** new {noun}{_SEPARATOR}"
             f"**{_format_bytes(total_bytes)}** reclaimable"
@@ -421,7 +583,7 @@ def _compose_body(
             )
             if extra > 0:
                 lines.append("")
-                lines.append(f"_and {extra} more_")
+                lines.append(f"_and {extra} more {_plural(extra, 'title')}_")
         return title, "\n".join(lines), _DEFAULT_BODY_FORMAT
 
     if detail == "compact":
@@ -578,6 +740,7 @@ async def build_cleanup_notification_context(
             r.movie_version_id for r in rows if r.movie_version_id is not None
         }
         season_ids = {r.season_id for r in rows if r.season_id is not None}
+        episode_ids = {r.episode_id for r in rows if r.episode_id is not None}
 
         movies = {
             m.id: m
@@ -626,10 +789,26 @@ async def build_cleanup_notification_context(
             )
         }
 
+        episodes = {
+            e.id: e
+            for e in (
+                (
+                    await session.execute(
+                        select(Episode).where(Episode.id.in_(episode_ids))
+                    )
+                )
+                .scalars()
+                .all()
+                if episode_ids
+                else []
+            )
+        }
+
         candidates: list[dict[str, Any]] = []
         total_reclaimable_bytes = 0
         for row in rows:
             season = None
+            episode = None
             if row.media_type.value == "movie":
                 m = movies.get(row.movie_id)
                 v = versions.get(row.movie_version_id)
@@ -639,6 +818,7 @@ async def build_cleanup_notification_context(
             else:
                 s = series.get(row.series_id)
                 season = seasons.get(row.season_id)
+                episode = episodes.get(row.episode_id)
                 media_title = s.title if s else "Unknown"
                 media_year = s.year if s else None
                 version_file_name = None
@@ -661,10 +841,13 @@ async def build_cleanup_notification_context(
                     "season_number": season.season_number
                     if row.media_type.value == "series" and season
                     else None,
-                    "episode_number": None,
+                    "episode_number": episode.episode_number
+                    if row.media_type.value == "series" and episode
+                    else None,
                     "version_file_name": version_file_name,
                     "estimated_space_bytes": size,
                     "reason_tokens": reason_tokens,
+                    "reasons": _notification_reasons(reason_data),
                 }
             )
 
@@ -673,6 +856,37 @@ async def build_cleanup_notification_context(
             "total_reclaimable_bytes": total_reclaimable_bytes,
             "candidates": candidates,
         }
+
+
+# Apprise sends Telegram legacy Markdown, which has no list syntax, so a "- "
+# bullet arrives as a literal hyphen. Swapping in bullet glyphs keeps the
+# structure readable there; every other transport gets proper markdown lists.
+_TELEGRAM_SCHEMES = ("tgram://", "telegram://")
+
+
+def _is_telegram_url(url: str) -> bool:
+    return url.strip().lower().startswith(_TELEGRAM_SCHEMES)
+
+
+def _telegram_bullets(body: str) -> str:
+    """Replace markdown list markers with bullet glyphs outside code fences."""
+    out: list[str] = []
+    in_fence = False
+    for line in body.split("\n"):
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence:
+            if line.startswith("- "):
+                line = f"• {line[2:]}"
+            elif line.startswith("  - "):
+                line = f"    ◦ {line[4:]}"
+        out.append(line)
+    return "\n".join(out)
+
+
+def _destination_key(url: str) -> str:
+    """Identity of a destination, used to send each event once per target."""
+    return url.strip().rstrip("/")
 
 
 @retry(
@@ -700,6 +914,8 @@ async def send_notification(
     ap = apprise.Apprise(asset=_APPRISE_ASSET)
     ap.add(url)
     label = log_label or url
+    if body_format == apprise.NotifyFormat.MARKDOWN and _is_telegram_url(url):
+        message = _telegram_bullets(message)
 
     try:
         result = await ap.async_notify(
@@ -759,8 +975,14 @@ async def notify_user(
     message: str,
     body_format: apprise.NotifyFormat = _DEFAULT_BODY_FORMAT,
     context: dict[str, Any] | None = None,
+    delivered: set[str] | None = None,
 ) -> dict[str, int]:
-    """Send a notification to a specific user based on their notification preferences."""
+    """Send a notification to a specific user based on their notification preferences.
+
+    `delivered` is shared by callers fanning one event out to several users.
+    Two accounts pointing at the same destination (an admin and their own user
+    account, both on one Telegram chat) then receive the event once, not twice.
+    """
     results = {"sent": 0, "failed": 0}
 
     async with async_db() as session:
@@ -793,6 +1015,15 @@ async def notify_user(
             if destination is None:
                 continue
             url, log_label = destination
+            if delivered is not None:
+                key = _destination_key(url)
+                if key in delivered:
+                    LOG.debug(
+                        f"Skipping {notification_type} to {log_label}: already "
+                        "delivered to this destination for this event"
+                    )
+                    continue
+                delivered.add(key)
 
             composed_title, composed_message, composed_format = _compose_notification(
                 notification_type=notification_type,
@@ -870,6 +1101,7 @@ async def notify_admins(
         LOG.warning("No active admin users found to send notification to")
         return results
 
+    delivered: set[str] = set()
     for user in admin_users:
         user_results = await notify_user(
             user_id=user.id,
@@ -878,6 +1110,7 @@ async def notify_admins(
             message=message,
             body_format=body_format,
             context=context,
+            delivered=delivered,
         )
         results["sent"] += user_results["sent"]
         results["failed"] += user_results["failed"]
@@ -896,6 +1129,7 @@ async def notify_users(
     """Send a notification to multiple specific users."""
     results = {"sent": 0, "failed": 0}
 
+    delivered: set[str] = set()
     for user_id in user_ids:
         user_results = await notify_user(
             user_id=user_id,
@@ -904,6 +1138,7 @@ async def notify_users(
             message=message,
             body_format=body_format,
             context=context,
+            delivered=delivered,
         )
         results["sent"] += user_results["sent"]
         results["failed"] += user_results["failed"]
@@ -937,6 +1172,7 @@ async def notify_all_users(
         return results
 
     type_field = _notification_type_to_field(notification_type)
+    delivered: set[str] = set()
 
     for user in users:
         eligible_settings = [
@@ -956,6 +1192,14 @@ async def notify_all_users(
             if destination is None:
                 continue
             url, log_label = destination
+            key = _destination_key(url)
+            if key in delivered:
+                LOG.debug(
+                    f"Skipping {notification_type} to {log_label}: already "
+                    "delivered to this destination for this event"
+                )
+                continue
+            delivered.add(key)
 
             composed_title, composed_message, composed_format = _compose_notification(
                 notification_type=notification_type,
