@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated apprise, granian, and platformdirs.
+
 ### Fixed
 
 - Seasons stored directly in the series folder can now be unmonitored and deleted through Sonarr's episode files when no season subfolder exists. Playback protection still checks each file, and other seasons stay untouched. #487
