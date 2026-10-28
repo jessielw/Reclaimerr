@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -25,7 +25,20 @@ from backend.database.models import (
     ServiceConfig,
 )
 from backend.enums import MediaType, Service
-from backend.models.live_playback import PlaybackDeferral, PlaybackDeferred
+from backend.models.live_playback import (
+    LiveSession,
+    PlaybackDeferral,
+    PlaybackDeferred,
+    PlaybackSnapshot,
+)
+from backend.services.playback_guard import (
+    PlaybackGuard,
+    PlaybackOperation,
+    PlaybackTarget,
+    current_playback_operation,
+    guard_native_removal,
+)
+from backend.services.sonarr import SonarrClient
 from backend.tasks import cleanup
 
 
@@ -186,6 +199,227 @@ async def _make_session(monkeypatch):
     )
     monkeypatch.setattr(cleanup, "async_db", session_maker)
     return engine, session_maker
+
+
+@pytest.mark.parametrize(
+    "snapshot,deferral_code",
+    [
+        (PlaybackSnapshot(), None),
+        (PlaybackSnapshot(available=False), "playback_unavailable"),
+        (PlaybackSnapshot((LiveSession("episode-key"),)), "currently_playing"),
+    ],
+)
+def test_season_unmonitor_finishes_after_local_removal(
+    monkeypatch, tmp_path, snapshot, deferral_code
+):
+    """Issue #486: Plex can have no deletion paths for an already removed season."""
+
+    async def run():
+        folder = tmp_path / "Show" / "Season 01"
+        folder.mkdir(parents=True)
+        episode = folder / "Show - S01E01.mkv"
+        episode.write_bytes(b"episode")
+        engine, sessions = await _make_session(monkeypatch)
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action="unmonitor",
+                    arr_series_paths=[str(folder.parent)],
+                    season_path=str(folder),
+                    episode_path=str(episode),
+                )
+            sonarr = FakeSonarr({ids[0]: [{"seasonNumber": 1, "episodeFileId": 900}]})
+            media = FakeMediaServer()
+
+            async def native_delete(item_id):
+                await guard_native_removal(media, Service.PLEX, item_id)
+
+            media.delete_item = AsyncMock(side_effect=native_delete)
+            _patch_services(monkeypatch, {configs[0]: sonarr}, media)
+            monkeypatch.setattr(cleanup.service_manager, "_plex_clients", {99: media})
+            monkeypatch.setattr(
+                "backend.services.live_sessions.native_item_paths",
+                AsyncMock(return_value=[]),
+            )
+            guard = PlaybackGuard(True, [], {99: Service.PLEX})
+            monkeypatch.setattr(guard, "_snapshot", AsyncMock(return_value=snapshot))
+            token = current_playback_operation.set(
+                PlaybackOperation(
+                    guard,
+                    PlaybackTarget(
+                        paths=[(str(folder), None, None, True)],
+                        identities={(99, "episode-key", None)},
+                    ),
+                )
+            )
+            monkeypatch.setattr(cleanup, "_dispatch_reclaim_event", AsyncMock())
+            try:
+                if deferral_code:
+                    with pytest.raises(PlaybackDeferred) as error:
+                        await cleanup._delete_season_candidates(
+                            frozenset([candidate_id])
+                        )
+                    assert error.value.detail.code == deferral_code
+                    assert folder.is_dir()
+                    assert episode.read_bytes() == b"episode"
+                    media.delete_item.assert_not_awaited()
+                    assert media.scanned_paths == []
+                    async with sessions() as db:
+                        assert await db.get(ReclaimCandidate, candidate_id) is not None
+                        assert (await db.scalars(select(ReclaimHistory))).all() == []
+                    return
+                deleted = await cleanup._delete_season_candidates(
+                    frozenset([candidate_id])
+                )
+            finally:
+                current_playback_operation.reset(token)
+
+            assert deleted == 1
+            assert not folder.exists()
+            assert sonarr.season_monitoring_updates == [(ids[0], 1, False)]
+            media.delete_item.assert_not_awaited()
+            assert media.scanned_paths == [str(folder)]
+            async with sessions() as db:
+                assert await db.get(ReclaimCandidate, candidate_id) is None
+                history = (await db.scalars(select(ReclaimHistory))).all()
+                assert len(history) == 1
+                assert history[0].size == 100
+                assert history[0].action == "unmonitored"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "outcome", ["deleted", "playing", "unavailable", "missing-path", "failed"]
+)
+def test_flat_season_unmonitor_deletes_only_sonarr_season_files(
+    monkeypatch, tmp_path, outcome
+):
+    """Issue #487: a flat season must not depend on native season deletion paths."""
+
+    async def run():
+        folder = tmp_path / "Show"
+        folder.mkdir()
+        files = {
+            900: folder / "Show - S01E01-E02.mkv",
+            901: folder / "Show - S01E03.mkv",
+            902: folder / "Show - S02E01.mkv",
+        }
+        for file in files.values():
+            file.write_bytes(b"episode")
+        mappings = [
+            {
+                "service_type": "sonarr",
+                "service_config_id": 1,
+                "source_prefix": "/sonarr/TV",
+                "local_prefix": str(tmp_path),
+            }
+        ]
+        engine, sessions = await _make_session(monkeypatch)
+        token = None
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action="unmonitor",
+                    arr_series_paths=["/sonarr/TV/Show"],
+                    season_path=str(folder),
+                    episode_path=str(files[900]),
+                    path_mappings=mappings,
+                )
+            episodes = [
+                {"seasonNumber": season, "episodeFileId": file_id}
+                for season, file_id in [(1, 900), (1, 900), (1, 901), (2, 902)]
+            ]
+            sonarr = FakeSonarr({ids[0]: episodes})
+            sonarr.delete_season_files = MethodType(
+                SonarrClient.delete_season_files, sonarr
+            )
+
+            async def request(method, endpoint, **kwargs):
+                if method == "GET" and endpoint == "episode":
+                    return 200, episodes
+                if method == "GET" and endpoint.startswith("episodefile/"):
+                    file_id = int(endpoint.split("/")[1])
+                    path = f"/sonarr/TV/Show/{files[file_id].name}"
+                    return 200, {"path": None if outcome == "missing-path" else path}
+                assert (method, endpoint) == ("DELETE", "episodefile/bulk")
+                assert kwargs["json"] == {"episodeFileIds": [900, 901]}
+                if outcome == "failed":
+                    raise ValueError("Sonarr deletion failed")
+                for file_id in kwargs["json"]["episodeFileIds"]:
+                    files[file_id].unlink()
+                return 200, None
+
+            sonarr._make_request = AsyncMock(side_effect=request)
+            media = FakeMediaServer()
+            media.delete_item = AsyncMock(side_effect=AssertionError("native delete"))
+            _patch_services(monkeypatch, {configs[0]: sonarr}, media)
+            monkeypatch.setattr(cleanup, "_dispatch_reclaim_event", AsyncMock())
+            # Start with only one known episode; Sonarr must expand the guard
+            # to cover every file it will delete, using its scoped path mapping.
+            guard = PlaybackGuard(True, mappings, {99: Service.PLEX})
+            snapshot = PlaybackSnapshot(
+                (LiveSession("playing", paths=(str(files[901]),)),)
+                if outcome == "playing"
+                else (),
+                available=outcome != "unavailable",
+            )
+            monkeypatch.setattr(guard, "_snapshot", AsyncMock(return_value=snapshot))
+            token = current_playback_operation.set(
+                PlaybackOperation(
+                    guard,
+                    PlaybackTarget(
+                        paths=[(str(files[900]), None, None, False)],
+                        relevant_configs={99},
+                    ),
+                )
+            )
+            deferred = outcome in {"playing", "unavailable", "missing-path"}
+            if deferred:
+                with pytest.raises(PlaybackDeferred) as error:
+                    await cleanup._delete_season_candidates(frozenset([candidate_id]))
+                assert error.value.detail.code == (
+                    "currently_playing"
+                    if outcome == "playing"
+                    else "playback_unavailable"
+                )
+            else:
+                count = await cleanup._delete_season_candidates(
+                    frozenset([candidate_id])
+                )
+                assert count == int(outcome == "deleted")
+
+            success = outcome == "deleted"
+            assert folder.is_dir()
+            assert files[900].exists() is not success
+            assert files[901].exists() is not success
+            assert files[902].read_bytes() == b"episode"
+            assert sonarr.season_monitoring_updates == [(ids[0], 1, False)]
+            if outcome != "failed":
+                media.delete_item.assert_not_awaited()
+            assert media.scanned_paths == ([str(folder)] if success else [])
+            async with sessions() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert (candidate is None) is success
+                history = (await db.scalars(select(ReclaimHistory))).all()
+                assert len(history) == int(success)
+                if success:
+                    assert history[0].action == "unmonitored"
+                    assert history[0].size == 100
+                elif outcome == "failed":
+                    assert "Sonarr deletion failed" in candidate.last_delete_error
+        finally:
+            if token is not None:
+                current_playback_operation.reset(token)
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def _patch_services(
@@ -652,7 +886,8 @@ def test_episode_multi_sonarr_uses_path_matched_ref(monkeypatch) -> None:
             assert wrong_sonarr.get_episode_calls == []
             assert matched_sonarr.get_episode_calls == [22]
             assert matched_sonarr.deleted_episode_files == [900]
-            assert media.deleted_items == ["episode-key"]
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data2/Show/Season 01/Show - S01E01.mkv"]
             async with session_maker() as db:
                 assert await db.get(ReclaimCandidate, candidate_id) is None
         finally:
@@ -710,7 +945,8 @@ def test_season_multi_sonarr_uses_path_matched_ref(monkeypatch) -> None:
             assert matched_sonarr.get_episode_calls == [22]
             assert matched_sonarr.season_monitoring_updates == [(22, 1, False)]
             assert matched_sonarr.deleted_seasons == [(22, 1)]
-            assert media.deleted_items == ["season-key"]
+            assert media.deleted_items == []
+            assert media.scanned_paths == ["/data2/Show/Season 01"]
             async with session_maker() as db:
                 assert await db.get(ReclaimCandidate, candidate_id) is None
                 assert (await db.execute(select(Season))).scalars().all() == []
@@ -1005,8 +1241,13 @@ def test_conditional_monitoring_season_delete(
             assert sonarr.deleted_series == []
             if expected:
                 assert sonarr.events == ["prepare", "delete", "finalize"]
-                # Reconciliation is allowed once; finalization failures never retry it.
-                assert len(media.deleted_items) == 1
+                # Native fallback is needed only when Sonarr did not remove files.
+                assert media.deleted_items == (
+                    ["season-key"] if failure == "delete" else []
+                )
+                assert media.scanned_paths == (
+                    [] if failure == "delete" else ["/data/Show/Season 01"]
+                )
             else:
                 assert "finalize" not in sonarr.events
                 assert media.deleted_items == []
@@ -1217,7 +1458,10 @@ def test_season_move_kept_copy_scans_media_server_path(monkeypatch, tmp_path):
             media = FakeMediaServer()
             _patch_services(
                 monkeypatch,
-                {configs[0]: MonitoringSonarr(ids[0]), configs[1]: MonitoringSonarr(22)},
+                {
+                    configs[0]: MonitoringSonarr(ids[0]),
+                    configs[1]: MonitoringSonarr(22),
+                },
                 media,
             )
             result = await cleanup._move_specific_candidates_impl(

@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-10-28
+
+### Changed
+
+- Updated apprise, granian, and platformdirs.
+
+### Fixed
+
+- Seasons stored directly in the series folder can now be unmonitored and deleted through Sonarr's episode files when no season subfolder exists. Playback protection still checks each file, and other seasons stay untouched. #487
+- Notifications: readable cleanup candidate alerts, no duplicate sends (@edmunek)
+- Cleanup no longer gets stuck as playback unavailable after successfully removing files. Library reconciliation now requests a path scan instead of a second deletion, so the candidate completes and reclaim history is recorded. #486
+
 ## [0.6.4] - 2026-10-25
 
 ### Added
