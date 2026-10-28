@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import apprise
+import pytest
 
 from backend.database.models import NotificationSetting
 from backend.enums import NotificationType
@@ -408,3 +409,34 @@ def test_telegram_gets_bullet_glyphs_outside_code_fences() -> None:
     assert _telegram_bullets(body) == "lead\n\n• one\n    ◦ two\n```\n- keep\n```"
     assert _is_telegram_url("tgram://123:abc/456")
     assert not _is_telegram_url("discord://a/b")
+
+
+@pytest.mark.parametrize("episode_number", [None, 3])
+def test_whole_series_scope_remains_visible_in_mixed_group(
+    episode_number: int | None,
+) -> None:
+    whole_series = {
+        "media_type": "series",
+        "media_id": 42,
+        "media_title": "Example Show",
+        "media_year": 2020,
+        "season_number": None,
+        "episode_number": None,
+        "estimated_space_bytes": 10 * 1024**3,
+    }
+    child = {
+        **whole_series,
+        "season_number": 1,
+        "episode_number": episode_number,
+        "estimated_space_bytes": 2 * 1024**3,
+    }
+    _, body = _compose(
+        NotificationType.NEW_CLEANUP_CANDIDATES,
+        context={
+            "created_count": 2,
+            "total_reclaimable_bytes": 12 * 1024**3,
+            "candidates": [child, whole_series],
+        },
+    )
+    assert body.count("**Example Show (2020)**") == 1
+    assert "**Example Show (2020)** · Entire series · 12.0 GB" in body

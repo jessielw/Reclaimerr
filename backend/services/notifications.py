@@ -367,6 +367,11 @@ def _candidate_group_scope(items: list[dict[str, Any]]) -> str:
     """Describe which part of a title the grouped candidates cover."""
     media_type = str(items[0].get("media_type") or "").lower()
     if media_type == "series":
+        if any(
+            item.get("season_number") is None and item.get("episode_number") is None
+            for item in items
+        ):
+            return "Entire series"
         episodes = [
             (item["season_number"], item["episode_number"])
             for item in items
@@ -432,14 +437,19 @@ def _group_cleanup_candidates(
     candidates: list[dict[str, Any]],
 ) -> list[tuple[str, list[dict[str, Any]]]]:
     """Group candidates by title so one show reads as one line, biggest first."""
-    groups: dict[tuple[str, str, Any], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, Any], list[dict[str, Any]]] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         key = (
             str(candidate.get("media_type") or "").lower(),
-            str(candidate.get("media_title") or "Unknown"),
-            candidate.get("media_year"),
+            candidate["media_id"]
+            if candidate.get("media_id") is not None
+            # Older contexts did not carry the database identity.
+            else (
+                str(candidate.get("media_title") or "Unknown"),
+                candidate.get("media_year"),
+            ),
         )
         groups.setdefault(key, []).append(candidate)
     ordered = sorted(
@@ -836,6 +846,9 @@ async def build_cleanup_notification_context(
             candidates.append(
                 {
                     "media_type": row.media_type.value,
+                    "media_id": row.movie_id
+                    if row.media_type.value == "movie"
+                    else row.series_id,
                     "media_title": media_title,
                     "media_year": media_year,
                     "season_number": season.season_number
