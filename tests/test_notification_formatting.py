@@ -3,13 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 import apprise
+import pytest
 
 from backend.database.models import NotificationSetting
 from backend.enums import NotificationType
 from backend.services.notifications import (
     _compose_body,
+    _episode_codes,
     _format_bytes,
+    _is_telegram_url,
+    _notification_reasons,
     _notify_type_for,
+    _telegram_bullets,
     _truncate_body,
 )
 
@@ -183,8 +188,10 @@ def test_cleanup_body_groups_by_media_type() -> None:
     assert body.startswith("**3** new cleanup candidates · **8.4 GB** reclaimable")
     assert "**Movies**" in body
     assert "**Series**" in body
-    assert "- The Matrix (1999) · `The.Matrix.1999_x265-GRP.mkv` · 5.1 GB" in body
-    assert "- Breaking Bad (2008) · Season 2 · 3.3 GB" in body
+    assert "- **The Matrix (1999)** · 5.1 GB" in body
+    assert "- **Breaking Bad (2008)** · Season 2 · 3.3 GB" in body
+    # file names only appear alongside reasons, where they explain the match
+    assert "The.Matrix.1999_x265-GRP.mkv" not in body
     # reasons stay out of the default summary view
     assert "Watched 90+ days ago" not in body
 
@@ -214,12 +221,22 @@ def test_cleanup_body_appends_reasons_when_requested() -> None:
             }
         },
     )
-    assert "- Watched 90+ days ago, Not requested" in body
+    assert "  - `The.Matrix.1999_x265-GRP.mkv`" in body
+    assert "  - _Watched 90+ days ago_" in body
+    assert "  - _Not requested_" in body
 
 
 def test_cleanup_body_reports_the_remainder() -> None:
     context = _cleanup_context(created_count=9)
-    context["candidates"] = context["candidates"] * 5
+    context["candidates"] = [
+        {
+            "media_type": "movie",
+            "media_title": f"Movie {index}",
+            "media_year": 2000 + index,
+            "estimated_space_bytes": 1_000_000_000 - index,
+        }
+        for index in range(9)
+    ]
     _, body = _compose(
         NotificationType.NEW_CLEANUP_CANDIDATES,
         title="New Cleanup Candidates Found",
@@ -231,7 +248,7 @@ def test_cleanup_body_reports_the_remainder() -> None:
             }
         },
     )
-    assert body.endswith("_and 6 more_")
+    assert body.endswith("_and 5 more titles_")
 
 
 def test_cleanup_count_only_detail() -> None:
@@ -260,3 +277,166 @@ def test_format_bytes() -> None:
     assert _format_bytes(512) == "512 B"
     assert _format_bytes(1024) == "1.0 KB"
     assert _format_bytes(5_476_083_302) == "5.1 GB"
+
+
+def _episode(
+    title: str,
+    season: int,
+    episode: int,
+    size: int,
+    days: int,
+    year: int = 2020,
+) -> dict[str, Any]:
+    """An episode candidate shaped like build_cleanup_notification_context output."""
+    return {
+        "media_type": "series",
+        "media_title": title,
+        "media_year": year,
+        "season_number": season,
+        "episode_number": episode,
+        "estimated_space_bytes": size,
+        "reason_tokens": [
+            f"Tag tv series episodes (S{season:02d}E{episode:02d}): Library matches "
+            "any b539bda9 (b539bda9), Days since watched > 7 "
+            f"({days})"
+        ],
+        "reasons": _notification_reasons(
+            [
+                {
+                    "rule_name": "Tag tv series episodes",
+                    "conditions": [
+                        {
+                            "field": "library.id",
+                            "field_label": "Library",
+                            "operator": "contains_any",
+                            "operator_label": "matches any",
+                            "expected": ["b539bda9"],
+                            "actual": "b539bda9",
+                            "display": "Library matches any b539bda9 (b539bda9)",
+                        },
+                        {
+                            "field": "watch.days_since_last_watched",
+                            "field_label": "Days since watched",
+                            "operator": "greater_than",
+                            "operator_label": ">",
+                            "expected": 7,
+                            "actual": days,
+                            "display": f"Days since watched > 7 ({days})",
+                        },
+                    ],
+                }
+            ]
+        ),
+    }
+
+
+def test_episode_candidates_name_the_episode_not_just_the_season() -> None:
+    context = {
+        "created_count": 3,
+        "total_reclaimable_bytes": 1_430_000_000,
+        "candidates": [
+            _episode("Carrie", 1, 5, 546_900_000, 8, year=2026),
+            _episode("Carrie", 1, 6, 437_100_000, 8, year=2026),
+            _episode("Carrie", 1, 7, 428_900_000, 9, year=2026),
+        ],
+    }
+    _, body = _compose(
+        NotificationType.NEW_CLEANUP_CANDIDATES,
+        title="New Cleanup Candidates Found",
+        context=context,
+    )
+    # one line per show, episodes compressed into a range
+    assert body.count("Carrie") == 1
+    assert "- **Carrie (2026)** · S01E05-E07 · 1.3 GB" in body
+
+
+def test_episode_codes_compress_runs_per_season() -> None:
+    assert (
+        _episode_codes([(1, 10), (2, 1), (1, 8), (1, 9), (2, 3)])
+        == "S01E08-E10, S02E01, S02E03"
+    )
+
+
+def test_episode_reasons_hide_library_ids_and_collapse_per_show() -> None:
+    context = {
+        "created_count": 2,
+        "total_reclaimable_bytes": 2_500_000_000,
+        "candidates": [
+            _episode("Ted Lasso", 2, 1, 1_300_000_000, 8),
+            _episode("Ted Lasso", 1, 10, 1_200_000_000, 9),
+        ],
+    }
+    _, body = _compose(
+        NotificationType.NEW_CLEANUP_CANDIDATES,
+        title="New Cleanup Candidates Found",
+        context=context,
+        preferences={
+            NotificationType.NEW_CLEANUP_CANDIDATES.value: {
+                "detail": "top_n_with_reasons",
+            }
+        },
+    )
+    assert "b539bda9" not in body
+    assert "- **Ted Lasso (2020)** · S01E10, S02E01 · 2.3 GB" in body
+    # the shared rule shows once, without each episode's own day count
+    assert body.count("Days since watched > 7") == 1
+    assert "  - _Days since watched > 7_" in body
+
+
+def test_single_episode_keeps_the_measured_value() -> None:
+    context = {
+        "created_count": 1,
+        "total_reclaimable_bytes": 1_100_000_000,
+        "candidates": [_episode("Ted Lasso", 1, 9, 1_100_000_000, 8)],
+    }
+    _, body = _compose(
+        NotificationType.NEW_CLEANUP_CANDIDATES,
+        title="New Cleanup Candidates Found",
+        context=context,
+        preferences={
+            NotificationType.NEW_CLEANUP_CANDIDATES.value: {
+                "detail": "top_n_with_reasons",
+            }
+        },
+    )
+    assert "- **Ted Lasso (2020)** · S01E09 · 1.0 GB" in body
+    assert "  - _Days since watched > 7 (8)_" in body
+    assert "b539bda9" not in body
+
+
+def test_telegram_gets_bullet_glyphs_outside_code_fences() -> None:
+    body = "lead\n\n- one\n  - two\n```\n- keep\n```"
+    assert _telegram_bullets(body) == "lead\n\n• one\n    ◦ two\n```\n- keep\n```"
+    assert _is_telegram_url("tgram://123:abc/456")
+    assert not _is_telegram_url("discord://a/b")
+
+
+@pytest.mark.parametrize("episode_number", [None, 3])
+def test_whole_series_scope_remains_visible_in_mixed_group(
+    episode_number: int | None,
+) -> None:
+    whole_series = {
+        "media_type": "series",
+        "media_id": 42,
+        "media_title": "Example Show",
+        "media_year": 2020,
+        "season_number": None,
+        "episode_number": None,
+        "estimated_space_bytes": 10 * 1024**3,
+    }
+    child = {
+        **whole_series,
+        "season_number": 1,
+        "episode_number": episode_number,
+        "estimated_space_bytes": 2 * 1024**3,
+    }
+    _, body = _compose(
+        NotificationType.NEW_CLEANUP_CANDIDATES,
+        context={
+            "created_count": 2,
+            "total_reclaimable_bytes": 12 * 1024**3,
+            "candidates": [child, whole_series],
+        },
+    )
+    assert body.count("**Example Show (2020)**") == 1
+    assert "**Example Show (2020)** · Entire series · 12.0 GB" in body
