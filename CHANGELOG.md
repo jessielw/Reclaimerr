@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Notifications: readable cleanup candidate alerts, no duplicate sends (@edmunek)
+- Cleanup no longer gets stuck as playback unavailable after successfully removing files. Library reconciliation now requests a path scan instead of a second deletion, so the candidate completes and reclaim history is recorded. #486
 
 ## [0.6.4] - 2026-10-25
 

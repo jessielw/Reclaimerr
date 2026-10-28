@@ -80,11 +80,31 @@ def test_secondary_only_scans_when_main_deletes_item(monkeypatch) -> None:
     _patch_servers(monkeypatch, main, secondary)
     season = "/data/Media/tv/Example Show/Season 01"
 
-    _reconcile(item_id="season-key", paths=[season], allow_delete_item=True)
+    _reconcile(
+        item_id="season-key",
+        paths=[season],
+        allow_delete_item=True,
+        require_removal=True,
+    )
 
     assert main.deleted_items == ["season-key"]
     assert main.scanned_paths == []
     assert secondary.deleted_items == []
+    assert secondary.scanned_paths == [season]
+
+
+@pytest.mark.parametrize("fail_scan", [False, True])
+def test_confirmed_removal_only_scans_even_when_native_deletion_allowed(
+    monkeypatch, fail_scan
+):
+    main, secondary = FakeMediaServer(fail_scan=fail_scan), FakeMediaServer()
+    _patch_servers(monkeypatch, main, secondary)
+    season = "/data/Media/tv/Example Show/Season 01"
+
+    _reconcile(item_id="season-key", paths=[season], allow_delete_item=True)
+
+    assert main.deleted_items == []
+    assert main.scanned_paths == ([] if fail_scan else [season])
     assert secondary.scanned_paths == [season]
 
 

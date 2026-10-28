@@ -8859,13 +8859,15 @@ async def _reconcile_media_server_after_delete(
 ) -> None:
     """Keep the media server's library in step with files we already removed.
 
-    ``delete_item`` removes the media itself, so it stays behind the "Allow
-    Media Server Fallback Deletion" setting.  ``scan_item_path`` only asks the
+    Once file removal succeeds, only request a path scan. A second native
+    deletion could remove another copy or fail its playback path lookup after
+    the original files are gone. ``scan_item_path`` only asks the
     server to re-check a path it already indexed, so it runs either way -
     without it the server keeps serving an entry whose files are gone, the next
     sync re-imports the item, and the scan re-flags it with a fresh review
     period. If local removal could not be confirmed, ``require_removal`` makes
-    the native deletion mandatory before finalizing the candidate.
+    the native deletion mandatory before finalizing the candidate, subject to
+    the "Allow Media Server Fallback Deletion" setting.
 
     Secondary media servers only ever get the path scan, so libraries that share
     the main server's paths catch up too.
@@ -8877,7 +8879,7 @@ async def _reconcile_media_server_after_delete(
             raise ValueError(
                 "File removal could not be confirmed and no media server is available"
             )
-    elif allow_delete_item and item_id:
+    elif require_removal and allow_delete_item and item_id:
         try:
             await main_service.delete_item(item_id)
         except PlaybackDeferred:
