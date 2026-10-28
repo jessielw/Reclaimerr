@@ -11641,8 +11641,8 @@ async def _delete_season_candidates(
                 deleted_via_sonarr = True
                 break
 
+            season_folder: Path | None = None
             if cand_arr_action == "unmonitor":
-                season_folder: Path | None = None
                 if arr_series_path:
                     initial_series_path = Path(arr_series_path)
                     local_series_path: Path | None = initial_series_path
@@ -11679,12 +11679,15 @@ async def _delete_season_candidates(
                             f"- will attempt media server fallback"
                         )
                 else:
-                    last_sonarr_error = "Could not locate season folder"
-                    LOG.warning(
+                    # Flat layouts have no season directory. Let Sonarr remove
+                    # only this season's episode files, with per-file playback
+                    # checks; the shared series directory must stay intact.
+                    LOG.info(
                         f"Could not locate season folder for '{series_obj.title}' "
-                        f"S{season_number:02d} (arr_series_path={arr_series_path!r})"
+                        f"S{season_number:02d} (arr_series_path={arr_series_path!r}) "
+                        "- deleting season episode files via Sonarr"
                     )
-            else:
+            if cand_arr_action != "unmonitor" or season_folder is None:
                 try:
                     await ref_client.delete_season_files(
                         ref.arr_series_id, season_number

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Seasons stored directly in the series folder can now be unmonitored and deleted through Sonarr's episode files when no season subfolder exists. Playback protection still checks each file, and other seasons stay untouched. #487
 - Notifications: readable cleanup candidate alerts, no duplicate sends (@edmunek)
 - Cleanup no longer gets stuck as playback unavailable after successfully removing files. Library reconciliation now requests a path scan instead of a second deletion, so the candidate completes and reclaim history is recorded. #486
 

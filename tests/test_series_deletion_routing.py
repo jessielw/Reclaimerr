@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -38,6 +38,7 @@ from backend.services.playback_guard import (
     current_playback_operation,
     guard_native_removal,
 )
+from backend.services.sonarr import SonarrClient
 from backend.tasks import cleanup
 
 
@@ -287,6 +288,135 @@ def test_season_unmonitor_finishes_after_local_removal(
                 assert history[0].size == 100
                 assert history[0].action == "unmonitored"
         finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "outcome", ["deleted", "playing", "unavailable", "missing-path", "failed"]
+)
+def test_flat_season_unmonitor_deletes_only_sonarr_season_files(
+    monkeypatch, tmp_path, outcome
+):
+    """Issue #487: a flat season must not depend on native season deletion paths."""
+
+    async def run():
+        folder = tmp_path / "Show"
+        folder.mkdir()
+        files = {
+            900: folder / "Show - S01E01-E02.mkv",
+            901: folder / "Show - S01E03.mkv",
+            902: folder / "Show - S02E01.mkv",
+        }
+        for file in files.values():
+            file.write_bytes(b"episode")
+        mappings = [
+            {
+                "service_type": "sonarr",
+                "service_config_id": 1,
+                "source_prefix": "/sonarr/TV",
+                "local_prefix": str(tmp_path),
+            }
+        ]
+        engine, sessions = await _make_session(monkeypatch)
+        token = None
+        try:
+            async with sessions() as db:
+                candidate_id, configs, ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    arr_action="unmonitor",
+                    arr_series_paths=["/sonarr/TV/Show"],
+                    season_path=str(folder),
+                    episode_path=str(files[900]),
+                    path_mappings=mappings,
+                )
+            episodes = [
+                {"seasonNumber": season, "episodeFileId": file_id}
+                for season, file_id in [(1, 900), (1, 900), (1, 901), (2, 902)]
+            ]
+            sonarr = FakeSonarr({ids[0]: episodes})
+            sonarr.delete_season_files = MethodType(
+                SonarrClient.delete_season_files, sonarr
+            )
+
+            async def request(method, endpoint, **kwargs):
+                if method == "GET" and endpoint == "episode":
+                    return 200, episodes
+                if method == "GET" and endpoint.startswith("episodefile/"):
+                    file_id = int(endpoint.split("/")[1])
+                    path = f"/sonarr/TV/Show/{files[file_id].name}"
+                    return 200, {"path": None if outcome == "missing-path" else path}
+                assert (method, endpoint) == ("DELETE", "episodefile/bulk")
+                assert kwargs["json"] == {"episodeFileIds": [900, 901]}
+                if outcome == "failed":
+                    raise ValueError("Sonarr deletion failed")
+                for file_id in kwargs["json"]["episodeFileIds"]:
+                    files[file_id].unlink()
+                return 200, None
+
+            sonarr._make_request = AsyncMock(side_effect=request)
+            media = FakeMediaServer()
+            media.delete_item = AsyncMock(side_effect=AssertionError("native delete"))
+            _patch_services(monkeypatch, {configs[0]: sonarr}, media)
+            monkeypatch.setattr(cleanup, "_dispatch_reclaim_event", AsyncMock())
+            # Start with only one known episode; Sonarr must expand the guard
+            # to cover every file it will delete, using its scoped path mapping.
+            guard = PlaybackGuard(True, mappings, {99: Service.PLEX})
+            snapshot = PlaybackSnapshot(
+                (LiveSession("playing", paths=(str(files[901]),)),)
+                if outcome == "playing"
+                else (),
+                available=outcome != "unavailable",
+            )
+            monkeypatch.setattr(guard, "_snapshot", AsyncMock(return_value=snapshot))
+            token = current_playback_operation.set(
+                PlaybackOperation(
+                    guard,
+                    PlaybackTarget(
+                        paths=[(str(files[900]), None, None, False)],
+                        relevant_configs={99},
+                    ),
+                )
+            )
+            deferred = outcome in {"playing", "unavailable", "missing-path"}
+            if deferred:
+                with pytest.raises(PlaybackDeferred) as error:
+                    await cleanup._delete_season_candidates(frozenset([candidate_id]))
+                assert error.value.detail.code == (
+                    "currently_playing"
+                    if outcome == "playing"
+                    else "playback_unavailable"
+                )
+            else:
+                count = await cleanup._delete_season_candidates(
+                    frozenset([candidate_id])
+                )
+                assert count == int(outcome == "deleted")
+
+            success = outcome == "deleted"
+            assert folder.is_dir()
+            assert files[900].exists() is not success
+            assert files[901].exists() is not success
+            assert files[902].read_bytes() == b"episode"
+            assert sonarr.season_monitoring_updates == [(ids[0], 1, False)]
+            if outcome != "failed":
+                media.delete_item.assert_not_awaited()
+            assert media.scanned_paths == ([str(folder)] if success else [])
+            async with sessions() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert (candidate is None) is success
+                history = (await db.scalars(select(ReclaimHistory))).all()
+                assert len(history) == int(success)
+                if success:
+                    assert history[0].action == "unmonitored"
+                    assert history[0].size == 100
+                elif outcome == "failed":
+                    assert "Sonarr deletion failed" in candidate.last_delete_error
+        finally:
+            if token is not None:
+                current_playback_operation.reset(token)
             await engine.dispose()
 
     asyncio.run(run())
