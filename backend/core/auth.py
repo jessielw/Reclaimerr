@@ -32,7 +32,6 @@ SESSION_TTL = timedelta(hours=24)
 SESSION_TTL_SECONDS = int(SESSION_TTL.total_seconds())  # 86400
 SESSION_LAST_SEEN_TOUCH_INTERVAL = timedelta(minutes=5)
 SESSION_TOUCH_BUSY_TIMEOUT_MS = 250
-DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
 ORIGINAL_CLIENT_HOST_STATE_KEY = "reclaimerr_original_client_host"
 
 FORWARD_AUTH_WARNED_PEERS_MAX = 256
@@ -398,6 +397,7 @@ async def _touch_user_session_last_seen(session_row_id: int, now: datetime) -> N
     """
     async with async_db() as db:
         try:
+            # The pool resets this per-connection setting on the next checkout.
             await db.execute(
                 text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}")
             )
@@ -413,15 +413,6 @@ async def _touch_user_session_last_seen(session_row_id: int, now: datetime) -> N
         except Exception:
             await db.rollback()
             LOG.debug("Failed to update session last_seen_at", exc_info=True)
-        finally:
-            # busy_timeout is per-connection and connections are pooled, so the
-            # short timeout has to be undone before this one goes back
-            try:
-                await db.execute(
-                    text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
-                )
-            except Exception:
-                LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
 
 
 async def require_admin(
