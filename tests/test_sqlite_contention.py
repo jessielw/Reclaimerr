@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Response
@@ -15,11 +19,21 @@ from backend.database import Base, set_sqlite_pragma
 from backend.database import engine as app_engine
 from backend.database.models import (
     BackgroundJob,
+    Movie,
+    Series,
+    ServiceConfig,
     User,
     UserSession,
 )
-from backend.enums import BackgroundJobType
+from backend.enums import BackgroundJobType, Service
 from backend.jobs import queue
+from backend.models.media import (
+    AggregatedMovieData,
+    AggregatedSeriesData,
+    ExternalIDs,
+    MovieVersionData,
+)
+from backend.tasks import sync
 
 
 async def _database(path):
@@ -194,6 +208,116 @@ def test_queue_waits_for_writer_and_keeps_distinct_tasks(tmp_path, monkeypatch):
                 assert len((await db.scalars(select(BackgroundJob))).all()) == 3
         finally:
             await asyncio.gather(*pending, return_exceptions=True)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("media", ["movie", "series"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_sync_releases_writer_before_metadata_http(
+    tmp_path, monkeypatch, media, existing
+):
+    async def run():
+        path = tmp_path / "sync.db"
+        engine, sessions = await _database(path)
+        monkeypatch.setattr(sync, "async_db", sessions)
+        monkeypatch.setattr(
+            sync,
+            "service_manager",
+            SimpleNamespace(
+                radarr_clients=lambda: {},
+                radarr=None,
+                sonarr_clients=lambda: {},
+                sonarr=None,
+            ),
+        )
+        monkeypatch.setattr(
+            sync,
+            "AsyncTMDBClient",
+            lambda: SimpleNamespace(session=SimpleNamespace(close=AsyncMock())),
+        )
+        probes = []
+
+        async def metadata(_row, _tmdb_id, _client):
+            with closing(sqlite3.connect(path, timeout=0.1)) as other:
+                try:
+                    other.execute("UPDATE service_configs SET name = name")
+                    other.commit()
+                    probes.append(None)
+                except sqlite3.OperationalError as exc:
+                    probes.append(str(exc))
+
+        monkeypatch.setattr(sync, f"_update_{media}_tmdb_metadata", metadata)
+        monkeypatch.setattr(sync, "_needs_metadata_refresh", lambda *_: True)
+        model = Movie if media == "movie" else Series
+        try:
+            async with sessions() as db:
+                db.add(
+                    ServiceConfig(
+                        service_type=Service.PLEX,
+                        base_url="http://plex",
+                        api_key="test",
+                        enabled=True,
+                        is_main=True,
+                    )
+                )
+                if existing:
+                    db.add_all([model(title=f"Item {i}", tmdb_id=i) for i in (1, 2)])
+                await db.commit()
+            incoming = {}
+            for i in (1, 2):
+                ids = ExternalIDs(tmdb=i, imdb=None, tvdb=None, tmdb_collection=None)
+                if media == "movie":
+                    incoming[i] = AggregatedMovieData(
+                        name=f"Item {i}",
+                        year=None,
+                        external_ids=ids,
+                        versions=[
+                            MovieVersionData(
+                                service=Service.PLEX,
+                                service_item_id=str(i),
+                                service_media_id=str(i),
+                                library_id="1",
+                                library_name="Movies",
+                                path=f"/movies/{i}.mkv",
+                                size=1,
+                                added_at=None,
+                            )
+                        ],
+                        view_count=0,
+                        last_viewed_at=None,
+                    )
+                else:
+                    incoming[i] = AggregatedSeriesData(
+                        id=str(i),
+                        name=f"Item {i}",
+                        year=None,
+                        service=Service.PLEX,
+                        library_id="1",
+                        library_name="TV",
+                        path=f"/series/{i}",
+                        added_at=None,
+                        external_ids=ids,
+                        size=1,
+                        view_count=0,
+                        last_viewed_at=None,
+                    )
+            if media == "movie":
+                monkeypatch.setattr(
+                    sync, "gather_movies", AsyncMock(return_value=incoming)
+                )
+                result = await sync.sync_movies(allow_soft_delete=False)
+            else:
+                monkeypatch.setattr(
+                    sync, "gather_series", AsyncMock(return_value=(incoming, {}))
+                )
+                result = await sync.sync_series(allow_soft_delete=False)
+            assert result == {1, 2}
+            assert probes == [None, None]
+            async with sessions() as db:
+                assert len((await db.scalars(select(model))).all()) == 2
+        finally:
             await engine.dispose()
 
     asyncio.run(run())
