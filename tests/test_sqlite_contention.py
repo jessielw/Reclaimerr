@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import Response
-from sqlalchemy import event, text, update
+from sqlalchemy import event, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
@@ -14,9 +14,12 @@ from backend.core import auth
 from backend.database import Base, set_sqlite_pragma
 from backend.database import engine as app_engine
 from backend.database.models import (
+    BackgroundJob,
     User,
     UserSession,
 )
+from backend.enums import BackgroundJobType
+from backend.jobs import queue
 
 
 async def _database(path):
@@ -112,6 +115,85 @@ def test_auth_short_timeout_does_not_escape_to_other_writers(
                 else:
                     assert (persisted.revoked_at is not None) is not locked
         finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_concurrent_enqueues_deduplicate_atomically(tmp_path, monkeypatch):
+    async def run():
+        engine, sessions = await _database(tmp_path / "queue.db")
+        monkeypatch.setattr(queue, "async_db", sessions)
+        try:
+            # Hold the writer while requests arrive. A non-atomic SELECT/INSERT
+            # lets every request observe no active job before any can insert it.
+            async with engine.connect() as writer:
+                await writer.execute(text("BEGIN IMMEDIATE"))
+                pending = [
+                    asyncio.create_task(
+                        queue.enqueue_background_job(
+                            BackgroundJobType.TASK_RUN,
+                            {"task": "sync_media"},
+                            dedupe_key="task-run-sync_media",
+                            skip_if_active=True,
+                        )
+                    )
+                    for _ in range(12)
+                ]
+                await asyncio.sleep(0.5)
+                await writer.rollback()
+            results = await asyncio.gather(*pending)
+            assert sum(job is not None for job in results) == 1
+            async with sessions() as db:
+                assert len((await db.scalars(select(BackgroundJob))).all()) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_queue_waits_for_writer_and_keeps_distinct_tasks(tmp_path, monkeypatch):
+    async def run():
+        engine, sessions = await _database(tmp_path / "busy-queue.db")
+        monkeypatch.setattr(queue, "async_db", sessions)
+        started = asyncio.Event()
+
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def writing(_conn, _cursor, statement, _params, _context, _many):
+            if statement.startswith(("INSERT INTO background_jobs", "BEGIN IMMEDIATE")):
+                started.set()
+
+        pending = []
+        try:
+            async with engine.connect() as writer:
+                await writer.execute(text("BEGIN IMMEDIATE"))
+                started.clear()
+                pending = [
+                    asyncio.create_task(
+                        queue.enqueue_background_job(
+                            BackgroundJobType.TASK_RUN,
+                            {"task": task},
+                            dedupe_key=f"task-run-{task}",
+                            skip_if_active=True,
+                        )
+                    )
+                    for task in (
+                        "sync_media",
+                        "sync_media_libraries",
+                        "sync_linked_data",
+                    )
+                ]
+                await asyncio.wait_for(started.wait(), timeout=5)
+                # Deliberately exceed the leaked authentication timeout.
+                await asyncio.sleep(0.4)
+                assert not any(task.done() for task in pending)
+                await writer.rollback()
+            results = await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+            assert all(job is not None for job in results)
+            async with sessions() as db:
+                assert len((await db.scalars(select(BackgroundJob))).all()) == 3
+        finally:
+            await asyncio.gather(*pending, return_exceptions=True)
             await engine.dispose()
 
     asyncio.run(run())

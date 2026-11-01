@@ -5,7 +5,7 @@ from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, or_, select, text
 from sqlalchemy import update as sql_update
 
 from backend.core.logger import LOG
@@ -35,6 +35,12 @@ async def enqueue_background_job(
     """Enqueue a background job with optional deduplication and scheduling."""
     run_at = scheduled_at or datetime.now(UTC)
     async with async_db() as session:
+        if dedupe_key and (replace_pending or skip_if_active):
+            # Reserve SQLite's writer before checking for an existing job. A
+            # SELECT followed by INSERT otherwise lets concurrent requests both
+            # pass deduplication (or fail upgrading a stale read transaction).
+            # This transaction contains only queue operations, never task work.
+            await session.execute(text("BEGIN IMMEDIATE"))
         if replace_pending and dedupe_key:
             await session.execute(
                 sql_update(BackgroundJob)
