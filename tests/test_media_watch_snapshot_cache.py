@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.database import Base
@@ -26,6 +27,84 @@ from backend.services.media_watch_snapshot_cache import (
     _FetchedWatchState,
 )
 from backend.services.plex import PlexService
+
+
+@pytest.mark.parametrize("fail_insert", [False, True])
+def test_snapshot_bulk_replacement_is_atomic(tmp_path, monkeypatch, fail_insert):
+    async def run():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bulk.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with sessions() as session:
+                config = ServiceConfig(
+                    service_type=Service.PLEX,
+                    base_url="http://plex",
+                    api_key="test",
+                    enabled=True,
+                    is_main=True,
+                )
+                session.add(config)
+                await session.flush()
+                session.add(
+                    MediaWatchUser(
+                        media_type=MediaType.MOVIE,
+                        tmdb_id=1,
+                        watch_user_key="Old",
+                        watch_user_key_normalized="old",
+                        source_service=Service.PLEX,
+                        source_service_config_id=config.id,
+                        last_watched_at=datetime(2026, 8, 1),
+                    )
+                )
+                await session.commit()
+
+            async def fetch(_self, _config):
+                return _FetchedWatchState(
+                    snapshots=[
+                        MediaWatchSnapshot(
+                            media_type=MediaType.MOVIE,
+                            tmdb_id=i + 2,
+                            watch_user_key="Alice",
+                            last_watched_at=datetime(2026, 8, 2),
+                            play_count=None if i % 2 else 2,
+                        )
+                        for i in range(60)
+                    ]
+                )
+
+            monkeypatch.setattr(
+                "backend.services.media_watch_snapshot_cache.async_db", sessions
+            )
+            monkeypatch.setattr(MediaWatchSnapshotCache, "_fetch_watch_state", fetch)
+            inserts = []
+
+            @event.listens_for(engine.sync_engine, "before_cursor_execute")
+            def record(_conn, _cursor, statement, _params, _context, _many):
+                if statement.startswith("INSERT INTO media_watch_users"):
+                    inserts.append(statement)
+                    if fail_insert:
+                        raise RuntimeError("simulated snapshot insert failure")
+
+            ok, error = await MediaWatchSnapshotCache().refresh_snapshot(
+                all_servers=[config]
+            )
+            assert ok is not fail_insert
+            async with sessions() as session:
+                saved = (await session.scalars(select(MediaWatchUser))).all()
+                if fail_insert:
+                    assert error and "simulated" in error
+                    assert [row.watch_user_key for row in saved] == ["Old"]
+                else:
+                    assert len(saved) == 60
+                    assert all(row.watch_user_key == "Alice" for row in saved)
+                    assert sum(row.play_count is None for row in saved) == 30
+                    assert len(inserts) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_legacy_plex_sync_state_requires_full_rebuild() -> None:

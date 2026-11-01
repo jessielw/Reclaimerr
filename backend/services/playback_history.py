@@ -6,10 +6,22 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import ColumnElement, and_, delete, false, func, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Table,
+    and_,
+    bindparam,
+    case,
+    delete,
+    false,
+    func,
+    insert,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -88,13 +100,6 @@ IMPORTED_PLAYBACK_DURATION_FIELDS = frozenset(
 _playback_refresh_lock = Lock()
 
 PlaybackTargetKey = tuple[str, int]
-
-
-class _WatchTrackedRow(Protocol):
-    """Protocol for rows that expose playback watch tracking fields."""
-
-    view_count: int | None
-    last_viewed_at: datetime | None
 
 
 @dataclass(slots=True)
@@ -2720,69 +2725,104 @@ async def rebuild_playback_history_aggregates() -> None:
                     _UserAggregate(media_type=media_type),
                 ).add(event)
 
+        # Prepare replacement rows before taking SQLite's single writer. These
+        # rows' generated ids are unused: bulk inserts avoid one RETURNING round
+        # trip per aggregate while keeping the replacement atomic.
+        aggregate_rows = [
+            {
+                "target_scope": scope,
+                "target_id": target_id,
+                "media_type": aggregate.media_type,
+                "play_count": aggregate.play_count,
+                "total_duration_seconds": aggregate.total_duration_seconds,
+                "longest_duration_seconds": aggregate.longest_duration_seconds,
+                "unique_user_count": len(aggregate.users),
+                "usernames": sorted(aggregate.usernames.values(), key=str.casefold),
+                "usernames_complete": aggregate.usernames_complete,
+                "first_activity_at": aggregate.first_activity_at,
+                "last_activity_at": aggregate.last_activity_at,
+            }
+            for (scope, target_id), aggregate in aggregates.items()
+        ]
+        user_rows = [
+            {
+                "source_service_config_id": config_id,
+                "observed_service": observed_service,
+                "target_scope": scope,
+                "target_id": target_id,
+                "media_type": aggregate.media_type,
+                "unique_user_count": len(aggregate.users),
+                "usernames": sorted(aggregate.usernames.values(), key=str.casefold),
+                "usernames_complete": aggregate.usernames_complete,
+            }
+            for (
+                config_id,
+                observed_service,
+                scope,
+                target_id,
+            ), aggregate in user_aggregates.items()
+        ]
         await session.execute(delete(PlaybackHistoryAggregate))
         await session.execute(delete(PlaybackHistoryUserAggregate))
-        session.add_all(
-            [
-                PlaybackHistoryAggregate(
-                    target_scope=scope,
-                    target_id=target_id,
-                    media_type=aggregate.media_type,
-                    play_count=aggregate.play_count,
-                    total_duration_seconds=aggregate.total_duration_seconds,
-                    longest_duration_seconds=aggregate.longest_duration_seconds,
-                    unique_user_count=len(aggregate.users),
-                    usernames=sorted(aggregate.usernames.values(), key=str.casefold),
-                    usernames_complete=aggregate.usernames_complete,
-                    first_activity_at=aggregate.first_activity_at,
-                    last_activity_at=aggregate.last_activity_at,
-                )
-                for (scope, target_id), aggregate in aggregates.items()
-            ]
-        )
-        session.add_all(
-            [
-                PlaybackHistoryUserAggregate(
-                    source_service_config_id=config_id,
-                    observed_service=observed_service,
-                    target_scope=scope,
-                    target_id=target_id,
-                    media_type=aggregate.media_type,
-                    unique_user_count=len(aggregate.users),
-                    usernames=sorted(
-                        aggregate.usernames.values(),
-                        key=str.casefold,
-                    ),
-                    usernames_complete=aggregate.usernames_complete,
-                )
-                for (
-                    config_id,
-                    observed_service,
-                    scope,
-                    target_id,
-                ), aggregate in user_aggregates.items()
-            ]
-        )
+        if aggregate_rows:
+            await session.execute(
+                insert(PlaybackHistoryAggregate),
+                aggregate_rows,
+                execution_options={"render_nulls": True},
+            )
+        if user_rows:
+            await session.execute(insert(PlaybackHistoryUserAggregate), user_rows)
 
+        # Compare against the current database values in a batched UPDATE. The
+        # previous per-target session.get() held the writer across thousands of
+        # SELECTs. Never lower native play counts or replace a newer watch date.
         for model, values in (
             (Movie, movie_watch),
             (Series, series_watch),
             (Season, season_watch),
             (Episode, episode_watch),
         ):
-            for target_id, aggregate in values.items():
-                row = cast(
-                    _WatchTrackedRow | None,
-                    await session.get(model, target_id),
+            if not values:
+                continue
+            table = cast(Table, model.__table__)
+            last_activity = bindparam(
+                "last_activity", type_=table.c.last_viewed_at.type
+            )
+            newer_activity = and_(
+                last_activity.is_not(None),
+                or_(
+                    table.c.last_viewed_at.is_(None),
+                    table.c.last_viewed_at < last_activity,
+                ),
+            )
+            await session.execute(
+                table.update()
+                .where(
+                    table.c.id == bindparam("target_id"),
+                    or_(
+                        table.c.view_count.is_(None),
+                        table.c.view_count < bindparam("play_count"),
+                        newer_activity,
+                    ),
                 )
-                if row is None:
-                    continue
-                row.view_count = max(row.view_count or 0, aggregate.play_count)
-                if aggregate.last_activity_at is not None and (
-                    row.last_viewed_at is None
-                    or aggregate.last_activity_at > row.last_viewed_at
-                ):
-                    row.last_viewed_at = aggregate.last_activity_at
+                .values(
+                    view_count=func.max(
+                        func.coalesce(table.c.view_count, 0), bindparam("play_count")
+                    ),
+                    last_viewed_at=case(
+                        (newer_activity, last_activity),
+                        else_=table.c.last_viewed_at,
+                    ),
+                ),
+                [
+                    {
+                        "target_id": target_id,
+                        "play_count": aggregate.play_count,
+                        "last_activity": aggregate.last_activity_at,
+                    }
+                    for target_id, aggregate in values.items()
+                ],
+            )
         await session.commit()
         LOG.info(
             "Playback aggregate rebuild complete: "

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -787,6 +787,79 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
         if self.db_path.exists():
             self.db_path.unlink()
+
+    async def test_rebuild_batches_writes_and_preserves_newer_watch_state(self) -> None:
+        played_at = datetime(2026, 8, 1)
+        newer = datetime(2026, 8, 2)
+        async with self.sessionmaker() as db:
+            provider = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="test",
+                enabled=True,
+            )
+            movies = [Movie(title=f"Movie {i}", tmdb_id=i + 1) for i in range(60)]
+            movies[0].view_count = 10
+            movies[0].last_viewed_at = newer
+            db.add_all([provider, *movies])
+            await db.flush()
+            for movie in movies:
+                db.add(
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.PLEX,
+                        service_item_id=str(movie.id),
+                        service_media_id=str(movie.id),
+                        library_id="movies",
+                        library_name="Movies",
+                    )
+                )
+                db.add(
+                    PlaybackHistoryEvent(
+                        source_service=Service.TAUTULLI,
+                        source_service_config_id=provider.id,
+                        source_event_key=str(movie.id),
+                        source_item_id=str(movie.id),
+                        provider_media_type="movie",
+                        played_at=played_at,
+                        duration_seconds=60,
+                        tmdb_id=movie.tmdb_id,
+                    )
+                )
+            await db.commit()
+
+        statements = []
+
+        def record(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement.lstrip().upper())
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", record)
+        try:
+            await rebuild_playback_history_aggregates()
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", record)
+
+        async with self.sessionmaker() as db:
+            saved_movies = (await db.scalars(select(Movie).order_by(Movie.id))).all()
+            self.assertEqual(saved_movies[0].view_count, 10)
+            self.assertEqual(saved_movies[0].last_viewed_at, newer)
+            self.assertTrue(all(m.view_count == 1 for m in saved_movies[1:]))
+            self.assertTrue(
+                all(m.last_viewed_at == played_at for m in saved_movies[1:])
+            )
+            aggregates = (await db.scalars(select(PlaybackHistoryAggregate))).all()
+            self.assertEqual(len(aggregates), 60)
+            self.assertTrue(all(row.play_count == 1 for row in aggregates))
+        first_write = next(
+            i
+            for i, sql in enumerate(statements)
+            if sql.startswith(("INSERT", "UPDATE", "DELETE"))
+        )
+        self.assertFalse(
+            any(sql.startswith("SELECT") for sql in statements[first_write:])
+        )
+        # SQL round trips must not grow by several statements for each target.
+        self.assertLess(len(statements), 30)
 
     async def test_tracearr_binding_selects_one_durable_history_source(self) -> None:
         async with self.sessionmaker() as db:
