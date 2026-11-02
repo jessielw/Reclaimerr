@@ -8,6 +8,7 @@ import sys
 from enum import StrEnum
 from typing import Any
 
+from backend.core.diagnostic_trace import JOB_ENV, job_id
 from backend.core.logger import LOG
 from backend.core.memory import cleanup_process_memory, log_memory_snapshot
 from backend.core.service_manager import service_manager
@@ -132,6 +133,11 @@ async def run_task_in_subprocess(
         payload["service_config_id"] = service_config_id
     request = json.dumps(payload, separators=(",", ":")).encode()
     env = {**os.environ, TASK_CHILD_ENV: "1"}
+    support_job_id = job_id()
+    if support_job_id is not None:
+        env[JOB_ENV] = str(support_job_id)
+    else:
+        env.pop(JOB_ENV, None)
     command = _task_child_command()
 
     try:

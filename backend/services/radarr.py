@@ -14,6 +14,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.operation_diagnostics import observe_step
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.enums import Service
@@ -583,6 +584,12 @@ class RadarrClient:
             error_context=f"Failed to queue a search for movies {movie_ids}",
         )
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="radarr",
+        reference="movie_ids",
+    )
     async def delete_movies(
         self,
         movie_ids: list[int],
@@ -693,6 +700,12 @@ class RadarrClient:
             dates[movie_id] = min(dates.get(movie_id, imported_at), imported_at)
         return dates
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="radarr",
+        reference="movie_file_ids",
+    )
     async def delete_movie_files(self, movie_file_ids: list[int]) -> None:
         """Delete individual movie files without touching the Radarr movie entry.
 
@@ -715,6 +728,12 @@ class RadarrClient:
                 f"Failed to delete movie files {movie_file_ids} (status: {status_code})"
             )
 
+    @observe_step(
+        "provider_unmonitor",
+        subject="provider_request",
+        provider="radarr",
+        reference="movie_ids",
+    )
     async def unmonitor_movies(self, movie_ids: list[int]) -> None:
         """Set multiple movies to unmonitored so Radarr won't queue re-downloads."""
         if not movie_ids:

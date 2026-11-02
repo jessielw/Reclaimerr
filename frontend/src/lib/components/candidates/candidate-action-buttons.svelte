@@ -1,9 +1,13 @@
 <script lang="ts">
   import type { Component } from "svelte";
+  import DiagnosticsDialog from "$lib/components/diagnostics/diagnostics-dialog.svelte";
+  import type { DiagnosticsTarget } from "$lib/types/diagnostics";
+  import { auth } from "$lib/stores/auth";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import Info from "@lucide/svelte/icons/info";
+  import Bug from "@lucide/svelte/icons/bug";
   import Shield from "@lucide/svelte/icons/shield";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
@@ -38,6 +42,21 @@
       : "rounded-full",
   );
   const iconCls = $derived(compact ? "size-3.5 shrink-0" : "size-4 shrink-0");
+  let diagnosticsOpen = $state(false);
+  const diagnosticsTarget = $derived<DiagnosticsTarget | null>(
+    entry.episode_id != null
+      ? { scope: "episode", id: entry.episode_id }
+      : entry.episode_number != null
+        ? null
+        : entry.movie_version_id != null
+          ? { scope: "movie_version", id: entry.movie_version_id }
+          : entry.season_id != null
+            ? { scope: "season", id: entry.season_id }
+            : { scope: entry.media_type, id: entry.media_id },
+  );
+  const canDiagnose = $derived(
+    $auth.user?.role === "admin" && diagnosticsTarget !== null,
+  );
 
   // what the buttons act on, so tooltips make the scope explicit
   const scope = $derived(
@@ -106,8 +125,21 @@
   )}
 {/if}
 
-<!-- info -->
-{#if onInfo}
+<!-- Inspection actions sit together, separate from protection and deletion. -->
+{#if onInfo || canDiagnose}
   <div class="w-px bg-border self-stretch"></div>
+{/if}
+{#if onInfo}
   {@render action("Details", "", Info, () => onInfo!(entry))}
+{/if}
+{#if canDiagnose}
+  {@render action(
+    `Debug info for ${scope}`,
+    "",
+    Bug,
+    () => (diagnosticsOpen = true),
+  )}
+{/if}
+{#if diagnosticsOpen && canDiagnose && diagnosticsTarget}
+  <DiagnosticsDialog bind:open={diagnosticsOpen} target={diagnosticsTarget} />
 {/if}

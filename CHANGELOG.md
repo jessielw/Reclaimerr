@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Support diagnostics** for administrators under **Settings > About**, in media details, and on candidate cards. Preview, copy or download scoped JSON reports with stored playback, configuration, task and database evidence. Separate, explicit checks can inspect saved paths, relationships or a configured provider's connection.
+- **Controlled support bundles** with problem presets, section selection, history windows, optional sanitized log summaries and a sanitized SQLite extract. Review the exact contents before downloading; file paths are opt-in, credentials are excluded, and nothing is uploaded automatically. The SQLite extract is for support, not backup or restore.
+- **Why this candidate?** shows readable expected and observed rule values, matched and skipped conditions, and protection context. Future scans retain bounded historical evaluations and rule revisions; missing evidence stays unknown rather than being reconstructed by rerunning rules.
+- **Per-item move and deletion diagnostics** record observed stages, safe failure categories and exact failed file paths where available. Partial successes and failed fallback attempts remain visible, while interrupted or unrecorded outcomes stay unknown.
+- **Support-code lookup** finds retained evidence by scan, job, operation or correlation ID and prepares a matching support bundle without retrying the original work.
+
+### Changed
+
+- Candidate **Debug info** now sits beside the other card actions with consistent button and icon sizing.
+
+### Fixed
+
+- Toggling **Include file paths** updates the diagnostics preview without flashing or remounting the dialog.
+- Failed file-copy verification now preserves the useful size-mismatch error instead of trying to read the destination after removing the incomplete copy. The source file remains intact.
+
 ## [0.6.5] - 2026-10-28
 
 ### Changed
@@ -144,7 +163,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **Selected-provider playback history rules.** New **Playback history — selected provider** group adds 11 rule conditions for recorded activity, play counts, durations, viewers, and completed-watch dates. Choose a history provider per server under **Settings → Media Servers**: Automatic prefers a bound Tracearr source, otherwise Tautulli for Plex or Playback Reporting for Jellyfin/Emby. Tautulli settings now include an explicit Plex-server binding. These conditions use all retained provider history, including watches before a file was replaced, without merging native watch state. Unavailable history remains unknown and never silently switches providers; completion conditions require provider completion data.
+- **Selected-provider playback history rules.** New **Playback history - selected provider** group adds 11 rule conditions for recorded activity, play counts, durations, viewers, and completed-watch dates. Choose a history provider per server under **Settings → Media Servers**: Automatic prefers a bound Tracearr source, otherwise Tautulli for Plex or Playback Reporting for Jellyfin/Emby. Tautulli settings now include an explicit Plex-server binding. These conditions use all retained provider history, including watches before a file was replaced, without merging native watch state. Unavailable history remains unknown and never silently switches providers; completion conditions require provider completion data.
 - **Unsaved rule edit warnings.** Leaving an edited rule through the editor Back button or app navigation asks before discarding changes. Refreshing or closing the tab uses the browser warning. Canceling navigation preserves the draft; unchanged editors and preview-only actions do not prompt.
 - **Smoother Storage refresh.** Existing metrics stay visible during refresh, with a full Last updated timestamp. A failed refresh retains the previous values and marks them as previous metrics alongside the error.
 - **Show/hide entered API keys.** Service configuration forms have a visibility toggle for newly entered keys or tokens. Saved secrets are never fetched or revealed, and clearing the field restores masking.

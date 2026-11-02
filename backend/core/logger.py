@@ -8,6 +8,7 @@ from typing import Any
 from typing_extensions import override
 
 from backend.core.__version__ import __version__, program_name
+from backend.core.diagnostic_trace import current_operation_id, current_scan, job_id
 from backend.core.settings import settings
 from backend.core.task_env import TASK_CHILD_ENV
 from backend.enums import LogLevel, LogSource
@@ -17,6 +18,22 @@ _LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 # An isolated task child's lines land in the parent's log exactly as the child
 # wrote them, so they carry a marker saying which process they came from.
 _TASK_CHILD_LOG_FORMAT = "%(asctime)s - %(levelname)s - [task-child] %(message)s"
+
+
+def _support_message(message: object) -> str:
+    tags = []
+    scan = current_scan.get()
+    operation = current_operation_id.get()
+    job = job_id()
+    if scan:
+        tags.append(f"scan={scan.scan_id}")
+    if operation:
+        tags.append(f"operation={operation}")
+    if job is not None:
+        tags.append(f"job={job}")
+    prefix = "[support " + " ".join(tags) + "] " if tags else ""
+    return prefix + str(message).strip()
+
 
 # Level names as they appear in an already formatted line. Used to keep a line
 # forwarded from a task child at the severity the child gave it.
@@ -113,7 +130,9 @@ class Logger:
         if self.logger.level <= logging.DEBUG:
             self._initialize_handlers()
             src = source or self.default_source
-            self.logger.debug(f"{src.value}: {str(message).strip()}", exc_info=exc_info)
+            self.logger.debug(
+                f"{src.value}: {_support_message(message)}", exc_info=exc_info
+            )
 
     def info(
         self, message: str, source: LogSource | None = None, exc_info: bool = False
@@ -121,7 +140,9 @@ class Logger:
         if self.logger.level <= logging.INFO:
             self._initialize_handlers()
             src = source or self.default_source
-            self.logger.info(f"{src.value}: {str(message).strip()}", exc_info=exc_info)
+            self.logger.info(
+                f"{src.value}: {_support_message(message)}", exc_info=exc_info
+            )
 
     def warning(
         self, message: str, source: LogSource | None = None, exc_info: bool = False
@@ -130,7 +151,7 @@ class Logger:
             self._initialize_handlers()
             src = source or self.default_source
             self.logger.warning(
-                f"{src.value}: {str(message).strip()}", exc_info=exc_info
+                f"{src.value}: {_support_message(message)}", exc_info=exc_info
             )
 
     def error(
@@ -139,7 +160,9 @@ class Logger:
         if self.logger.level <= logging.ERROR:
             self._initialize_handlers()
             src = source or self.default_source
-            self.logger.error(f"{src.value}: {str(message).strip()}", exc_info=exc_info)
+            self.logger.error(
+                f"{src.value}: {_support_message(message)}", exc_info=exc_info
+            )
 
     def critical(
         self, message: str, source: LogSource | None = None, exc_info: bool = False
@@ -148,7 +171,7 @@ class Logger:
             self._initialize_handlers()
             src = source or self.default_source
             self.logger.critical(
-                f"{src.value}: {str(message).strip()}", exc_info=exc_info
+                f"{src.value}: {_support_message(message)}", exc_info=exc_info
             )
 
     def exception(self, message: str, source: LogSource | None = None) -> None:
@@ -156,7 +179,7 @@ class Logger:
         if self.logger.level <= logging.ERROR:
             self._initialize_handlers()
             src = source or self.default_source
-            self.logger.exception(f"{src.value}: {str(message).strip()}")
+            self.logger.exception(f"{src.value}: {_support_message(message)}")
 
     def forward(self, line: str) -> None:
         """Re-emit a line an isolated task child already formatted for itself.

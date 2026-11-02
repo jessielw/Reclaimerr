@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.logger import LOG
+from backend.core.operation_diagnostics import (
+    observe_step,
+    operation_stage,
+    operation_step,
+)
 
 _MEDIA_FILE_EXTENSIONS = {
     ".3g2",
@@ -348,7 +353,8 @@ def sibling_cleanup(local_path: Path) -> None:
     for f in parent.iterdir():
         if f.is_file() and f.stem == stem:
             try:
-                f.unlink()
+                with operation_step("filesystem_cleanup", path=f, subject="file"):
+                    f.unlink()
                 deleted.append(f)
             except OSError as e:
                 LOG.warning(f"sibling_cleanup: could not delete {f}: {e}")
@@ -437,7 +443,14 @@ def _files_are_identical(src: Path, dest: Path) -> bool:
 
 
 def _destination_collision_error(src: Path, dest: Path, reason: str) -> FileExistsError:
-    return FileExistsError(f"move: cannot merge {src} into {dest}; {reason}")
+    error = FileExistsError(f"move: cannot merge {src} into {dest}; {reason}")
+    try:
+        with operation_step(
+            "destination_collision", path=src, destination=dest, subject="path"
+        ):
+            raise error
+    except FileExistsError:
+        return error
 
 
 def _preflight_file_moves(file_moves: Sequence[tuple[Path, Path]]) -> None:
@@ -461,6 +474,7 @@ def _preflight_file_moves(file_moves: Sequence[tuple[Path, Path]]) -> None:
             )
 
 
+@observe_step("prepare_destination", path="src", destination="dest", subject="file")
 def _move_single_file_to_path(
     src: Path,
     dest: Path,
@@ -478,9 +492,11 @@ def _move_single_file_to_path(
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
+        operation_stage("destination_collision")
         if dest.is_symlink():
             raise _destination_collision_error(src, dest, "destination is a symlink")
         if dest.is_file() and _files_are_identical(src, dest):
+            operation_stage("remove_source")
             src.unlink()
             if stats:
                 stats.deduplicated_files += 1
@@ -496,6 +512,7 @@ def _move_single_file_to_path(
 
     # fast path: same filesystem rename
     try:
+        operation_stage("rename")
         os_rename(src, dest)
         if stats:
             stats.moved_files += 1
@@ -504,17 +521,21 @@ def _move_single_file_to_path(
         pass  # cross device (fall through to copy + delete)
 
     # copy to destination
+    operation_stage("copy")
     shutil.copy2(str(src), str(dest))
 
     # verify destination has the expected size before deleting source
-    if dest.stat().st_size != src.stat().st_size:
+    operation_stage("verify_copy")
+    expected_size, copied_size = src.stat().st_size, dest.stat().st_size
+    if copied_size != expected_size:
         dest.unlink(missing_ok=True)
         raise OSError(
             f"move_media: destination size mismatch for {dest} "
-            f"(expected {src.stat().st_size}, got {dest.stat().st_size})"
+            f"(expected {expected_size}, got {copied_size})"
         )
 
     # delete source only after verified copy
+    operation_stage("remove_source")
     src.unlink()
     if stats:
         stats.moved_files += 1
@@ -591,15 +612,21 @@ def _count_regular_files(path: Path) -> int:
     )
 
 
+@observe_step(
+    "prepare_destination", path="src", destination="dest", subject="directory"
+)
 def _move_directory_to_path(src: Path, dest: Path) -> None:
     """Move one directory where *dest* has already been confirmed absent."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
         raise _destination_collision_error(src, dest, "destination already exists")
     try:
+        operation_stage("rename")
         os_rename(src, dest)
     except OSError:
+        operation_stage("copy")
         shutil.copytree(str(src), str(dest))
+        operation_stage("remove_source")
         shutil.rmtree(str(src))
 
 
@@ -788,6 +815,9 @@ def remove_empty_directory(
         return False
 
 
+@observe_step(
+    "directory_move", path="src", destination="destination_root", subject="directory"
+)
 def move_directory(
     src: Path,
     destination_root: Path,

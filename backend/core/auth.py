@@ -373,7 +373,9 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled"
         )
 
-    if (
+    # Support collection must not add activity writes while diagnosing a busy DB.
+    # Authorization and session revocation checks above still run normally.
+    if not request.url.path.startswith("/api/diagnostics/") and (
         user_session.last_seen_at is None
         or (now - ensure_utc(user_session.last_seen_at))
         >= SESSION_LAST_SEEN_TOUCH_INTERVAL

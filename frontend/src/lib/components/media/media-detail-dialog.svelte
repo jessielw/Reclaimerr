@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import DiagnosticsButton from "$lib/components/diagnostics/diagnostics-button.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import Clock from "@lucide/svelte/icons/clock";
@@ -618,6 +619,7 @@
                 {/if}
               </div>
             {/if}
+            <DiagnosticsButton target={{ scope: mediaType, id: media.id }} />
             <Button
               variant="secondary"
               class="w-full mt-2"
@@ -632,6 +634,7 @@
             class="hidden sm:flex mt-6 border-t border-border/60 pt-4"
           >
             <!-- close button -->
+            <DiagnosticsButton target={{ scope: mediaType, id: media.id }} />
             <Button variant="secondary" onclick={handleClose}>
               <X class="size-5" />
               Close

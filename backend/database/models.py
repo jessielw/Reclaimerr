@@ -1966,9 +1966,7 @@ class ReclaimCandidate(Base):
         DateTime, default=None
     )
     # when its Seerr requesters were warned it is leaving; once per candidate
-    requester_warned_at: Mapped[datetime | None] = mapped_column(
-        DateTime, default=None
-    )
+    requester_warned_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # space savings
     estimated_space_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
@@ -2375,6 +2373,56 @@ class BackgroundJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), init=False
     )
+
+
+class SupportScanRun(Base):
+    """Bounded historical context for diagnostics, not a replay instruction."""
+
+    __tablename__ = "support_scan_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime)
+    job_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    dropped_traces: Mapped[int] = mapped_column(Integer, default=0)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default_factory=dict)
+
+
+class SupportDecisionTrace(Base):
+    __tablename__ = "support_decision_traces"
+    __table_args__ = (Index("ix_support_trace_target", "target_scope", "target_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
+    scan_id: Mapped[str] = mapped_column(
+        ForeignKey("support_scan_runs.id", ondelete="CASCADE"), index=True
+    )
+    target_scope: Mapped[str] = mapped_column(String(24))
+    target_id: Mapped[int] = mapped_column(Integer)
+    rule_id: Mapped[int] = mapped_column(Integer)
+    rule_revision: Mapped[str] = mapped_column(String(64))
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    outcome: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    movie_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    series_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    season_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    candidate_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+
+
+class SupportOperationEvent(Base):
+    __tablename__ = "support_operation_events"
+    __table_args__ = (Index("ix_support_event_target", "target_scope", "target_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_type: Mapped[str] = mapped_column(String(48))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    target_scope: Mapped[str] = mapped_column(String(24))
+    target_id: Mapped[int] = mapped_column(Integer)
+    candidate_id: Mapped[int] = mapped_column(Integer, index=True)
+    movie_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    series_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    season_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    error_category: Mapped[str | None] = mapped_column(String(48), default=None)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
 
 class WebhookEndpoint(Base):

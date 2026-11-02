@@ -5,6 +5,7 @@
   import { gfmPlugin } from "svelte-exmarkdown/gfm";
 
   import { get_api } from "$lib/api";
+  import DiagnosticsButton from "$lib/components/diagnostics/diagnostics-button.svelte";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
@@ -61,6 +62,15 @@
   </div>
 
   <hr />
+
+  <section class="space-y-2">
+    <h3 class="text-foreground">Support diagnostics</h3>
+    <p class="text-sm text-muted-foreground">
+      Preview and share a masked report of stored service, task and database
+      state.
+    </p>
+    <DiagnosticsButton label="Support diagnostics" />
+  </section>
 
   {#if loading}
     <div class="flex justify-center py-8">
