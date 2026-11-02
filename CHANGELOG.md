@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Why doesn’t this match?** in the rule editor checks one movie version, show, season or episode against the current rule, including unsaved edits. Search for an item and inspect required and actual values, nested AND/OR groups, failed conditions, unavailable data and eligibility exclusions such as favorites or active protections. The check evaluates all enabled branches without saving the rule, creating candidates or protections, or taking rule actions.
 - **Support diagnostics** for administrators under **Settings > About**, in media details, and on candidate cards. Preview, copy or download scoped JSON reports with stored playback, configuration, task and database evidence. Separate, explicit checks can inspect saved paths, relationships or a configured provider's connection.
 - **Controlled support bundles** with problem presets, section selection, history windows, optional sanitized log summaries and a sanitized SQLite extract. Review the exact contents before downloading; file paths are opt-in, credentials are excluded, and nothing is uploaded automatically. The SQLite extract is for support, not backup or restore.
 - **Why this candidate?** shows readable expected and observed rule values, matched and skipped conditions, and protection context. Future scans retain bounded historical evaluations and rule revisions; missing evidence stays unknown rather than being reconstructed by rerunning rules.
@@ -20,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The rule explanation dialog keeps a fixed height while loading items and results, with a stationary header and internal scrolling.
 - Retained playback history no longer lets an unresolved episode hide movie history, or an unresolved movie hide episode history. Proven watches remain available while uncertain counts and dates stay unknown. Stable identities take precedence over reused server item IDs, and Tracearr identity recovery validates episode links, retains conflict evidence, and retries failed history replays. #498
 - Toggling **Include file paths** updates the diagnostics preview without flashing or remounting the dialog.
 - Failed file-copy verification now preserves the useful size-mismatch error instead of trying to read the destination after removing the incomplete copy. The source file remains intact.

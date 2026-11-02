@@ -83,7 +83,11 @@ from backend.models.rules import (
     QualityProfileLookup,
     QualityProfileLookupError,
     QualityProfileLookupResponse,
+    RuleExplainRequest,
+    RuleExplainResponse,
+    RuleExplainTargetsResponse,
     RulePreviewRequest,
+    RuleTargetScope,
     SeerrUserLookupResponse,
     ValidatePathCondition,
     ValidatePathsRequest,
@@ -92,6 +96,11 @@ from backend.models.rules import (
     ValidateRegexResponse,
 )
 from backend.services.admin_notices import reconcile_stale_library_notice
+from backend.services.rule_explain import (
+    RuleExplainTargetNotFound,
+    explain_rule_target,
+    list_rule_explain_targets,
+)
 from backend.services.rule_presets import RulePreset, rule_presets
 from backend.services.seerr_cache import seerr_snapshot_cache
 from backend.services.watch_identity import (
@@ -1463,6 +1472,48 @@ async def validate_paths_against_scope(
         valid_conditions=valid_conditions,
         invalid_conditions=invalid_conditions,
     )
+
+
+@router.get("/rules/explain/targets", response_model=RuleExplainTargetsResponse)
+async def rule_explain_targets(
+    target_scope: RuleTargetScope,
+    _admin: Annotated[User, Depends(require_admin)],
+    search: str = Query(default="", max_length=300),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> RuleExplainTargetsResponse:
+    """Find individual indexed targets, including items excluded from previews."""
+    return await list_rule_explain_targets(db, target_scope, search, page, per_page)
+
+
+@router.post("/rules/explain", response_model=RuleExplainResponse)
+async def explain_rule(
+    body: RuleExplainRequest,
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> RuleExplainResponse:
+    """Explain an unsaved rule against one item without taking rule actions."""
+    try:
+        validate_rule_definition(body.definition, target_scope=body.target_scope)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    _validate_definition_path_syntax(body.definition)
+    _validate_definition_tag_regex_syntax(body.definition)
+    rule = ReclaimRule(
+        name=(body.name or "").strip() or "Rule check",
+        media_type=MediaType.MOVIE
+        if body.target_scope == TARGET_MOVIE_VERSION
+        else MediaType.SERIES,
+        enabled=True,
+        target_scope=body.target_scope,
+        definition=body.definition,
+        action={"outcome": body.outcome},
+    )
+    try:
+        return await explain_rule_target(db, rule, body.target_scope, body.target_id)
+    except RuleExplainTargetNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.post("/rules/preview", response_model=PaginatedRulePreviewResponse)

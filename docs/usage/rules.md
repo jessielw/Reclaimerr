@@ -15,6 +15,18 @@ Use the search box on **Rules** to find names or descriptions, ignoring case. Co
 
 The rule editor warns before you discard unsaved changes through its Back button or navigation to another app page. Refreshing or closing the tab uses the browser’s own warning. Cancel the warning to keep editing. Opening a preview does not mark a rule as changed.
 
+## Check why an item does not match
+
+1. Open a rule and select **Why doesn’t this match?** beside **Preview Matches**.
+2. Search by title or file path and select the specific movie version, show, season, or episode. The picker includes protected, removed, and empty indexed items so their exclusions can be explained.
+3. Select **Check this item**. The check uses your current conditions and outcome, including unsaved edits.
+
+The results show each condition’s required and actual values within its original `AND`/`OR` groups. **Pass** and **Fail** describe the comparison. **Unknown** means required source data is unavailable; it does not mean zero or unwatched. **Disabled** conditions are ignored. All enabled branches are checked, including conditions that a normal evaluation skips after an earlier failure. Long displayed values may be shortened.
+
+Eligibility checks explain exclusions such as favorites/watchlists, active protections (including rule-managed protections), missing media paths or sizes, and removed titles. An item can pass every condition and still be excluded from Preview. Favorites and existing protections exclude cleanup candidates, while protection and match-only outcomes follow the same eligibility behavior as their normal preview.
+
+Checking refreshes source data in the same way as Preview. It does not save the rule, create candidates or protections, or execute rule actions. To check further edits, close the dialog and reopen it from the editor.
+
 ## Start from a preset
 
 1. Open **Rules → Add from preset** and choose a starter.

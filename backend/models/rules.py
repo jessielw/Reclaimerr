@@ -46,6 +46,55 @@ class RulePreviewRequest(BaseModel):
     per_page: int = Field(default=25, ge=1, le=100)
 
 
+RuleTargetScope = Literal["movie_version", "series", "season", "episode"]
+RuleCheckState = Literal["pass", "fail", "unknown", "disabled"]
+
+
+class RuleExplainRequest(BaseModel):
+    name: str | None = None
+    target_scope: RuleTargetScope
+    target_id: int = Field(gt=0)
+    definition: dict[str, Any]
+    outcome: Literal["candidate", "protect", "match"] = "candidate"
+
+
+class RuleExplainTarget(BaseModel):
+    id: int
+    label: str
+    path: str | None = None
+
+
+class RuleExplainTargetsResponse(BaseModel):
+    items: list[RuleExplainTarget]
+    total: int
+    page: int
+    per_page: int
+
+
+class RuleExplainNode(BaseModel):
+    type: Literal["group", "condition"]
+    state: RuleCheckState
+    op: str | None = None
+    field: str | None = None
+    label: str | None = None
+    operator: str | None = None
+    operator_label: str | None = None
+    expected: Any = None
+    actual: Any = None
+    children: list["RuleExplainNode"] = Field(default_factory=list)
+
+
+class RuleExplainResponse(BaseModel):
+    target: RuleExplainTarget
+    target_scope: RuleTargetScope
+    outcome: Literal["candidate", "protect", "match"]
+    condition_state: RuleCheckState
+    eligible: bool
+    exclusions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    root: RuleExplainNode
+
+
 class QualityProfileLookupResponse(BaseModel):
     """One Arr quality profile, as offered in the rule action editor."""
 

@@ -19,6 +19,8 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Save from "@lucide/svelte/icons/save";
   import RuleNodeEditor from "$lib/components/settings/rules/rule-node-editor.svelte";
+  import RuleExplainDialog from "$lib/components/settings/rules/rule-explain-dialog.svelte";
+  import type { RuleExplainSnapshot } from "$lib/types/rule-explain";
   import { parseAutoDeleteDelay } from "$lib/components/settings/rules/rule-action-values.js";
   import { isConditionValueSet } from "$lib/components/settings/rules/rule-condition-value.js";
   import { movieRequesterWatchSummary } from "$lib/components/settings/rules/requester-watch-summary.js";
@@ -208,6 +210,8 @@
 
   // preview states
   let previewDialogOpen = $state(false);
+  let ruleCheckOpen = $state(false);
+  let ruleCheckSnapshot = $state<RuleExplainSnapshot | null>(null);
   let explainDialogOpen = $state(false);
   let explainLoading = $state(false);
   let explainError = $state<string | null>(null);
@@ -742,7 +746,16 @@
         </p>
       </div>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center justify-end gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        disabled={!canPreviewRule}
+        onclick={() => {
+          ruleCheckSnapshot = buildPreviewSnapshot();
+          ruleCheckOpen = true;
+        }}>Why doesn’t this match?</Button
+      >
       <Button
         type="button"
         variant="secondary"
@@ -1271,6 +1284,10 @@
     </div>
   {/if}
 </div>
+
+{#if ruleCheckOpen && ruleCheckSnapshot}
+  <RuleExplainDialog bind:open={ruleCheckOpen} snapshot={ruleCheckSnapshot} />
+{/if}
 
 <!-- preview dialog -->
 <Dialog.Root bind:open={previewDialogOpen}>

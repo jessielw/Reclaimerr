@@ -8,7 +8,11 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any, Final, TypeAlias, cast
 
-from backend.core.diagnostic_trace import capture_evaluation, current_scan
+from backend.core.diagnostic_trace import (
+    bounded_value,
+    capture_evaluation,
+    current_scan,
+)
 from backend.core.playback_history_fields import (
     HISTORY_FIELD_LABELS,
     HISTORY_RULE_FIELDS,
@@ -2152,6 +2156,101 @@ def evaluate_advanced_rule_state(
         RULE_VALUE_UNAVAILABLE,
     )
     return outcome
+
+
+def explain_advanced_rule(
+    rule: ReclaimRule,
+    *,
+    target_scope: str,
+    movie: Movie | None = None,
+    version: MovieVersion | None = None,
+    series: Series | None = None,
+    season: Season | None = None,
+    episode: Episode | None = None,
+) -> dict[str, Any]:
+    """Explain every condition using the same context and operators as a scan.
+
+    Unlike the normal boolean evaluator, explanations visit all enabled branches.
+    Unknown external values remain distinct from ordinary failed comparisons.
+    """
+    definition = normalize_rule_definition(rule)
+    validate_rule_definition(definition, target_scope=target_scope)
+    assert definition is not None
+    context = _build_context(
+        target_scope,
+        movie,
+        version,
+        series,
+        season,
+        episode,
+        _rule_uses_disk_fields(definition),
+    )
+    context["_support_conditions"] = {}
+
+    def walk(node: dict[str, Any], disabled: bool = False) -> dict[str, Any]:
+        disabled = disabled or _node_is_disabled(node)
+        result: dict[str, Any] = {"type": node["type"], "state": "disabled"}
+        if node["type"] == "group":
+            children = [walk(child, disabled) for child in node.get("children", [])]
+            op = str(node.get("op", "and")).lower()
+            result.update(op=op, children=children)
+            if not disabled:
+                states = [
+                    child["state"] for child in children if child["state"] != "disabled"
+                ]
+                if not states:
+                    result["state"] = "pass"
+                elif op == "and":
+                    result["state"] = (
+                        "fail"
+                        if "fail" in states
+                        else "unknown"
+                        if "unknown" in states
+                        else "pass"
+                    )
+                else:
+                    result["state"] = (
+                        "pass"
+                        if "pass" in states
+                        else "unknown"
+                        if "unknown" in states
+                        else "fail"
+                    )
+            return result
+        actual: Any = None
+        if not disabled:
+            state = _evaluate_node_state(node, context)
+            actual = context["_support_conditions"][id(node)][1]
+            result["state"] = (
+                "unknown" if state is None else "pass" if state else "fail"
+            )
+        field = str(node.get("field", ""))
+        operator = str(node.get("operator", ""))
+        # Failed per-user comparisons have no single matching total. Show every
+        # selected user's total so failures have useful actual values too.
+        if not disabled and field in USER_SCOPED_PLAYBACK_FIELDS:
+            totals = context.get(field)
+            expected = node.get("value")
+            if isinstance(totals, dict) and isinstance(expected, dict):
+                actual = {
+                    username: max(
+                        totals.get(alias, 0)
+                        for alias in {username, *_expand_playback_username(username)}
+                    )
+                    for name in expected.get("usernames", [])
+                    if (username := str(name).strip().casefold())
+                }
+        result.update(
+            field=field,
+            label=FIELD_LABELS.get(field, field),
+            operator=operator,
+            operator_label=OPERATOR_LABELS.get(operator, operator),
+            expected=bounded_value(node.get("value")),
+            actual=None if actual is RULE_VALUE_UNAVAILABLE else bounded_value(actual),
+        )
+        return result
+
+    return walk(definition["root"])
 
 
 def _evaluate_user_scoped_condition(
